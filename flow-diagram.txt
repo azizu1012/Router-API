@@ -1,0 +1,610 @@
++====================================================================================================+
+|                                    ROUTER API — FLOW DIAGRAM                                       |
++====================================================================================================+
+
+>>> FILE: flow-diagram.txt
+>>> MÔ TẢ: Sơ đồ quan hệ chi tiết giữa các module trong Router API
+>>> CẬP NHẬT: 2026-06-06
+
+
+======================================================================================================
+1. ENTRY POINT — main.py
+======================================================================================================
+
+  main.py
+  ├── Đọc .env (RouterApiConfig)
+  ├── Free port cũ (PowerShell / fuser)
+  └── Chạy uvicorn (FastAPI app: src.server.openai_server)
+
+  DEPENDENCIES:
+    main.py ──> src.server.openai_server (import app)
+    main.py ──> src.core.config_n_logg (config, logger)
+
+
+======================================================================================================
+2. SERVER LAYER — src/server/openai_server/
+======================================================================================================
+
+  routes/__init__.py
+  ├── Import toàn bộ route modules
+  └── Mount static frontend (src/frontend/)
+
+  routes/app_init.py
+  ├── FastAPI(title="Router API v2", version="2.0.0")
+  ├── CORS middleware (mọi origin, OPTIONS preflight)
+  ├── Security middleware
+  │   ├── Body size limit (10MB)
+  │   ├── IP rate limit (login 5/min, dashboard 60/min)
+  │   ├── Brute-force protection (5 fail → block 30 phút)
+  │   └── Security headers (HSTS, X-Content-Type-Options, ...)
+  └── Startup (lifespan)
+      ├── Init DB tables (schema.py)
+      ├── Migrate JSON → SQLite
+      ├── Start flush loop (usage_logger.py)
+      └── Watch .env file changes
+
+  routes/standard_routes.py
+  ├── GET / → root() — System online status
+  ├── GET /health → health() — Core model & key counts
+  ├── GET /preflight → preflight() — Port check diagnostics
+  ├── GET /mcp → mcp() — MCP discovery
+  └── GET /v1/models → list_models() — Active models list
+
+  routes/completions_routes.py
+  ├── POST /v1/chat/completions → chat_completions()
+  │   └── Gọi handler.py (_openai_chat_completion)
+  └── POST /v1/messages → anthropic_messages()
+      └── Gọi claude_proxy/handler
+
+  routes/admin_routes.py
+  ├── GET /dashboard/admin/keys → admin_keys()
+  ├── POST /dashboard/admin/keys/add → add_key()
+  ├── DELETE /dashboard/admin/keys/{key} → remove_key()
+  ├── POST /dashboard/admin/keys/{key}/freeze → toggle_key_freeze()
+  ├── PUT /dashboard/admin/accounts/{account_id} → update_account()
+  └── GET /dashboard/admin/models → admin_models()
+
+  routes/dashboard_routes.py
+  ├── POST /dashboard/login → login()
+  ├── GET /dashboard/stats → dashboard_stats()
+  ├── GET /dashboard/accounts → dashboard_accounts()
+  ├── POST /dashboard/refresh-keys → refresh_keys()
+  ├── GET /dashboard/config → dashboard_config()
+  └── GET /dashboard/logs → get_frontend_logs()
+
+  DEPENDENCIES:
+    app_init.py ──> auth.py (middleware)
+    app_init.py ──> backend/schema.py (DB init)
+    app_init.py ──> core/usage_logger.py (telemetry)
+    completions_routes.py ──> handler.py
+    completions_routes.py ──> api/claude_proxy/
+    admin_routes.py ──> backend/accounts.py
+    admin_routes.py ──> backend/endpoints.py
+    admin_routes.py ──> console/admin_console.py
+    dashboard_routes.py ──> backend/accounts.py
+    dashboard_routes.py ──> console/admin_console.py
+    dashboard_routes.py ──> auth_session.py
+
+
+======================================================================================================
+3. AUTH LAYER — src/server/openai_server/auth.py + security.py + auth_session.py
+======================================================================================================
+
+  auth.py
+  ├── _bearer_token() — Trích xuất token từ header
+  ├── _resolve_auth() — Tra cứu account theo token prefix
+  ├── _check_auth() — Kiểm tra enabled/disabled
+  ├── _apply_account_limit() — Check RPM/TPM/RPD
+  └── _auth_key_prefix() — Key prefix extraction
+
+  security.py
+  ├── check_frontend_rate_limit() — Dashboard rate limit (60/min)
+  ├── record_failed_login() — Ghi nhận login fail
+  ├── _hit() — Increment counter
+  ├── _trim() — Cleanup expired entries
+  └── add_security_headers() — Response security headers
+
+  auth_session.py
+  ├── _make_session_token() — HMAC-SHA256 token
+  ├── _verify_session_token() — Verify + check expiry (8h)
+  ├── _require_dashboard() — Guard decorator
+  └── _require_admin() — Admin-only decorator
+
+  DEPENDENCIES:
+    auth.py ──> backend/accounts.py (account lookup)
+    auth.py ──> core/limits/account_limiter/ (rate limit check)
+    auth_session.py ──> core/config_n_logg (SECRET_KEY)
+
+
+======================================================================================================
+4. HANDLER LAYER — src/server/openai_server/handler.py
+======================================================================================================
+
+  handler.py
+  ├── _openai_chat_completion() — Main execution
+  │   ├── Compaction nếu cần
+  │   ├── Web search injection
+  │   ├── Pool selection (Gemini vs Custom)
+  │   ├── Gemini API call
+  │   └── Response formatting
+  ├── _completion_response() — JSON non-stream response
+  ├── _stream_response() — SSE stream response
+  ├── _extract_openai_text() — Text extraction
+  └── _check_custom_pool_rate() -- Custom pool rate check
+
+  DEPENDENCIES:
+    handler.py ──> api/claude_proxy/ (Anthropic → Gemini conversion)
+    handler.py ──> server/pass_through/ (Gemini native proxy)
+    handler.py ──> core/router/ (key selection)
+    handler.py ──> core/providers/ (API calls)
+    handler.py ──> core/limits/ (rate limiters)
+    handler.py ──> backend/accounts.py (account check)
+
+
+======================================================================================================
+5. PROXY LAYER — src/api/claude_proxy/
+======================================================================================================
+
+  5a. PROXY ENTRY
+  ────────────────────────────────────────────────────────────────────────────────
+  handler/proxy.py — ClaudeProxy class
+  ├── _prepare_litellm_kwargs() — Chuẩn bị kwargs cho LiteLLM
+  └── _chat_completion_retry_loop() — Retry loop + pool fallback
+
+  handler/proxy_nonstream.py — ClaudeProxyNonstreamMixin
+  └── create_message() — Non-stream entry point
+
+  handler/proxy_stream.py — ClaudeProxyStreamMixin
+  └── stream_message() — Stream entry point
+
+  5b. EXECUTORS
+  ────────────────────────────────────────────────────────────────────────────────
+  handler/nonstream_executor.py
+  ├── _resolve_gemini_with_tools() — Tool call handling
+  └── _execute_nonstream() — Non-stream execution
+
+  handler/stream_executor.py
+  ├── _execute_stream() — Stream execution
+  └── _stream_with_pool() — Pool retry loop + usage logging
+
+  5c. COMPACTION
+  ────────────────────────────────────────────────────────────────────────────────
+  handler/compaction.py
+  └── _pre_compact_and_truncate() — Gate check + truncation
+
+  utils/compaction_utils.py
+  ├── should_compact() — Threshold check (80K Claude Code / 160K standard)
+  ├── _emergency_truncate_to_limit() — Hard truncation (180K)
+  └── _compact_conversation() — LLM summarization via gemini-flash-lite
+
+  5d. CONVERTERS & HELPERS
+  ────────────────────────────────────────────────────────────────────────────────
+  stream.py
+  └── _process_anthropic_stream() — OpenAI SSE → Anthropic SSE
+
+  utils/message_converter.py
+  ├── _tool_call_names() — Tool name extraction
+  ├── _clean_system_prompt() — Prompt cleaning
+  └── _convert_messages() — Anthropic → OpenAI format
+
+  utils/model_resolver.py
+  ├── _retry_delay() — Exponential backoff
+  └── _resolve_model() — Model alias resolution (pool/standalone)
+
+  utils/sse_cache_agent.py
+  ├── _sse() — SSE event formatting
+  ├── _get_simulated_cache_usage() — Cache simulation
+  ├── _intercept_sub_agent() — Sub-agent interception
+  ├── _estimate_msg_tokens() -- Token estimation
+  └── is_claude_code_body() — Claude Code detection
+
+  handler/helpers.py
+  ├── get_system_status_summary() — System status
+  ├── _classify_error_reason() — Error classification
+  └── _reinforce_messages_for_retry() — Retry reinforcement
+
+  DEPENDENCIES:
+    proxy.py ──> proxy_nonstream.py, proxy_stream.py
+    proxy_nonstream.py ──> nonstream_executor.py
+    proxy_stream.py ──> stream_executor.py
+    nonstream_executor.py ──> stream_executor.py (dùng streaming rồi collect)
+    stream_executor.py ──> core/providers/search_manager.py (web search)
+    stream_executor.py ──> core/providers/gemini_api_manager.py
+    stream_executor.py ──> core/router/ (key resolution)
+    stream_executor.py ──> stream.py (SSE conversion)
+    compaction.py ──> utils/compaction_utils.py
+    message_converter.py ──> utils/model_resolver.py
+    sse_cache_agent.py ──> core/config_n_logg/config.py
+
+
+======================================================================================================
+6. PASS-THROUGH — src/server/pass_through_server/
+======================================================================================================
+
+  routes/gemini_routes.py
+  ├── _resolve_gemini_auth() — Auth từ key param hoặc x-goog-api-key
+  ├── _parse_gemini_contents() — Content parsing
+  ├── gemini_generate_content — POST non-stream
+  └── gemini_stream_generate_content — POST stream (SSE)
+
+  DEPENDENCIES:
+    gemini_routes.py ──> core/router/ (key selection)
+    gemini_routes.py ──> core/providers/gemini_api_manager.py
+
+
+======================================================================================================
+7. CORE ROUTER — src/core/router/
+======================================================================================================
+
+  core/router.py — class APIRouter(KeyResolverMixin)
+  ├── _get_custom_ep() — Lấy custom endpoint config
+  ├── reserve_key() — Atomic key selection + DB reserve
+  └── release_key() — Key release + usage recording
+
+  core/key_resolver.py — class KeyResolverMixin
+  ├── _key_is_circuit_open() — Check circuit breaker
+  ├── _adaptive_cooldown() — 429 penalty: exponential, RPD: 60s, invalid: permanent
+  ├── _resolve_key() — Key candidate filtering
+  ├── _try_reserve_key() — Atomic reserve attempt
+  ├── _find_best_key_pooled() — Pool-aware key ranking
+  └── _resolve_key_for_pool() -- Per-pool key resolution
+
+  pool.py — class ModelPool
+  ├── Pool state machine (transient vs hard failure)
+  ├── Swap threshold tracking
+  └── Auto-swap logic (flash-35 → flash-30 → flash-25)
+
+  DEPENDENCIES:
+    router.py ──> key_resolver.py
+    key_resolver.py ──> backend/key_status.py (DB operations)
+    key_resolver.py ──> core/limits/gemini_rate_limiter.py
+    key_resolver.py ──> core/config_n_logg (config, logger)
+
+
+======================================================================================================
+8. PROVIDERS — src/core/providers/
+======================================================================================================
+
+  gemini_api_manager.py — class GeminiAPIManager(GeminiAPIHelpersMixin)
+  ├── Google AI client pool (semaphore-controlled)
+  ├── Key rotation
+  ├── generate_content (stream + non-stream)
+  ├── Safety checks
+  └── Image handling
+
+  gemini_api_helpers.py — class GeminiAPIHelpersMixin
+  └── Error classification: retryable, unavailable, invalid, billing
+
+  custom_endpoint_manager.py — class CustomEndpointManager
+  ├── CRUD endpoint mappings
+  ├── Model → endpoint resolution
+  ├── Pool assignment + fallback
+  └── Model fetching từ 3rd party API
+
+  search_manager.py
+  ├── extract_search_queries() — Parse search intent
+  ├── web_search_google() — Google search via Gemini API
+  └── process_search_results() — Result formatting
+
+  DEPENDENCIES:
+    gemini_api_manager.py ──> backend/key_status.py (key state)
+    gemini_api_manager.py ──> core/limits/gemini_rate_limiter.py
+    custom_endpoint_manager.py ──> backend/endpoints.py
+    search_manager.py ──> tools/duckduckgo.py (local search engine)
+
+
+======================================================================================================
+9. RATE LIMITERS — src/core/limits/
+======================================================================================================
+
+  gemini_rate_limiter.py — class GeminiRateLimiter
+  ├── Per-model RPM/TPM/RPD sliding window (deque)
+  ├── Error penalty scoring (persisted to SQLite)
+  ├── Key priority sorting
+  ├── RPD reset theo Pacific TZ
+  └── Per-model usage tracking
+
+  account_limiter/
+  ├── limiter.py — AccountRateLimiter
+  │   └── Per-account RPM/TPM sliding window
+  ├── capacity.py
+  │   ├── get_active_account_counts()
+  │   ├── calculate_key_capacities()
+  │   └── calculate_pool_capacities_for_user()
+  └── effective_limits.py
+      ├── get_effective_limits()
+      └── get_effective_limits_by_pool()
+
+  DEPENDENCIES:
+    gemini_rate_limiter.py ──> backend/key_status.py (key_penalties table)
+    account_limiter ──> backend/accounts.py
+    account_limiter ──> backend/endpoints.py
+
+
+======================================================================================================
+10. BACKEND — src/backend/ (SQLite)
+======================================================================================================
+
+  _db.py
+  └── conn() — Connection factory (WAL mode, RLock)
+
+  schema.py
+  ├── init_config_tables() — Tạo tables: accounts, custom_endpoints,
+  │                             oauth_clients, key_usage, key_status, usage_logs
+  └── migrate_from_json() — JSON → SQLite migration
+
+  accounts.py
+  ├── list_accounts_db()
+  ├── find_account_by_name()
+  ├── find_account_by_key()
+  ├── create_account_db()
+  ├── update_account_db()
+  └── delete_account_db()
+
+  endpoints.py
+  ├── list_endpoints_db()
+  ├── get_endpoint_db()
+  ├── add_endpoint_db()
+  ├── remove_endpoint_db()
+  ├── enable/disable_endpoint_db()
+  ├── assign_to_pool_db()
+  └── set_fallback_db()
+
+  key_status.py
+  ├── get_key_status_db()
+  ├── set_key_status_db()
+  ├── atomic_reserve_key()
+  ├── atomic_release_key()
+  ├── atomic_freeze_key()
+  ├── atomic_record_success()
+  ├── get_key_usage_db()
+  ├── update_key_usage_batch_db()
+  ├── get_key_tiers_db()
+  └── db_load_active_penalties()
+
+  DEPENDENCIES (internal):
+    schema.py ──> _db.py
+    accounts.py ──> _db.py
+    endpoints.py ──> _db.py
+    key_status.py ──> _db.py
+
+
+======================================================================================================
+11. TOOLS — src/tools/
+======================================================================================================
+
+  duckduckgo.py — class AdvancedSearchManager
+  ├── web_search() — DuckDuckGo search engine (1314 lines)
+  ├── search_with_citations() — Search + citation formatting
+  ├── Caching system
+  ├── Topic classification (gaming/tech/science/finance)
+  ├── Deduplication
+  ├── Text extraction (HTML → text)
+  └── Parallel intent fanout
+
+  DEPENDENCIES:
+    duckduckgo.py ──> core/config_n_logg (logger)
+
+
+======================================================================================================
+12. CONSOLE — src/console/
+======================================================================================================
+
+  admin_console.py
+  ├── main() — argparse CLI
+  └── AdminConsole(cmd.Cmd) — Interactive shell
+
+  console_endpoint.py
+  ├── _wizard_add_endpoint() — Endpoint add wizard
+  ├── _wizard_pool_assign() — Pool assignment wizard
+  ├── _list_pool_assignments()
+  └── _ping_pool_model()
+
+  console_helpers.py
+  ├── _print_accounts()
+  ├── _print_defaults()
+  ├── _getch() — Keypress input
+  ├── _prompt_yesno()
+  └── _select_models_interactively()
+
+  DEPENDENCIES:
+    admin_console.py ──> backend/accounts.py
+    admin_console.py ──> backend/endpoints.py
+    admin_console.py ──> backend/key_status.py
+    admin_console.py ──> console_endpoint.py
+    admin_console.py ──> console_helpers.py
+
+
+======================================================================================================
+13. CORE UTILITIES — src/core/
+======================================================================================================
+
+  config_n_logg/
+  ├── config.py — RouterApiConfig (dataclass, .env loader)
+  │   ├── reload_config() — Hot reload
+  │   └── remove_banned_key_from_env() — Ban key removal
+  └── logger.py — 6 loggers: system, proxy, keys, api, keepalive, web
+      └── setup_logger() — Rotating file + console
+
+  usage_logger.py
+  ├── init_db() — Khởi tạo usage_logs.db
+  ├── log_usage() — Async batch insert
+  ├── get_stats() — Stats 1h/24h/7d
+  ├── get_top_keys() — Top keys ranking
+  └── start_flush_loop() — Background flush
+
+  accounts/account_manager.py — class AccountManager
+  └── CRUD facade (delegate to backend/accounts.py)
+
+  api_config.py
+  ├── is_sunset_25() — Gemini 2026 sunset check
+  ├── AVAILABLE_MODELS — Danh sách model
+  ├── MODEL_POOLS — Pool definitions (flash 35↔30↔25, lite 35↔30)
+  └── MODEL_PRIORITY — Priority ordering
+
+  preflight.py — run_preflight()
+  └── Startup diagnostics (keys, models, auth, accounts, relay)
+
+
+======================================================================================================
+14. DB TABLES — usage.db
+======================================================================================================
+
+  accounts                        custom_endpoints                key_status
+  ─────────────────────────       ──────────────────────          ───────────────────────
+  account_id (PK) TEXT            name (PK) TEXT                  key (PK) TEXT
+  name TEXT UNIQUE                base_url TEXT                   enabled INTEGER
+  auth_key TEXT                   auth_key TEXT                   usage INTEGER
+  enabled INTEGER (1)             enabled INTEGER (1)             active_requests INTEGER
+  tier TEXT ('free')              models TEXT ('[]')               frozen_until REAL
+  rpm INTEGER (300)               pool_assignments TEXT ('{}')    consecutive_failures INTEGER
+  tpm INTEGER (6000000)           fallback INTEGER (0)            last_success REAL
+  rpd INTEGER (20000)             updated_at TEXT                  date TEXT
+  web_search_enabled INTEGER (0)  oauth_client_id TEXT            today INTEGER
+  created_at INTEGER              oauth_client_secret TEXT        per_model TEXT ('{}')
+  updated_at INTEGER               oauth_scopes TEXT              tier TEXT ('free')
+                                                                   pool TEXT
+  key_penalties                    key_usage                      data TEXT
+  ──────────────────────          ─────────────────────
+  pkey INTEGER PK AUTO            key TEXT PK
+  api_key TEXT                    data TEXT
+  model_id TEXT
+  reason TEXT
+  expires REAL
+  score_reduction REAL
+
+
+======================================================================================================
+15. REQUEST FLOW — TỔNG QUAN VÒNG ĐỜI REQUEST
+======================================================================================================
+
+  OpenAI Format (/v1/chat/completions):
+  ──────────────────────────────────────────────────────────────────────────────
+
+    Client ──> CORS ──> Security ──> auth.py (Bearer token)
+                                          │
+                                          v
+                                    account_limiter (RPM/TPM/RPD)
+                                          │
+                                          v
+                                    handler.py (model alias, pool select)
+                                          │
+                              ┌───────────┴───────────┐
+                              │                       │
+                         Gemini Pool           Custom Pool
+                              │                       │
+                    router.reserve_key()     custom_endpoint_manager
+                              │                       │
+                    gemini_api_manager.py      LiteLLM proxy call
+                              │                       │
+                    └───────────┬─────────────────────┘
+                                │
+                                v
+                        Response Engine
+                          │           │
+                          v           v
+                      JSON          SSE Stream
+
+  Anthropic Format (/v1/messages):
+  ──────────────────────────────────────────────────────────────────────────────
+
+    Client ──> CORS ──> Security ──> auth.py ──> account_limiter
+                                                    │
+                                                    v
+                                            claude_proxy/handler/
+                                                    │
+                                          Anthropic → OpenAI conversion
+                                                    │
+                                          compaction nếu cần
+                                                    │
+                                          handler.py → Gemini/Custom Pool
+                                                    │
+                                          stream_executor.py (SSE translation)
+                                                    │
+                                                    v
+                                          Anthropic-format SSE events
+
+
+  Gemini Native Format (/v1/models/{model}:generateContent):
+  ──────────────────────────────────────────────────────────────────────────────
+
+    Client ──> CORS ──> Security ──> auth.py ──> account_limiter
+                                                    │
+                                                    v
+                                            pass_through/gemini_routes.py
+                                                    │
+                                            Native Gemini format proxy
+                                                    │
+                                            router.reserve_key()
+                                                    │
+                                            gemini_api_manager.py
+                                                    │
+                                                    v
+                                            Gemini API (stream/non-stream)
+
+
+  Dashboard (/dashboard/*):
+  ──────────────────────────────────────────────────────────────────────────────
+
+    Client ──> CORS ──> Security (60/min/IP) ──> auth_session.py (HMAC token)
+                                                    │
+                                                    v
+                                            dashboard_routes.py / admin_routes.py
+                                                    │
+                                                    v
+                                            JSON → Frontend SPA (index.html + JS)
+
+
+======================================================================================================
+16. KEY STATE MACHINE
+======================================================================================================
+
+                    ┌─────────────────────────────────────────────┐
+                    │           KEY LIFECYCLE                    │
+                    └───────────────┬─────────────────────────────┘
+                                    │
+                                    v
+                          ┌─────────────────────┐
+                          │      ACTIVE         │
+                          │  (sẵn sàng dùng)    │
+                          └──────────┬──────────┘
+                                     │
+                   ┌─────────────────┼─────────────────┐
+                   │                 │                 │
+                   v                 │                 v
+          ┌────────────────┐        │        ┌──────────────────────┐
+          │    FROZEN      │        │        │      DISABLED        │
+          │  429/overload  │        │        │  invalid_key /       │
+          │  adaptive      │        │        │  permission_denied   │
+          │  cooldown      │        │        │  (banned-keys.txt)   │
+          └───────┬────────┘        │        └──────────────────────┘
+                  │                 │
+                  v                 │
+          ┌────────────────┐        │
+          │    ACTIVE      │        │
+          │  (hết timeout) │        │
+          └────────────────┘        │
+                                    │
+                  ┌─────────────────┘
+                  v
+          ┌────────────────────┐
+          │  CIRCUIT BREAKER   │
+          │  15 lần 429 liên   │
+          │  tiếp → global     │
+          │  block 10-20s      │
+          └────────┬───────────┘
+                   │
+                   v
+          ┌────────────────┐
+          │    ACTIVE      │
+          │  (hết block)   │
+          └────────────────┘
+
+    ỨNG DỤNG ADAPTIVE COOLDOWN:
+    ──────────────────────────────────────────────────────────────────────────────
+    - 429 (rate limit):     exponential backoff (8s, 16s, 32s, 64s, ...)
+    - RPD vượt quá giới hạn:  60s freeze
+    - Circuit breaker:       global block 10-20s (cả pool)
+    - invalid_key:           DISABLED vĩnh viễn (vẫn cho 1 auto-retry cuối)
+    - Jitter ngẫu nhiên:     0-15% + gaussian margins
+    - Giảm ưu tiên key:     penalty score tăng dần, key càng lỗi càng ít được chọn

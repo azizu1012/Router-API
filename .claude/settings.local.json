@@ -1,0 +1,14 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(Get-ChildItem *)",
+      "Bash(python *)",
+      "PowerShell(\\(Get-Content src/api/claude_proxy.py | Measure-Object -Line\\).Lines)",
+      "PowerShell(\\(Get-Content src/core/gemini_api_manager.py | Measure-Object -Line\\).Lines)",
+      "PowerShell(Get-Process *)",
+      "Bash(dir *)",
+      "PowerShell(\\(Get-Content main.py | Measure-Object -Line\\).Lines)",
+      "PowerShell(claude *)"
+    ]
+  }
+}

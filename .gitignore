@@ -1,0 +1,31 @@
+# ─── Runtime data ───
+.env
+usage.db
+usage_logs.db
+logs/
+
+# ─── Auto-generated ───
+__pycache__/
+*.pyc
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+
+# ─── Virtual env ───
+.venv/
+
+# ─── Secrets / keys ───
+banned-keys.txt
+
+# ─── Chua deploy ───
+Cert/
+run_router_ssl.ps1
+run_router_ssl.sh
+start_router_api.ps1
+stop_router_api.ps1
+stop_router_ssl.ps1
+stop_router_ssl.sh
+
+# ─── OS ───
+Thumbs.db
+.DS_Store
