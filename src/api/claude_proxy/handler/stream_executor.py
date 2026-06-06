@@ -47,7 +47,7 @@ async def _execute_stream(proxy_instance: Any, kwargs: Dict[str, Any], api_key: 
                 yield _sse("message_start", {
                     "type": "message_start",
                     "message": {
-                        "id": msg_id, "type": "message", "role": "assistant", "model": model_alias,
+                        "id": msg_id, "type": "message", "role": "assistant", "model": body.get("model") or model_alias,
                         "content": [], "stop_reason": None, "stop_sequence": None,
                         "usage": {
                             "input_tokens": adjusted_input_tokens,
@@ -189,7 +189,7 @@ async def _execute_stream(proxy_instance: Any, kwargs: Dict[str, Any], api_key: 
             ttfb = asyncio.get_event_loop().time() - t0_wait
             logger.info("[Stream] model=%s ttfb=%.2fs", model_alias, ttfb)
 
-            async for chunk in _process_anthropic_stream(gen, first_chunk, model_alias, input_tokens, kp, auth_key_prefix, body):
+            async for chunk in _process_anthropic_stream(gen, first_chunk, body.get("model") or model_alias, input_tokens, kp, auth_key_prefix, body):
                 yield chunk
             router.record_success(api_key, model_id)
             if pool:

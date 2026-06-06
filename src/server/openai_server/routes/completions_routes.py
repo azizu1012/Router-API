@@ -272,11 +272,31 @@ async def anthropic_messages(
         }
         await _apply_account_limit(account, chat_like)
 
+        # Estimate input tokens to generate simulated rate-limit headers
+        messages_val = body.get("messages", [])
+        system_val = body.get("system", "")
+        text_content = str(system_val) + str(messages_val)
+        input_tokens_est = len(text_content) // 4
+        limit_tokens = 200000
+        remaining_tokens = max(1000, limit_tokens - input_tokens_est)
+        utilization_val = min(0.99, round(input_tokens_est / limit_tokens, 4))
+        
+        response_headers = {
+            "anthropic-version": "2023-06-01",
+            "anthropic-ratelimit-requests-limit": "1000",
+            "anthropic-ratelimit-requests-remaining": "999",
+            "anthropic-ratelimit-tokens-limit": str(limit_tokens),
+            "anthropic-ratelimit-tokens-remaining": str(remaining_tokens),
+            "anthropic-ratelimit-unified-5h-utilization": f"{utilization_val:.4f}",
+            "anthropic-ratelimit-unified-7d-utilization": f"{utilization_val:.4f}",
+            "anthropic-ratelimit-unified-status": "allowed",
+        }
+
         if body.get("stream"):
             return StreamingResponse(
                 claude_proxy.stream_message(body, akp, account=account),
                 media_type="text/event-stream",
-                headers={"anthropic-version": "2023-06-01"},
+                headers=response_headers,
             )
 
         message = await claude_proxy.create_message(body, akp, account=account)
@@ -289,7 +309,7 @@ async def anthropic_messages(
             content={"type": "error", "error": {"type": "api_error", "message": "Service temporarily unavailable"}},
         )
 
-    return JSONResponse(content=message, headers={"anthropic-version": "2023-06-01"})
+    return JSONResponse(content=message, headers=response_headers)
 
 
 @app.post("/api/ping-model")

@@ -18,7 +18,7 @@ async def test():
 
     async with httpx.AsyncClient(timeout=60) as client:
         resp = await client.post(
-            'http://localhost:58100/v1/messages',
+            'http://localhost:58100/opencode/v1/chat/completions',
             json={
                 'model': 'gemini-flash',
                 'max_tokens': 50,
