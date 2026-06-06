@@ -1,0 +1,19 @@
+/* ═══════════════════════════════════════════════════════════
+   index.css — Router API Cockpit · CSS Entry Point
+   All styles are imported from modular CSS files below.
+   ═══════════════════════════════════════════════════════════ */
+
+/* 1. Design tokens & theme variables */
+@import url('./css/variables.css');
+
+/* 2. Base reset, fonts, scrollbar */
+@import url('./css/base.css');
+
+/* 3. Rich animations, keyframes, micro-interactions */
+@import url('./css/animations.css');
+
+/* 4. Components: badges, buttons, dropdowns, code, tooltips */
+@import url('./css/components.css');
+
+/* 5. App layout, sidebar, views, tables, panels */
+@import url('./css/views.css');

@@ -1,0 +1,158 @@
+:root {
+  --bg: #030712;
+  --bg2: #090d16;
+  --card: rgba(255, 255, 255, 0.02);
+  --card-hover: rgba(255, 255, 255, 0.05);
+  --border: rgba(255, 255, 255, 0.07);
+  --border-hover: rgba(255, 255, 255, 0.15);
+  
+  --primary: #6366f1;
+  --primary-glow: rgba(99, 102, 241, 0.25);
+  --cyan: #06b6d4;
+  --cyan-glow: rgba(6, 182, 212, 0.25);
+  --emerald: #10b981;
+  --emerald-glow: rgba(16, 185, 129, 0.25);
+  --amber: #f59e0b;
+  --amber-glow: rgba(245, 158, 11, 0.25);
+  --rose: #f43f5e;
+  --rose-glow: rgba(244, 63, 94, 0.25);
+  
+  --text: #f3f4f6;
+  --text-muted: #9ca3af;
+  --text-dark: #6b7280;
+  
+  --sidebar-width: 240px;
+  --header-height: 64px;
+  --radius: 12px;
+  --transition: all 0.25s cubic-bezier(0.4, 0, 0.2, 1);
+
+  /* Shared Background Variables for Theme Adapting */
+  --header-bg: rgba(10, 15, 26, 0.8);
+  --sidebar-bg: rgba(7, 10, 19, 0.6);
+  --login-bg: rgba(10, 15, 26, 0.7);
+  --input-bg: rgba(255, 255, 255, 0.03);
+  --select-opt-bg: #0d111a;
+  --filter-bg: rgba(13, 17, 30, 0.45);
+
+  /* Theme-aware contrast overrides */
+  --hover-bg: rgba(255, 255, 255, 0.03);
+  --hover-bg2: rgba(255, 255, 255, 0.05);
+  --card-gradient: linear-gradient(135deg, rgba(255, 255, 255, 0.02) 0%, transparent 100%);
+  --table-header-bg: rgba(255, 255, 255, 0.015);
+  --scrollbar-thumb-bg: rgba(255, 255, 255, 0.1);
+  --scrollbar-thumb-hover: rgba(255, 255, 255, 0.2);
+  --btn-sec-bg: rgba(255, 255, 255, 0.05);
+  --btn-sec-hover: rgba(255, 255, 255, 0.08);
+  --code-bg: rgba(255, 255, 255, 0.05);
+  --code-text: #c7d2fe;
+  --admin-hdr-color: #a5b4fc;
+  --admin-hdr-bg: rgba(99, 102, 241, 0.08);
+  --premium-hdr-color: #fbbf24;
+  --premium-hdr-bg: rgba(245, 158, 11, 0.08);
+  --free-hdr-color: #d1d5db;
+  --free-hdr-bg: rgba(156, 163, 175, 0.08);
+  --tooltip-bg: rgba(10, 15, 26, 0.98);
+  --tooltip-border: rgba(255, 255, 255, 0.12);
+}
+
+:root.theme-light {
+  --bg: #f3f4f6;
+  --bg2: #ffffff;
+  --card: rgba(0, 0, 0, 0.018);
+  --card-hover: rgba(0, 0, 0, 0.04);
+  --border: rgba(0, 0, 0, 0.08);
+  --border-hover: rgba(0, 0, 0, 0.15);
+  
+  --primary: #4f46e5;
+  --primary-glow: rgba(79, 70, 229, 0.15);
+  --cyan: #0891b2;
+  --cyan-glow: rgba(8, 145, 178, 0.15);
+  --emerald: #059669;
+  --emerald-glow: rgba(5, 150, 105, 0.15);
+  --amber: #d97706;
+  --amber-glow: rgba(217, 119, 6, 0.15);
+  --rose: #e11d48;
+  --rose-glow: rgba(225, 29, 72, 0.15);
+  
+  --text: #1f2937;
+  --text-muted: #4b5563;
+  --text-dark: #9ca3af;
+
+  --header-bg: rgba(255, 255, 255, 0.8);
+  --sidebar-bg: rgba(249, 250, 251, 0.85);
+  --login-bg: rgba(255, 255, 255, 0.85);
+  --input-bg: rgba(0, 0, 0, 0.02);
+  --select-opt-bg: #ffffff;
+  --filter-bg: rgba(255, 255, 255, 0.45);
+
+  /* Theme-aware contrast overrides */
+  --hover-bg: rgba(0, 0, 0, 0.03);
+  --hover-bg2: rgba(0, 0, 0, 0.05);
+  --card-gradient: linear-gradient(135deg, rgba(0, 0, 0, 0.01) 0%, transparent 100%);
+  --table-header-bg: rgba(0, 0, 0, 0.02);
+  --scrollbar-thumb-bg: rgba(0, 0, 0, 0.1);
+  --scrollbar-thumb-hover: rgba(0, 0, 0, 0.25);
+  --btn-sec-bg: rgba(0, 0, 0, 0.04);
+  --btn-sec-hover: rgba(0, 0, 0, 0.08);
+  --code-bg: rgba(0, 0, 0, 0.04);
+  --code-text: #4f46e5;
+  --admin-hdr-color: #4f46e5;
+  --admin-hdr-bg: rgba(79, 70, 229, 0.08);
+  --premium-hdr-color: #b45309;
+  --premium-hdr-bg: rgba(217, 119, 6, 0.08);
+  --free-hdr-color: #374151;
+  --free-hdr-bg: rgba(75, 85, 99, 0.08);
+  --tooltip-bg: #ffffff;
+  --tooltip-border: rgba(0, 0, 0, 0.12);
+}
+
+:root.theme-sakura {
+  --bg: #fff5f6;
+  --bg2: #ffe5ec;
+  --card: rgba(255, 255, 255, 0.65);
+  --card-hover: rgba(255, 255, 255, 0.9);
+  --border: rgba(255, 77, 109, 0.15);
+  --border-hover: rgba(255, 77, 109, 0.35);
+  
+  --primary: #ff4d6d;
+  --primary-glow: rgba(255, 77, 109, 0.25);
+  --cyan: #ff758f;
+  --cyan-glow: rgba(255, 117, 143, 0.25);
+  --emerald: #c9184a;
+  --emerald-glow: rgba(201, 24, 74, 0.25);
+  --amber: #ff85a1;
+  --amber-glow: rgba(255, 133, 161, 0.25);
+  --rose: #ffb3c1;
+  --rose-glow: rgba(255, 179, 193, 0.25);
+  
+  --text: #590d22;
+  --text-muted: #800f2f;
+  --text-dark: #a4133c;
+
+  --header-bg: rgba(255, 240, 243, 0.85);
+  --sidebar-bg: rgba(255, 229, 236, 0.5);
+  --login-bg: rgba(255, 245, 246, 0.85);
+  --input-bg: rgba(255, 255, 255, 0.6);
+  --select-opt-bg: #ffe5ec;
+  --filter-bg: rgba(255, 255, 255, 0.45);
+
+  /* Theme-aware contrast overrides */
+  --hover-bg: rgba(255, 77, 109, 0.06);
+  --hover-bg2: rgba(255, 77, 109, 0.12);
+  --card-gradient: linear-gradient(135deg, rgba(255, 77, 109, 0.03) 0%, transparent 100%);
+  --table-header-bg: rgba(255, 77, 109, 0.04);
+  --scrollbar-thumb-bg: rgba(255, 77, 109, 0.2);
+  --scrollbar-thumb-hover: rgba(255, 77, 109, 0.4);
+  --btn-sec-bg: rgba(255, 77, 109, 0.08);
+  --btn-sec-hover: rgba(255, 77, 109, 0.15);
+  --code-bg: rgba(255, 77, 109, 0.08);
+  --code-text: #ff4d6d;
+  --admin-hdr-color: #ff4d6d;
+  --admin-hdr-bg: rgba(255, 77, 109, 0.08);
+  --premium-hdr-color: #c9184a;
+  --premium-hdr-bg: rgba(201, 24, 74, 0.08);
+  --free-hdr-color: #800f2f;
+  --free-hdr-bg: rgba(128, 15, 47, 0.08);
+  --tooltip-bg: #ffe5ec;
+  --tooltip-border: rgba(255, 77, 109, 0.2);
+}
