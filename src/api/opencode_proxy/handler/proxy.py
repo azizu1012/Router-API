@@ -181,7 +181,7 @@ class OpenCodeProxy:
             return messages
 
         try:
-            search_context, _ = await execute_opencode_search(queries, model_alias_or_name=model_alias, auth_key_prefix=akp, account=account)
+            search_context, citations = await execute_opencode_search(queries, model_alias_or_name=model_alias, auth_key_prefix=akp, account=account)
         except Exception as serr:
             logger.warning("[OpenCode Search] execute_opencode_search failed: %s", serr)
             return messages
@@ -189,15 +189,26 @@ class OpenCodeProxy:
         if not search_context:
             return messages
 
+        citations_block = ""
+        if citations:
+            seen = set()
+            unique = []
+            for c in citations:
+                url = c.get("url", "")
+                if url and url not in seen:
+                    seen.add(url)
+                    unique.append(c)
+            if unique:
+                citations_block = "\n\n— Sources —\n" + "\n".join(
+                    f"• [{c.get('title', 'Source')}]({c.get('url', '#')})" for c in unique
+                )
+
         current_time = datetime.now().strftime("%A, %B %d, %Y, %I:%M %p")
         context_block = (
             "\n\n---\n"
             f"[Web Search Context — {current_time}]\n"
-            "CRITICAL INSTRUCTION: Use the following real-time search results to answer the user's request. "
-            "Please provide a highly detailed, comprehensive, and specific response with all dates, versions, characters, "
-            "items, and names. Do NOT summarize briefly or write a short answer. Be exhaustive and elaborate. "
-            "Cite your sources with markdown links [Title](URL) directly in the body of your response, exactly as provided in the context.\n"
             f"{search_context}\n"
+            f"{citations_block}\n"
             "[/Web Search Context]"
         )
 
@@ -298,7 +309,7 @@ class OpenCodeProxy:
         resolve_alias: str, pool_mode: bool = False, pool: Any = None,
         account: Optional[Dict[str, Any]] = None, is_stream: bool = False, attempt: int = 0
     ) -> tuple:
-        max_output = min(int(body.get("max_tokens", 4096)), config.MAX_OUTPUT_TOKENS)
+        max_output = min(int(body.get("max_tokens", config.MAX_OUTPUT_TOKENS)), config.MAX_OUTPUT_TOKENS)
         estimated_tokens = len(str(messages)) // 4 + max_output
 
         retry = pool.total_attempts if pool else attempt

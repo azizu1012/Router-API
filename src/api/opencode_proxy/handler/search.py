@@ -46,8 +46,8 @@ async def execute_opencode_search(
                     "You are a professional, thorough research assistant. Your task is to search the web and compile a detailed, factually accurate report on the given topic.\n"
                     "Rules:\n"
                     "1. Provide a comprehensive summary with detailed context, dates, facts, and names. Do NOT limit your answer to a few sentences.\n"
-                    "2. You MUST cite your sources. For every key piece of information, include the source name and its URL in the format [Source Name](URL) directly in the body of your response.\n"
-                    "3. Make sure all links are valid and directly taken from the search results grounding metadata. Do not fabricate any links or sources.\n"
+                    "2. For every key piece of information, include the article title and FULL article URL exactly as provided. NEVER output just a homepage domain like `example.com`.\n"
+                    "3. Only cite information that comes from the search results grounding metadata. Do not fabricate any links or sources.\n"
                     "4. If different sources have conflicting information, present both views clearly.\n"
                     "5. Keep the report clear, structured, and easy to read."
                 )
@@ -56,7 +56,7 @@ async def execute_opencode_search(
                     text=(
                         f"Today is {current_time_str}.\n"
                         f"Please research and write a detailed report on: {query}\n"
-                        "Make sure to include all relevant details, numbers, dates, and provide direct clickable markdown links [Title](URL) for your sources."
+                        "Include all relevant details, numbers, dates. For each source, provide the FULL article URL (not just the domain)."
                     )
                 )])]
 
