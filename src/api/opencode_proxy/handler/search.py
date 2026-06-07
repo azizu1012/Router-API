@@ -55,7 +55,7 @@ async def execute_opencode_search(
                 contents = [gt.Content(role="user", parts=[gt.Part.from_text(
                     text=(
                         f"Today is {current_time_str}.\n"
-                        f"Search and write a detailed report on: {query} current 2026\n"
+                        f"Search and write a detailed report on: {query} current as of {datetime.now().strftime('%B %Y')}\n"
                         "Include all relevant details, numbers, dates. For each source, provide the FULL article URL (not just the domain)."
                     )
                 )])]
