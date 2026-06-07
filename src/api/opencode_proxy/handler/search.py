@@ -33,11 +33,20 @@ async def execute_opencode_search(
         logger.info("[OpenCode Search] Model %s is lite, using standard search", model_alias_or_name)
         return await execute_hybrid_search(queries, auth_key_prefix=auth_key_prefix, account=account)
 
-    logger.info("[OpenCode Search] Model %s is flash, executing sub-agent search via lite pool", model_alias_or_name)
+    # Resolve the customized sub-agent model (if any)
+    target_model = None
+    if account:
+        target_model = account.get("subagent_model") or account.get("agent_model") or account.get("sub_agent_model")
+    if not target_model:
+        import os
+        target_model = os.getenv("OPENCODE_SUB_AGENT_MODEL") or os.getenv("SUB_AGENT_MODEL")
+
+    models_to_try = [target_model] if target_model else ["gemini-flash-lite", "gemini-flash-25-lite"]
+
+    logger.info("[OpenCode Search] Executing sub-agent search via models %s", models_to_try)
 
     async def run_subagent_query(query: str) -> Dict[str, Any]:
-        # Attempt to run on gemini-flash-lite first, then gemini-flash-25-lite pools
-        for model in ["gemini-flash-lite", "gemini-flash-25-lite"]:
+        for model in models_to_try:
             try:
                 logger.info("[OpenCode Search Sub-agent] Starting with model %s for query: %s", model, query)
                 current_time_str = datetime.now().strftime("%A, %B %d, %Y, %I:%M %p")
@@ -66,12 +75,14 @@ async def execute_opencode_search(
                         from src.core.limits import account_limiter
                         # We use 1024 max_tokens for a detailed report, so estimate higher
                         estimated_tokens = len(query) // 4 + 1200
-                        eff_rpm, eff_tpm, eff_rpd = await get_effective_limits_by_pool(account, "lite")
+                        is_sub_lite = "lite" in str(model).lower() or "flash-lite" in str(model).lower()
+                        sub_pool = "lite" if is_sub_lite else "flash"
+                        eff_rpm, eff_tpm, eff_rpd = await get_effective_limits_by_pool(account, sub_pool)
                         effective = {**account, "rpm": eff_rpm, "tpm": eff_tpm, "rpd": eff_rpd}
-                        allowed, reason = await account_limiter.acquire(effective, estimated_tokens, "lite")
+                        allowed, reason = await account_limiter.acquire(effective, estimated_tokens, sub_pool)
                         if not allowed:
-                            logger.warning("[OpenCode Search Sub-agent] Rate limit exceeded for lite pool: %s", reason)
-                            raise RuntimeError(f"quota_exhausted: Account rate limit exceeded for lite pool: {reason}")
+                            logger.warning("[OpenCode Search Sub-agent] Rate limit exceeded for %s pool: %s", sub_pool, reason)
+                            raise RuntimeError(f"quota_exhausted: Account rate limit exceeded for {sub_pool} pool: {reason}")
                     except Exception as s_err:
                         if "quota_exhausted" in str(s_err):
                             raise
