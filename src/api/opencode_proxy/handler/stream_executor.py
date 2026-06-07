@@ -322,7 +322,7 @@ async def _stream_with_pool(
         model_id_val = None
         try:
             est_input = len(str(messages)) // 4
-            max_output = min(int(body.get("max_tokens", 4096)), config.MAX_OUTPUT_TOKENS)
+            max_output = min(int(body.get("max_tokens", config.MAX_OUTPUT_TOKENS)), config.MAX_OUTPUT_TOKENS)
             estimated_tokens = est_input + max_output
             model_alias_val, model_id_val, api_key_val, litellm_model_val, reservation = await _resolve_model(
                 body, actual_alias, account=account, estimated_tokens=estimated_tokens,
@@ -339,7 +339,7 @@ async def _stream_with_pool(
                 except Exception:
                     input_tokens = max(1, len(str(messages)) // 4)
 
-                max_output = min(int(body.get("max_tokens", 4096)), config.MAX_OUTPUT_TOKENS)
+                max_output = min(int(body.get("max_tokens", config.MAX_OUTPUT_TOKENS)), config.MAX_OUTPUT_TOKENS)
                 has_quota = await router.acquire_quota(input_tokens + max_output, actual_alias)
                 if not has_quota:
                     apply_error_penalty(api_key_val, "rate_limit_rpm_tpm", model_id_val)
@@ -473,7 +473,7 @@ async def _stream_standalone(
         model_id_val = None
         try:
             est_input = len(str(messages)) // 4
-            max_output = min(int(body.get("max_tokens", 4096)), config.MAX_OUTPUT_TOKENS)
+            max_output = min(int(body.get("max_tokens", config.MAX_OUTPUT_TOKENS)), config.MAX_OUTPUT_TOKENS)
             estimated_tokens = est_input + max_output
             model_alias_val, model_id_val, api_key_val, litellm_model_val, reservation = await _resolve_model(
                 body, model_alias, account=account, estimated_tokens=estimated_tokens,
@@ -486,7 +486,7 @@ async def _stream_standalone(
                 except Exception:
                     input_tokens = max(1, len(str(messages)) // 4)
 
-                max_output = min(int(body.get("max_tokens", 4096)), config.MAX_OUTPUT_TOKENS)
+                max_output = min(int(body.get("max_tokens", config.MAX_OUTPUT_TOKENS)), config.MAX_OUTPUT_TOKENS)
                 has_quota = await router.acquire_quota(input_tokens + max_output, model_alias)
                 if not has_quota:
                     apply_error_penalty(api_key_val, "rate_limit_rpm_tpm", model_id_val)
