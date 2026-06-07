@@ -27,6 +27,8 @@ def get_system_prompt(body: dict) -> str:
     return ""
 
 def detect_sub_agent_override(body: dict, account: Optional[dict] = None, is_opencode: bool = False) -> Optional[str]:
+    if is_opencode:
+        return None
     system_prompt = get_system_prompt(body)
     if not system_prompt:
         return None

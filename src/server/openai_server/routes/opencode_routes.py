@@ -25,7 +25,7 @@ async def opencode_chat_completions(
         )
 
     try:
-        await _apply_account_limit(account, body)
+        await _apply_account_limit(account, body, is_opencode=True)
 
         body["stream"] = True
         return StreamingResponse(
