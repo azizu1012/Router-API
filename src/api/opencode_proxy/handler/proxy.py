@@ -169,7 +169,22 @@ class OpenCodeProxy:
             queries = []
 
         if not queries:
-            return messages
+            last_user = ""
+            for m in reversed(messages):
+                if m.get("role") == "user":
+                    c = m.get("content", "")
+                    if isinstance(c, str):
+                        last_user = c[:500]
+                    elif isinstance(c, list):
+                        for p in c:
+                            if isinstance(p, dict) and p.get("type") == "text":
+                                last_user = str(p.get("text", ""))[:500]
+                                break
+                    break
+            if last_user:
+                queries = [last_user]
+            else:
+                return messages
 
         try:
             search_context, citations = await execute_opencode_search(queries, model_alias_or_name=model_alias, auth_key_prefix=akp, account=account)
