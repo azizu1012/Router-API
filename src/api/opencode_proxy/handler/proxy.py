@@ -163,7 +163,20 @@ class OpenCodeProxy:
         from .search import execute_opencode_search
         akp = _get_auth_key_prefix(account)
         try:
-            queries = await extract_search_queries(prompt_text, messages, auth_key_prefix=akp, account=account)
+            last_user_msg = ""
+            for m in reversed(messages):
+                if m.get("role") == "user":
+                    c = m.get("content", "")
+                    if isinstance(c, str):
+                        last_user_msg = c
+                    elif isinstance(c, list):
+                        texts = []
+                        for p in c:
+                            if isinstance(p, dict) and p.get("type") == "text":
+                                texts.append(str(p.get("text", "")))
+                        last_user_msg = "\n".join(texts)
+                    break
+            queries = await extract_search_queries(last_user_msg, messages, auth_key_prefix=akp, account=account) if last_user_msg else []
         except Exception as qerr:
             logger.warning("[OpenCode Search] extract_search_queries failed: %s", qerr)
             queries = []
