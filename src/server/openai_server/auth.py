@@ -73,7 +73,7 @@ def _count_openai_images(messages: list) -> int:
     return image_count
 
 
-async def _apply_account_limit(account: Dict[str, Any], body: Dict[str, Any]) -> None:
+async def _apply_account_limit(account: Dict[str, Any], body: Dict[str, Any], is_opencode: bool = False) -> None:
     if account.get("name") in {"anonymous", "legacy-env-token"}:
         return
     model = body.get("model") or ""
@@ -81,80 +81,81 @@ async def _apply_account_limit(account: Dict[str, Any], body: Dict[str, Any]) ->
     
     # Detect if the request is a Claude Code sub-agent request (which gets overridden to gemini-flash-lite)
     is_sub_agent = False
-    system_instruction = body.get("system", "")
-    if isinstance(system_instruction, list):
-        system_prompt = "\n".join([str(item.get("text", "")) for item in system_instruction if isinstance(item, dict)])
-    else:
-        system_prompt = str(system_instruction or "")
-
-    if system_prompt:
-        system_prompt_lower = system_prompt.lower()
-        if "you are an interactive agent" in system_prompt_lower:
-            pass
+    if not is_opencode:
+        system_instruction = body.get("system", "")
+        if isinstance(system_instruction, list):
+            system_prompt = "\n".join([str(item.get("text", "")) for item in system_instruction if isinstance(item, dict)])
         else:
-            sub_agent_keywords = [
-                "general-purpose agent",
-                "general-purpose assistant",
-                "explore agent",
-                "file search specialist",
-                "exploration task",
-                "read-only exploration",
-                "plan agent",
-                "software architect",
-                "implementation plans",
-                "claude-code-guide",
-                "statusline-setup",
-                "specialized agent",
-                "subagent",
-                "sub-agent",
-                "security monitor",
-                "you are the claude-code-guide",
-                "you are the explore",
-                "you are the plan",
-                "you are the general-purpose",
-                "you are the statusline-setup",
-                "file_search_specialist", "file-search-specialist",
-                "code search specialist", "code_search_specialist", "code-search-specialist",
-                "search specialist", "search_specialist", "search-specialist",
-                "research specialist", "research_specialist", "research-specialist",
-                "code review", "code_review", "codereview",
-                "debug assistant", "debug_assistant", "debug-assistant",
-                "planning", "planner",
-                "task agent", "task_agent", "task-agent",
-            ]
-            is_claude_code = (
-                "you are claude code" in system_prompt_lower 
-                or "cc_version=" in system_prompt_lower 
-                or "claude-code" in system_prompt_lower
-            )
-            if any(kw in system_prompt_lower for kw in sub_agent_keywords):
-                is_sub_agent = True
-            else:
-                import re
-                if re.search(r"you are (a|an|the)[\s\w\-]*sub.?agent", system_prompt_lower):
-                    is_sub_agent = True
-                elif "[sub-agent]" in system_prompt_lower:
-                    is_sub_agent = True
-                elif is_claude_code and len(body.get("tools", [])) in (19, 20):
-                    is_sub_agent = True
+            system_prompt = str(system_instruction or "")
 
-    if not is_sub_agent:
-        messages = body.get("messages", [])
-        for msg in messages:
-            if msg.get("role") != "user":
-                continue
-            content = msg.get("content")
-            if isinstance(content, str) and content.strip().startswith("[SUB-AGENT]"):
-                is_sub_agent = True
-                break
-            elif isinstance(content, list):
-                for block in content:
-                    if isinstance(block, dict) and block.get("type") == "text":
-                        if block.get("text", "").strip().startswith("[SUB-AGENT]"):
-                            is_sub_agent = True
-                            break
-                if is_sub_agent:
+        if system_prompt:
+            system_prompt_lower = system_prompt.lower()
+            if "you are an interactive agent" in system_prompt_lower:
+                pass
+            else:
+                sub_agent_keywords = [
+                    "general-purpose agent",
+                    "general-purpose assistant",
+                    "explore agent",
+                    "file search specialist",
+                    "exploration task",
+                    "read-only exploration",
+                    "plan agent",
+                    "software architect",
+                    "implementation plans",
+                    "claude-code-guide",
+                    "statusline-setup",
+                    "specialized agent",
+                    "subagent",
+                    "sub-agent",
+                    "security monitor",
+                    "you are the claude-code-guide",
+                    "you are the explore",
+                    "you are the plan",
+                    "you are the general-purpose",
+                    "you are the statusline-setup",
+                    "file_search_specialist", "file-search-specialist",
+                    "code search specialist", "code_search_specialist", "code-search-specialist",
+                    "search specialist", "search_specialist", "search-specialist",
+                    "research specialist", "research_specialist", "research-specialist",
+                    "code review", "code_review", "codereview",
+                    "debug assistant", "debug_assistant", "debug-assistant",
+                    "planning", "planner",
+                    "task agent", "task_agent", "task-agent",
+                ]
+                is_claude_code = (
+                    "you are claude code" in system_prompt_lower 
+                    or "cc_version=" in system_prompt_lower 
+                    or "claude-code" in system_prompt_lower
+                )
+                if any(kw in system_prompt_lower for kw in sub_agent_keywords):
+                    is_sub_agent = True
+                else:
+                    import re
+                    if re.search(r"you are (a|an|the)[\s\w\-]*sub.?agent", system_prompt_lower):
+                        is_sub_agent = True
+                    elif "[sub-agent]" in system_prompt_lower:
+                        is_sub_agent = True
+                    elif is_claude_code and len(body.get("tools", [])) in (19, 20):
+                        is_sub_agent = True
+
+        if not is_sub_agent:
+            messages = body.get("messages", [])
+            for msg in messages:
+                if msg.get("role") != "user":
+                    continue
+                content = msg.get("content")
+                if isinstance(content, str) and content.strip().startswith("[SUB-AGENT]"):
+                    is_sub_agent = True
                     break
+                elif isinstance(content, list):
+                    for block in content:
+                        if isinstance(block, dict) and block.get("type") == "text":
+                            if block.get("text", "").strip().startswith("[SUB-AGENT]"):
+                                is_sub_agent = True
+                                break
+                    if is_sub_agent:
+                        break
 
     if is_sub_agent:
         target_model = None

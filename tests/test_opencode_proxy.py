@@ -5,12 +5,14 @@ import httpx
 
 def get_auth_key():
     try:
-        with open('accounts.json', 'r') as f:
-            data = json.load(f)
-            if data.get('accounts'):
-                return data['accounts'][0]['auth_key']
+        import sys
+        sys.path.append('.')
+        from src.core.accounts import account_manager
+        accs = account_manager.list_accounts(include_disabled=False)
+        if accs:
+            return accs[0]['auth_key']
     except Exception as e:
-        print(f"Error reading accounts.json: {e}")
+        print(f"Error reading accounts from db: {e}")
     return 'test'
 
 async def test_non_stream(client, auth_key):
