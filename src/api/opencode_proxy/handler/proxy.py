@@ -198,7 +198,8 @@ class OpenCodeProxy:
         context_block = (
             "\n\n---\n"
             f"[Web Search Context — {current_time}]\n"
-            "Answer in detail with full context, dates, names.\n"
+            "CRITICAL: Use the search results above to write a comprehensive, detailed response. "
+            "Include all relevant dates, numbers, names. Do NOT summarize briefly — be exhaustive.\n"
             f"{search_context}\n"
             f"{citations_block}\n"
             "[/Web Search Context]"

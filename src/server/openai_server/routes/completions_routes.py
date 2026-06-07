@@ -33,9 +33,12 @@ async def chat_completions(
 
     try:
         await _apply_account_limit(account, body)
-        result = await _openai_chat_completion(body, account=account)
-    except HTTPException:
-        raise
+        body["stream"] = True
+        from src.api.opencode_proxy import opencode_proxy
+        return StreamingResponse(
+            opencode_proxy.stream_chat_completion(body, account=account),
+            media_type="text/event-stream",
+        )
     except Exception as e:
         logger_api.error("chat_completion failed: %s", e)
         msg = str(e)
@@ -58,26 +61,6 @@ async def chat_completions(
             status_code=503,
             content={"error": {"message": "Service temporarily unavailable", "type": "api_error"}},
         )
-
-    auth_key_prefix = _auth_key_prefix(account)
-    from src.api.claude_proxy.utils import _get_simulated_cache_usage
-    input_tokens = result.get("input_tokens", 0) or 0
-    cache_usage = _get_simulated_cache_usage(body or {}, input_tokens)
-    cc = cache_usage.get("cache_creation_input_tokens", 0) or 0
-    cr = cache_usage.get("cache_read_input_tokens", 0) or 0
-    await log_usage(
-        result.get("model_alias") or body.get("model", "unknown"),
-        result.get("key_prefix") or "",
-        input_tokens,
-        result.get("output_tokens", 0) or 0,
-        auth_key_prefix,
-        cc,
-        cr,
-    )
-
-    if body.get("stream"):
-        return StreamingResponse(_stream_response(body, result), media_type="text/event-stream")
-    return _completion_response(body, result)
 
 
 @app.post("/v1/completions")
@@ -292,14 +275,12 @@ async def anthropic_messages(
             "anthropic-ratelimit-unified-status": "allowed",
         }
 
-        if body.get("stream"):
-            return StreamingResponse(
-                claude_proxy.stream_message(body, akp, account=account),
-                media_type="text/event-stream",
-                headers=response_headers,
-            )
-
-        message = await claude_proxy.create_message(body, akp, account=account)
+        body["stream"] = True
+        return StreamingResponse(
+            claude_proxy.stream_message(body, akp, account=account),
+            media_type="text/event-stream",
+            headers=response_headers,
+        )
     except HTTPException:
         raise
     except Exception as e:
