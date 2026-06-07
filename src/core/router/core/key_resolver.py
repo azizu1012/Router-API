@@ -203,7 +203,6 @@ class KeyResolverMixin:
                                 
                                 self._key_status[selected_key]["usage"] += 1
                                 self._key_status[selected_key]["active_requests"] += 1
-                                record_key_model_usage(selected_key, selected_mid, estimated_tokens)
                         if candidates and selected_key:
                             try:
                                 atomic_reserve_key(selected_key)
@@ -213,6 +212,7 @@ class KeyResolverMixin:
                                         self._key_status[selected_key]["usage"] = max(0, self._key_status[selected_key]["usage"] - 1)
                                         self._key_status[selected_key]["active_requests"] = max(0, self._key_status[selected_key]["active_requests"] - 1)
                                 continue
+                            record_key_model_usage(selected_key, selected_mid, estimated_tokens)
                             return {
                                 "key": selected_key,
                                 "model_alias": member,
@@ -343,7 +343,6 @@ class KeyResolverMixin:
                             
                         self._key_status[selected_key]["usage"] += 1
                         self._key_status[selected_key]["active_requests"] += 1
-                        record_key_model_usage(selected_key, selected_mid, estimated_tokens)
                 if candidates and selected_key:
                     try:
                         atomic_reserve_key(selected_key)
@@ -353,6 +352,7 @@ class KeyResolverMixin:
                                 self._key_status[selected_key]["usage"] = max(0, self._key_status[selected_key]["usage"] - 1)
                                 self._key_status[selected_key]["active_requests"] = max(0, self._key_status[selected_key]["active_requests"] - 1)
                         continue
+                    record_key_model_usage(selected_key, selected_mid, estimated_tokens)
                     return {
                         "key": selected_key,
                         "model_alias": model_alias,

@@ -10,7 +10,7 @@ from datetime import datetime
 
 
 async def extract_search_queries(prompt_text: str, messages: list, auth_key_prefix: str = "", account: Optional[Dict[str, Any]] = None) -> List[str]:
-    """Use Gemini to detect search intent and extract up to 3 clean search queries.
+    """Use Gemini to detect search intent and extract 1 clean search query.
     
     Returns an empty list if no search is required.
     """
@@ -18,7 +18,7 @@ async def extract_search_queries(prompt_text: str, messages: list, auth_key_pref
     system_instruction = (
         "You are an AI search query generator. Analyze the user's prompt and conversation context.\n"
         "Determine if the user is asking about current events, real-time prices, recent releases, news, "
-        "or facts requiring search. If a search is needed, extract up to 3 concise keyword queries to "
+        "or facts requiring search. If a search is needed, extract exactly 1 concise keyword query to "
         "search the web.\n"
         "If no search is needed (e.g. conversational greetings, general coding questions, math, "
         "creative writing, or general historical facts), return an empty list: [].\n"
@@ -49,7 +49,7 @@ async def extract_search_queries(prompt_text: str, messages: list, auth_key_pref
         last_msg = messages[-1:] if messages else []
         
         res_dict = None
-        for alias in ["gemini-flash-lite", "gemini-flash-25-lite", "gemini-flash"]:
+        for alias in ["gemini-flash", "gemini-flash-lite", "gemini-flash-25-lite"]:
             try:
                 res_dict = await api_manager.call_gemini_json(
                     model_alias=alias,

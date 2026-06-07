@@ -15,6 +15,10 @@ export async function api(path, opts = {}) {
     doLogout();
     return null;
   }
-  if (!r.ok) throw new Error('HTTP ' + r.status);
+  if (!r.ok) {
+    let detail = `HTTP ${r.status}`;
+    try { const body = await r.json(); if (body?.detail) detail = body.detail; } catch {}
+    throw new Error(detail);
+  }
   return r.json();
 }

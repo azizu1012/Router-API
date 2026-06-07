@@ -120,7 +120,11 @@ async def completions(
         "created": now,
         "model": body.get("model") or result["model_alias"],
         "choices": [{"text": result["text"], "index": 0, "logprobs": None, "finish_reason": result.get("finish_reason") or "stop"}],
-        "usage": {"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0},
+        "usage": {
+            "prompt_tokens": result.get("input_tokens", 0),
+            "completion_tokens": result.get("output_tokens", 0),
+            "total_tokens": (result.get("input_tokens", 0) or 0) + (result.get("output_tokens", 0) or 0),
+        },
     }
 
 
@@ -187,7 +191,11 @@ async def responses(
         "status": "completed",
         "output_text": result["text"],
         "output": [{"id": f"msg_{uuid.uuid4().hex}", "type": "message", "role": "assistant", "content": [{"type": "output_text", "text": result["text"]}]}],
-        "usage": {"input_tokens": 0, "output_tokens": 0, "total_tokens": 0},
+        "usage": {
+            "input_tokens": result.get("input_tokens", 0),
+            "output_tokens": result.get("output_tokens", 0),
+            "total_tokens": (result.get("input_tokens", 0) or 0) + (result.get("output_tokens", 0) or 0),
+        },
     }
 
 

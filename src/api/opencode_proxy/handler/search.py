@@ -142,16 +142,12 @@ async def execute_opencode_search(
 
         return {"query": query, "snippet": "", "citations": []}
 
-    # Run up to 3 queries in parallel
-    logger.info("[OpenCode Search] Scheduling parallel tasks in execute_opencode_search")
-    tasks = [run_subagent_query(q) for q in queries[:3]]
-    try:
-        results = await asyncio.gather(*tasks)
-    except Exception as gather_err:
-        logger.warning("[OpenCode Search] execute_opencode_search gather error: %s", gather_err)
-        return "", []
-
-    # Filter empty results
+    # Run queries sequentially (1 per turn to avoid hammering keys)
+    logger.info("[OpenCode Search] Executing queries sequentially")
+    results = []
+    for q in queries[:1]:
+        result = await run_subagent_query(q)
+        results.append(result)
     valid_results = [r for r in results if r.get("snippet")]
     if not valid_results:
         return "", []

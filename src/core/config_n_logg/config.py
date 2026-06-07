@@ -75,7 +75,7 @@ class RouterApiConfig:
     GEMINI_OAUTH_FILES: List[str] = field(default_factory=_load_gemini_oauth_files)
 
     # Model defaults
-    DEFAULT_MODEL_ALIAS: str = field(default_factory=lambda: (os.getenv("ROUTER_API_DEFAULT_MODEL_ALIAS") or "gemini-flash-35").strip())
+    DEFAULT_MODEL_ALIAS: str = field(default_factory=lambda: (os.getenv("ROUTER_API_DEFAULT_MODEL_ALIAS") or "gemini-flash").strip())
     REQUEST_TIMEOUT_SECONDS: int = _get_int("ROUTER_API_REQUEST_TIMEOUT_SEC", 120, 5, 600)
     MAX_OUTPUT_TOKENS: int = _get_int("ROUTER_API_MAX_OUTPUT_TOKENS", 65536, 128, 1000000)
     MAX_RETRIES: int = _get_int("ROUTER_API_MAX_RETRIES", 5, 1, 20)
@@ -129,8 +129,8 @@ class RouterApiConfig:
     KEY_UNKNOWN_ERROR_COOLDOWN_SECONDS: int = _get_int("KEY_UNKNOWN_ERROR_COOLDOWN_SECONDS", 30, 5, 300)
 
     # Per-key throttle tuning (gemini_api_manager)
-    GEMINI_API_GLOBAL_INTERVAL: float = _get_int("GEMINI_API_GLOBAL_INTERVAL", 3, 0, 100) / 10.0
-    GEMINI_API_KEY_INTERVAL: float = _get_int("GEMINI_API_KEY_INTERVAL", 8, 1, 100) / 10.0
+    GEMINI_API_GLOBAL_INTERVAL: float = _get_int("GEMINI_API_GLOBAL_INTERVAL", 15, 10, 26) / 10.0
+    GEMINI_API_KEY_INTERVAL: float = _get_int("GEMINI_API_KEY_INTERVAL", 15, 10, 26) / 10.0
     GEMINI_API_MAX_CONCURRENT: int = _get_int("GEMINI_API_MAX_CONCURRENT", 0, 0, 500)
     GEMINI_GLOBAL_COOLDOWN_SEC: int = _get_int("GEMINI_GLOBAL_COOLDOWN_SEC", 5, 1, 60)
     GEMINI_PROJECT_FREEZE_SEC: int = _get_int("GEMINI_PROJECT_FREEZE_SEC", 60, 5, 600)

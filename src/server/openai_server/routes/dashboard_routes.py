@@ -296,54 +296,29 @@ async def dashboard_my_stats(request: Request, days: int = 30):
 @app.get("/api/model-pools-detail")
 async def get_model_pools_api(request: Request):
     _require_dashboard(request)
-    from src.core.api_config import AVAILABLE_MODELS, is_sunset_25
-    
-    pools_data = []
-    # 1. gemini-flash pool
-    flash_members = []
-    for member in ["gemini-flash-35", "gemini-flash-30", "gemini-flash-25"]:
-        if is_sunset_25() and member == "gemini-flash-25":
-            continue
-        cfg = AVAILABLE_MODELS.get(member, {})
-        flash_members.append({
-            "model_id": cfg.get("model_id", "unknown"),
-            "rpm": cfg.get("rpm", 0),
-            "tpm": cfg.get("tpm", 0),
-            "status": "Active (Optimized)" if member == "gemini-flash-35" else ("Active (Preview)" if member == "gemini-flash-30" else "Active (Fallback)")
-        })
-    flash_rpm = sum(m["rpm"] for m in flash_members)
-    flash_tpm = sum(m["tpm"] for m in flash_members)
-    pools_data.append({
-        "name": "gemini-flash",
-        "display_name": "gemini-flash (Pool)",
-        "models": ", ".join(m["model_id"] for m in flash_members),
-        "rpm": f"{flash_rpm} RPM",
-        "tpm": f"{flash_tpm:,} TPM",
-        "status": "Active (Optimized)"
-    })
+    from src.core.api_config import AVAILABLE_MODELS, MODEL_POOLS, is_sunset_25
 
-    # 2. gemini-flash-lite pool
-    lite_members = []
-    for member in ["gemini-flash-lite", "gemini-flash-25-lite"]:
-        if is_sunset_25() and member == "gemini-flash-25-lite":
-            continue
-        cfg = AVAILABLE_MODELS.get(member, {})
-        lite_members.append({
-            "model_id": cfg.get("model_id", "unknown"),
-            "rpm": cfg.get("rpm", 0),
-            "tpm": cfg.get("tpm", 0),
-            "status": "Active (Low-Cost)" if member == "gemini-flash-lite" else "Active (Fallback)"
+    pools_data = []
+    for pool_name, pool_cfg in MODEL_POOLS.items():
+        members = []
+        for member in pool_cfg["members"]:
+            if is_sunset_25() and member in ("gemini-flash-25", "gemini-flash-25-lite"):
+                continue
+            cfg = AVAILABLE_MODELS.get(member, {})
+            members.append({
+                "model_id": cfg.get("model_id", "unknown"),
+                "rpm": cfg.get("rpm", 0),
+                "tpm": cfg.get("tpm", 0),
+            })
+        total_rpm = sum(m["rpm"] for m in members)
+        total_tpm = sum(m["tpm"] for m in members)
+        pools_data.append({
+            "name": pool_name,
+            "display_name": f"{pool_name} (Pool)",
+            "models": ", ".join(m["model_id"] for m in members),
+            "rpm": f"{total_rpm} RPM",
+            "tpm": f"{total_tpm:,} TPM",
         })
-    lite_rpm = sum(m["rpm"] for m in lite_members)
-    lite_tpm = sum(m["tpm"] for m in lite_members)
-    pools_data.append({
-        "name": "gemini-flash-lite",
-        "display_name": "gemini-flash-lite (Pool)",
-        "models": ", ".join(m["model_id"] for m in lite_members),
-        "rpm": f"{lite_rpm} RPM",
-        "tpm": f"{lite_tpm:,} TPM",
-        "status": "Active (Low-Cost)"
-    })
 
     return {"pools": pools_data}
 
