@@ -17,7 +17,7 @@ from src.backend.key_status import get_key_usage_db, update_key_usage_batch_db
 
 
 class AccountManager:
-    _cache: List[Dict[str, Any]] = []
+    _cache: Dict[str, Dict[str, Any]] = {}
     _cache_ts: float = 0.0
     _cache_ttl: float = 10.0
     _cache_lock = threading.RLock()
@@ -35,27 +35,22 @@ class AccountManager:
         if now - self._cache_ts > self._cache_ttl:
             with self._cache_lock:
                 if now - self._cache_ts > self._cache_ttl:
-                    self._cache = _list_accounts(include_disabled=False)
+                    accs = _list_accounts(include_disabled=False)
+                    self._cache = {acc["auth_key"]: acc for acc in accs if acc.get("auth_key")}
                     self._cache_ts = now
 
     def invalidate_cache(self) -> None:
         with self._cache_lock:
             self._cache_ts = 0.0
 
-    def list_accounts(self, include_disabled: bool = True) -> List[Dict[str, Any]]:
-        return _list_accounts(include_disabled)
-
-    def find_by_name(self, name: str) -> Optional[Dict[str, Any]]:
-        return _find_by_name(name)
-
     def find_by_key(self, auth_key: str) -> Optional[Dict[str, Any]]:
         self._refresh_cache()
         raw = str(auth_key or "").strip()
         if not raw:
             return None
-        for acc in self._cache:
-            if secrets.compare_digest(acc.get("auth_key") or "", raw):
-                return acc
+        acc = self._cache.get(raw)
+        if acc:
+            return acc
         return _find_by_key(auth_key)
 
     def create_account(
@@ -92,6 +87,9 @@ class AccountManager:
 
     def has_accounts(self) -> bool:
         return bool(_list_accounts(include_disabled=True))
+
+    def list_accounts(self, include_disabled: bool = True) -> List[Dict[str, Any]]:
+        return _list_accounts(include_disabled=include_disabled)
 
     def get_gemini_key_usage(self) -> Dict[str, Any]:
         return get_key_usage_db()

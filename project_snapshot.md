@@ -13,13 +13,13 @@ d:\AI_Projects\router_api/
 ├── .env.example                  # Template for env file config
 ├── README.md                     # Project configuration and usage documentation
 ├── DEPLOY_DOMAIN.md              # Caddy and Nginx reverse proxy deployment guide
+├── AGENTS.md                     # OpenCode agent task management instructions
 ├── CLAUDE.md                     # Claude Code developer instructions
+├── opencode.json                 # OpenCode configuration
 ├── requirements.txt              # Project Python dependencies
 ├── banned-keys.txt               # Cooldown and banned key tracking
 │
 ├── main.py                       # Uvicorn startup script with auto port-freeing
-│
-
 │
 ├── usage.db                      # SQLite config DB (accounts, endpoints, status)
 ├── usage_logs.db                 # SQLite telemetry DB for token tracking
@@ -31,25 +31,38 @@ d:\AI_Projects\router_api/
 │   │
 │   ├── api/
 │   │   ├── __init__.py
-│   │   └── claude_proxy/
+│   │   │
+│   │   ├── claude_proxy/
+│   │   │   ├── __init__.py
+│   │   │   ├── stream.py         # Anthropic SSE chunk stream converter
+│   │   │   ├── handler/          # API proxy execution engines
+│   │   │   │   ├── __init__.py
+│   │   │   │   ├── compaction.py # Token limits compaction gate middleware
+│   │   │   │   ├── helpers.py    # Request reinforcement & error classification
+│   │   │   │   ├── nonstream_executor.py # WebSearch intercept & non-stream handler
+│   │   │   │   ├── stream_executor.py    # WebSearch intercept & streaming handler
+│   │   │   │   ├── proxy.py              # LiteLLM kwargs prep & retry loop
+│   │   │   │   ├── proxy_nonstream.py    # Non-streaming call mixer
+│   │   │   │   └── proxy_stream.py       # Streaming call mixer with pings
+│   │   │   │
+│   │   │   └── utils/
+│   │   │       ├── __init__.py
+│   │   │       ├── compaction_utils.py # Workspace detector & merge engine
+│   │   │       ├── message_converter.py# Claude↔OpenAI schema converter
+│   │   │       ├── model_resolver.py   # Model alias resolution & backoff
+│   │   │       └── sse_cache_agent.py  # Cache simulator & sub-agent interceptor
+│   │   │
+│   │   └── opencode_proxy/
 │   │       ├── __init__.py
-│   │       ├── stream.py         # Anthropic SSE chunk stream converter
-│   │       ├── handler/          # API proxy execution engines
-│   │       │   ├── __init__.py
-│   │       │   ├── compaction.py # Token limits compaction gate middleware
-│   │       │   ├── helpers.py    # Request reinforcement & error classification
-│   │       │   ├── nonstream_executor.py # WebSearch intercept & non-stream handler
-│   │       │   ├── stream_executor.py    # WebSearch intercept & streaming handler
-│   │       │   ├── proxy.py              # LiteLLM kwargs prep & retry loop
-│   │       │   ├── proxy_nonstream.py    # Non-streaming call mixer
-│   │       │   └── proxy_stream.py       # Streaming call mixer with pings
-│   │       │
-│   │       └── utils/
-│   │           ├── __init__.py
-│   │           ├── compaction_utils.py # Workspace detector & merge engine
-│   │           ├── message_converter.py# Claude↔OpenAI schema converter
-│   │           ├── model_resolver.py   # Model alias resolution & backoff
-│   │           └── sse_cache_agent.py  # Cache simulator & sub-agent interceptor
+│   │       ├── detection.py      # Subagent override detector (backup)
+│   │       ├── sse.py            # SSE parser/formatter helper
+│   │       └── handler/          # OpenCode proxy execution engines
+│   │           ├── detection.py  # Main subagent override detector
+│   │           ├── proxy.py      # Request routing entrypoint
+│   │           ├── nonstream_executor.py # Non-streaming caller with websearch
+│   │           ├── stream_executor.py    # Streaming caller with websearch
+│   │           ├── search.py     # duckduckgo search wrapper
+│   │           └── sse.py        # SSE stream parser
 │   │
 │   ├── backend/
 │   │   ├── __init__.py
@@ -165,8 +178,8 @@ d:\AI_Projects\router_api/
 | `src/api/claude_proxy/handler/stream_executor.py` | 379 | Streaming execution, WebSearch intercept, model swapping |
 | `src/api/claude_proxy/handler/proxy_stream.py` | 335 | Streaming request mixer with keepalive pings |
 | `src/api/claude_proxy/utils/message_converter.py` | 326 | Converts Anthropic schemas, injects auto progress instructions |
-| `src/core/providers/gemini_api_manager.py` | 325 | Gemini SDK caller with key throttling & retry pacing |
-| `src/core/router/core/key_resolver.py` | ~330 | Circuit breaker, adaptive cooldown, pool-aware key selection |
+| `src/core/providers/gemini_api_manager.py` | 407 | Gemini SDK caller with per-tier semaphore & retry pacing |
+| `src/core/accounts/account_manager.py` | 103 | Account CRUD facade with in-memory cache |
 | `src/console/admin_console.py` | 278 | Interactive command shell CLI for admin management |
 | `src/api/claude_proxy/utils/sse_cache_agent.py` | 275 | Simulated cache metrics, sub-agent overrides |
 | `src/backend/key_status.py` | 272 | Key status records, success/freeze DB updates |
@@ -351,7 +364,7 @@ Reserve Key (atomic DB increment) -> Execute Gemini call -> Release Key
 |---------|---------|-------------|
 | `ROUTER_API_HOST` | `127.0.0.1` | Server binding IP |
 | `ROUTER_API_PORT` | `58100` | Server binding port |
-| `ROUTER_API_DEFAULT_MODEL_ALIAS`| `gemini-flash-35` | Standard model routing fallback |
+| `ROUTER_API_DEFAULT_MODEL_ALIAS`| `gemini-flash` | Pool-based model routing fallback |
 | `ROUTER_API_MAX_RETRIES` | `13` | Key attempts limit before swapping pools |
 | `COMPACTION_TOKEN_THRESHOLD` | `160000` | Context compaction trigger limit for standard endpoints |
 | `CLAUDE_CODE_COMPACTION_THRESHOLD`| `80000` | Context compaction trigger limit for Claude Code client |
@@ -371,9 +384,16 @@ Reserve Key (atomic DB increment) -> Execute Gemini call -> Release Key
 
 ## KEY ARCHITECTURE DECISIONS
 
-1. **Proxy Auto-Managed Progress**: Compaction handles the `progress_report.md` lifecycle automatically under the hood without client inputs, merging previous logs on disk using `gemini-flash-lite`.
-2. **WebSearch Interception**: Proxy intercepts all client WebSearch calls, runs a localized crawler and consensus ranking logic, and maps findings to structured link citations.
-3. **Paced Multi-attempt Pool Swap**: If a reserved key encounters rate limits, the request swaps to another model in the pool (e.g. flash-35 to flash-30), retry-spacing the request up to 13 times.
-4. **Adaptive Cooldown & Penalty Jitter**: Model cooldowns apply randomized jitter (0-15%) plus gaussian margins to avoid key starvation and 429 concurrency collisions.
-5. **Strict Concurrency Cap**: Restricts each API key to exactly 1 active request. Keys with `active_requests > 0` are skipped during reservation scans.
-6. **Dual Compaction Limits**: Implements aggressive context thresholds for Claude Code (80K tokens trigger, 45K limit) versus standard chats to avoid client CLI Vertex TPM errors.
+1. **Serial Search**: Sub-agent search queries run sequentially (1 per turn), not parallel — eliminates 429 cascade from fan-out.
+2. **Per-Tier Semaphore**: Concurrency capped per account tier: admin=6, premium=4, free=2 — independent semaphores, not global.
+3. **In-Memory Rate Limits**: All RPM/TPM/RPD tracking via `deque` sliding windows — zero DB reads on hot path. Account lookup cached 10s TTL.
+4. **Throttle Pacing 1–2.6s**: Global + per-key minimum intervals enforced with jitter before every API call.
+5. **Proxy Auto-Managed Progress**: Compaction handles the `progress_report.md` lifecycle automatically under the hood without client inputs, merging previous logs on disk using `gemini-flash-lite`.
+6. **WebSearch Interception**: Proxy intercepts all client WebSearch calls, runs a localized crawler and consensus ranking logic, and maps findings to structured link citations.
+7. **Paced Multi-attempt Pool Swap**: If a reserved key encounters rate limits, the request swaps to another model in the pool (e.g. flash-35 to flash-30), retry-spacing the request up to 13 times.
+8. **Adaptive Cooldown & Penalty Jitter**: Model cooldowns apply randomized jitter (0-15%) plus gaussian margins to avoid key starvation and 429 concurrency collisions.
+9. **Strict Concurrency Cap**: Restricts each API key to exactly 1 active request. Keys with `active_requests > 0` are skipped during reservation scans.
+10. **Dual Compaction Limits**: Implements aggressive context thresholds for Claude Code (80K tokens trigger, 45K limit) versus standard chats to avoid client CLI Vertex TPM errors.
+11. **OpenCode Proxy Separation**: Supports dedicated `/opencode/v1/chat/completions` routing to automatically identify OpenCode request contexts and distinguish them from standard chatbot completions without polluting system prompt strings.
+12. **Customizable Agent Models**: Supports overriding sub-agent models individually per user account (`subagent_model`, `agent_model`, `sub_agent_model` in accounts database) or globally via env vars (`OPENCODE_SUB_AGENT_MODEL`/`SUB_AGENT_MODEL`), falling back to `gemini-flash-lite` by default.
+

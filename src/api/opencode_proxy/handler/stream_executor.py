@@ -256,7 +256,7 @@ async def _execute_stream(
             cc = cache_usage.get("cache_creation_input_tokens", 0) or 0
             cr = cache_usage.get("cache_read_input_tokens", 0) or 0
             await log_usage(model_alias, kp, input_tokens, out_tokens, auth_key_prefix, cc, cr)
-            router.record_success(api_key, model_id)
+            router.record_success(api_key, model_id, input_tokens, out_tokens)
             if pool:
                 pool.record_success()
 
@@ -368,7 +368,13 @@ async def _stream_with_pool(
                 saved_key = api_key_val
                 api_key_val = None
                 async for chunk in gen:
-                    committed = True
+                    has_real_content = False
+                    if b'"content":' in chunk and not b'"content": ""' in chunk and not b'"content": null' in chunk:
+                        has_real_content = True
+                    if b'"tool_calls"' in chunk:
+                        has_real_content = True
+                    if has_real_content:
+                        committed = True
                     yield chunk
                 return
 
@@ -512,7 +518,13 @@ async def _stream_standalone(
                 saved_key = api_key_val
                 api_key_val = None
                 async for chunk in gen:
-                    committed = True
+                    has_real_content = False
+                    if b'"content":' in chunk and not b'"content": ""' in chunk and not b'"content": null' in chunk:
+                        has_real_content = True
+                    if b'"tool_calls"' in chunk:
+                        has_real_content = True
+                    if has_real_content:
+                        committed = True
                     yield chunk
                 return
 

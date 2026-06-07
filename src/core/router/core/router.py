@@ -231,7 +231,7 @@ class APIRouter(KeyResolverMixin):
         with self._key_lock:
             self._consecutive_429_count = 0
 
-    def record_success(self, key: Optional[str] = None, model_id: Optional[str] = None) -> None:
+    def record_success(self, key: Optional[str] = None, model_id: Optional[str] = None, input_tokens: int = 0, output_tokens: int = 0) -> None:
         try:
             self.total_requests += 1
             self.reset_429_counter()
@@ -242,6 +242,10 @@ class APIRouter(KeyResolverMixin):
                 if key and key in self._key_status:
                     self._key_status[key]["consecutive_failures"] = 0
                     self._key_status[key]["last_success"] = time.time()
+                    # Cập nhật usage tokens
+                    self._key_status[key]["input_tokens"] = self._key_status[key].get("input_tokens", 0) + input_tokens
+                    self._key_status[key]["output_tokens"] = self._key_status[key].get("output_tokens", 0) + output_tokens
+                    
                     if model_id and model_id in self._key_status[key]["per_model"]:
                         self._key_status[key]["per_model"][model_id]["failures"] = 0
         except Exception as exc:

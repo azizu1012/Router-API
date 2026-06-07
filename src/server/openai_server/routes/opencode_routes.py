@@ -29,7 +29,7 @@ async def opencode_chat_completions(
 
         body["stream"] = True
         return StreamingResponse(
-            opencode_proxy.stream_chat_completion(body, account=account),
+            opencode_proxy.stream_chat_completion(body, account=account, is_opencode=True),
             media_type="text/event-stream",
         )
 

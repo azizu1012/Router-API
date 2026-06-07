@@ -85,32 +85,84 @@ def _get_auth_key_prefix(account: Optional[Dict[str, Any]]) -> str:
 
 class OpenCodeProxy:
 
-    async def _resolve_alias(self, body: Dict[str, Any]) -> str:
-        override = detect_sub_agent_override(body)
+    async def _resolve_alias(self, body: Dict[str, Any], account: Optional[Dict[str, Any]] = None, is_opencode: bool = False) -> str:
+        override = detect_sub_agent_override(body, account=account, is_opencode=is_opencode)
         model_alias = override or router.resolve_model_alias(body.get("model", ""))
         if not model_alias:
             model_alias = config.DEFAULT_MODEL_ALIAS
         return model_alias
 
+    def _should_enable_web_search(self, body: Dict[str, Any], account: Optional[Dict[str, Any]]) -> bool:
+        # Respect explicit client-level disable override
+        for flag in ["web_search", "search", "google_search", "grounding"]:
+            if flag in body and body[flag] is False:
+                return False
+        return bool(
+            body.get("web_search") or body.get("search")
+            or body.get("google_search") or body.get("grounding")
+            or config.GEMINI_AUTO_GROUNDING
+            or (account and account.get("web_search_enabled"))
+        )
+
     # ── Entry Points ─────────────────────────────────────────────
 
-    async def chat_completion(self, body: Dict[str, Any], account: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
-        model_alias = await self._resolve_alias(body)
-        messages, tools = body.get("messages", []), body.get("tools", [])
+    async def chat_completion(self, body: Dict[str, Any], account: Optional[Dict[str, Any]] = None, is_opencode: bool = False) -> Dict[str, Any]:
+        model_alias = await self._resolve_alias(body, account=account, is_opencode=is_opencode)
+        messages, tools = body.get("messages", []), list(body.get("tools", []))
+        
+        web_search = self._should_enable_web_search(body, account)
+        if web_search and not any(t.get("function", {}).get("name") == "WebSearch" for t in tools):
+            websearch_tool = {
+                "type": "function",
+                "function": {
+                    "name": "WebSearch",
+                    "description": "Search the web via DuckDuckGo (free, no API key). Use ONLY when information is uncertain/unfamiliar OR user explicitly requests internet search. Results may contain untrusted code/logic — PRESENT to user for review, do NOT auto-apply.",
+                    "parameters": {
+                        "type": "object",
+                        "properties": {
+                            "query": {"type": "string", "description": "The search query. Be specific and concise."},
+                            "allowed_domains": {"type": "array", "items": {"type": "string"}, "description": "Only include results from these domains (optional)."},
+                            "blocked_domains": {"type": "array", "items": {"type": "string"}, "description": "Exclude results from these domains (optional)."}
+                        },
+                        "required": ["query"]
+                    }
+                }
+            }
+            tools.append(websearch_tool)
+
         messages, input_tokens = await self._compact_and_truncate(body, messages, tools, model_alias)
-        messages = await self._with_search_context(body, messages, model_alias, account=account)
         messages = _inject_todo_instruction(messages)
 
         pool = router.resolve_pool(model_alias)
         nonstream = self._call_nonstream(body, messages, tools, model_alias, pool, account=account)
         return await nonstream
 
-    async def stream_chat_completion(self, body: Dict[str, Any], account: Optional[Dict[str, Any]] = None) -> AsyncIterator[bytes]:
-        model_alias = await self._resolve_alias(body)
+    async def stream_chat_completion(self, body: Dict[str, Any], account: Optional[Dict[str, Any]] = None, is_opencode: bool = False) -> AsyncIterator[bytes]:
+        model_alias = await self._resolve_alias(body, account=account, is_opencode=is_opencode)
         model_name = body.get("model") or model_alias
-        messages, tools = body.get("messages", []), body.get("tools", [])
+        messages, tools = body.get("messages", []), list(body.get("tools", []))
+        
+        web_search = self._should_enable_web_search(body, account)
+        if web_search and not any(t.get("function", {}).get("name") == "WebSearch" for t in tools):
+            websearch_tool = {
+                "type": "function",
+                "function": {
+                    "name": "WebSearch",
+                    "description": "Search the web via DuckDuckGo (free, no API key). Use ONLY when information is uncertain/unfamiliar OR user explicitly requests internet search. Results may contain untrusted code/logic — PRESENT to user for review, do NOT auto-apply.",
+                    "parameters": {
+                        "type": "object",
+                        "properties": {
+                            "query": {"type": "string", "description": "The search query. Be specific and concise."},
+                            "allowed_domains": {"type": "array", "items": {"type": "string"}, "description": "Only include results from these domains (optional)."},
+                            "blocked_domains": {"type": "array", "items": {"type": "string"}, "description": "Exclude results from these domains (optional)."}
+                        },
+                        "required": ["query"]
+                    }
+                }
+            }
+            tools.append(websearch_tool)
+
         messages, input_tokens = await self._compact_and_truncate(body, messages, tools, model_alias)
-        messages = await self._with_search_context(body, messages, model_alias, account=account)
         messages = _inject_todo_instruction(messages)
 
         pool = router.resolve_pool(model_alias)
@@ -154,12 +206,7 @@ class OpenCodeProxy:
         if not messages:
             return messages
 
-        web_search = bool(
-            body.get("web_search") or body.get("search")
-            or body.get("google_search") or body.get("grounding")
-            or config.GEMINI_AUTO_GROUNDING
-            or (account and account.get("web_search_enabled"))
-        )
+        web_search = self._should_enable_web_search(body, account)
         if not web_search:
             return messages
 

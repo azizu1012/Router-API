@@ -23,8 +23,16 @@ class GeminiAPIHelpersMixin:
         return None
 
     @staticmethod
+    def _is_not_found(text: str) -> bool:
+        lowered = (text or "").lower()
+        return "404" in lowered or "not_found" in lowered or "not found" in lowered
+
+    @staticmethod
     def _is_retryable(text: str) -> bool:
         lowered = (text or "").lower()
+        # Không retry nếu là 404 (model không tồn tại)
+        if "404" in lowered or "not_found" in lowered or "not found" in lowered:
+            return False
         return any(t in lowered for t in [
             "429", "quota", "resource exhausted", "503",
             "unavailable", "overloaded", "deadline exceeded", "timeout",

@@ -36,7 +36,7 @@ async def chat_completions(
         body["stream"] = True
         from src.api.opencode_proxy import opencode_proxy
         return StreamingResponse(
-            opencode_proxy.stream_chat_completion(body, account=account),
+            opencode_proxy.stream_chat_completion(body, account=account, is_opencode=False),
             media_type="text/event-stream",
         )
     except Exception as e:
