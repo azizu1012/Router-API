@@ -52,6 +52,7 @@ async def test_stream(client, auth_key):
             headers={'Authorization': f'Bearer {auth_key}'},
         ) as response:
             print('Status:', response.status_code)
+            print('Headers:', {k: v for k, v in response.headers.items() if 'ratelimit' in k.lower() or 'anthropic' in k.lower()})
             if response.status_code != 200:
                 print('Error:', await response.aread())
                 return

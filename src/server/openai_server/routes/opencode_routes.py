@@ -5,6 +5,9 @@ from src.core.config_n_logg.logger import logger_api
 from src.api.opencode_proxy import opencode_proxy
 
 from src.server.openai_server.auth import _resolve_auth, _check_auth, _apply_account_limit
+from src.core.limits.account_limiter import get_effective_limits_by_pool
+from src.core.router import router
+from src.core.config_n_logg import config
 from .app_init import app
 
 
@@ -27,10 +30,39 @@ async def opencode_chat_completions(
     try:
         await _apply_account_limit(account, body, is_opencode=True)
 
+        # Dynamic rate limit headers based on account and pool configuration
+        model = body.get("model") or ""
+        model_alias = router.resolve_model_alias(model)
+        if not model_alias:
+            model_alias = config.DEFAULT_MODEL_ALIAS
+            
+        pool_type = "lite" if (model_alias and ("lite" in model_alias.lower() or "flash-lite" in model_alias.lower())) else "flash"
+        eff_rpm, eff_tpm, eff_rpd = await get_effective_limits_by_pool(account, pool_type)
+        
+        messages_val = body.get("messages", [])
+        text_content = str(messages_val)
+        input_tokens_est = len(text_content) // 4
+        
+        limit_tokens = eff_tpm if eff_tpm > 0 else 250000
+        remaining_tokens = max(1000, limit_tokens - input_tokens_est)
+        utilization_val = min(0.99, round(input_tokens_est / limit_tokens, 4))
+        
+        response_headers = {
+            "anthropic-version": "2023-06-01",
+            "anthropic-ratelimit-requests-limit": "1000",
+            "anthropic-ratelimit-requests-remaining": "999",
+            "anthropic-ratelimit-tokens-limit": str(limit_tokens),
+            "anthropic-ratelimit-tokens-remaining": str(remaining_tokens),
+            "anthropic-ratelimit-unified-5h-utilization": f"{utilization_val:.4f}",
+            "anthropic-ratelimit-unified-7d-utilization": f"{utilization_val:.4f}",
+            "anthropic-ratelimit-unified-status": "allowed",
+        }
+
         body["stream"] = True
         return StreamingResponse(
             opencode_proxy.stream_chat_completion(body, account=account, is_opencode=True),
             media_type="text/event-stream",
+            headers=response_headers,
         )
 
     except Exception as e:

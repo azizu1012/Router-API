@@ -130,7 +130,9 @@ async def _execute_nonstream(
     if pool:
         pool.record_success()
 
-    model_name = body.get("model") or model_alias
+    from .proxy import get_client_model_name
+    requested_model = body.get("model") or model_alias
+    model_name = get_client_model_name(requested_model)
 
     message_content = {"role": "assistant", "content": text or None}
     if tool_calls:
