@@ -35,19 +35,17 @@ def _calculate_financial_savings(summary: list) -> dict:
         total_prompt += p
         total_completion += c
 
-        is_lite = "lite" in alias
-        pool_key = "gemini-flash-lite" if is_lite else "gemini-flash"
-        cfg = get_model_price(alias) or get_model_price(pool_key) or {}
+        # Lấy giá từ DB thay vì hardcode
+        cfg = get_model_price(alias) or {}
+        in_rate = float(cfg.get("input_rate_per_1k", 0.0015))
+        out_rate = float(cfg.get("output_rate_per_1k", 0.009))
 
-        in_rate = float(cfg.get("input_rate_per_1k", 0.000075 if is_lite else 0.0015))
-        out_rate = float(cfg.get("output_rate_per_1k", 0.0003 if is_lite else 0.009))
-
-        # 1. Claude 3.7 Sonnet Standard Cost (No cache)
+        # 1. Standard Cost (Claude 3.7 Sonnet pricing)
         std_input = p * 3.0 / 1_000_000.0
         std_output = c * 15.0 / 1_000_000.0
         total_standard_cost += std_input + std_output
 
-        # 2. Claude 3.7 Sonnet Cached Cost (Simulated)
+        # 2. Cached Cost (Claude 3.7 Sonnet simulated)
         cc_val = row.get("cc", 0) or 0
         cr_val = row.get("cr", 0) or 0
 
@@ -64,7 +62,7 @@ def _calculate_financial_savings(summary: list) -> dict:
 
         total_cached_cost += cached_input + std_output
 
-        # 3. Actual Gemini Cost (from DB model_prices)
+        # 3. Actual Gemini Cost
         gem_uncached = max(0, p - cr_val)
         cache_rate = out_rate * 0.25
         gem_in = (gem_uncached * in_rate * 1000 + cr_val * cache_rate * 1000) / 1_000_000.0

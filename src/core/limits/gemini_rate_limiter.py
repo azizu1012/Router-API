@@ -161,6 +161,7 @@ def record_key_model_usage(api_key: str, model_id: str, tokens: int):
 # ── Per-key/per-model penalty system (temporary score reduction after errors) ──
 
 _score_penalties: Dict[str, Dict[str, Any]] = {}
+_penalty_cleanup_ts: float = 0.0
 
 
 PENALTY_MAP: Dict[str, Dict[str, Any]] = {
@@ -275,17 +276,20 @@ def get_key_priority(key: str, actual_model_id: Optional[str] = None) -> int:
         per_model = entry.get("per_model", {})
         model_today_count = per_model.get(actual_model_id, {}).get("today", 0) if actual_model_id else entry.get("today", 0)
 
-        # ── Clean expired penalties ──
+        # ── Clean expired penalties (tối đa 1 lần/60s) ──
         now = time.time()
-        expired = [k for k, p in list(_score_penalties.items()) if p["expires"] <= now]
-        if expired:
-            for k in expired:
-                del _score_penalties[k]
-            try:
-                from src.backend.key_status import db_clean_expired_penalties
-                db_clean_expired_penalties()
-            except Exception:
-                pass
+        global _penalty_cleanup_ts
+        if now - _penalty_cleanup_ts > 60:
+            _penalty_cleanup_ts = now
+            expired = [k for k, p in list(_score_penalties.items()) if p["expires"] <= now]
+            if expired:
+                for k in expired:
+                    del _score_penalties[k]
+                try:
+                    from src.backend.key_status import db_clean_expired_penalties
+                    db_clean_expired_penalties()
+                except Exception:
+                    pass
 
         # ── Check active penalty. Prefer model-specific state; global is only
         # used for callers that truly cannot identify a concrete model.

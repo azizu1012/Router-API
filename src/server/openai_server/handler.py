@@ -47,14 +47,24 @@ async def _openai_chat_completion(body: Dict[str, Any], account: Optional[Dict[s
     model_alias = router.resolve_model_alias(body.get("model"))
     messages = body.get("messages") or []
 
-    web_search = bool(
-        body.get("web_search") or 
-        body.get("search") or 
-        body.get("grounding") or 
-        body.get("google_search") or
-        config.GEMINI_AUTO_GROUNDING or
-        (account and account.get("web_search_enabled"))
-    )
+    # Respect explicit client-level disable override
+    explicit_disable = False
+    for flag in ["web_search", "search", "google_search", "grounding"]:
+        if flag in body and body[flag] is False:
+            explicit_disable = True
+            break
+
+    if explicit_disable:
+        web_search = False
+    else:
+        web_search = bool(
+            body.get("web_search") or 
+            body.get("search") or 
+            body.get("grounding") or 
+            body.get("google_search") or
+            config.GEMINI_AUTO_GROUNDING or
+            (account and account.get("web_search_enabled"))
+        )
 
     # Estimate input tokens
     try:

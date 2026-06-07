@@ -62,7 +62,12 @@
   ├── DELETE /dashboard/admin/keys/{key} → remove_key()
   ├── POST /dashboard/admin/keys/{key}/freeze → toggle_key_freeze()
   ├── PUT /dashboard/admin/accounts/{account_id} → update_account()
-  └── GET /dashboard/admin/models → admin_models()
+  ├── GET /dashboard/admin/models → admin_models()
+  ├── POST /dashboard/admin/endpoints/add → admin_add_endpoint()
+  ├── POST /dashboard/admin/endpoints/delete → admin_delete_endpoint()
+  ├── POST /dashboard/admin/endpoints/toggle → admin_toggle_endpoint()
+  ├── POST /dashboard/admin/endpoints/pool → admin_pool_endpoint()
+  └── POST /dashboard/admin/endpoints/refresh → admin_refresh_endpoint()
 
   routes/dashboard_routes.py
   ├── POST /dashboard/login → login()
@@ -93,8 +98,8 @@
   auth.py
   ├── _bearer_token() — Trích xuất token từ header
   ├── _resolve_auth() — Tra cứu account theo token prefix
-  ├── _check_auth() — Kiểm tra enabled/disabled
-  ├── _apply_account_limit() — Check RPM/TPM/RPD
+  ├── _check_auth() — Kiểm tra enabled/disabled (dùng in-memory cache 10s TTL)
+  ├── _apply_account_limit() — Check RPM/TPM/RPD (per-pool: flash/lite)
   └── _auth_key_prefix() — Key prefix extraction
 
   security.py
@@ -111,7 +116,7 @@
   └── _require_admin() — Admin-only decorator
 
   DEPENDENCIES:
-    auth.py ──> backend/accounts.py (account lookup)
+    auth.py ──> core/accounts/account_manager.py (account cache + DB fallback)
     auth.py ──> core/limits/account_limiter/ (rate limit check)
     auth_session.py ──> core/config_n_logg (SECRET_KEY)
 
@@ -142,10 +147,30 @@
 
 
 ======================================================================================================
-5. PROXY LAYER — src/api/claude_proxy/
-======================================================================================================
+5. PROXY LAYER — src/api/
+======================================================================
 
-  5a. PROXY ENTRY
+  5a. OPENCODE PROXY — src/api/opencode_proxy/
+  ────────────────────────────────────────────────────────────────────────────────
+  handler/proxy.py
+  ├── _inject_todo_instruction() — Inject task management instruction
+  ├── _completion_handler() — OpenAI chat completions (stream + non-stream)
+  └── _check_custom_pool_rate() — Custom pool rate check
+
+  handler/search.py
+  ├── _with_search_context() — Web search context injection
+  └── _extract_search_queries() — Search query extraction (tuần tự, 1 query/turn)
+
+  DEPENDENCIES:
+    proxy.py ──> core/providers/gemini_api_manager.py
+    proxy.py ──> core/providers/search_manager.py
+    proxy.py ──> core/providers/custom_endpoint_manager.py
+    search.py ──> core/providers/search_manager.py
+
+  5b. CLAUDE PROXY — src/api/claude_proxy/
+======================================================================
+
+  5b-i. PROXY ENTRY
   ────────────────────────────────────────────────────────────────────────────────
   handler/proxy.py — ClaudeProxy class
   ├── _prepare_litellm_kwargs() — Chuẩn bị kwargs cho LiteLLM
@@ -157,7 +182,7 @@
   handler/proxy_stream.py — ClaudeProxyStreamMixin
   └── stream_message() — Stream entry point
 
-  5b. EXECUTORS
+  5b-ii. EXECUTORS
   ────────────────────────────────────────────────────────────────────────────────
   handler/nonstream_executor.py
   ├── _resolve_gemini_with_tools() — Tool call handling
@@ -167,7 +192,7 @@
   ├── _execute_stream() — Stream execution
   └── _stream_with_pool() — Pool retry loop + usage logging
 
-  5c. COMPACTION
+  5b-iii. COMPACTION
   ────────────────────────────────────────────────────────────────────────────────
   handler/compaction.py
   └── _pre_compact_and_truncate() — Gate check + truncation
@@ -177,7 +202,7 @@
   ├── _emergency_truncate_to_limit() — Hard truncation (180K)
   └── _compact_conversation() — LLM summarization via gemini-flash-lite
 
-  5d. CONVERTERS & HELPERS
+  5b-iv. CONVERTERS & HELPERS
   ────────────────────────────────────────────────────────────────────────────────
   stream.py
   └── _process_anthropic_stream() — OpenAI SSE → Anthropic SSE
@@ -238,16 +263,19 @@
 
   core/router.py — class APIRouter(KeyResolverMixin)
   ├── _get_custom_ep() — Lấy custom endpoint config
-  ├── reserve_key() — Atomic key selection + DB reserve
-  └── release_key() — Key release + usage recording
+  ├── freeze_key() — Adaptive cooldown + penalty jitter + per-model freeze
+  ├── freeze_all_keys() — Global freeze (circuit breaker)
+  ├── record_success() — Reset failures, update last_success, fire DB write
+  ├── record_429() — Global circuit breaker (15 429s → block 10-20s)
+  ├── release_key() — active_requests-- + fire-and-forget DB write
+  └── reserve_key() — Key selection → atomic_reserve_key → record_key_model_usage
 
   core/key_resolver.py — class KeyResolverMixin
   ├── _key_is_circuit_open() — Check circuit breaker
-  ├── _adaptive_cooldown() — 429 penalty: exponential, RPD: 60s, invalid: permanent
-  ├── _resolve_key() — Key candidate filtering
-  ├── _try_reserve_key() — Atomic reserve attempt
-  ├── _find_best_key_pooled() — Pool-aware key ranking
-  └── _resolve_key_for_pool() -- Per-pool key resolution
+  ├── _adaptive_cooldown() — 429: exponential backoff 3^(n-1) capped 600s
+  ├── _load_key_tiers() — Load tier từ DB
+  ├── _get_allowed_tiers() — Tiers allowed cho account
+  └── reserve_key() — Iterate keys → filter frozen/busy → priority rank → pick → reserve
 
   pool.py — class ModelPool
   ├── Pool state machine (transient vs hard failure)
@@ -266,8 +294,9 @@
 ======================================================================================================
 
   gemini_api_manager.py — class GeminiAPIManager(GeminiAPIHelpersMixin)
-  ├── Google AI client pool (semaphore-controlled)
-  ├── Key rotation
+  ├── Per-tier semaphore (admin=6, premium=4, free=2)
+  ├── Google AI client pool
+  ├── Key rotation + throttle pacing (global 1-2.6s + per-key 1-2.6s)
   ├── generate_content (stream + non-stream)
   ├── Safety checks
   └── Image handling
@@ -276,10 +305,12 @@
   └── Error classification: retryable, unavailable, invalid, billing
 
   custom_endpoint_manager.py — class CustomEndpointManager
+  ├── In-memory cache (5s TTL) for endpoint configs
   ├── CRUD endpoint mappings
   ├── Model → endpoint resolution
   ├── Pool assignment + fallback
-  └── Model fetching từ 3rd party API
+  ├── _try_fetch_models() — Auto-detect /models, /v1/models, /api/v1/models
+  └── get_fallback_endpoints() — First-fallback model cho retry
 
   search_manager.py
   ├── extract_search_queries() — Parse search intent
@@ -434,6 +465,8 @@
   └── start_flush_loop() — Background flush
 
   accounts/account_manager.py — class AccountManager
+  ├── In-memory cache (10s TTL) cho find_by_key
+  ├── invalidate_cache() gọi sau create/update/delete/rotate
   └── CRUD facade (delegate to backend/accounts.py)
 
   api_config.py
@@ -481,66 +514,71 @@
   OpenAI Format (/v1/chat/completions):
   ──────────────────────────────────────────────────────────────────────────────
 
-    Client ──> CORS ──> Security ──> auth.py (Bearer token)
-                                          │
-                                          v
-                                    account_limiter (RPM/TPM/RPD)
-                                          │
-                                          v
-                                    handler.py (model alias, pool select)
-                                          │
-                              ┌───────────┴───────────┐
-                              │                       │
-                         Gemini Pool           Custom Pool
-                              │                       │
-                    router.reserve_key()     custom_endpoint_manager
-                              │                       │
-                    gemini_api_manager.py      LiteLLM proxy call
-                              │                       │
-                    └───────────┬─────────────────────┘
-                                │
-                                v
-                        Response Engine
-                          │           │
-                          v           v
-                      JSON          SSE Stream
+    Client ──> CORS ──> Security ──> auth.py (Bearer token + account cache)
+                                           │
+                                           v
+                                     account_limiter (RPM/TPM/RPD per pool)
+                                           │
+                              ┌────────────┴────────────┐
+                              │                         │
+                         Standard                   OpenCode
+                              │                         │
+                     handler.py (pool select)   opencode_proxy/proxy.py
+                              │                         │
+                    ┌─────────┴─────────┐       inject todo instruction
+                    │                   │               │
+               Gemini Pool       Custom Pool    handler.py → Gemini Pool
+                    │                   │               │
+          router.reserve_key()  custom_endpoint  router.reserve_key()
+                    │            manager              │
+          gemini_api_manager.py   LiteLLM call  gemini_api_manager.py
+                    │                   │               │
+                    └─────────┬─────────┘               │
+                              │                         │
+                              v                         v
+                      Response Engine             Response Engine
+                        │           │               │           │
+                        v           v               v           v
+                      JSON      SSE Stream        JSON      SSE Stream
 
   Anthropic Format (/v1/messages):
   ──────────────────────────────────────────────────────────────────────────────
 
-    Client ──> CORS ──> Security ──> auth.py ──> account_limiter
-                                                    │
-                                                    v
-                                            claude_proxy/handler/
-                                                    │
-                                          Anthropic → OpenAI conversion
-                                                    │
-                                          compaction nếu cần
-                                                    │
-                                          handler.py → Gemini/Custom Pool
-                                                    │
-                                          stream_executor.py (SSE translation)
-                                                    │
-                                                    v
-                                          Anthropic-format SSE events
+    Client ──> CORS ──> Security ──> auth.py (account cache) ──> account_limiter
+                                                                       │
+                                                                       v
+                                                               claude_proxy/handler/
+                                                                       │
+                                                             Anthropic → OpenAI conversion
+                                                                       │
+                                                             compaction nếu cần (gemini-flash-lite)
+                                                                       │
+                                                             handler.py → Gemini/Custom Pool
+                                                                       │
+                                                             stream_executor.py (SSE translation)
+                                                                       │
+                                                                       v
+                                                             Anthropic-format SSE events
 
 
   Gemini Native Format (/v1/models/{model}:generateContent):
   ──────────────────────────────────────────────────────────────────────────────
 
-    Client ──> CORS ──> Security ──> auth.py ──> account_limiter
-                                                    │
-                                                    v
-                                            pass_through/gemini_routes.py
-                                                    │
-                                            Native Gemini format proxy
-                                                    │
-                                            router.reserve_key()
-                                                    │
-                                            gemini_api_manager.py
-                                                    │
-                                                    v
-                                            Gemini API (stream/non-stream)
+    Client ──> CORS ──> Security ──> auth.py (account cache) ──> account_limiter
+                                                                       │
+                                                                       v
+                                                               pass_through/gemini_routes.py
+                                                                       │
+                                                               Native Gemini format proxy
+                                                                       │
+                                                               router.reserve_key()
+                                                                       │
+                                                               gemini_api_manager.py
+                                                                 │ per-tier semaphore
+                                                                 │ throttle 1-2.6s
+                                                                       │
+                                                                       v
+                                                               Gemini API (stream/non-stream)
 
 
   Dashboard (/dashboard/*):
@@ -602,9 +640,12 @@
 
     ỨNG DỤNG ADAPTIVE COOLDOWN:
     ──────────────────────────────────────────────────────────────────────────────
-    - 429 (rate limit):     exponential backoff (8s, 16s, 32s, 64s, ...)
-    - RPD vượt quá giới hạn:  60s freeze
-    - Circuit breaker:       global block 10-20s (cả pool)
-    - invalid_key:           DISABLED vĩnh viễn (vẫn cho 1 auto-retry cuối)
+    - 429 (rate limit):     exponential backoff 3^(n-1), base 30s, capped 600s
+    - RPD vượt quá giới hạn:  freeze đến midnight Pacific + 300s
+    - timeout:              60s * 2^(min(cf-1,3))
+    - Circuit breaker:       global block 10-20s (sau 15 lần 429 liên tiếp)
+    - invalid_key:           DISABLED vĩnh viễn (atomic_disable_key)
+    - permission_denied:     DISABLED vĩnh viễn (atomic_disable_key)
     - Jitter ngẫu nhiên:     0-15% + gaussian margins
-    - Giảm ưu tiên key:     penalty score tăng dần, key càng lỗi càng ít được chọn
+    - Giảm ưu tiên key:     penalty score khác nhau theo lỗi (-20 đến -86)
+    - Per-model freeze:      freeze riêng model + short global freeze (max 12s)

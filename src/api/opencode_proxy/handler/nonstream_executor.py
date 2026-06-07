@@ -126,7 +126,7 @@ async def _execute_nonstream(
     cr = cache_usage.get("cache_read_input_tokens", 0) or 0
 
     await log_usage(model_alias, kp, input_tokens, out_tokens, auth_key_prefix, cc, cr)
-    router.record_success(api_key, model_id)
+    router.record_success(api_key, model_id, input_tokens, out_tokens)
     if pool:
         pool.record_success()
 

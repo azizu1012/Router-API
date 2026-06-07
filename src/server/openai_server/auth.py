@@ -146,7 +146,16 @@ async def _apply_account_limit(account: Dict[str, Any], body: Dict[str, Any]) ->
                     break
 
     if is_sub_agent:
-        pool_type = "lite"
+        target_model = None
+        if account:
+            target_model = account.get("subagent_model") or account.get("agent_model") or account.get("sub_agent_model")
+        if not target_model:
+            import os
+            target_model = os.getenv("OPENCODE_SUB_AGENT_MODEL") or os.getenv("SUB_AGENT_MODEL")
+        if not target_model:
+            target_model = "gemini-flash-lite"
+        model_alias = router.resolve_model_alias(target_model)
+        pool_type = "lite" if (model_alias and ("lite" in model_alias.lower() or "flash-lite" in model_alias.lower())) else "flash"
     else:
         model_alias = router.resolve_model_alias(model)
         pool_type = "lite" if (model_alias and ("lite" in model_alias.lower() or "flash-lite" in model_alias.lower())) else "flash"

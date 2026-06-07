@@ -26,7 +26,7 @@ Commands: `create`, `list`, `enable`, `disable`, `rotate-key`, `delete`, `defaul
 
 Claude Code sử dụng giao thức Anthropic Messages API (`/v1/messages`). Để cấu hình Claude Code kết nối qua Router API, bạn có thể thực hiện theo một trong hai cách dưới đây:
 
-### Cách 1: Sử dụng file cấu hình `settings.json` (Khuyên dùng)
+### Giao thức qua settings.json (Khuyên dùng)
 Bạn có thể cấu hình trực tiếp vào file cấu hình global của Claude Code để không cần thiết lập lại mỗi khi mở terminal mới:
 *   **Đường dẫn file (Windows):** `C:\Users\<Tên_User>\.claude\settings.json`
 *   **Đường dẫn file (Unix/macOS):** `~/.claude/settings.json`
@@ -41,7 +41,7 @@ Thêm cấu hình `env` vào file `settings.json` như sau:
 }
 ```
 
-### Cách 2: Thiết lập qua biến môi trường Shell
+### Thiết lập qua biến môi trường Shell
 Thiết lập các biến môi trường trước khi khởi động Claude Code:
 ```bash
 # Windows (PowerShell)
@@ -55,6 +55,40 @@ export ANTHROPIC_AUTH_TOKEN="sk-<account-key>"
 export ANTHROPIC_MODEL="gemini-flash-35"
 ```
 Khởi chạy bằng lệnh: `claude`. Kiểm tra trạng thái kết nối bên trong CLI bằng lệnh `/status`.
+
+---
+
+## Cấu hình với OpenCode
+
+OpenCode sử dụng giao thức OpenAI-compatible API. Để cấu hình OpenCode chạy qua Router API:
+* **Base URL:** `http://127.0.0.1:58100/opencode/v1` (Sử dụng đường dẫn `/opencode` để Router tự động nhận diện chính xác các request từ OpenCode).
+* **API Key:** `sk-<account-key>`
+
+Thiết lập các biến môi trường trước khi khởi chạy OpenCode:
+```bash
+# Windows (PowerShell)
+$env:OPENAI_BASE_URL="http://127.0.0.1:58100/opencode/v1"
+$env:OPENAI_API_KEY="sk-<account-key>"
+
+# Linux / macOS
+export OPENAI_BASE_URL="http://127.0.0.1:58100/opencode/v1"
+export OPENAI_API_KEY="sk-<account-key>"
+```
+
+---
+
+## Tùy chỉnh Model Agent (Sub-agent)
+
+Router API hỗ trợ cấu hình model riêng cho các Agent/Sub-agent (các tiến trình chạy ngầm quét file, lập kế hoạch, kiểm tra lỗi...) độc lập với model chính được chọn để tối ưu hóa chi phí và tài nguyên (ví dụ: model chat chính dùng `gemini-flash` nhưng sub-agent dùng `gemini-flash-lite`).
+
+Bạn có thể tùy chỉnh model cho sub-agent thông qua các cách sau:
+1. **Qua cấu hình Account:** Thêm trường `subagent_model`, `agent_model`, hoặc `sub_agent_model` vào cấu hình tài khoản trong cơ sở dữ liệu/`accounts.json` (ví dụ: `"subagent_model": "gemini-flash-lite"`).
+2. **Qua biến môi trường:** Cấu hình trong file `.env`:
+   ```env
+   OPENCODE_SUB_AGENT_MODEL=gemini-flash-lite
+   SUB_AGENT_MODEL=gemini-flash-lite
+   ```
+Nếu không cấu hình, mặc định sub-agent của cả OpenCode và Claude Code sẽ tự động fallback về `gemini-flash-lite`.
 
 ## Các Giao Thức Chính
 

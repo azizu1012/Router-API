@@ -277,7 +277,8 @@ async def _stream_with_pool(
                 saved_key = api_key_val
                 api_key_val = None
                 async for chunk in gen:
-                    committed = True
+                    if not chunk.startswith(b"event: ping") and not chunk.startswith(b"event: message_start"):
+                        committed = True
                     yield chunk
                 return
 

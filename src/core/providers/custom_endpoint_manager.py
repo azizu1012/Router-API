@@ -1,3 +1,4 @@
+import asyncio
 import time
 from datetime import datetime
 from pathlib import Path
@@ -6,6 +7,7 @@ from typing import Any, Dict, List, Optional
 import aiohttp
 
 from src.core.config_n_logg import config
+from src.core.config_n_logg.logger import logger_api as logger
 from src.backend.endpoints import (
     list_endpoints_db,
     get_endpoint_db,
@@ -150,20 +152,24 @@ class CustomEndpointManager:
             f"{base_url}/models",
             f"{base_url}/v1/models",
             f"{base_url}/api/v1/models",
-            f"{base_url.rstrip('/')}/v1/models",
-            f"{base_url.rstrip('/')}/api/v1/models",
         ]
         headers = {"Authorization": f"Bearer {auth_key}"}
-        async with aiohttp.ClientSession(headers=headers, timeout=aiohttp.ClientTimeout(total=10)) as session:
+        async with aiohttp.ClientSession(headers=headers) as session:
             for url in candidates:
                 try:
-                    async with session.get(url) as resp:
+                    async with session.get(url, timeout=aiohttp.ClientTimeout(total=5)) as resp:
                         if resp.status == 200:
                             data = await resp.json()
                             base = url[:url.rfind("/models")]
+                            logger.info("Fetched models from %s for endpoint %s", base, base_url)
                             return {"base": base, "data": data}
-                except Exception:
-                    continue
+                        logger.warning("Fetch models %s returned HTTP %d", url, resp.status)
+                except asyncio.TimeoutError:
+                    logger.warning("Fetch models timeout for %s", url)
+                except aiohttp.ClientConnectorError as e:
+                    logger.warning("Fetch models connection refused for %s: %s", url, e)
+                except Exception as e:
+                    logger.warning("Fetch models error for %s: %s", url, e)
         raise ValueError(f"Cannot reach models endpoint at {base_url}")
 
     async def fetch_models(self, name: str) -> List[str]:

@@ -231,12 +231,17 @@ class GeminiAPIManager(GeminiAPIHelpersMixin):
                             raise ge_err
 
                     usage = getattr(response, "usage_metadata", None)
+                    input_tokens = getattr(usage, "prompt_token_count", 0) or 0
+                    output_tokens = getattr(usage, "candidates_token_count", 0) or 0
+                    
                     self._commit_selected_key(api_key, model_id)
                     router.reset_429_counter()
+                    # Ghi token vào router để tracking
+                    router.record_success(api_key, model_id, input_tokens, output_tokens)
                     return {
                         "response": response,
-                        "input_tokens": getattr(usage, "prompt_token_count", 0) or 0,
-                        "output_tokens": getattr(usage, "candidates_token_count", 0) or 0,
+                        "input_tokens": input_tokens,
+                        "output_tokens": output_tokens,
                         "model_alias": model_alias,
                         "model_id": model_id,
                         "api_key": api_key,
@@ -258,24 +263,20 @@ class GeminiAPIManager(GeminiAPIHelpersMixin):
                         await asyncio.sleep(0.5)
                         continue
 
-                    if self._is_invalid_key(error_text):
-                        router.freeze_key(api_key, config.KEY_INVALID_COOLDOWN_SECONDS, model_id, "invalid_key")
-                        logger.warning("Key ...%s INVALID, frozen", api_key[-4:])
-                        await asyncio.sleep(0.5)
+                    # Xử lý 503, MidStreamFallbackError, 404: KHÔNG freeze key, chỉ rotate
+                    if "midstreamfallbackerror" in error_text or "serviceunavailableerror" in error_text or self._is_unavailable(error_text) or self._is_not_found(error_text):
+                        wait_time = config.GEMINI_UNAVAILABLE_DELAY_SEC * (attempt + 1)
+                        self.logger.warning("Key ...%s gặp lỗi stream/503/404 (lần %d), chờ %.1fs rồi rotate", api_key[-4:], attempt, wait_time)
+                        await asyncio.sleep(wait_time)
                         continue
 
+                    # Các lỗi retryable khác (429, quota, timeout...)
                     if self._is_retryable(error_text):
                         # Track model failures for fallback swapping
                         model_failures[model_id] = model_failures.get(model_id, 0) + 1
                         logger.warning("Model %s failed on key ...%s (failures=%d)", model_id, api_key[-4:], model_failures[model_id])
                         if model_failures[model_id] >= config.POOL_SWAP_FAILURES:
                             logger.warning("Model %s hit failure limit (%d), swapping pool members", model_id, config.POOL_SWAP_FAILURES)
-
-                        if self._is_unavailable(error_text):
-                            apply_error_penalty(api_key, "unavailable", model_id)
-                            logger.warning("Key ...%s unavailable (503), penalty + short delay %.1fs, rotating", api_key[-4:], config.GEMINI_UNAVAILABLE_DELAY_SEC)
-                            await asyncio.sleep(config.GEMINI_UNAVAILABLE_DELAY_SEC)
-                            continue
 
                         if self._is_project_quota_429(error_text):
                             project_id = self._parse_project(error_text)
@@ -303,7 +304,7 @@ class GeminiAPIManager(GeminiAPIHelpersMixin):
                         router.freeze_key(api_key, config.KEY_429_COOLDOWN_SECONDS, model_id, "rate_limit")
                         apply_error_penalty(api_key, "rate_limit", model_id)
                         if router.record_429():
-                            logger.warning("[Cascade] 3 consecutive 429s detected. IP Block confirmed. Global cooldown 45-90s")
+                            logger.warning("[Cascade] 15 consecutive 429s detected. Global cooldown 10-20s")
                         else:
                             logger.info("[Swap] Key ...%s rate-limited. Swapping.", api_key[-4:])
                         continue
