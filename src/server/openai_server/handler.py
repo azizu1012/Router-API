@@ -380,7 +380,11 @@ def _completion_response(body: Dict[str, Any], result: Dict[str, Any]) -> Dict[s
                 "finish_reason": result.get("finish_reason") or "stop",
             }
         ],
-        "usage": {"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0},
+        "usage": {
+            "prompt_tokens": result.get("input_tokens", 0),
+            "completion_tokens": result.get("output_tokens", 0),
+            "total_tokens": (result.get("input_tokens", 0) or 0) + (result.get("output_tokens", 0) or 0),
+        },
     }
 
 

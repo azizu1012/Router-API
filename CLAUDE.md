@@ -2,11 +2,13 @@
 
 ## Nguyên tắc làm việc (2026-06)
 
-### 1. TODO vừa đủ
+### 1. TODO bắt buộc cho task phức tạp
 
-- Chỉ tạo TODO khi task có từ 3 bước trở lên hoặc chạm nhiều file.
-- Không tạo TODO cho việc nhỏ, một bước.
-- Luôn cập nhật trạng thái TODO ngay sau khi hoàn thành mỗi bước.
+- Khi thấy task từ 3 bước trở lên hoặc chạm nhiều file → **tự động tạo TODO list ngay** trước khi làm.
+- Ghi cụ thể từng bước, theo đúng thứ tự cần làm.
+- Làm xong bước nào → **tick hoàn thành bước đó ngay** (dùng todowrite).
+- Không tự ý làm bước sau khi bước trước chưa xong.
+- Chỉ skip TODO nếu task chỉ 1-2 bước đơn giản.
 
 ### 2. Đọc file theo lô, song song
 

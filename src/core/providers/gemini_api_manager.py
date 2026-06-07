@@ -16,16 +16,15 @@ from .gemini_api_helpers import GeminiAPIHelpersMixin
 
 
 class GeminiAPIManager(GeminiAPIHelpersMixin):
-    _semaphore = None
+    _semaphores: Dict[str, asyncio.Semaphore] = {}
+    TIER_LIMITS = {"admin": 6, "premium": 4, "free": 2}
 
     @classmethod
-    def _get_semaphore(cls) -> asyncio.Semaphore:
-        if cls._semaphore is None:
-            max_concurrent = config.GEMINI_API_MAX_CONCURRENT
-            if max_concurrent <= 0:
-                max_concurrent = max(10, len(config.GEMINI_API_KEYS) if config.GEMINI_API_KEYS else 10)
-            cls._semaphore = asyncio.Semaphore(max_concurrent)
-        return cls._semaphore
+    def _get_semaphore(cls, tier: str = "free") -> asyncio.Semaphore:
+        tier = tier if tier in cls.TIER_LIMITS else "free"
+        if tier not in cls._semaphores:
+            cls._semaphores[tier] = asyncio.Semaphore(cls.TIER_LIMITS[tier])
+        return cls._semaphores[tier]
 
     def __init__(self):
         self._clients: Dict[str, Any] = {}
@@ -59,7 +58,7 @@ class GeminiAPIManager(GeminiAPIHelpersMixin):
 
     def refresh_pool_size(self):
         self._pool_size = len(config.GEMINI_API_KEYS) if config.GEMINI_API_KEYS else 10
-        GeminiAPIManager._semaphore = None
+        GeminiAPIManager._semaphores.clear()
         logger.info("GeminiAPIManager pool size and semaphore refreshed. Pool size: %d", self._pool_size)
 
 
@@ -68,9 +67,10 @@ class GeminiAPIManager(GeminiAPIHelpersMixin):
         self, api_key: str, model_id: str, system_instruction: str,
         contents: List[types.Content], max_tokens: int,
         temperature: float, top_p: float, tools: Optional[List[types.Tool]] = None,
+        tier: str = "free",
     ) -> Any:
         client = await self._get_client(api_key)
-        async with self._get_semaphore():
+        async with self._get_semaphore(tier):
             gen_config = types.GenerateContentConfig(
                 system_instruction=system_instruction or None,
                 temperature=temperature,
@@ -115,6 +115,9 @@ class GeminiAPIManager(GeminiAPIHelpersMixin):
         model_failures: Dict[str, int] = {}
         last_error: Optional[Exception] = None
         total_keys = self._pool_size
+        tier = (account or {}).get("tier", "free")
+        if tier not in ("admin", "premium", "free"):
+            tier = "free"
 
         for attempt in range(1, config.MAX_RETRIES + 1):
             logger.info("call_gemini attempt %d/%d starting", attempt, config.MAX_RETRIES)
@@ -197,6 +200,7 @@ class GeminiAPIManager(GeminiAPIHelpersMixin):
                             system_instruction=system_instruction, contents=contents,
                             max_tokens=max_tokens, temperature=temperature,
                             top_p=top_p, tools=request_tools or None,
+                            tier=tier,
                         )
                     except Exception as ge_err:
                         error_text = str(ge_err).lower()
@@ -221,6 +225,7 @@ class GeminiAPIManager(GeminiAPIHelpersMixin):
                                 system_instruction=system_instruction, contents=contents,
                                 max_tokens=max_tokens, temperature=temperature,
                                 top_p=top_p, tools=non_grounding_tools or None,
+                                tier=tier,
                             )
                         else:
                             raise ge_err
@@ -330,6 +335,9 @@ class GeminiAPIManager(GeminiAPIHelpersMixin):
     ) -> Dict[str, Any]:
         last_error = None
         model_failures: Dict[str, int] = {}
+        tier = (account or {}).get("tier", "free")
+        if tier not in ("admin", "premium", "free"):
+            tier = "free"
         for attempt in range(1, 4):
             exclude_models = [mid for mid, count in model_failures.items() if count >= config.POOL_SWAP_FAILURES]
             
@@ -356,20 +364,21 @@ class GeminiAPIManager(GeminiAPIHelpersMixin):
                 self._key_last_used[api_key] = time.time()
 
                 client = await self._get_client(api_key)
-                response = await asyncio.wait_for(
-                    asyncio.to_thread(
-                        client.models.generate_content,
-                        model=model_id,
-                        contents=prompt_text,
-                        config=types.GenerateContentConfig(
-                            system_instruction=system_instruction or None,
-                            response_mime_type="application/json",
-                            temperature=0.1,
-                            max_output_tokens=512,
+                async with self._get_semaphore(tier):
+                    response = await asyncio.wait_for(
+                        asyncio.to_thread(
+                            client.models.generate_content,
+                            model=model_id,
+                            contents=prompt_text,
+                            config=types.GenerateContentConfig(
+                                system_instruction=system_instruction or None,
+                                response_mime_type="application/json",
+                                temperature=0.1,
+                                max_output_tokens=512,
+                            ),
                         ),
-                    ),
-                    timeout=15.0,
-                )
+                        timeout=15.0,
+                    )
                 usage = getattr(response, "usage_metadata", None)
                 self._commit_selected_key(api_key, model_id)
                 return {

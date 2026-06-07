@@ -31,6 +31,25 @@ from .detection import detect_sub_agent_override
 from .nonstream_executor import _execute_nonstream
 from .stream_executor import _stream_with_pool, _stream_standalone, LiteLLMTransientError
 
+_TODO_INSTRUCTION = (
+    "## Task Management\n"
+    "- When given a complex task (3+ steps or touching multiple files), "
+    "create a TODO list to break it down.\n"
+    "- Complete one step at a time and mark it done before moving to the next.\n"
+    "- For simple tasks (1-2 steps), skip the TODO list.\n"
+)
+
+
+def _inject_todo_instruction(messages: list) -> list:
+    for m in messages:
+        role = m.get("role", "")
+        if role == "system":
+            existing = str(m.get("content", ""))
+            m["content"] = existing + "\n\n" + _TODO_INSTRUCTION
+            return messages
+    messages.insert(0, {"role": "system", "content": _TODO_INSTRUCTION.strip()})
+    return messages
+
 
 def get_client_model_name(requested_model: str) -> str:
     try:
@@ -80,6 +99,7 @@ class OpenCodeProxy:
         messages, tools = body.get("messages", []), body.get("tools", [])
         messages, input_tokens = await self._compact_and_truncate(body, messages, tools, model_alias)
         messages = await self._with_search_context(body, messages, model_alias, account=account)
+        messages = _inject_todo_instruction(messages)
 
         pool = router.resolve_pool(model_alias)
         nonstream = self._call_nonstream(body, messages, tools, model_alias, pool, account=account)
@@ -91,6 +111,7 @@ class OpenCodeProxy:
         messages, tools = body.get("messages", []), body.get("tools", [])
         messages, input_tokens = await self._compact_and_truncate(body, messages, tools, model_alias)
         messages = await self._with_search_context(body, messages, model_alias, account=account)
+        messages = _inject_todo_instruction(messages)
 
         pool = router.resolve_pool(model_alias)
         if pool:
@@ -182,22 +203,7 @@ class OpenCodeProxy:
             queries = []
 
         if not queries:
-            last_user = ""
-            for m in reversed(messages):
-                if m.get("role") == "user":
-                    c = m.get("content", "")
-                    if isinstance(c, str):
-                        last_user = c[:500]
-                    elif isinstance(c, list):
-                        for p in c:
-                            if isinstance(p, dict) and p.get("type") == "text":
-                                last_user = str(p.get("text", ""))[:500]
-                                break
-                    break
-            if last_user:
-                queries = [last_user]
-            else:
-                return messages
+            return messages
 
         try:
             search_context, citations = await execute_opencode_search(queries, model_alias_or_name=model_alias, auth_key_prefix=akp, account=account)

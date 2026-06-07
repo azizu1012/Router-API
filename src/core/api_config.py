@@ -63,7 +63,7 @@ AVAILABLE_MODELS: Dict[str, Dict[str, Any]] = {
     },
 }
 
-MODEL_PRIORITY: List[str] = ["gemini-flash", "gemini-flash-35", "gemini-flash-30", "gemini-flash-25", "gemini-flash-lite", "gemini-flash-25-lite"]
+MODEL_PRIORITY: List[str] = ["gemini-flash", "gemini-flash-lite"]
 
 MODEL_POOLS: Dict[str, Dict[str, Any]] = {
     "gemini-flash": {

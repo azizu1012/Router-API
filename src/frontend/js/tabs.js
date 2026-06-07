@@ -637,10 +637,10 @@ export async function handleAddEndpoint() {
   const key  = $('ep-key-input')?.value.trim();
   if (!name || !url) return;
   try {
-    await api('/dashboard/endpoints', {
+    await api('/dashboard/admin/endpoints/add', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ name, base_url: url, api_key: key || undefined }),
+      body: JSON.stringify({ name, base_url: url, auth_key: key || undefined }),
     });
     $('ep-name-input').value = '';
     $('ep-url-input').value  = '';
