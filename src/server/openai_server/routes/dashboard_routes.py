@@ -25,23 +25,32 @@ def _calculate_financial_savings(summary: list) -> dict:
     total_standard_cost = 0.0
     total_cached_cost = 0.0
     total_gemini_cost = 0.0
-    
+
+    from src.backend.model_prices import get_model_price
+
     for row in summary or []:
         alias = str(row.get("model_alias") or "").lower()
         p = row.get("p", 0) or 0
         c = row.get("c", 0) or 0
         total_prompt += p
         total_completion += c
-        
+
+        is_lite = "lite" in alias
+        pool_key = "gemini-flash-lite" if is_lite else "gemini-flash"
+        cfg = get_model_price(alias) or get_model_price(pool_key) or {}
+
+        in_rate = float(cfg.get("input_rate_per_1k", 0.000075 if is_lite else 0.0015))
+        out_rate = float(cfg.get("output_rate_per_1k", 0.0003 if is_lite else 0.009))
+
         # 1. Claude 3.7 Sonnet Standard Cost (No cache)
         std_input = p * 3.0 / 1_000_000.0
         std_output = c * 15.0 / 1_000_000.0
         total_standard_cost += std_input + std_output
-        
+
         # 2. Claude 3.7 Sonnet Cached Cost (Simulated)
         cc_val = row.get("cc", 0) or 0
         cr_val = row.get("cr", 0) or 0
-        
+
         if cc_val > 0 or cr_val > 0:
             uncached_input = max(0, p - cc_val - cr_val)
             cached_input = (uncached_input * 3.0 + cc_val * 3.75 + cr_val * 0.3) / 1_000_000.0
@@ -52,33 +61,23 @@ def _calculate_financial_savings(summary: list) -> dict:
                 cached_input = (new_input_tokens * 3.0 + cache_read_tokens * 0.3) / 1_000_000.0
             else:
                 cached_input = p * 3.0 / 1_000_000.0
-            
+
         total_cached_cost += cached_input + std_output
 
-        # 3. Actual Gemini Cost
-        if "lite" in alias:
-            gem_uncached = max(0, p - cr_val)
-            gem_in = (gem_uncached * 0.25 + cr_val * 0.0625) / 1_000_000.0
-            gem_out = c * 1.50 / 1_000_000.0
-        elif "pro" in alias:
-            gem_uncached = max(0, p - cr_val)
-            gem_in = (gem_uncached * 1.25 + cr_val * 0.3125) / 1_000_000.0
-            gem_out = c * 10.00 / 1_000_000.0
-        else:
-            gem_uncached = max(0, p - cr_val)
-            gem_in = (gem_uncached * 1.50 + cr_val * 0.375) / 1_000_000.0
-            gem_out = c * 9.00 / 1_000_000.0
-            
+        # 3. Actual Gemini Cost (from DB model_prices)
+        gem_uncached = max(0, p - cr_val)
+        cache_rate = out_rate * 0.25
+        gem_in = (gem_uncached * in_rate * 1000 + cr_val * cache_rate * 1000) / 1_000_000.0
+        gem_out = c * out_rate * 1000 / 1_000_000.0
         total_gemini_cost += gem_in + gem_out
 
     net_savings = total_standard_cost - total_gemini_cost
-    
+
     return {
         "standard_cost": round(total_standard_cost, 4),
         "cached_cost": round(total_cached_cost, 4),
         "gemini_cost": round(total_gemini_cost, 4),
         "net_savings": round(net_savings, 4),
-        "savings": round(net_savings, 4)
     }
 
 

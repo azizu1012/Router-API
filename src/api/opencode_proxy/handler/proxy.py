@@ -33,29 +33,20 @@ from .stream_executor import _stream_with_pool, _stream_standalone, LiteLLMTrans
 
 
 def get_client_model_name(requested_model: str) -> str:
-    import json
-    from pathlib import Path
     try:
-        price_file = Path("model_prices.json")
-        if price_file.is_file():
-            with open(price_file, "r") as f:
-                prices = json.load(f)
-            
-            # Check direct match
-            model_cfg = prices.get(requested_model)
-            if model_cfg and "response_model_name" in model_cfg:
-                return model_cfg["response_model_name"]
-            
-            # Check pool match
-            is_lite = "lite" in str(requested_model).lower()
-            pool_key = "gemini-flash-lite" if is_lite else "gemini-flash"
-            model_cfg = prices.get(pool_key)
-            if model_cfg and "response_model_name" in model_cfg:
-                return model_cfg["response_model_name"]
+        from src.backend.model_prices import get_model_price
+        prices = get_model_price(requested_model)
+        if prices and prices.get("response_model_name"):
+            return prices["response_model_name"]
+
+        is_lite = "lite" in str(requested_model).lower()
+        pool_key = "gemini-flash-lite" if is_lite else "gemini-flash"
+        prices = get_model_price(pool_key)
+        if prices and prices.get("response_model_name"):
+            return prices["response_model_name"]
     except Exception:
         pass
-        
-    # Default fallback
+
     if "gemini" in requested_model.lower():
         return "deepseek-chat"
     return requested_model
@@ -358,34 +349,22 @@ class OpenCodeProxy:
     # ── Cost Estimation ──────────────────────────────────────────
 
     def _estimate_cost(self, input_tokens: int, output_tokens: int, model_alias: str) -> float:
-        import json
-        from pathlib import Path
-        
-        # Default fallback pricing (OpenCode standard: $2.50/1M input, $10.00/1M output for flash; $1.00/1M input, $4.00/1M output for lite)
         is_lite = "lite" in str(model_alias).lower()
         input_rate = 0.001 if is_lite else 0.0025
         output_rate = 0.004 if is_lite else 0.010
-        
+
         try:
-            price_file = Path("model_prices.json")
-            if price_file.is_file():
-                with open(price_file, "r") as f:
-                    prices = json.load(f)
-                
-                # Check direct model_alias match
-                model_cfg = prices.get(model_alias)
-                if not model_cfg:
-                    # Check pool key
-                    pool_key = "gemini-flash-lite" if is_lite else "gemini-flash"
-                    model_cfg = prices.get(pool_key)
-                
-                if model_cfg:
-                    # Prices in JSON are per 1000 tokens (e.g. 0.0025 for $2.50/1M)
-                    input_rate = float(model_cfg.get("input_rate_per_1k", input_rate))
-                    output_rate = float(model_cfg.get("output_rate_per_1k", output_rate))
+            from src.backend.model_prices import get_model_price
+            cfg = get_model_price(model_alias)
+            if not cfg:
+                pool_key = "gemini-flash-lite" if is_lite else "gemini-flash"
+                cfg = get_model_price(pool_key)
+            if cfg:
+                input_rate = float(cfg.get("input_rate_per_1k", input_rate))
+                output_rate = float(cfg.get("output_rate_per_1k", output_rate))
         except Exception as e:
-            logger.warning("[Cost Estimate] Failed to parse model_prices.json: %s", e)
-            
+            logger.warning("[Cost Estimate] DB lookup failed: %s", e)
+
         return round(input_tokens * input_rate / 1000 + output_tokens * output_rate / 1000, 6)
 
     # ── Response Builders ────────────────────────────────────────

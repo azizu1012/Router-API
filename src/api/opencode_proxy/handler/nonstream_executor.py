@@ -20,48 +20,33 @@ async def _resolve_gemini_with_tools(
     account: Optional[Dict[str, Any]] = None,
 ) -> Tuple[str, List[Dict[str, Any]], str]:
     try:
-        kwargs["stream"] = True
-        gen = await litellm.acompletion(**kwargs)
+        kwargs["stream"] = False
+        resp = await litellm.acompletion(**kwargs)
     except Exception as e:
         logger.error("[_resolve_gemini_with_tools] litellm.acompletion error: %s", e, exc_info=True)
         raise
 
-    text_buf = []
-    tool_call_buf = {}
-    finish_reason = "stop"
+    choice = resp.choices[0] if resp.choices else None
+    if not choice:
+        return "", [], "stop"
 
-    async for chunk in gen:
-        if not chunk.choices:
-            continue
-        delta = chunk.choices[0].delta
-        finish = chunk.choices[0].finish_reason
+    msg = choice.message
+    text = getattr(msg, "content", "") or ""
+    finish_reason = getattr(choice, "finish_reason", "stop") or "stop"
 
-        if getattr(delta, "content", None):
-            text_buf.append(delta.content)
-        if getattr(delta, "tool_calls", None):
-            for tc in delta.tool_calls:
-                idx = tc.index
-                if idx not in tool_call_buf:
-                    tool_call_buf[idx] = {
-                        "id": getattr(tc, "id", f"call_{uuid.uuid4().hex}"),
-                        "name": "",
-                        "arguments": "",
-                    }
-                if getattr(tc.function, "name", None):
-                    tool_call_buf[idx]["name"] = tc.function.name
-                args_val = getattr(tc.function, "arguments", None)
-                if args_val:
-                    if isinstance(args_val, dict):
-                        args_val = json.dumps(args_val)
-                    elif not isinstance(args_val, str):
-                        args_val = str(args_val)
-                    cur = tool_call_buf[idx]["arguments"]
-                    tool_call_buf[idx]["arguments"] = cur + args_val if isinstance(cur, str) else args_val
-        if finish:
-            finish_reason = finish
-
-    text = "".join(text_buf)
-    tool_calls = list(tool_call_buf.values())
+    raw_tool_calls = getattr(msg, "tool_calls", None) or []
+    tool_calls = []
+    for tc in raw_tool_calls:
+        args = getattr(tc.function, "arguments", None) or ""
+        if isinstance(args, dict):
+            args = json.dumps(args)
+        elif not isinstance(args, str):
+            args = str(args)
+        tool_calls.append({
+            "id": getattr(tc, "id", f"call_{uuid.uuid4().hex}"),
+            "name": getattr(tc.function, "name", "") or "",
+            "arguments": args,
+        })
 
     web_call = next((tc for tc in tool_calls if tc.get("name") == "WebSearch"), None)
     if web_call:

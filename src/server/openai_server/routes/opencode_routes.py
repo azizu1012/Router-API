@@ -27,14 +27,11 @@ async def opencode_chat_completions(
     try:
         await _apply_account_limit(account, body)
 
-        if body.get("stream"):
-            return StreamingResponse(
-                opencode_proxy.stream_chat_completion(body, account=account),
-                media_type="text/event-stream",
-            )
-
-        result = await opencode_proxy.chat_completion(body, account=account)
-        return result
+        body["stream"] = True
+        return StreamingResponse(
+            opencode_proxy.stream_chat_completion(body, account=account),
+            media_type="text/event-stream",
+        )
 
     except Exception as e:
         logger_api.error("opencode_chat_completions failed: %s", e)

@@ -65,6 +65,12 @@ def init_config_tables() -> None:
                     score_reduction INTEGER
                 );
                 CREATE INDEX IF NOT EXISTS idx_key_penalties_expires ON key_penalties(expires);
+                CREATE TABLE IF NOT EXISTS model_prices (
+                    model_name TEXT PRIMARY KEY,
+                    input_rate_per_1k REAL NOT NULL DEFAULT 0.0025,
+                    output_rate_per_1k REAL NOT NULL DEFAULT 0.01,
+                    response_model_name TEXT DEFAULT ''
+                );
             """)
             c.commit()
  
@@ -112,6 +118,32 @@ def init_config_tables() -> None:
                     c.execute(f"ALTER TABLE key_status ADD COLUMN {col_sql}")
                 except Exception:
                     pass
+            c.commit()
+
+            # Seed model_prices if empty
+            cur = c.execute("SELECT COUNT(*) FROM model_prices")
+            if cur.fetchone()[0] == 0:
+                default_prices = [
+                    ("gemini-3.5-flash", 0.0015, 0.009, "gemini-3.5-flash"),
+                    ("gemini-3.1-flash", 0.0005, 0.003, "gemini-3.1-flash"),
+                    ("gemini-3.1-flash-lite", 0.00025, 0.0015, "gemini-3.1-flash-lite"),
+                    ("gemini-3.1-pro", 0.002, 0.012, "gemini-3.1-pro"),
+                    ("gemini-2.5-flash", 0.0003, 0.0025, "gemini-2.5-flash"),
+                    ("gemini-2.5-flash-lite", 0.0001, 0.0004, "gemini-2.5-flash-lite"),
+                    ("gemini-2.5-pro", 0.00125, 0.01, "gemini-2.5-pro"),
+                    ("gemini-2.0-flash", 0.0001, 0.0004, "gemini-2.0-flash"),
+                    ("gemini-flash", 0.0005, 0.003, "gemini-3.1-flash"),
+                    ("gemini-flash-lite", 0.00025, 0.0015, "gemini-3.1-flash-lite"),
+                    ("custom-model", 0.0, 0.0, "custom-model"),
+                    ("gemini-flash-35", 0.0015, 0.009, "gemini-3.5-flash"),
+                    ("gemini-flash-25", 0.0003, 0.0025, "gemini-2.5-flash"),
+                    ("gemini-flash-25-lite", 0.0001, 0.0004, "gemini-2.5-flash-lite"),
+                ]
+                c.executemany(
+                    "INSERT OR IGNORE INTO model_prices (model_name, input_rate_per_1k, output_rate_per_1k, response_model_name) VALUES (?,?,?,?)",
+                    default_prices,
+                )
+                logger.info("[Schema] Seeded %d model prices", len(default_prices))
             c.commit()
         finally:
             c.close()
