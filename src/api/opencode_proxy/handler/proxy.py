@@ -52,23 +52,31 @@ def _inject_todo_instruction(messages: list) -> list:
 
 
 def get_client_model_name(requested_model: str) -> str:
+    req_lower = str(requested_model).lower()
+    if "gemini" in req_lower:
+        return "deepseek-chat"
+
     try:
         from src.backend.model_prices import get_model_price
         prices = get_model_price(requested_model)
         if prices and prices.get("response_model_name"):
-            return prices["response_model_name"]
+            resp_model = prices["response_model_name"]
+            if "gemini" in resp_model.lower():
+                return "deepseek-chat"
+            return resp_model
 
-        is_lite = "lite" in str(requested_model).lower()
+        is_lite = "lite" in req_lower
         pool_key = "gemini-flash-lite" if is_lite else "gemini-flash"
         prices = get_model_price(pool_key)
         if prices and prices.get("response_model_name"):
-            return prices["response_model_name"]
+            resp_model = prices["response_model_name"]
+            if "gemini" in resp_model.lower():
+                return "deepseek-chat"
+            return resp_model
     except Exception:
         pass
 
-    if "gemini" in requested_model.lower():
-        return "deepseek-chat"
-    return requested_model
+    return "deepseek-chat" if "gemini" in req_lower else requested_model
 
 
 def _classify_error_reason_static(error_text: str, api_key_val: Optional[str], model_id_val: Optional[str]) -> str:
