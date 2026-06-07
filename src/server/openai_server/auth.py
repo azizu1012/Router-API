@@ -91,8 +91,6 @@ async def _apply_account_limit(account: Dict[str, Any], body: Dict[str, Any]) ->
         system_prompt_lower = system_prompt.lower()
         if "you are an interactive agent" in system_prompt_lower:
             pass
-        elif "you are claude code" in system_prompt_lower:
-            is_sub_agent = True
         else:
             sub_agent_keywords = [
                 "general-purpose agent",
@@ -115,7 +113,20 @@ async def _apply_account_limit(account: Dict[str, Any], body: Dict[str, Any]) ->
                 "you are the plan",
                 "you are the general-purpose",
                 "you are the statusline-setup",
+                "file_search_specialist", "file-search-specialist",
+                "code search specialist", "code_search_specialist", "code-search-specialist",
+                "search specialist", "search_specialist", "search-specialist",
+                "research specialist", "research_specialist", "research-specialist",
+                "code review", "code_review", "codereview",
+                "debug assistant", "debug_assistant", "debug-assistant",
+                "planning", "planner",
+                "task agent", "task_agent", "task-agent",
             ]
+            is_claude_code = (
+                "you are claude code" in system_prompt_lower 
+                or "cc_version=" in system_prompt_lower 
+                or "claude-code" in system_prompt_lower
+            )
             if any(kw in system_prompt_lower for kw in sub_agent_keywords):
                 is_sub_agent = True
             else:
@@ -124,7 +135,7 @@ async def _apply_account_limit(account: Dict[str, Any], body: Dict[str, Any]) ->
                     is_sub_agent = True
                 elif "[sub-agent]" in system_prompt_lower:
                     is_sub_agent = True
-                elif len(body.get("tools", [])) in (19, 20):
+                elif is_claude_code and len(body.get("tools", [])) in (19, 20):
                     is_sub_agent = True
 
     if not is_sub_agent:

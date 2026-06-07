@@ -46,25 +46,21 @@ def detect_sub_agent_override(body: dict, account: Optional[dict] = None, is_ope
     if not target_model:
         target_model = "gemini-flash-lite"
     
-    # If explicitly called from the opencode endpoint, any non-interactive request is treated as a sub-agent
-    if is_opencode:
-        return target_model
-        
-    # Check if this request is identified as coming from OpenCode or Claude Code via prompt keywords
-    is_coding_agent_session = (
+    # Check if this request is identified as coming from OpenCode or Claude Code via path or prompt keywords
+    is_claude_code = (
         "you are claude code" in system_prompt_lower 
         or "cc_version=" in system_prompt_lower 
         or "claude-code" in system_prompt_lower
-        or "you are opencode" in system_prompt_lower
+    )
+    is_opencode_prompt = (
+        "you are opencode" in system_prompt_lower
         or "opencode" in system_prompt_lower
     )
     
-    if not is_coding_agent_session:
+    if not (is_opencode or is_claude_code or is_opencode_prompt):
         return None
         
-    if "you are claude code" in system_prompt_lower or "you are opencode" in system_prompt_lower:
-        return target_model
-        
+    # Keyword check: if a sub-agent keyword is found, it's definitely a sub-agent
     for kw in SUB_AGENT_KEYWORDS:
         if kw in system_prompt_lower:
             return target_model
@@ -75,8 +71,23 @@ def detect_sub_agent_override(body: dict, account: Optional[dict] = None, is_ope
     if "[sub-agent]" in system_prompt_lower:
         return target_model
 
-    tool_count = len(body.get("tools", []))
-    if tool_count in (19, 20):
-        return target_model
+    # Check for [SUB-AGENT] prefix in user messages
+    messages = body.get("messages", [])
+    for msg in messages:
+        if msg.get("role") == "user":
+            content = msg.get("content")
+            if isinstance(content, str) and content.strip().startswith("[SUB-AGENT]"):
+                return target_model
+            elif isinstance(content, list):
+                for block in content:
+                    if isinstance(block, dict) and block.get("type") == "text":
+                        if block.get("text", "").strip().startswith("[SUB-AGENT]"):
+                            return target_model
+
+    # Tool count check (only applicable to Claude Code subagents)
+    if is_claude_code:
+        tool_count = len(body.get("tools", []))
+        if tool_count in (19, 20):
+            return target_model
 
     return None
