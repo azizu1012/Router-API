@@ -227,7 +227,6 @@ async def dashboard_keys(request: Request):
             "expiry_date": 0,
             "per_model": {},
             "google_models": [],
-            "model_pool_assignments": {},
         })
     return {"keys": keys}
 
@@ -273,7 +272,21 @@ async def api_model_pools(request: Request):
 async def dashboard_endpoints(request: Request):
     _require_dashboard(request)
     eps = await asyncio.to_thread(list_endpoints_db)
-    safe = [{k: v for k, v in e.items() if k != "auth_key"} for e in eps]
+    safe = []
+    for e in eps:
+        ep = {k: v for k, v in e.items() if k != "auth_key"}
+        aid = e.get("account_id", "")
+        if aid:
+            from src.backend.accounts import list_accounts_db
+            for a in list_accounts_db():
+                if a.get("account_id") == aid:
+                    ep["account_name"] = a.get("name", "")
+                    break
+            if not ep.get("account_name"):
+                ep["account_name"] = aid
+        else:
+            ep["account_name"] = ""
+        safe.append(ep)
     return {"endpoints": safe}
 
 

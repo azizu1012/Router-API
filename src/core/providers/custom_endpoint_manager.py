@@ -11,24 +11,24 @@ from src.core.config_n_logg.logger import logger_api as logger
 from src.backend.endpoints import (
     list_endpoints_db,
     get_endpoint_db,
+    get_endpoint_by_account_db,
     add_endpoint_db,
     remove_endpoint_db,
     enable_endpoint_db,
     disable_endpoint_db,
     update_endpoint_db,
     set_fallback_db,
-    assign_to_pool_db,
-    remove_from_pool_db,
+    assign_endpoint_to_account_db,
 )
 
 
 _DEFAULT_PATH = str(Path(__file__).resolve().parents[2] / "custom_endpoints.json")
-_CACHE_TTL = 5.0  # seconds before auto-refresh
+_CACHE_TTL = 5.0
 
 
 class CustomEndpointManager:
     _cache: Optional[Dict[str, Dict[str, Any]]] = None
-    _model_map: Optional[Dict[str, str]] = None
+    _account_map: Optional[Dict[str, str]] = None
     _cache_ts: float = 0.0
 
     def __init__(self, path: str = _DEFAULT_PATH) -> None:
@@ -40,13 +40,14 @@ class CustomEndpointManager:
 
     def _load_cache(self) -> None:
         eps = {ep["name"]: ep for ep in list_endpoints_db()}
-        mm = {}
+        am = {}
         for name, ep in eps.items():
             if ep.get("enabled", True):
-                for mid in ep.get("models", []):
-                    mm[mid] = name
+                aid = ep.get("account_id") or ""
+                if aid:
+                    am[aid] = name
         self.__class__._cache = eps
-        self.__class__._model_map = mm
+        self.__class__._account_map = am
         self.__class__._cache_ts = time.time()
 
     def _invalidate_cache(self) -> None:
@@ -88,42 +89,33 @@ class CustomEndpointManager:
             self._load_cache()
         return (self._cache or {}).get(name)
 
-    def get_endpoint_for_model(self, model_id: str) -> Optional[Dict[str, Any]]:
+    # ── Account-based lookup ─────────────────────────────────────
+    def get_endpoint_for_account(self, account: Optional[Dict[str, Any]]) -> Optional[Dict[str, Any]]:
+        if not account:
+            return None
+        aid = account.get("account_id") or ""
+        if not aid:
+            return None
         if not self._cache_fresh():
             self._load_cache()
-        ep_name = (self._model_map or {}).get(model_id)
+        ep_name = (self._account_map or {}).get(aid)
         if ep_name and self._cache is not None:
             return self._cache.get(ep_name)
         return None
 
-    def get_registered_model_ids(self) -> List[str]:
-        if not self._cache_fresh():
-            self._load_cache()
-        return list((self._model_map or {}).keys())
+    def assign_to_account(self, name: str, account_id: str) -> Optional[Dict[str, Any]]:
+        r = assign_endpoint_to_account_db(name, account_id)
+        if r:
+            self._invalidate_cache()
+        return r
 
-    # ── Pool assignments ─────────────────────────────────────────
-
-    def assign_to_pool(self, name: str, model_id: str, pool_name: str) -> None:
-        assign_to_pool_db(name, model_id, pool_name)
-        self._invalidate_cache()
-
-    def remove_from_pool(self, name: str, model_id: str) -> None:
-        remove_from_pool_db(name, model_id)
-        self._invalidate_cache()
-
-    def get_pool_models(self, pool_name: str) -> List[Dict[str, Any]]:
-        if not self._cache_fresh():
-            self._load_cache()
-        result = []
-        for ep_name, ep in (self._cache or {}).items():
-            if not ep.get("enabled", True):
-                continue
-            for mid, assigned_pools in ep.get("pool_assignments", {}).items():
-                if isinstance(assigned_pools, str):
-                    assigned_pools = [assigned_pools]
-                if pool_name in assigned_pools:
-                    result.append({"model_id": mid, "endpoint_name": ep_name, "endpoint": ep})
-        return result
+    def get_endpoint_model_ids(self, name: str) -> List[str]:
+        ep = self.get(name)
+        if ep:
+            all_models = ep.get("models", [])
+            enabled = ep.get("enabled_models", [])
+            return [m for m in all_models if m in enabled]
+        return []
 
     # ── Fallback ─────────────────────────────────────────────────
 
@@ -141,9 +133,27 @@ class CustomEndpointManager:
 
     def get_first_fallback_model(self) -> Optional[Dict[str, Any]]:
         for ep in self.get_fallback_endpoints():
+            enabled = ep.get("enabled_models", [])
             for mid in ep.get("models", []):
-                return {"model_id": mid, "endpoint": ep}
+                if mid in enabled:
+                    return {"model_id": mid, "endpoint": ep}
         return None
+
+    def toggle_model(self, name: str, model_id: str, enabled: bool) -> Optional[Dict[str, Any]]:
+        ep = self.get(name)
+        if not ep:
+            return None
+        enabled_list = list(ep.get("enabled_models", []))
+        if enabled:
+            if model_id not in enabled_list:
+                enabled_list.append(model_id)
+        else:
+            if model_id in enabled_list:
+                enabled_list.remove(model_id)
+        r = update_endpoint_db(name, enabled_models=enabled_list)
+        if r:
+            self._invalidate_cache()
+        return r
 
     # ── Model fetching ───────────────────────────────────────────
 

@@ -396,4 +396,5 @@ Reserve Key (atomic DB increment) -> Execute Gemini call -> Release Key
 10. **Dual Compaction Limits**: Implements aggressive context thresholds for Claude Code (80K tokens trigger, 45K limit) versus standard chats to avoid client CLI Vertex TPM errors.
 11. **OpenCode Proxy Separation**: Supports dedicated `/opencode/v1/chat/completions` routing to automatically identify OpenCode request contexts and distinguish them from standard chatbot completions without polluting system prompt strings.
 12. **Customizable Agent Models**: Supports overriding sub-agent models individually per user account (`subagent_model`, `agent_model`, `sub_agent_model` in accounts database) or globally via env vars (`OPENCODE_SUB_AGENT_MODEL`/`SUB_AGENT_MODEL`), falling back to `gemini-flash-lite` by default.
+13. **Cost Tracking Completeness (v2.1+)**: Streaming endpoints (`streamGenerateContent`, SSE) now log usage with actual `model_id` resolved — fixes $0.0000 dashboard bug. All paths (Gemini pass-through, OpenCode proxy, Claude proxy) use resolved `model_id` for accurate pricing lookup against `model_prices` table.
 

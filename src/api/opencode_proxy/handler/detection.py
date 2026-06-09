@@ -2,15 +2,34 @@ import re
 from typing import List, Optional
 
 SUB_AGENT_KEYWORDS: List[str] = [
-    "subagent", "sub-agent", "sub_agent",
-    "file search specialist", "file_search_specialist", "file-search-specialist",
+    "general-purpose agent",
+    "general-purpose assistant",
+    "explore agent",
+    "file search specialist",
+    "exploration task",
+    "read-only exploration",
+    "plan agent",
+    "software architect",
+    "implementation plans",
+    "claude-code-guide",
+    "statusline-setup",
+    "specialized agent",
+    "subagent",
+    "sub-agent",
+    "sub_agent",
+    "security monitor",
+    "you are the claude-code-guide",
+    "you are the explore",
+    "you are the plan",
+    "you are the general-purpose",
+    "you are the statusline-setup",
+    "file_search_specialist", "file-search-specialist",
     "code search specialist", "code_search_specialist", "code-search-specialist",
     "search specialist", "search_specialist", "search-specialist",
     "research specialist", "research_specialist", "research-specialist",
     "code review", "code_review", "codereview",
     "debug assistant", "debug_assistant", "debug-assistant",
     "planning", "planner",
-    "plan agent", "you are the plan",
     "task agent", "task_agent", "task-agent",
 ]
 
@@ -27,8 +46,6 @@ def get_system_prompt(body: dict) -> str:
     return ""
 
 def detect_sub_agent_override(body: dict, account: Optional[dict] = None, is_opencode: bool = False) -> Optional[str]:
-    if is_opencode:
-        return None
     system_prompt = get_system_prompt(body)
     if not system_prompt:
         return None

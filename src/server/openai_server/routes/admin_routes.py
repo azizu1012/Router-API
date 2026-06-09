@@ -213,37 +213,53 @@ async def admin_toggle_endpoint(request: Request):
     return {"status": "success"}
 
 
-@app.post("/dashboard/admin/endpoints/pool")
-async def admin_pool_endpoint(request: Request):
+@app.post("/dashboard/admin/endpoints/assign")
+async def admin_assign_endpoint(request: Request):
+    _require_admin(request)
+    try:
+        body = await request.json()
+        name = str(body.get("name", "")).strip()
+        account_id = str(body.get("account_id", "")).strip()
+    except Exception:
+        raise HTTPException(status_code=400, detail="Invalid JSON")
+    if not name:
+        raise HTTPException(status_code=400, detail="name is required")
+
+    from src.core.providers import _custom_endpoint_manager
+    try:
+        if account_id:
+            from src.backend.accounts import find_account_by_name
+            acct = find_account_by_name(account_id)
+            if not acct:
+                raise HTTPException(status_code=404, detail=f"Account '{account_id}' not found")
+            _custom_endpoint_manager.assign_to_account(name, acct["account_id"])
+        else:
+            _custom_endpoint_manager.assign_to_account(name, "")
+        return {"status": "success"}
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+
+@app.post("/dashboard/admin/endpoints/toggle-model")
+async def admin_toggle_endpoint_model(request: Request):
     _require_admin(request)
     try:
         body = await request.json()
         name = str(body.get("name", "")).strip()
         model_id = str(body.get("model_id", "")).strip()
-        pool_name = str(body.get("pool_name", "")).strip().lower()
+        enabled = bool(body.get("enabled", True))
     except Exception:
         raise HTTPException(status_code=400, detail="Invalid JSON")
-    if not name or not model_id or not pool_name:
-        raise HTTPException(status_code=400, detail="name, model_id, and pool_name are required")
-
-    _pool_alias = {
-        "flash": "gemini-flash", "gemini-flash": "gemini-flash",
-        "lite": "gemini-flash-lite", "gemini-flash-lite": "gemini-flash-lite",
-    }
-    from src.backend.endpoints import assign_to_pool_db, remove_from_pool_db
+    if not name or not model_id:
+        raise HTTPException(status_code=400, detail="name and model_id are required")
+    from src.core.providers import _custom_endpoint_manager
     try:
-        if pool_name == "remove" or pool_name == "none":
-            remove_from_pool_db(name, model_id)
-        elif pool_name in _pool_alias:
-            assign_to_pool_db(name, model_id, _pool_alias[pool_name])
-        elif pool_name == "both":
-            assign_to_pool_db(name, model_id, "gemini-flash")
-            assign_to_pool_db(name, model_id, "gemini-flash-lite")
-        else:
-            raise HTTPException(status_code=400, detail=f"Invalid pool name: {pool_name}")
-        from src.core.providers import _custom_endpoint_manager
-        _custom_endpoint_manager._invalidate_cache()
-        return {"status": "success"}
+        r = _custom_endpoint_manager.toggle_model(name, model_id, enabled)
+        if not r:
+            raise HTTPException(status_code=404, detail=f"Endpoint '{name}' not found")
+        return {"status": "success", "endpoint": r}
     except HTTPException:
         raise
     except Exception as e:

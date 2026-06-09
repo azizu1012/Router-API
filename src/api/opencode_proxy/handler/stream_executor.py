@@ -153,7 +153,7 @@ async def _execute_stream(
                 cache_usage = _get_simulated_cache_usage(body, input_tokens)
                 cc = cache_usage.get("cache_creation_input_tokens", 0) or 0
                 cr = cache_usage.get("cache_read_input_tokens", 0) or 0
-                await log_usage(model_alias, kp, input_tokens, out_tokens, auth_key_prefix, cc, cr)
+                await log_usage(model_id, kp, input_tokens, out_tokens, auth_key_prefix, cc, cr)
                 router.record_success(api_key, model_id)
                 if pool:
                     pool.record_success()
@@ -255,7 +255,7 @@ async def _execute_stream(
             cache_usage = _get_simulated_cache_usage(body, input_tokens)
             cc = cache_usage.get("cache_creation_input_tokens", 0) or 0
             cr = cache_usage.get("cache_read_input_tokens", 0) or 0
-            await log_usage(model_alias, kp, input_tokens, out_tokens, auth_key_prefix, cc, cr)
+            await log_usage(model_id, kp, input_tokens, out_tokens, auth_key_prefix, cc, cr)
             router.record_success(api_key, model_id, input_tokens, out_tokens)
             if pool:
                 pool.record_success()

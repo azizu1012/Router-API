@@ -11,9 +11,11 @@ import {
   filterKeys, filterAccounts,
   handleAddKey,
   handleAddEndpoint, handleEpPoolAssign, handleEpToggle,
+  handleEpAccountAssign,
   handleCreateAccount,
   handleKeyPoolAssign,
   toggleEpModels, handleRefreshEpModels,
+  handleEpModelToggle,
 } from './tabs.js';
 
 // ─── Security: Anti-DevTools ──────────────────────────────────────
@@ -137,9 +139,11 @@ window.handleAddKey                = handleAddKey;
 window.handleAddEndpoint           = handleAddEndpoint;
 window.handleEpPoolAssign          = handleEpPoolAssign;
 window.handleEpToggle              = handleEpToggle;
+window.handleEpAccountAssign       = handleEpAccountAssign;
 window.handleKeyPoolAssign         = handleKeyPoolAssign;
 window.toggleEpModels              = toggleEpModels;
 window.handleRefreshEpModels       = handleRefreshEpModels;
+window.handleEpModelToggle         = handleEpModelToggle;
 window.handleCreateAccount         = handleCreateAccount;
 
 // Key/endpoint delete helpers (called from rendered HTML)

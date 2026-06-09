@@ -158,7 +158,7 @@ async def _execute_nonstream(proxy_instance: Any, kwargs: Dict[str, Any], api_ke
     cache_usage = _get_simulated_cache_usage(body, adjusted_input_tokens)
     cc = cache_usage.get("cache_creation_input_tokens", 0) or 0
     cr = cache_usage.get("cache_read_input_tokens", 0) or 0
-    await log_usage(model_alias or "unknown", (api_key or "")[-8:], input_tokens, out_tokens, auth_key_prefix, cc, cr)
+    await log_usage(model_id, (api_key or "")[-8:], input_tokens, out_tokens, auth_key_prefix, cc, cr)
 
     return {
         "id": "msg_" + uuid.uuid4().hex,

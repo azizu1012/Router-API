@@ -29,7 +29,9 @@ def init_config_tables() -> None:
                     auth_key TEXT NOT NULL,
                     enabled INTEGER DEFAULT 1,
                     models TEXT DEFAULT '[]',
-                    pool_assignments TEXT DEFAULT '{}',
+                    disabled_models TEXT DEFAULT '[]',
+                    enabled_models TEXT DEFAULT '[]',
+                    account_id TEXT DEFAULT '',
                     fallback INTEGER DEFAULT 0,
                     updated_at TEXT
                 );
@@ -89,6 +91,24 @@ def init_config_tables() -> None:
             # Migration: add web_search_enabled to accounts
             try:
                 c.execute("ALTER TABLE accounts ADD COLUMN web_search_enabled INTEGER DEFAULT 0")
+            except Exception:
+                pass
+
+            # Migration: add account_id to custom_endpoints
+            try:
+                c.execute("ALTER TABLE custom_endpoints ADD COLUMN account_id TEXT DEFAULT ''")
+            except Exception:
+                pass
+
+            # Migration: add disabled_models to custom_endpoints
+            try:
+                c.execute("ALTER TABLE custom_endpoints ADD COLUMN disabled_models TEXT DEFAULT '[]'")
+            except Exception:
+                pass
+
+            # Migration: add enabled_models to custom_endpoints
+            try:
+                c.execute("ALTER TABLE custom_endpoints ADD COLUMN enabled_models TEXT DEFAULT '[]'")
             except Exception:
                 pass
 
@@ -239,12 +259,12 @@ def migrate_from_json() -> None:
                 for name, ep in raw.items():
                     c.execute(
                         """INSERT OR REPLACE INTO custom_endpoints
-                           (name, base_url, auth_key, enabled, models, pool_assignments, fallback, updated_at)
+                           (name, base_url, auth_key, enabled, models, account_id, fallback, updated_at)
                            VALUES (?,?,?,?,?,?,?,?)""",
                         (name, ep.get("base_url", ""), ep.get("auth_key", ""),
                          1 if ep.get("enabled", True) else 0,
                          json.dumps(ep.get("models", [])),
-                         json.dumps(ep.get("pool_assignments", {})),
+                         "",
                          1 if ep.get("fallback", False) else 0,
                          ep.get("updated_at", "")),
                     )

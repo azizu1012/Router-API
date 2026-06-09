@@ -9,7 +9,7 @@ from src.core.config_n_logg import config
 from src.core.providers import _custom_endpoint_manager
 
 from .console_helpers import _print_accounts, _print_defaults, _prompt_yesno
-from .console_endpoint import _wizard_add_endpoint, _wizard_pool_assign, _list_pool_assignments, _remove_pool_assignment, _ping_pool_model
+from .console_endpoint import _wizard_add_endpoint, _list_endpoints, _ping_endpoint
 
 
 # ── CLI main ──────────────────────────────────────────────
@@ -195,7 +195,7 @@ class AccountConsole(cmd.Cmd):
             print("  ║  3. ❌  Remove endpoint                      ║")
             print("  ║  4. 🔄  Enable / Disable endpoint            ║")
             print("  ║  5. 🔁  Refresh models                       ║")
-            print("  ║  6. 📦  Manage pool assignments              ║")
+            print("  ║  6. 🏓  Test endpoint (ping)                 ║")
             print("  ║  7. 🔙  Back                                 ║")
             print("  ╚══════════════════════════════════════════════╝")
             choice = input("  Choose (1-7): ").strip()
@@ -211,7 +211,7 @@ class AccountConsole(cmd.Cmd):
             elif choice == "5":
                 self._refresh_endpoint()
             elif choice == "6":
-                self._pool_menu()
+                _ping_endpoint()
             elif choice in ("7", ""):
                 break
 
@@ -223,16 +223,22 @@ class AccountConsole(cmd.Cmd):
         if not eps:
             print("  No endpoints configured.")
             return
-        print(f"\n  {'name':20} {'enabled':8} {'models':>6} {'pool':>5} {'base_url'}")
-        print(f"  {'─' * 80}")
+        from src.backend.accounts import list_accounts_db
+        accs = {a.get("account_id"): a for a in list_accounts_db()}
+        print(f"\n  {'name':20} {'enabled':8} {'models':>6} {'assigned_to':18} {'base_url'}")
+        print(f"  {'─' * 95}")
         for ep in eps:
-            pa = ep.get("pool_assignments", {})
-            pool_count = len(pa) if pa else 0
+            aid = ep.get("account_id", "")
+            if aid:
+                assigned = accs.get(aid)
+                assigned_name = f"{assigned['name']} ({assigned['tier']})" if assigned else aid
+            else:
+                assigned_name = "(unassigned)"
             print(
                 f"  {ep['name'][:20]:20} "
                 f"{'yes' if ep.get('enabled', True) else 'no':8} "
                 f"{len(ep.get('models', [])):6} "
-                f"{pool_count:5} "
+                f"{assigned_name[:18]:18} "
                 f"{ep.get('base_url', '')}"
             )
         print()
@@ -281,27 +287,21 @@ class AccountConsole(cmd.Cmd):
             print(f"  ❌ Error: {e}")
 
     @staticmethod
-    def _pool_menu() -> None:
+    def _endpoint_assignments_menu() -> None:
         while True:
             print()
-            print("  ╔══ Pool Assignments ══════════════════════════╗")
-            print("  ║  1. 📋  List pool assignments               ║")
-            print("  ║  2. ➕  Assign model to pool                 ║")
-            print("  ║  3. ❌  Remove model from pool               ║")
-            print("  ║  4. 🏓  Ping / test model                    ║")
-            print("  ║  5. 🔙  Back                                 ║")
-            print("  ╚══════════════════════════════════════════════╝")
-            choice = input("  Choose (1-5): ").strip()
+            print("  ╔══ Endpoint Account Assignments ════════════════╗")
+            print("  ║  1. 📋  List all endpoints & assignments        ║")
+            print("  ║  2. 🏓  Ping / test endpoint                    ║")
+            print("  ║  3. 🔙  Back                                     ║")
+            print("  ╚════════════════════════════════════════════════╝")
+            choice = input("  Choose (1-3): ").strip()
 
             if choice == "1":
-                _list_pool_assignments()
+                _list_endpoints()
             elif choice == "2":
-                _wizard_pool_assign()
-            elif choice == "3":
-                _remove_pool_assignment()
-            elif choice == "4":
-                _ping_pool_model()
-            elif choice in ("5", ""):
+                _ping_endpoint()
+            elif choice in ("3", ""):
                 break
 
     # ── Re-show menu after each command ────────────────────
@@ -320,8 +320,8 @@ class AccountConsole(cmd.Cmd):
     def do_quit(self, arg: str) -> bool:
         return True
 
-    def emptyline(self) -> None:
-        return None
+    def emptyline(self) -> bool:
+        return False
 
 
 if __name__ == "__main__":

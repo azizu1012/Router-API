@@ -15,100 +15,113 @@ def get_auth_key():
         print(f"Error reading accounts from db: {e}")
     return 'test'
 
+async def _consume_stream(client, url, json_body, auth_key):
+    chunks = []
+    full_content = ""
+    async with client.stream(
+        'POST',
+        url,
+        json=json_body,
+        headers={'Authorization': f'Bearer {auth_key}'},
+    ) as response:
+        if response.status_code != 200:
+            err_body = await response.aread()
+            print('Error status:', response.status_code, 'body:', err_body.decode('utf-8', errors='ignore'))
+            return response.status_code, chunks, full_content
+            
+        async for line in response.aiter_lines():
+            if not line.strip():
+                continue
+            if line.startswith('data: '):
+                data_str = line[6:]
+                if data_str.strip() == '[DONE]':
+                    break
+                try:
+                    data = json.loads(data_str)
+                    chunks.append(data)
+                    choices = data.get('choices', [])
+                    if choices:
+                        delta = choices[0].get('delta', {})
+                        if 'content' in delta and delta['content']:
+                            full_content += delta['content']
+                except Exception as e:
+                    print(f'Error parsing chunk: {e} | Line: {line}')
+    return 200, chunks, full_content
+
 async def test_non_stream(client, auth_key):
     print("\n=== Testing Non-Stream Chat Completion ===")
     try:
-        resp = await client.post(
+        # Note: Server force-enables stream=True for all OpenCode completions
+        status, chunks, content = await _consume_stream(
+            client,
             'http://127.0.0.1:58100/opencode/v1/chat/completions',
-            json={
+            {
                 'model': 'gemini-flash',
                 'messages': [{'role': 'user', 'content': 'Say "Hello, this is a non-stream test"'}],
                 'temperature': 0.0,
             },
-            headers={'Authorization': f'Bearer {auth_key}'},
+            auth_key
         )
-        print('Status:', resp.status_code)
-        if resp.status_code == 200:
-            res_json = resp.json()
-            print('Response JSON:', json.dumps(res_json, indent=2))
-            print('Content:', res_json['choices'][0]['message']['content'])
-        else:
-            print('Error Response:', resp.text)
+        print('Status:', status)
+        if status == 200:
+            if chunks:
+                print('First Chunk JSON model:', chunks[0].get('model'))
+            print('Content:', content)
     except Exception as e:
         print('Exception:', e)
 
 async def test_stream(client, auth_key):
     print("\n=== Testing Stream Chat Completion ===")
     try:
-        async with client.stream(
-            'POST',
+        status, chunks, content = await _consume_stream(
+            client,
             'http://127.0.0.1:58100/opencode/v1/chat/completions',
-            json={
+            {
                 'model': 'gemini-flash',
                 'messages': [{'role': 'user', 'content': 'Count from 1 to 5 slowly with commas.'}],
                 'stream': True,
                 'temperature': 0.0,
             },
-            headers={'Authorization': f'Bearer {auth_key}'},
-        ) as response:
-            print('Status:', response.status_code)
-            print('Headers:', {k: v for k, v in response.headers.items() if 'ratelimit' in k.lower() or 'anthropic' in k.lower()})
-            if response.status_code != 200:
-                print('Error:', await response.aread())
-                return
-
-            async for line in response.aiter_lines():
-                if not line.strip():
-                    continue
-                if line.startswith('data: '):
-                    data_str = line[6:]
-                    if data_str.strip() == '[DONE]':
-                        print('\n[DONE]')
-                        break
-                    try:
-                        data = json.loads(data_str)
-                        if 'usage' in data and data['usage']:
-                            print(f'\n[Usage Stats]: {json.dumps(data["usage"])}')
-                        choices = data.get('choices', [])
-                        if choices:
-                            delta = choices[0].get('delta', {})
-                            if 'content' in delta and delta['content']:
-                                sys.stdout.write(delta['content'])
-                                sys.stdout.flush()
-                    except Exception as e:
-                        print(f'\nError parsing chunk: {e} | Line: {line}')
+            auth_key
+        )
+        print('Status:', status)
+        if status == 200:
+            print('Content:', content)
+            # Find and print usage stats from chunks if available
+            for chunk in chunks:
+                if 'usage' in chunk and chunk['usage']:
+                    print(f'[Usage Stats]: {json.dumps(chunk["usage"])}')
+                    break
     except Exception as e:
         print('Exception:', e)
 
 async def test_web_search(client, auth_key):
     print("\n=== Testing Web Search Integration ===")
     try:
-        resp = await client.post(
+        status, chunks, content = await _consume_stream(
+            client,
             'http://127.0.0.1:58100/opencode/v1/chat/completions',
-            json={
+            {
                 'model': 'gemini-flash',
                 'messages': [{'role': 'user', 'content': 'What is the current price of Bitcoin today?'}],
                 'web_search': True,
                 'temperature': 0.0,
             },
-            headers={'Authorization': f'Bearer {auth_key}'},
+            auth_key
         )
-        print('Status:', resp.status_code)
-        if resp.status_code == 200:
-            res_json = resp.json()
-            print('Response JSON:', json.dumps(res_json, indent=2))
-            print('Content:', res_json['choices'][0]['message']['content'])
-        else:
-            print('Error Response:', resp.text)
+        print('Status:', status)
+        if status == 200:
+            print('Content:', content)
     except Exception as e:
         print('Exception:', e)
 
 async def test_subagent_override(client, auth_key):
     print("\n=== Testing Subagent Override (gemini-flash-lite) ===")
     try:
-        resp = await client.post(
+        status, chunks, content = await _consume_stream(
+            client,
             'http://127.0.0.1:58100/opencode/v1/chat/completions',
-            json={
+            {
                 'model': 'gemini-flash', # Will be overridden to gemini-flash-lite
                 'messages': [
                     {'role': 'system', 'content': 'You are a code search specialist subagent.'},
@@ -116,17 +129,16 @@ async def test_subagent_override(client, auth_key):
                 ],
                 'temperature': 0.0,
             },
-            headers={'Authorization': f'Bearer {auth_key}'},
+            auth_key
         )
-        print('Status:', resp.status_code)
-        if resp.status_code == 200:
-            res_json = resp.json()
-            print('Model Used in Response:', res_json.get('model'))
-            print('Content:', res_json['choices'][0]['message']['content'])
-        else:
-            print('Error Response:', resp.text)
+        print('Status:', status)
+        if status == 200:
+            models_used = set(chunk.get('model') for chunk in chunks if chunk.get('model'))
+            print('Models Used in Response:', list(models_used))
+            print('Content:', content)
     except Exception as e:
-        print('Exception:', e)
+        import traceback
+        traceback.print_exc()
 
 async def main():
     auth_key = get_auth_key()

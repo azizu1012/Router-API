@@ -8,6 +8,12 @@ from src.core.config_n_logg.logger import logger_proxy as logger
 from src.core.providers import _custom_endpoint_manager
 from src.core.router import router
 
+def _has_account_endpoint(account: Optional[Dict[str, Any]]) -> bool:
+    if not account:
+        return False
+    ep = _custom_endpoint_manager.get_endpoint_for_account(account)
+    return ep is not None and ep.get("enabled", True)
+
 def _retry_delay(attempt: int) -> float:
     import random
     if attempt >= 10:
@@ -24,16 +30,38 @@ async def _resolve_model(body: Dict[str, Any], pool_alias_override: Optional[str
     if not model_alias:
         model_alias = config.DEFAULT_MODEL_ALIAS
     model_id = router.get_model_id(model_alias)
-    ep = _custom_endpoint_manager.get_endpoint_for_model(model_id)
+
+    # If account has dedicated endpoint, route 100% there
+    # Nếu endpoint lỗi → fallback Gemini Lite (pool_mode xử lý retry)
+    ep = _custom_endpoint_manager.get_endpoint_for_account(account)
     if ep and ep.get("enabled", True):
-        litellm_model = f"openai/{model_id}"
-        return model_alias, model_id, ep["auth_key"], litellm_model, {
-            "key": ep["auth_key"],
-            "model_alias": model_alias,
-            "model_id": model_id,
-            "provider": "custom",
-            "api_base": ep["base_url"],
-        }
+        model_to_use = body.get("model", model_id)
+        enabled_models = ep.get("enabled_models", [])
+        if model_to_use not in enabled_models and model_id not in enabled_models:
+            logger.warning("[AccountEndpoint] Model %s is not enabled on custom endpoint %s, fallback to Gemini Lite pool", model_to_use or model_id, ep["name"])
+        else:
+            try:
+                import litellm
+                test = await litellm.acompletion(
+                    model=f"openai/{model_id}",
+                    messages=[{"role": "user", "content": "ping"}],
+                    api_key=ep["auth_key"],
+                    api_base=ep["base_url"],
+                    max_tokens=1,
+                    stream=False,
+                    request_timeout=5,
+                )
+                litellm_model = f"openai/{model_id}"
+                return model_alias, model_id, ep["auth_key"], litellm_model, {
+                    "key": ep["auth_key"],
+                    "model_alias": model_alias,
+                    "model_id": model_id,
+                    "provider": "custom",
+                    "api_base": ep["base_url"],
+                }
+            except Exception as e:
+                logger.warning("[AccountEndpoint] %s ping failed (%s), fallback to Gemini Lite pool", model_id, e)
+
     # In pool_mode, don't wait long — the pool loop handles retry timing.
     # In standalone mode, wait up to 15s for a key to become available.
     max_wait = 2.0 if pool_mode else 15.0

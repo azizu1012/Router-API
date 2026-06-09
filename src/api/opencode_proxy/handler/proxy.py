@@ -52,31 +52,9 @@ def _inject_todo_instruction(messages: list) -> list:
 
 
 def get_client_model_name(requested_model: str) -> str:
-    req_lower = str(requested_model).lower()
-    if "gemini" in req_lower:
-        return "deepseek-chat"
+    # Trả về requested_model trực tiếp để OpenCode khớp chính xác cấu hình models trong opencode.json
+    return requested_model
 
-    try:
-        from src.backend.model_prices import get_model_price
-        prices = get_model_price(requested_model)
-        if prices and prices.get("response_model_name"):
-            resp_model = prices["response_model_name"]
-            if "gemini" in resp_model.lower():
-                return "deepseek-chat"
-            return resp_model
-
-        is_lite = "lite" in req_lower
-        pool_key = "gemini-flash-lite" if is_lite else "gemini-flash"
-        prices = get_model_price(pool_key)
-        if prices and prices.get("response_model_name"):
-            resp_model = prices["response_model_name"]
-            if "gemini" in resp_model.lower():
-                return "deepseek-chat"
-            return resp_model
-    except Exception:
-        pass
-
-    return "deepseek-chat" if "gemini" in req_lower else requested_model
 
 
 def _classify_error_reason_static(error_text: str, api_key_val: Optional[str], model_id_val: Optional[str]) -> str:
@@ -352,7 +330,7 @@ class OpenCodeProxy:
                 saved_key = api_key_val
                 api_key_val = None
                 router.record_success(saved_key, model_id_val)
-                return self._build_response(body, resp, model_alias, saved_key, input_tokens)
+                return self._build_response(body, resp, model_id_val, saved_key, input_tokens)
             except HTTPException:
                 raise
             except Exception as e:
