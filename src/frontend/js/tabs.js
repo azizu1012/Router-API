@@ -332,14 +332,13 @@ export async function loadEp(force = false) {
   const container = $('ep-list-container');
   if (container && !state.rawEndpoints) container.innerHTML = spHtml();
   try {
-    // Load endpoints and pool config in parallel
     const fetches = [];
     if (force || !state.rawEndpoints) fetches.push(api('/dashboard/endpoints').then(d => { if (d) state.rawEndpoints = d.endpoints || []; }));
-    if (force || !state.rawPools)     fetches.push(api('/api/model-pools').then(d => { if (d) state.rawPools = d.pools || []; }));
+    if (force || !state.rawAccounts)  fetches.push(api('/dashboard/accounts').then(d => { if (d) state.rawAccounts = d.accounts || []; }));
     await Promise.all(fetches);
 
     const eps   = state.rawEndpoints || [];
-    const pools = state.rawPools || [];
+    const accs  = state.rawAccounts || [];
     const cntEl = $('ep-cnt');
     if (cntEl) cntEl.textContent = `${eps.length} ${t('endpoints_count')}`;
     if (!container) return;
@@ -349,51 +348,61 @@ export async function loadEp(force = false) {
       return;
     }
 
-    // Pool options HTML for dropdowns (built from API, not hardcoded)
-    const poolOptions = [
-      `<option value="none">— ${t('lbl_no_pool') || 'Not assigned'} —</option>`,
-      ...pools.map(p => `<option value="${p.id}">${p.icon} ${p.label}</option>`),
-    ].join('');
-
     container.innerHTML = eps.map((ep, i) => {
-      const models       = ep.models || [];
-      const poolAssign   = ep.pool_assignments || {}; // { model_id: pool_name_or_array }
-      const isEnabled    = ep.enabled !== false;
-      const hasFallback  = !!ep.fallback;
-      const sanitizedId  = ep.name.replace(/[^a-z0-9]/gi,'_');
+      const models      = ep.models || [];
+      const isEnabled   = ep.enabled !== false;
+      const accountName = ep.account_name || '';
+      const sanitizedId = ep.name.replace(/[^a-z0-9]/gi,'_');
 
-      // Per-model pool assignment rows
-      const modelRows = models.map(mid => {
-        const assignedPool = Array.isArray(poolAssign[mid]) ? poolAssign[mid][0] : (poolAssign[mid] || 'none');
-        return `
-          <tr style="border-bottom:1px solid var(--border-subtle,rgba(255,255,255,0.04))">
-            <td style="padding:5px 8px;font-family:monospace;font-size:11px;color:var(--primary)">${mid}</td>
-            <td style="padding:5px 8px">
-              <select
-                style="background:var(--bg-tertiary,rgba(0,0,0,0.25));border:1px solid var(--border,rgba(255,255,255,0.1));border-radius:6px;padding:3px 8px;font-size:11px;color:var(--text);cursor:pointer;outline:none"
-                onchange="handleEpPoolAssign('${ep.name}', '${mid}', this.value)">
-                ${poolOptions.replace(`value="${assignedPool}"`, `value="${assignedPool}" selected`)}
-              </select>
-            </td>
-          </tr>`;
-      }).join('');
+      const enabledModels = ep.enabled_models || [];
+      const modelList = models.length
+        ? `<style>
+            details.ep-models-dropdown summary::-webkit-details-marker { display:none; }
+            details.ep-models-dropdown summary { list-style:none; }
+           </style>
+           <details style="margin-top:10px; cursor:pointer;" class="ep-models-dropdown" open>
+            <summary style="font-size:12px; font-weight:600; color:var(--text-muted); margin-bottom:6px; outline:none; user-select:none; display:flex; align-items:center; justify-content:space-between; list-style:none;">
+              <span>📋 Các Model hỗ trợ (${models.length} models)</span>
+              <span style="font-size:11px; color:var(--primary); font-weight:normal;">Chi tiết ▾</span>
+            </summary>
+            <div style="display:flex; flex-direction:column; gap:8px; margin-top:8px; padding:10px; background:var(--bg-tertiary,rgba(0,0,0,0.15)); border-radius:8px; cursor:default;">
+              ${models.map(mid => {
+                const isModelEnabled = enabledModels.includes(mid);
+                const nameColor = isModelEnabled ? 'var(--emerald)' : 'var(--text-muted)';
+                const nameWeight = isModelEnabled ? 'bold' : 'normal';
+                return `
+                  <div style="display:flex; align-items:center; justify-content:space-between; padding:6px 0; border-bottom:1px solid rgba(255,255,255,0.04)">
+                    <span style="font-family:monospace; font-size:12px; color:${nameColor}; font-weight:${nameWeight}; word-break:break-all; padding-right:12px;">${mid}</span>
+                    <label class="toggle-switch" style="transform: scale(0.85); transform-origin: right;">
+                      <input type="checkbox" ${isModelEnabled ? 'checked' : ''} onchange="window.handleEpModelToggle('${ep.name}', '${mid}', this.checked)">
+                      <span class="toggle-slider"></span>
+                    </label>
+                  </div>
+                `;
+              }).join('')}
+            </div>
+           </details>`
+        : `<div style="font-size:11px;color:var(--text-muted);margin-top:4px">Chưa fetch models — nhấn 🔄 Fetch Models</div>`;
 
-      const noModels = !models.length ? `
-        <div style="padding:10px;font-size:11px;color:var(--text-muted);text-align:center">
-          No models fetched yet — endpoint may need to be reached
-        </div>` : '';
+      // Account options for assignment dropdown
+      const accountOptions = [
+        `<option value="">— ${t('lbl_no_account') || 'Chưa gán'} —</option>`,
+        ...accs.filter(a => a.enabled !== false).map(a => {
+          const selected = (a.name === accountName || a.account_id === ep.account_id) ? 'selected' : '';
+          return `<option value="${a.name}" ${selected}>${a.name} (${a.tier})</option>`;
+        }).join(''),
+      ].join('');
 
       return `
         <div class="tcd" style="margin-bottom:12px;overflow:visible" data-ep="${ep.name}">
-          <!-- EP Header -->
           <div style="display:flex;align-items:center;justify-content:space-between;padding:12px 16px;flex-wrap:wrap;gap:8px">
             <div style="display:flex;align-items:center;gap:10px;min-width:0">
               <div style="width:8px;height:8px;border-radius:50%;background:${isEnabled ? 'var(--emerald)' : 'var(--rose)'};flex-shrink:0"></div>
               <strong style="font-size:14px;color:var(--text)">${ep.name}</strong>
               <span style="font-size:11px;font-family:monospace;color:var(--text-muted);overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${ep.base_url}">${ep.base_url}</span>
+              ${accountName ? `<span class="b bg" style="font-size:10px">${accountName}</span>` : ''}
             </div>
             <div style="display:flex;align-items:center;gap:8px;flex-shrink:0">
-              ${hasFallback ? `<span class="b ba" style="font-size:10px">Fallback</span>` : ''}
               <button class="btn btn-secondary" style="font-size:10px;padding:3px 8px" id="ep-fetch-btn-${sanitizedId}"
                 onclick="window.handleRefreshEpModels('${ep.name}')">
                 🔄 Fetch Models
@@ -410,24 +419,24 @@ export async function loadEp(force = false) {
             </div>
           </div>
 
-          <!-- Pool assignment table -->
           <div style="border-top:1px solid var(--border,rgba(255,255,255,0.08));padding:10px 16px">
-            <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:6px">
-              <span style="font-size:10px;font-weight:700;text-transform:uppercase;letter-spacing:0.5px;color:var(--text-muted)">Pool Assignment</span>
-              ${models.length ? `
-              <button class="btn btn-secondary" style="font-size:10px;padding:2px 8px"
-                id="btn-toggle-ep-${sanitizedId}" data-count="${models.length}"
-                onclick="window.toggleEpModels('${sanitizedId}')">
-                ▶ Hiện (${models.length} models)
-              </button>` : ''}
+            <div style="display:flex;align-items:center;gap:12px;flex-wrap:wrap;margin-bottom:8px">
+              <span style="font-size:10px;font-weight:700;text-transform:uppercase;letter-spacing:0.5px;color:var(--text-muted)">${t('lbl_assigned_account') || 'Gán cho tài khoản'}</span>
+              <select id="ep-account-select-${sanitizedId}"
+                style="background:var(--bg-tertiary,rgba(0,0,0,0.25));border:1px solid var(--border,rgba(255,255,255,0.1));border-radius:6px;padding:4px 10px;font-size:12px;color:var(--text);cursor:pointer;outline:none;min-width:160px"
+                onchange="handleEpAccountAssign('${ep.name}', this.value)">
+                ${accountOptions}
+              </select>
             </div>
-            ${noModels}
-            <div id="ep-models-container-${sanitizedId}" style="display:none;margin-top:6px">
-              ${models.length ? `<table style="width:100%;border-collapse:collapse">${modelRows}</table>` : ''}
+
+            <div style="display:flex;align-items:center;justify-content:space-between;margin-top:6px">
+              <span style="font-size:10px;font-weight:700;text-transform:uppercase;letter-spacing:0.5px;color:var(--text-muted)">${t('th_ep_models') || 'Models'}</span>
+              ${models.length ? `<span style="font-size:10px;color:var(--text-muted)">${models.length} models</span>` : ''}
             </div>
+            ${modelList}
           </div>
 
-          <div id="ep-pool-msg-${sanitizedId}" class="msg-box" style="margin:0 16px 8px"></div>
+          <div id="ep-account-msg-${sanitizedId}" class="msg-box" style="margin:0 16px 8px"></div>
         </div>`;
     }).join('');
   } catch (e) {
@@ -590,6 +599,34 @@ export async function handleRefreshEpModels(epName) {
   }
 }
 
+export async function handleEpModelToggle(epName, modelId, enabled) {
+  const safeId = epName.replace(/[^a-z0-9]/gi, '_');
+  const msgEl = $(`ep-account-msg-${safeId}`);
+  if (msgEl) {
+    msgEl.textContent = `⏳ Đang ${enabled ? 'bật' : 'tắt'} model ${modelId}...`;
+    msgEl.className = 'msg-box msg-ok';
+  }
+  try {
+    await api('/dashboard/admin/endpoints/toggle-model', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ name: epName, model_id: modelId, enabled: enabled }),
+    });
+    if (msgEl) {
+      msgEl.textContent = `✅ Đã ${enabled ? 'bật' : 'tắt'} model ${modelId}`;
+      msgEl.className = 'msg-box msg-ok';
+      setTimeout(() => { if (msgEl) msgEl.textContent = ''; }, 2500);
+    }
+    state.rawEndpoints = null;
+    loadEp(true);
+  } catch (e) {
+    if (msgEl) {
+      msgEl.textContent = `❌ Lỗi: ${e.message}`;
+      msgEl.className = 'msg-box msg-err';
+    }
+  }
+}
+
 
 
 export async function handleKeyPoolAssign(keyName, poolName) {
@@ -650,6 +687,23 @@ export async function handleAddEndpoint() {
     loadEp(true);
   } catch (e) {
     showMsg('add-ep-msg', t('msg_ep_error') + e.message, true);
+  }
+}
+
+export async function handleEpAccountAssign(epName, accountName) {
+  const safeId = epName.replace(/[^a-z0-9]/gi, '_');
+  const msgEl = $(`ep-account-msg-${safeId}`);
+  try {
+    await api('/dashboard/admin/endpoints/assign', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ name: epName, account_id: accountName }),
+    });
+    if (msgEl) { msgEl.textContent = `✅ ${accountName || 'Bỏ gán'}`; msgEl.className = 'msg-box msg-ok'; setTimeout(() => { if (msgEl) msgEl.textContent = ''; }, 2500); }
+    state.rawEndpoints = null;
+    loadEp(true);
+  } catch (e) {
+    if (msgEl) { msgEl.textContent = e.message; msgEl.className = 'msg-box msg-err'; }
   }
 }
 

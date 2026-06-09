@@ -9,9 +9,9 @@ export function renderEp() {
       <div class="action-box" style="width:100%">
         <h4>${t('ep_add_title')}</h4>
         <div class="action-input-group" style="display:flex;gap:12px;flex-wrap:wrap">
-          <input type="text" id="ep-name-input" placeholder="openrouter" class="text-input" style="flex:1;min-width:150px">
-          <input type="text" id="ep-url-input" placeholder="https://openrouter.ai/api/v1" class="text-input" style="flex:2;min-width:250px">
-          <input type="password" id="ep-key-input" placeholder="API Key" class="text-input" style="flex:1.5;min-width:200px">
+          <input type="text" id="ep-name-input" placeholder="my-custom-api" class="text-input" style="flex:1;min-width:150px">
+          <input type="text" id="ep-url-input" placeholder="https://api.example.com/v1" class="text-input" style="flex:2;min-width:250px">
+          <input type="password" id="ep-key-input" placeholder="API Key (admin giữ)" class="text-input" style="flex:1.5;min-width:200px">
           <button class="btn btn-primary" onclick="handleAddEndpoint()" style="min-width:90px">${t('btn_add')}</button>
         </div>
         <div id="add-ep-msg" class="msg-box"></div>

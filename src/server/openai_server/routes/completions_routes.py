@@ -33,12 +33,16 @@ async def chat_completions(
 
     try:
         await _apply_account_limit(account, body)
-        body["stream"] = True
-        from src.api.opencode_proxy import opencode_proxy
-        return StreamingResponse(
-            opencode_proxy.stream_chat_completion(body, account=account, is_opencode=False),
-            media_type="text/event-stream",
-        )
+        stream = body.get("stream", False)
+        if stream:
+            from src.api.opencode_proxy import opencode_proxy
+            return StreamingResponse(
+                opencode_proxy.stream_chat_completion(body, account=account, is_opencode=False),
+                media_type="text/event-stream",
+            )
+        else:
+            result = await _openai_chat_completion(body, account=account)
+            return _completion_response(body, result)
     except Exception as e:
         logger_api.error("chat_completion failed: %s", e)
         msg = str(e)
@@ -283,12 +287,16 @@ async def anthropic_messages(
             "anthropic-ratelimit-unified-status": "allowed",
         }
 
-        body["stream"] = True
-        return StreamingResponse(
-            claude_proxy.stream_message(body, akp, account=account),
-            media_type="text/event-stream",
-            headers=response_headers,
-        )
+        stream = body.get("stream", False)
+        if stream:
+            return StreamingResponse(
+                claude_proxy.stream_message(body, akp, account=account),
+                media_type="text/event-stream",
+                headers=response_headers,
+            )
+        else:
+            result = await claude_proxy.create_message(body, akp, account=account)
+            return JSONResponse(content=result, headers=response_headers)
     except HTTPException:
         raise
     except Exception as e:
@@ -298,7 +306,6 @@ async def anthropic_messages(
             content={"type": "error", "error": {"type": "api_error", "message": "Service temporarily unavailable"}},
         )
 
-    return JSONResponse(content=message, headers=response_headers)
 
 
 @app.post("/api/ping-model")
@@ -310,27 +317,22 @@ async def ping_model(request: Request):
     if not model:
         return JSONResponse(status_code=400, content={"ok": False, "error": "model required"})
 
-    pool_models = []
-    for pool_name in ("gemini-flash", "gemini-flash-lite"):
-        for pm in _custom_endpoint_manager.get_pool_models(pool_name):
-            pool_models.append(pm)
-
+    eps = _custom_endpoint_manager.list_endpoints()
     target = None
-    for pm in pool_models:
-        if pm["model_id"] == model:
-            target = pm
+    for ep in eps:
+        if model in ep.get("models", []):
+            target = ep
             break
 
     if not target:
-        return JSONResponse(status_code=404, content={"ok": False, "error": f"Model '{model}' not found in pools"})
+        return JSONResponse(status_code=404, content={"ok": False, "error": f"Model '{model}' not found in any endpoint"})
 
-    ep = target["endpoint"]
     try:
         resp = await litellm.acompletion(
             model=f"openai/{model}",
             messages=[{"role": "user", "content": "OK"}],
-            api_key=ep["auth_key"],
-            api_base=ep["base_url"],
+            api_key=target["auth_key"],
+            api_base=target["base_url"],
             max_tokens=5,
             temperature=0,
             stream=False,

@@ -97,8 +97,12 @@ Dành cho bot hoặc các client sử dụng thư viện chính thức `google-g
 
 *   **Endpoint:**
     *   `POST /v1beta/models/{model_id}:generateContent` (Non-stream)
-    *   `POST /v1beta/models/{model_id}:streamGenerateContent` (Stream - Server-Sent Events)
+    *   `POST /v1beta/models/{model_id}:streamGenerateContent` (Stream thực tế - Server-Sent Events)
     *(Hỗ trợ cả tiền tố `/v1alpha` và `/v1`)*
+*   **Tính năng mới (v2.1+):**
+    *   **Streaming thực tế**: `streamGenerateContent` dùng `generate_content_stream` của Google GenAI SDK, không phải fake chunking.
+    *   **Tool calling đầy đủ**: Hỗ trợ `functionCall` và `functionResponse` trong history chuyển tiếp (fix mất dữ liệu reasoning loop).
+    *   **Cost tracking chính xác**: Cả streaming & non-streaming log usage bằng `model_id` thực tế → dashboard hiển thị chi phí & tiết kiệm đúng.
 *   **Cách cấu hình Client SDK (Python):**
     ```python
     from google import genai
@@ -111,20 +115,22 @@ Dành cho bot hoặc các client sử dụng thư viện chính thức `google-g
         )
     )
 
-    # Sử dụng Google Search Grounding thông qua tools
-    response = client.models.generate_content(
+    # Streaming thực tế
+    stream = client.models.generate_content_stream(
         model="gemini-flash-25",
-        contents="Thời tiết hôm nay thế nào?",
+        contents="Viết bài thơ về coding.",
         config=types.GenerateContentConfig(
             tools=[types.Tool(google_search=types.GoogleSearch())]
         )
     )
+    for chunk in stream:
+        print(chunk.text, end="", flush=True)
     ```
 *   **Tham số chi tiết:**
-    *   `contents`: Danh sách các content block native (`role`, `parts` chứa text hoặc `inlineData` của ảnh).
+    *   `contents`: Danh sách các content block native (`role`, `parts` chứa text, `inlineData` ảnh, `functionCall`, `functionResponse`).
     *   `systemInstruction`: Chỉ dẫn hệ thống (System prompt).
     *   `generationConfig`: Thiết lập tham số (`temperature`, `topP`, `maxOutputTokens`).
-    *   `tools`: Nếu chứa `googleSearch` hoặc `google_search` thì Router tự động kích hoạt Web Grounding Search.
+    *   `tools`: Nếu chứa `googleSearch`/`google_search` → Router tự kích hoạt Web Grounding Search.
 
 ### 2. Giao thức OpenAI Compatible (Translator)
 Dành cho các thư viện OpenAI SDK chuẩn. Router sẽ dịch payload OpenAI thành định dạng thích hợp cho Gemini.

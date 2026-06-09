@@ -221,31 +221,43 @@ async def _openai_chat_completion(body: Dict[str, Any], account: Optional[Dict[s
     temperature = float(body.get("temperature", 0.7))
     top_p = float(body.get("top_p", 0.95))
 
-    ep = _custom_endpoint_manager.get_endpoint_for_model(model_id) if model_id != model_alias else None
-    if not ep:
-        ep = _custom_endpoint_manager.get_endpoint_for_model(model_alias)
+    # ── Account-dedicated endpoint: 100% priority ──
+    # Nếu endpoint bị lỗi → fallback về Gemini Lite (không raise)
+    _account_endpoint_failed = False
+    ep = _custom_endpoint_manager.get_endpoint_for_account(account)
     if ep and ep.get("enabled", True):
-        try:
-            litellm_model = f"openai/{model_id}" if model_id != model_alias else f"openai/{model_alias}"
-            resp = await litellm.acompletion(
-                model=litellm_model,
-                messages=custom_messages,
-                api_key=ep["auth_key"],
-                api_base=ep["base_url"],
-                max_tokens=max_tokens,
-                temperature=temperature,
-                top_p=top_p,
-                stream=False,
-                request_timeout=config.REQUEST_TIMEOUT_SECONDS,
-            )
-            resp_usage = getattr(resp, "usage", None)
-            input_tokens = getattr(resp_usage, "prompt_tokens", 0) or 0
-            output_tokens = getattr(resp_usage, "completion_tokens", 0) or 0
-            text = resp.choices[0].message.content if resp.choices else ""
-            return {"text": text, "model_alias": model_alias, "finish_reason": "stop", "input_tokens": input_tokens, "output_tokens": output_tokens}
-        except Exception as e:
-            logger.error("[CustomEndpoint] %s error: %s", model_alias, e)
-            raise
+        model_to_use = body.get("model", model_alias)
+        enabled_models = ep.get("enabled_models", [])
+        if model_to_use not in enabled_models:
+            logger.warning("[AccountEndpoint] Model %s is not enabled on custom endpoint %s, fallback to Gemini Lite", model_to_use, ep["name"])
+            _account_endpoint_failed = True
+        else:
+            try:
+                litellm_model = f"openai/{model_to_use}"
+                resp = await litellm.acompletion(
+                    model=litellm_model,
+                    messages=custom_messages,
+                    api_key=ep["auth_key"],
+                    api_base=ep["base_url"],
+                    max_tokens=max_tokens,
+                    temperature=temperature,
+                    top_p=top_p,
+                    stream=False,
+                    request_timeout=config.REQUEST_TIMEOUT_SECONDS,
+                )
+                resp_usage = getattr(resp, "usage", None)
+                input_tokens = getattr(resp_usage, "prompt_tokens", 0) or 0
+                output_tokens = getattr(resp_usage, "completion_tokens", 0) or 0
+                text = resp.choices[0].message.content if resp.choices else ""
+                return {"text": text, "model_alias": model_alias, "finish_reason": "stop", "input_tokens": input_tokens, "output_tokens": output_tokens}
+            except Exception as e:
+                logger.warning("[AccountEndpoint] %s failed (%s), fallback to Gemini Lite", model_alias, e)
+                _account_endpoint_failed = True
+
+    # ── Fallback: nếu account có endpoint nhưng lỗi, hoặc ko có endpoint → về Gemini Lite ──
+    if _account_endpoint_failed:
+        model_alias = "gemini-flash-lite"
+        model_id = router.get_model_id(model_alias)
 
     pool_models = router.get_pool_custom_models(model_alias)
 

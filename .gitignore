@@ -26,6 +26,6 @@ stop_router_api.ps1
 stop_router_ssl.ps1
 stop_router_ssl.sh
 
-# ─── OS ───
-Thumbs.db
-.DS_Store
+# ─── IDE ───
+.vscode/
+

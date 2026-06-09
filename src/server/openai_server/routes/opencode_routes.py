@@ -28,14 +28,13 @@ async def opencode_chat_completions(
         )
 
     try:
+        # Resolve model alias early so sub-agent override is applied for limits and headers
+        model_alias = await opencode_proxy._resolve_alias(body, account=account, is_opencode=True)
+        body["model"] = model_alias
+
         await _apply_account_limit(account, body, is_opencode=True)
 
         # Dynamic rate limit headers based on account and pool configuration
-        model = body.get("model") or ""
-        model_alias = router.resolve_model_alias(model)
-        if not model_alias:
-            model_alias = config.DEFAULT_MODEL_ALIAS
-            
         pool_type = "lite" if (model_alias and ("lite" in model_alias.lower() or "flash-lite" in model_alias.lower())) else "flash"
         eff_rpm, eff_tpm, eff_rpd = await get_effective_limits_by_pool(account, pool_type)
         

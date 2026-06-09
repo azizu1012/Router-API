@@ -19,10 +19,6 @@ from src.backend.key_status import (
 )
 from .key_resolver import KeyResolverMixin
 
-def _get_custom_ep():
-    from src.core.providers import _custom_endpoint_manager
-    return _custom_endpoint_manager
-
 class APIRouter(KeyResolverMixin):
     _instance = None
     _initialized = False
@@ -175,8 +171,10 @@ class APIRouter(KeyResolverMixin):
         for alias, cfg in AVAILABLE_MODELS.items():
             if raw == cfg.get("model_id"):
                 return alias
-        if _get_custom_ep().get_endpoint_for_model(raw):
-            return raw
+        from src.core.providers import _custom_endpoint_manager
+        for ep in _custom_endpoint_manager.list_endpoints():
+            if raw in ep.get("models", []):
+                return raw
         
         if "haiku" in raw:
             return "gemini-flash-lite"
@@ -189,19 +187,17 @@ class APIRouter(KeyResolverMixin):
         cfg = AVAILABLE_MODELS.get(alias)
         if cfg:
             return str(cfg.get("model_id", alias))
-        if _get_custom_ep().get_endpoint_for_model(alias):
-            return alias
+        from src.core.providers import _custom_endpoint_manager
+        for ep in _custom_endpoint_manager.list_endpoints():
+            if alias in ep.get("models", []):
+                return alias
         return alias
 
     def resolve_pool(self, alias: str) -> Optional[ModelPool]:
         pool_cfg = MODEL_POOLS.get(alias)
         if pool_cfg:
             members = [m for m in pool_cfg["members"] if not (is_sunset_25() and m in ("gemini-flash-25", "gemini-flash-25-lite"))]
-            custom_models = _get_custom_ep().get_pool_models(alias)
-            for cm in custom_models:
-                m_id = cm["model_id"]
-                if m_id not in members:
-                    members.append(m_id)
+            # Account-dedicated endpoints are resolved per-account, not per-pool
             if not members:
                 return None
             pool_cfg = {
@@ -316,7 +312,7 @@ class APIRouter(KeyResolverMixin):
             logger.error("release_key error: %s", exc)
 
     def get_pool_custom_models(self, pool_name: str) -> List[Dict[str, Any]]:
-        return _get_custom_ep().get_pool_models(pool_name)
+        return []
 
     def freeze_all_keys(self, duration: int) -> None:
         try:

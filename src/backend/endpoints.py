@@ -7,14 +7,12 @@ from src.backend._db import _LOCK, conn as _conn
 
 def _endpoint_row(r) -> Dict[str, Any]:
     d = dict(r)
-    d["models"] = json.loads(d.get("models", "[]"))
-    pa = json.loads(d.get("pool_assignments", "{}"))
-    for mid, pools in pa.items():
-        if isinstance(pools, str):
-            pa[mid] = [pools]
-    d["pool_assignments"] = pa
+    d["models"] = json.loads(d.get("models") or "[]")
+    d["disabled_models"] = json.loads(d.get("disabled_models") or "[]")
+    d["enabled_models"] = json.loads(d.get("enabled_models") or "[]")
     d["enabled"] = bool(d["enabled"])
     d["fallback"] = bool(d["fallback"])
+    d["account_id"] = d.get("account_id") or ""
     return d
 
 
@@ -37,6 +35,19 @@ def get_endpoint_db(name: str) -> Optional[Dict[str, Any]]:
             c.close()
 
 
+def get_endpoint_by_account_db(account_id: str) -> Optional[Dict[str, Any]]:
+    with _LOCK:
+        c = _conn()
+        try:
+            r = c.execute(
+                "SELECT * FROM custom_endpoints WHERE account_id = ? AND enabled = 1",
+                (account_id,),
+            ).fetchone()
+            return _endpoint_row(r) if r else None
+        finally:
+            c.close()
+
+
 def add_endpoint_db(name: str, base_url: str, auth_key: str) -> Dict[str, Any]:
     name = name.strip().lower().replace(" ", "-")
     if not name:
@@ -49,7 +60,9 @@ def add_endpoint_db(name: str, base_url: str, auth_key: str) -> Dict[str, Any]:
         "auth_key": auth_key,
         "enabled": True,
         "models": [],
-        "pool_assignments": {},
+        "disabled_models": [],
+        "enabled_models": [],
+        "account_id": "",
         "fallback": False,
         "updated_at": datetime.utcnow().isoformat(),
     }
@@ -58,10 +71,10 @@ def add_endpoint_db(name: str, base_url: str, auth_key: str) -> Dict[str, Any]:
         try:
             c.execute(
                 """INSERT INTO custom_endpoints
-                   (name, base_url, auth_key, enabled, models, pool_assignments, fallback, updated_at)
-                   VALUES (?,?,?,?,?,?,?,?)""",
+                   (name, base_url, auth_key, enabled, models, disabled_models, enabled_models, account_id, fallback, updated_at)
+                   VALUES (?,?,?,?,?,?,?,?,?,?)""",
                 (ep["name"], ep["base_url"], ep["auth_key"],
-                 1, "[]", "{}", 0, ep["updated_at"]),
+                 1, "[]", "[]", "[]", "", 0, ep["updated_at"]),
             )
             c.commit()
         finally:
@@ -123,17 +136,21 @@ def update_endpoint_db(name: str, **updates: Any) -> Optional[Dict[str, Any]]:
     ep = get_endpoint_db(name)
     if not ep:
         return None
-    ep.update(updates)
+    allowed = {"base_url", "auth_key", "enabled", "models", "disabled_models", "enabled_models", "account_id", "fallback"}
+    merged = {k: v for k, v in updates.items() if k in allowed}
+    ep.update(merged)
     with _LOCK:
         c = _conn()
         try:
             c.execute(
-                """UPDATE custom_endpoints SET base_url=?, auth_key=?, enabled=?, models=?,
-                   pool_assignments=?, fallback=?, updated_at=? WHERE name=?""",
+                """UPDATE custom_endpoints SET base_url=?, auth_key=?, enabled=?, models=?, disabled_models=?, enabled_models=?,
+                   account_id=?, fallback=?, updated_at=? WHERE name=?""",
                 (ep["base_url"], ep["auth_key"],
                  1 if ep.get("enabled", True) else 0,
-                 json.dumps(ep.get("models", [])),
-                 json.dumps(ep.get("pool_assignments", {})),
+                 json.dumps(ep.get("models") or []),
+                 json.dumps(ep.get("disabled_models") or []),
+                 json.dumps(ep.get("enabled_models") or []),
+                 ep.get("account_id", ""),
                  1 if ep.get("fallback", False) else 0,
                  datetime.utcnow().isoformat(), name),
             )
@@ -161,46 +178,12 @@ def set_fallback_db(name: str, enabled: bool) -> Optional[Dict[str, Any]]:
     return ep
 
 
-def assign_to_pool_db(name: str, model_id: str, pool_name: str) -> None:
+def assign_endpoint_to_account_db(name: str, account_id: str) -> Optional[Dict[str, Any]]:
     ep = get_endpoint_db(name)
     if not ep:
-        raise ValueError(f"Endpoint '{name}' not found")
-    if model_id not in ep.get("models", []):
-        raise ValueError(f"Model '{model_id}' not found in endpoint '{name}'")
-    if pool_name not in ("gemini-flash", "gemini-flash-lite"):
-        raise ValueError(f"Pool must be 'gemini-flash' or 'gemini-flash-lite'")
-    pa = ep.get("pool_assignments", {})
-    pools = pa.get(model_id, [])
-    if isinstance(pools, str):
-        pools = [pools]
-    if pool_name not in pools:
-        pools.append(pool_name)
-    pa[model_id] = pools
-    with _LOCK:
-        c = _conn()
-        try:
-            c.execute(
-                "UPDATE custom_endpoints SET pool_assignments = ?, updated_at = ? WHERE name = ?",
-                (json.dumps(pa), datetime.utcnow().isoformat(), name),
-            )
-            c.commit()
-        finally:
-            c.close()
-
-
-def remove_from_pool_db(name: str, model_id: str) -> None:
-    ep = get_endpoint_db(name)
-    if not ep:
-        raise ValueError(f"Endpoint '{name}' not found")
-    pa = ep.get("pool_assignments", {})
-    pa.pop(model_id, None)
-    with _LOCK:
-        c = _conn()
-        try:
-            c.execute(
-                "UPDATE custom_endpoints SET pool_assignments = ?, updated_at = ? WHERE name = ?",
-                (json.dumps(pa), datetime.utcnow().isoformat(), name),
-            )
-            c.commit()
-        finally:
-            c.close()
+        return None
+    if account_id:
+        existing = get_endpoint_by_account_db(account_id)
+        if existing and existing["name"] != name:
+            raise ValueError(f"Account '{account_id}' already has endpoint '{existing['name']}'")
+    return update_endpoint_db(name, account_id=account_id)
