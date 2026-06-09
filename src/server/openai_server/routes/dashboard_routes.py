@@ -296,7 +296,7 @@ async def dashboard_my_stats(request: Request, days: int = 30):
     from src.core.usage_logger import get_stats_for_prefix
     account = await asyncio.to_thread(find_account_by_name, payload.get("name", ""))
     if not account:
-        return {"summary": [], "daily": [], "total_requests": 0, "savings": {"savings": 0.0}}
+        return {"summary": [], "daily": [], "total_requests": 0, "savings": {"standard_cost": 0.0, "cached_cost": 0.0, "gemini_cost": 0.0, "net_savings": 0.0}}
     ak = account.get("auth_key", "")
     prefix = ak[-8:] if len(ak) >= 8 else ak
     res = await get_stats_for_prefix(prefix, days)

@@ -195,7 +195,7 @@ export function statsCards(s, d, savings, prefix) {
   const tdd = d.filter(x => x.d === td);
   const tdt = tdd.reduce((a, b) => a + (b.t || 0), 0);
   const tdr = tdd.reduce((a, b) => a + (b.req || 0), 0);
-  const sav = savings?.savings || 0;
+  const sav = savings?.net_savings || 0;
 
   setTimeout(() => animateSavings(sav, prefix), 100);
 

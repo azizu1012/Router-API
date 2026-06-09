@@ -17,6 +17,8 @@ from src.core.limits.gemini_rate_limiter import (
     record_key_model_usage,
 )
 
+# No global cache variables needed
+
 class KeyResolverMixin:
 
     def _key_is_circuit_open(self, key: str) -> bool:
@@ -196,8 +198,9 @@ class KeyResolverMixin:
                                 candidates_with_priority.sort(key=lambda x: (x[2].get("active_requests", 0), -x[0], x[2].get("consecutive_failures", 0)))
                                 if not candidates_with_priority:
                                     continue
-                                pool_top = min(10, len(candidates_with_priority))
-                                chosen_cand = random.choice(candidates_with_priority[:pool_top])
+                                # Lấy 50% key ngon nhất
+                                top_50_percent = int(len(candidates_with_priority) * 0.5)
+                                chosen_cand = random.choice(candidates_with_priority[:max(1, top_50_percent)])
                                 selected_key = chosen_cand[1]
                                 selected_mid = chosen_cand[3]
                                 
@@ -329,15 +332,14 @@ class KeyResolverMixin:
                                 continue
                             candidates_with_priority.append((pri, k, s, key_mid))
                         
-                        if not candidates_with_priority:
-                            continue
-
-                        random.shuffle(candidates_with_priority)
                         candidates_with_priority.sort(key=lambda x: (x[2].get("active_requests", 0), -x[0], x[2].get("consecutive_failures", 0)))
                         if not candidates_with_priority:
                             continue
-                        pool_top = min(10, len(candidates_with_priority))
-                        chosen_cand = random.choice(candidates_with_priority[:pool_top])
+
+                        # Lấy 50% key ngon nhất
+                        top_50_percent = int(len(candidates_with_priority) * 0.5)
+                        chosen_cand = random.choice(candidates_with_priority[:max(1, top_50_percent)])
+
                         selected_key = chosen_cand[1]
                         selected_mid = chosen_cand[3]
                             
