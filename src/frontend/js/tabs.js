@@ -33,7 +33,7 @@ export async function loadOv(force = false) {
     const tdr = tdd.reduce((a, b) => a + (b.req || 0), 0);
     const tot = s.reduce((a, b) => a + (b.t || 0), 0);
     const req = s.reduce((a, b) => a + (b.req || 0), 0);
-    const sav = savings?.savings || 0;
+    const sav = savings?.net_savings || 0;
 
     if ($('ov-card-today-tokens')) {
       animateUpdateText('ov-card-today-tokens', fmt(tdt));
@@ -910,7 +910,7 @@ export async function loadMyUse(force = false) {
     const tdr = tdd.reduce((a, b) => a + (b.req || 0), 0);
     const tot = s.reduce((a, b) => a + (b.t || 0), 0);
     const req = s.reduce((a, b) => a + (b.req || 0), 0);
-    const sav = state.myStatsData.savings?.savings || 0;
+    const sav = state.myStatsData.savings?.net_savings || 0;
 
     if ($('my-card-today-tokens')) {
       animateUpdateText('my-card-today-tokens', fmt(tdt));

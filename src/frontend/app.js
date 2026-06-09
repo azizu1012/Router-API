@@ -1262,7 +1262,7 @@ function statsCards(s, d, savings, prefix) {
   const tdd = d.filter(x => x.d === td);
   const tdt = tdd.reduce((a, b) => a + (b.t || 0), 0);
   const tdr = tdd.reduce((a, b) => a + (b.req || 0), 0);
-  const sav = savings ? (savings.savings || 0) : 0;
+  const sav = savings ? (savings.net_savings || 0) : 0;
   
   setTimeout(() => animateSavings(sav, prefix), 100);
   
@@ -1359,7 +1359,7 @@ async function loadOv(force = false) {
     const tdd = d.filter(x => x.d === td);
     const tdt = tdd.reduce((a, b) => a + (b.t || 0), 0);
     const tdr = tdd.reduce((a, b) => a + (b.req || 0), 0);
-    const sav = data.savings ? (data.savings.savings || 0) : 0;
+    const sav = data.savings ? (data.savings.net_savings || 0) : 0;
 
     if ($('ov-card-today-tokens')) {
       animateUpdateText('ov-card-today-tokens', fmt(tdt));
@@ -2126,7 +2126,7 @@ async function loadMyUse(force = false) {
     const tdd = d.filter(x => x.d === td);
     const tdt = tdd.reduce((a, b) => a + (b.t || 0), 0);
     const tdr = tdd.reduce((a, b) => a + (b.req || 0), 0);
-    const sav = _myStatsData.savings ? (_myStatsData.savings.savings || 0) : 0;
+    const sav = _myStatsData.savings ? (_myStatsData.savings.net_savings || 0) : 0;
 
     if ($('my-card-today-tokens')) {
       animateUpdateText('my-card-today-tokens', fmt(tdt));
