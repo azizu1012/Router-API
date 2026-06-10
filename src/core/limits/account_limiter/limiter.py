@@ -107,7 +107,7 @@ class AccountRateLimiter:
     async def snapshot(self, account: Dict[str, Any]) -> Dict[str, Any]:
         account_id = str(account.get("account_id") or account.get("name") or "anonymous")
         res = {}
-        for pkey in ["flash", "lite"]:
+        for pkey in ["flash", "lite", "custom"]:
             pool_aid = f"{account_id}::{pkey}"
             async with self._dict_lock:
                 account_lock = self._get_lock(pool_aid)

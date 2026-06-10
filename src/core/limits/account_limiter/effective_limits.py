@@ -126,6 +126,17 @@ async def get_effective_limits(account: Dict[str, Any]) -> tuple[int, int, int]:
 async def get_effective_limits_by_pool(account: Dict[str, Any], pool_type: str = "flash") -> tuple[int, int, int]:
     tier = account.get("tier", "free")
     
+    cfg_rpm = int(account.get("rpm") or 300)
+    cfg_tpm = int(account.get("tpm") or 6000000)
+    cfg_rpd = int(account.get("rpd") or 20000)
+    
+    if pool_type == "custom":
+        if tier == "admin":
+            return 999999, 999999999, 999999
+        elif tier == "premium":
+            return int(cfg_rpm * 1.5), int(cfg_tpm * 1.5), int(cfg_rpd * 1.5)
+        return cfg_rpm, cfg_tpm, cfg_rpd
+
     active_counts = await get_active_account_counts()
     capacities = calculate_key_capacities_by_pool(pool_type)
     
