@@ -49,25 +49,34 @@ def openai_chunks(chunk: Any, model: Optional[str] = None) -> List[bytes]:
 
     role = getattr(delta, "role", None)
     content = getattr(delta, "content", None)
+    reasoning = getattr(delta, "reasoning_content", None) or getattr(delta, "thought", None) or getattr(delta, "reasoning", None)
     tool_calls = _build_tool_calls(getattr(delta, "tool_calls", None))
 
     has_role = bool(role)
     has_content = content is not None
+    has_reasoning = reasoning is not None
     has_tool_calls = tool_calls is not None
     has_finish = finish_reason is not None
 
-    if not has_role and not has_content and not has_tool_calls and not has_finish:
+    if not has_role and not has_content and not has_reasoning and not has_tool_calls and not has_finish:
         return []
 
     results: List[bytes] = []
 
     if has_role and has_content:
         results.append(make_sse(chunk, choice, {"role": role}, None, model))
+        if has_reasoning:
+            results.append(make_sse(chunk, choice, {"reasoning_content": reasoning}, None, model))
         results.append(make_sse(chunk, choice, {"content": content}, None, model))
     elif has_role:
         results.append(make_sse(chunk, choice, {"role": role}, None, model))
-    elif has_content:
-        results.append(make_sse(chunk, choice, {"content": content}, None, model))
+        if has_reasoning:
+            results.append(make_sse(chunk, choice, {"reasoning_content": reasoning}, None, model))
+    else:
+        if has_reasoning:
+            results.append(make_sse(chunk, choice, {"reasoning_content": reasoning}, None, model))
+        if has_content:
+            results.append(make_sse(chunk, choice, {"content": content}, None, model))
 
     if has_tool_calls:
         results.append(make_sse(chunk, choice, {"tool_calls": tool_calls}, None, model))

@@ -9,6 +9,11 @@ def openai_chunks(chunk: Any, model_name: str) -> List[bytes]:
 
     delta = chunk.choices[0].delta
     content = getattr(delta, "content", None)
+    reasoning = getattr(delta, "reasoning_content", None)
+    if reasoning is None:
+        # Some providers might use thought or reasoning instead
+        reasoning = getattr(delta, "thought", None) or getattr(delta, "reasoning", None)
+    
     tool_calls = getattr(delta, "tool_calls", None)
     finish_reason = getattr(chunk.choices[0], "finish_reason", None)
 
@@ -20,6 +25,9 @@ def openai_chunks(chunk: Any, model_name: str) -> List[bytes]:
 
     if content is not None:
         result["choices"][0]["delta"]["content"] = content
+
+    if reasoning is not None:
+        result["choices"][0]["delta"]["reasoning_content"] = reasoning
 
     if tool_calls:
         result["choices"][0]["delta"]["tool_calls"] = _build_tool_calls(tool_calls)
