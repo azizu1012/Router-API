@@ -196,9 +196,10 @@ class AccountConsole(cmd.Cmd):
             print("  ║  4. 🔄  Enable / Disable endpoint            ║")
             print("  ║  5. 🔁  Refresh models                       ║")
             print("  ║  6. 🏓  Test endpoint (ping)                 ║")
-            print("  ║  7. 🔙  Back                                 ║")
+            print("  ║  7. 🏊  Pool assignments                     ║")
+            print("  ║  8. 🔙  Back                                 ║")
             print("  ╚══════════════════════════════════════════════╝")
-            choice = input("  Choose (1-7): ").strip()
+            choice = input("  Choose (1-8): ").strip()
 
             if choice == "1":
                 _wizard_add_endpoint()
@@ -212,7 +213,9 @@ class AccountConsole(cmd.Cmd):
                 self._refresh_endpoint()
             elif choice == "6":
                 _ping_endpoint()
-            elif choice in ("7", ""):
+            elif choice == "7":
+                self._pool_assignments_menu()
+            elif choice in ("8", ""):
                 break
 
     # ── Endpoint sub-functions ────────────────────────────
@@ -302,6 +305,45 @@ class AccountConsole(cmd.Cmd):
             elif choice == "2":
                 _ping_endpoint()
             elif choice in ("3", ""):
+                break
+
+    @staticmethod
+    def _pool_assignments_menu() -> None:
+        from src.core.providers import _custom_endpoint_manager
+        while True:
+            print()
+            print("  ╔══ Pool Model Assignments ═══════════════════════╗")
+            print("  ║  1. 📋  List all pool assignments                ║")
+            print("  ║  2. ➕  Assign model to pool                     ║")
+            print("  ║  3. ➖  Remove pool assignment                   ║")
+            print("  ║  4. 🔙  Back                                      ║")
+            print("  ╚════════════════════════════════════════════════╝")
+            choice = input("  Choose (1-4): ").strip()
+
+            if choice == "1":
+                eps = _custom_endpoint_manager.list_endpoints()
+                for ep in eps:
+                    pas = ep.get("pool_assignments", {})
+                    if pas:
+                        print(f"  {ep['name']}:")
+                        for pool, model in pas.items():
+                            print(f"    {pool} -> {model}")
+                    else:
+                        print(f"  {ep['name']}: (no pool assignments)")
+            elif choice == "2":
+                name = input("  Endpoint name: ").strip()
+                pool = input("  Pool name (e.g. gemini-flash): ").strip()
+                model = input("  Model ID: ").strip()
+                if name and pool and model:
+                    _custom_endpoint_manager.assign_pool_model(name, pool, model)
+                    print(f"  ✅ Assigned {pool} -> {model} on {name}")
+            elif choice == "3":
+                name = input("  Endpoint name: ").strip()
+                pool = input("  Pool name to remove: ").strip()
+                if name and pool:
+                    _custom_endpoint_manager.remove_pool_model(name, pool)
+                    print(f"  ✅ Removed {pool} from {name}")
+            elif choice in ("4", ""):
                 break
 
     # ── Re-show menu after each command ────────────────────

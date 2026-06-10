@@ -16,8 +16,6 @@ from src.core.usage_logger import log_usage
 from src.api.claude_proxy.utils import (
     _resolve_model,
     _retry_delay,
-    should_compact,
-    _compact_conversation,
     _emergency_truncate_to_limit,
     _get_simulated_cache_usage,
 )
@@ -116,12 +114,9 @@ class OpenCodeProxy:
             }
             tools.append(websearch_tool)
 
-        messages, input_tokens = await self._compact_and_truncate(body, messages, tools, model_alias)
-        messages = _inject_todo_instruction(messages)
+        # No auto-compaction for OpenCode yet
+        input_tokens = 0
 
-        pool = router.resolve_pool(model_alias)
-        nonstream = self._call_nonstream(body, messages, tools, model_alias, pool, account=account)
-        return await nonstream
 
     async def stream_chat_completion(self, body: Dict[str, Any], account: Optional[Dict[str, Any]] = None, is_opencode: bool = False) -> AsyncIterator[bytes]:
         model_alias = await self._resolve_alias(body, account=account, is_opencode=is_opencode)
@@ -148,32 +143,16 @@ class OpenCodeProxy:
             }
             tools.append(websearch_tool)
 
-        messages, input_tokens = await self._compact_and_truncate(body, messages, tools, model_alias)
-        messages = _inject_todo_instruction(messages)
+        # No auto-compaction for OpenCode yet
+        input_tokens = 0
 
-        pool = router.resolve_pool(model_alias)
-        if pool:
-            gen = _stream_with_pool(self, body, messages, tools, pool, model_alias, auth_key_prefix=_get_auth_key_prefix(account), account=account)
-        else:
-            gen = _stream_standalone(self, body, messages, tools, model_alias, auth_key_prefix=_get_auth_key_prefix(account), account=account)
-
-        async for chunk in gen:
-            yield chunk
 
     # ── Message Preprocessing ────────────────────────────────────
+    # ── Message Preprocessing ────────────────────────────────────
 
-    async def _compact_and_truncate(
-        self, body: Dict[str, Any], messages: List[Dict[str, Any]], tools: List[Dict[str, Any]], model_alias: str
+    async def _truncate_to_limit(
+        self, messages: List[Dict[str, Any]], model_alias: str
     ) -> tuple:
-        try:
-            model_id = router.get_model_id(model_alias)
-            input_tokens = await asyncio.to_thread(litellm.token_counter, model=f"gemini/{model_id}", messages=messages)
-        except Exception:
-            input_tokens = max(1, len(str(messages)) // 4)
-
-        if should_compact(messages, input_tokens):
-            messages = await _compact_conversation(body, messages, tools, input_tokens)
-
         is_lite = "lite" in str(model_alias).lower()
         limit = config.LITE_EMERGENCY_MAX_INPUT_TOKENS if is_lite else config.EMERGENCY_MAX_INPUT_TOKENS
         messages = _emergency_truncate_to_limit(messages, limit)
@@ -185,6 +164,8 @@ class OpenCodeProxy:
             input_tokens = max(1, len(str(messages)) // 4)
 
         return messages, input_tokens
+
+
 
     async def _with_search_context(
         self, body: Dict[str, Any], messages: List[Dict[str, Any]], model_alias: str, account: Optional[Dict[str, Any]] = None
