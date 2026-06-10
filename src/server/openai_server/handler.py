@@ -154,7 +154,7 @@ async def _openai_chat_completion(body: Dict[str, Any], account: Optional[Dict[s
     can_native_ground = (
         web_search
         and not has_media
-        and api_manager.model_supports_grounding(model_id)
+        and GeminiAPIHelpersMixin.model_supports_grounding(model_id)
     )
     native_grounding_active = can_native_ground
     
@@ -236,7 +236,8 @@ async def _openai_chat_completion(body: Dict[str, Any], account: Optional[Dict[s
                 return {"text": result["text"], "model_alias": model_alias,
                         "finish_reason": result.get("finish_reason", "stop"),
                         "input_tokens": result.get("input_tokens", 0),
-                        "output_tokens": result.get("output_tokens", 0)}
+                        "output_tokens": result.get("output_tokens", 0),
+                        "key_prefix": "custom"}
             except Exception as e:
                 logger.warning("[AccountEndpoint] %s failed (%s), trying pool fallback", model_alias, e)
 
@@ -269,7 +270,8 @@ async def _openai_chat_completion(body: Dict[str, Any], account: Optional[Dict[s
                 return {"text": result["text"], "model_alias": model_alias,
                         "finish_reason": result.get("finish_reason", "stop"),
                         "input_tokens": result.get("input_tokens", 0),
-                        "output_tokens": result.get("output_tokens", 0)}
+                        "output_tokens": result.get("output_tokens", 0),
+                        "key_prefix": "custom"}
             except Exception as pe:
                 logger.warning("Pool custom model %s failed: %s", model_to_call, pe)
         return None

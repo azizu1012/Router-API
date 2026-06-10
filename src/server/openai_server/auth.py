@@ -172,6 +172,22 @@ async def _apply_account_limit(account: Dict[str, Any], body: Dict[str, Any], is
         model_alias = router.resolve_model_alias(model)
         pool_type = "lite" if (model_alias and ("lite" in model_alias.lower() or "flash-lite" in model_alias.lower())) else "flash"
 
+    # Detect if the request goes to a custom endpoint
+    from src.core.providers import _custom_endpoint_manager
+    is_custom = False
+    ep = _custom_endpoint_manager.get_endpoint_for_account(account)
+    if ep and ep.get("enabled", True):
+        model_to_use = body.get("model", model_alias)
+        enabled_models = ep.get("enabled_models", [])
+        if model_to_use in enabled_models:
+            is_custom = True
+    if not is_custom:
+        pool_models = router.get_pool_custom_models(model_alias)
+        if pool_models:
+            is_custom = True
+    if is_custom:
+        pool_type = "custom"
+
     from src.core.limits.account_limiter import get_effective_limits_by_pool
     eff_rpm, eff_tpm, eff_rpd = await get_effective_limits_by_pool(account, pool_type)
     
