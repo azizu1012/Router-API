@@ -65,6 +65,17 @@ AVAILABLE_MODELS: Dict[str, Dict[str, Any]] = {
 
 MODEL_PRIORITY: List[str] = ["gemini-flash", "gemini-flash-lite"]
 
+# Reverse map: backing model_id → virtual pool alias
+BACKING_TO_ALIAS: Dict[str, str] = {}
+for _alias, _cfg in AVAILABLE_MODELS.items():
+    _mid = str(_cfg.get("model_id", ""))
+    if _mid and _mid not in ("gemini-flash-pool",):
+        BACKING_TO_ALIAS[_mid] = _alias
+
+def resolve_model_alias(model_id: str) -> str:
+    """Map backing model ID → virtual pool alias. Falls back to original if unknown."""
+    return BACKING_TO_ALIAS.get(model_id, model_id)
+
 MODEL_POOLS: Dict[str, Dict[str, Any]] = {
     "gemini-flash": {
         "pool_name": "gemini-flash",

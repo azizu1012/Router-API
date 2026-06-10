@@ -5,7 +5,7 @@ from .app_init import app
 from . import standard_routes
 from . import completions_routes
 from . import dashboard_routes
-from . import admin_routes
+from . import admin  # admin/ package (keys, endpoints, accounts)
 from . import opencode_routes
 from src.server.pass_through_server.routes import gemini_routes
 

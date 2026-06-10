@@ -199,7 +199,10 @@ class AccountConsole(cmd.Cmd):
             print("  ║  7. 🏊  Pool assignments                     ║")
             print("  ║  8. 🔙  Back                                 ║")
             print("  ╚══════════════════════════════════════════════╝")
-            choice = input("  Choose (1-8): ").strip()
+            try:
+                choice = input("  Choose (1-8): ").strip()
+            except (EOFError, KeyboardInterrupt):
+                break
 
             if choice == "1":
                 _wizard_add_endpoint()
@@ -248,7 +251,10 @@ class AccountConsole(cmd.Cmd):
 
     @staticmethod
     def _remove_endpoint() -> None:
-        name = input("  Endpoint name to remove: ").strip()
+        try:
+            name = input("  Endpoint name to remove: ").strip()
+        except (EOFError, KeyboardInterrupt):
+            return
         if not name:
             return
         if not _prompt_yesno(f"  Remove '{name}'?", default=False):
@@ -261,7 +267,10 @@ class AccountConsole(cmd.Cmd):
 
     @staticmethod
     def _toggle_endpoint() -> None:
-        name = input("  Endpoint name: ").strip()
+        try:
+            name = input("  Endpoint name: ").strip()
+        except (EOFError, KeyboardInterrupt):
+            return
         if not name:
             return
         ep = _custom_endpoint_manager.get(name)
@@ -278,7 +287,10 @@ class AccountConsole(cmd.Cmd):
 
     @staticmethod
     def _refresh_endpoint() -> None:
-        name = input("  Endpoint name: ").strip()
+        try:
+            name = input("  Endpoint name: ").strip()
+        except (EOFError, KeyboardInterrupt):
+            return
         if not name:
             return
         try:
@@ -298,7 +310,10 @@ class AccountConsole(cmd.Cmd):
             print("  ║  2. 🏓  Ping / test endpoint                    ║")
             print("  ║  3. 🔙  Back                                     ║")
             print("  ╚════════════════════════════════════════════════╝")
-            choice = input("  Choose (1-3): ").strip()
+            try:
+                choice = input("  Choose (1-3): ").strip()
+            except (EOFError, KeyboardInterrupt):
+                break
 
             if choice == "1":
                 _list_endpoints()
@@ -318,7 +333,10 @@ class AccountConsole(cmd.Cmd):
             print("  ║  3. ➖  Remove pool assignment                   ║")
             print("  ║  4. 🔙  Back                                      ║")
             print("  ╚════════════════════════════════════════════════╝")
-            choice = input("  Choose (1-4): ").strip()
+            try:
+                choice = input("  Choose (1-4): ").strip()
+            except (EOFError, KeyboardInterrupt):
+                break
 
             if choice == "1":
                 eps = _custom_endpoint_manager.list_endpoints()
@@ -331,15 +349,21 @@ class AccountConsole(cmd.Cmd):
                     else:
                         print(f"  {ep['name']}: (no pool assignments)")
             elif choice == "2":
-                name = input("  Endpoint name: ").strip()
-                pool = input("  Pool name (e.g. gemini-flash): ").strip()
-                model = input("  Model ID: ").strip()
+                try:
+                    name = input("  Endpoint name: ").strip()
+                    pool = input("  Pool name (e.g. gemini-flash): ").strip()
+                    model = input("  Model ID: ").strip()
+                except (EOFError, KeyboardInterrupt):
+                    break
                 if name and pool and model:
                     _custom_endpoint_manager.assign_pool_model(name, pool, model)
                     print(f"  ✅ Assigned {pool} -> {model} on {name}")
             elif choice == "3":
-                name = input("  Endpoint name: ").strip()
-                pool = input("  Pool name to remove: ").strip()
+                try:
+                    name = input("  Endpoint name: ").strip()
+                    pool = input("  Pool name to remove: ").strip()
+                except (EOFError, KeyboardInterrupt):
+                    break
                 if name and pool:
                     _custom_endpoint_manager.remove_pool_model(name, pool)
                     print(f"  ✅ Removed {pool} from {name}")
@@ -360,6 +384,10 @@ class AccountConsole(cmd.Cmd):
         return True
 
     def do_quit(self, arg: str) -> bool:
+        return True
+
+    def do_EOF(self, arg: str) -> bool:
+        print()
         return True
 
     def emptyline(self) -> bool:

@@ -48,9 +48,11 @@ async def log_usage(
     cache_creation_tokens: int = 0,
     cache_read_tokens: int = 0,
 ) -> None:
+    from src.core.api_config import resolve_model_alias
+    resolved = resolve_model_alias(model_alias)
     await _queue.put((
         datetime.now().isoformat(),
-        model_alias,
+        resolved,
         key_prefix or "unknown",
         prompt_tokens or 0,
         completion_tokens or 0,

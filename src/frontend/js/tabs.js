@@ -140,7 +140,7 @@ export function renderFilteredKeys() {
       const dot = !k.enabled ? 'hx' : fr ? 'ha' : k.consecutive_failures >= 3 ? 'hr' : 'hg';
       const st  = !k.enabled ? t('st_disabled') : fr ? t('st_cooldown') : k.consecutive_failures >= 3 ? t('st_degraded') : t('st_healthy');
       const sb  = !k.enabled ? 'bx' : fr ? 'ba' : k.consecutive_failures >= 3 ? 'br' : 'bg';
-      const cooldownInline = fr ? ` <div style="display:inline-block;vertical-align:middle;margin-left:6px">${relt(k.frozen_until)}</div>` : '';
+      const cooldownInline = fr ? ` <div style="display:inline-block;vertical-align:middle;margin-left:6px">${relt(k.frozen_until, k.key)}</div>` : '';
       const allowedPools = k.allowed_pools || [];
       const assignedPool = allowedPools.length > 0 ? allowedPools[0] : 'all';
       return `

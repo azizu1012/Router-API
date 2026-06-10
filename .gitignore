@@ -17,6 +17,9 @@ __pycache__/
 # ─── Secrets / keys ───
 banned-keys.txt
 
+# ─── Dev utilities ───
+clean_cache.bat
+
 # ─── Chua deploy ───
 Cert/
 run_router_ssl.ps1

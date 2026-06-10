@@ -92,7 +92,10 @@ def _prompt_yesno(prompt: str, default: bool = False) -> bool:
     """Ask yes/no question."""
     hint = "Y/n" if default else "y/N"
     while True:
-        r = input(f"{prompt} [{hint}]: ").strip().lower()
+        try:
+            r = input(f"{prompt} [{hint}]: ").strip().lower()
+        except (EOFError, KeyboardInterrupt):
+            return default
         if not r:
             return default
         if r in ('y', 'yes'):

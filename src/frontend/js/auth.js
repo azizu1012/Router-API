@@ -122,7 +122,7 @@ export async function enterApp() {
   state.timer = setInterval(async () => {
     const { loadTab } = await import('./tabs.js');
     if (state.cur) loadTab(state.cur, true);
-    showRefresh();
+    // showRefresh();  // removed flash — data updates silently
   }, 10000);
 }
 

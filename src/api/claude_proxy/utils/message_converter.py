@@ -31,9 +31,9 @@ def _tool_call_names(tool_calls: List[Dict[str, Any]]) -> str:
 
 def _clean_system_prompt(text: str) -> str:
     text = re.sub(r'claude-sonnet-4-20250514', 'gemini-flash', text)
-    text = re.sub(r'claude[- ]sonnet[- ]4(?:\.[\d]+)?', 'gemini-flash', text, flags=re.IGNORECASE)
-    text = re.sub(r'claude[- ]opus[- ]4(?:\.[\d]+)?', 'gemini-flash', text, flags=re.IGNORECASE)
-    text = re.sub(r'claude[- ]haiku[- ]4(?:\.[\d]+)?', 'gemini-flash-lite', text, flags=re.IGNORECASE)
+    text = re.sub(r'claude[- ]sonnet[- ]4(?:[\-\.][\d]+)?', 'gemini-flash', text, flags=re.IGNORECASE)
+    text = re.sub(r'claude[- ]opus[- ]4(?:[\-\.][\d]+)?', 'gemini-flash', text, flags=re.IGNORECASE)
+    text = re.sub(r'claude[- ]haiku[- ]4(?:[\-\.][\d]+)?', 'gemini-flash-lite', text, flags=re.IGNORECASE)
     text = re.sub(r'(?<![a-zA-Z])Sonnet 4(?:\.[\d]+)?', 'Gemini Flash', text)
     text = re.sub(r'(?<![a-zA-Z])Opus 4(?:\.[\d]+)?', 'Gemini Flash', text)
     text = re.sub(r'(?<![a-zA-Z])Haiku 4(?:\.[\d]+)?', 'Gemini Flash Lite', text)

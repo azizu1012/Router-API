@@ -283,3 +283,46 @@ initParticles();
 if (state.tok) {
   enterApp();
 }
+
+// ─── Silent background polls (no flash, no re-render) ─────────────
+// Penalty badge — 5s interval, only updates badge number
+setInterval(async () => {
+  if (!state.tok || state.usr?.tier !== 'admin') return;
+  try {
+    const { api } = await import('./api.js');
+    const data = await api('/dashboard/penalties');
+    if (!data) return;
+    const nb = document.getElementById('nbp');
+    if (nb) {
+      const count = (data.penalties || []).length;
+      nb.textContent = count;
+      nb.style.display = count ? 'inline' : 'none';
+    }
+  } catch {}
+}, 5000);
+
+// Cooldown timestamps + frozen badge — 15s interval, no re-render
+setInterval(async () => {
+  if (!state.tok) return;
+  try {
+    const { api } = await import('./api.js');
+    const data = await api('/dashboard/keys');
+    if (!data?.keys) return;
+    state.rawKeys = data.keys;
+    const now = Date.now() / 1000;
+    const frozenCount = data.keys.filter(k => k.frozen_until > now).length;
+    const nbf = document.getElementById('nbf');
+    if (nbf) {
+      nbf.textContent = frozenCount;
+      nbf.style.display = frozenCount ? 'inline' : 'none';
+    }
+    document.querySelectorAll('.cooldown-wrapper').forEach(el => {
+      const key = el.getAttribute('data-key');
+      if (!key) return;
+      const found = data.keys.find(k => k.key === key);
+      if (found && found.frozen_until) {
+        el.setAttribute('data-until', found.frozen_until);
+      }
+    });
+  } catch {}
+}, 15000);
