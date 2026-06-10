@@ -15,7 +15,7 @@ export function fmtD(ts) {
 }
 
 // ─── Relative time with animated clock ───────────────────────────
-export function relt(ts) {
+export function relt(ts, key = '') {
   const s = ts - Date.now() / 1000;
   if (s <= 0) return `<span class="expired-tag">${t('lbl_expired')}</span>`;
 
@@ -25,7 +25,7 @@ export function relt(ts) {
   let timeStr = h > 0 ? `${h}h ${m}m ${sec}s` : m > 0 ? `${m}m ${sec}s` : `${sec}s`;
 
   return `
-    <span class="cooldown-wrapper" data-until="${ts}">
+    <span class="cooldown-wrapper" data-until="${ts}" data-key="${key}">
       <svg class="clock-anim" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
         <circle cx="12" cy="12" r="10"></circle>
         <polyline points="12 6 12 12 16 14" class="clock-hand"></polyline>

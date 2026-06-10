@@ -10,7 +10,11 @@ def _wizard_add_endpoint() -> None:
     """Interactive endpoint addition with auto-verify & account assignment."""
     print("\n  ── Add New Endpoint ──\n")
 
-    url = input("  URL (e.g. https://openrouter.ai): ").strip()
+    try:
+        url = input("  URL (e.g. https://openrouter.ai): ").strip()
+    except (EOFError, KeyboardInterrupt):
+        print("\n  Cancelled.")
+        return
     if not url:
         print("  Cancelled.")
         return
@@ -20,7 +24,11 @@ def _wizard_add_endpoint() -> None:
         print("  Cancelled.")
         return
 
-    name = input("  Name (leave empty = auto from URL): ").strip()
+    try:
+        name = input("  Name (leave empty = auto from URL): ").strip()
+    except (EOFError, KeyboardInterrupt):
+        print("\n  Cancelled.")
+        return
     if not name:
         import re as _re
         m = _re.match(r'https?://([^.]+)', url)
@@ -47,7 +55,11 @@ def _wizard_add_endpoint() -> None:
         for i, a in enumerate(accs, 1):
             print(f"  {i}. {a['name']} ({a['tier']})")
         try:
-            choice = int(input("  Choose account (number, 0=skip): ").strip())
+            line = input("  Choose account (number, 0=skip): ").strip()
+        except (EOFError, KeyboardInterrupt):
+            line = "0"
+        try:
+            choice = int(line)
             if 1 <= choice <= len(accs):
                 acct = accs[choice - 1]
                 _custom_endpoint_manager.assign_to_account(name, acct["account_id"])
@@ -88,13 +100,22 @@ def _ping_endpoint() -> None:
     for i, ep in enumerate(eps, 1):
         print(f"  {i}. {ep['name']}: {ep['base_url']}")
     try:
-        choice = int(input("\n  Choose endpoint (number): ").strip())
+        line = input("\n  Choose endpoint (number): ").strip()
+    except (EOFError, KeyboardInterrupt):
+        print("  Cancelled.")
+        return
+    try:
+        choice = int(line)
         ep = eps[choice - 1]
     except (ValueError, IndexError):
         print("  Invalid choice.")
         return
 
-    model_id = input("  Model ID (leave empty for first available): ").strip()
+    try:
+        model_id = input("  Model ID (leave empty for first available): ").strip()
+    except (EOFError, KeyboardInterrupt):
+        print("  Cancelled.")
+        return
     if not model_id:
         models = ep.get("models", [])
         if models:

@@ -57,12 +57,19 @@ async def opencode_chat_completions(
             "anthropic-ratelimit-unified-status": "allowed",
         }
 
-        body["stream"] = True
-        return StreamingResponse(
-            opencode_proxy.stream_chat_completion(body, account=account, is_opencode=True),
-            media_type="text/event-stream",
-            headers=response_headers,
-        )
+        is_stream = body.get("stream", False)
+        if is_stream:
+            return StreamingResponse(
+                opencode_proxy.stream_chat_completion(body, account=account, is_opencode=True),
+                media_type="text/event-stream",
+                headers=response_headers,
+            )
+        else:
+            resp_dict = await opencode_proxy.chat_completion(body, account=account, is_opencode=True)
+            return JSONResponse(
+                content=resp_dict,
+                headers=response_headers,
+            )
 
     except Exception as e:
         logger_api.error("opencode_chat_completions failed: %s", e)
