@@ -15,7 +15,7 @@ from src.api.claude_proxy.utils import (
     is_claude_code_body,
 )
 
-async def _resolve_gemini_with_tools(kwargs: Dict[str, Any], body: Dict[str, Any], proxy_instance: Any, auth_key_prefix: str = "", account: Optional[Dict[str, Any]] = None) -> Tuple[str, List[Dict[str, Any]], str]:
+async def _resolve_gemini_with_tools(kwargs: Dict[str, Any], body: Dict[str, Any], proxy_instance: Any, auth_key_prefix: str = "", account: Optional[Dict[str, Any]] = None, _recursion_depth: int = 0) -> Tuple[str, List[Dict[str, Any]], str]:
     try:
         kwargs["stream"] = True
         gen = await litellm.acompletion(**kwargs)
@@ -56,6 +56,10 @@ async def _resolve_gemini_with_tools(kwargs: Dict[str, Any], body: Dict[str, Any
     text = "".join(text_buf)
     tool_calls = list(tool_call_buf.values())
 
+    if _recursion_depth >= 3:
+        logger.warning("[ToolRecursion] Max recursion depth reached (3), returning tool calls as-is")
+        return text, tool_calls, finish_reason
+
     web_call = next((tc for tc in tool_calls if tc.get("name") == "WebSearch"), None)
     if web_call:
         try:
@@ -93,7 +97,39 @@ async def _resolve_gemini_with_tools(kwargs: Dict[str, Any], body: Dict[str, Any
         new_kwargs = dict(kwargs)
         new_kwargs["messages"] = list(kwargs["messages"]) + [assistant_msg, tool_result_msg]
 
-        return await _resolve_gemini_with_tools(new_kwargs, body, proxy_instance, auth_key_prefix=auth_key_prefix, account=account)
+        return await _resolve_gemini_with_tools(new_kwargs, body, proxy_instance, auth_key_prefix=auth_key_prefix, account=account, _recursion_depth=_recursion_depth + 1)
+
+    web_fetch_call = next((tc for tc in tool_calls if tc.get("name") == "WebFetch"), None)
+    if web_fetch_call:
+        try:
+            args = json.loads(web_fetch_call["arguments"]) if isinstance(web_fetch_call["arguments"], str) else web_fetch_call["arguments"]
+            url = args.get("url", "")
+            logger.info("[WebFetch] fetching url=%r model=%s", url[:200], kwargs.get("model", "-"))
+
+            import aiohttp
+            async with aiohttp.ClientSession() as session:
+                async with session.get(url, timeout=aiohttp.ClientTimeout(total=10),
+                                       headers={"User-Agent": "Mozilla/5.0 (Router API; +http://127.0.0.1:58100)"}) as resp:
+                    if resp.status == 200:
+                        raw = await resp.text()
+                        result = raw[:8000]
+                    else:
+                        result = f"HTTP error {resp.status}"
+        except Exception as e:
+            result = f"WebFetch error: {e}"
+            logger.warning("[WebFetch] fetch failed: %s", e)
+
+        assistant_msg = {
+            "role": "assistant",
+            "content": text or None,
+            "tool_calls": [{"id": web_fetch_call["id"], "type": "function", "function": {"name": "WebFetch", "arguments": web_fetch_call["arguments"]}}]
+        }
+        tool_result_msg = {"role": "tool", "tool_call_id": web_fetch_call["id"], "content": result}
+
+        new_kwargs = dict(kwargs)
+        new_kwargs["messages"] = list(kwargs["messages"]) + [assistant_msg, tool_result_msg]
+
+        return await _resolve_gemini_with_tools(new_kwargs, body, proxy_instance, auth_key_prefix=auth_key_prefix, account=account, _recursion_depth=_recursion_depth + 1)
 
     return text, tool_calls, finish_reason
 

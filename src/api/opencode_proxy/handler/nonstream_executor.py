@@ -18,6 +18,7 @@ async def _resolve_gemini_with_tools(
     proxy_instance: Any,
     auth_key_prefix: str = "",
     account: Optional[Dict[str, Any]] = None,
+    _recursion_depth: int = 0,
 ) -> Tuple[str, List[Dict[str, Any]], str]:
     try:
         kwargs["stream"] = False
@@ -47,6 +48,10 @@ async def _resolve_gemini_with_tools(
             "name": getattr(tc.function, "name", "") or "",
             "arguments": args,
         })
+
+    if _recursion_depth >= 3:
+        logger.warning("[OpenCode ToolRecursion] Max recursion depth reached (3), returning tool calls as-is")
+        return text, tool_calls, finish_reason
 
     web_call = next((tc for tc in tool_calls if tc.get("name") == "WebSearch"), None)
     if web_call:
@@ -85,7 +90,7 @@ async def _resolve_gemini_with_tools(
         new_kwargs = dict(kwargs)
         new_kwargs["messages"] = list(kwargs["messages"]) + [assistant_msg, tool_result_msg]
 
-        return await _resolve_gemini_with_tools(new_kwargs, body, proxy_instance, auth_key_prefix=auth_key_prefix, account=account)
+        return await _resolve_gemini_with_tools(new_kwargs, body, proxy_instance, auth_key_prefix=auth_key_prefix, account=account, _recursion_depth=_recursion_depth + 1)
 
     return text, tool_calls, finish_reason
 

@@ -12,6 +12,7 @@ from .message_converter import (
     _convert_messages,
     _clean_system_prompt,
     _tool_call_names,
+    _sanitize_schema_for_gemini,
     UNSUPPORTED_OR_HEAVY_TOOLS,
 )
 

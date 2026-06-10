@@ -11,8 +11,6 @@ from src.core.limits import apply_error_penalty
 from src.api.claude_proxy.utils import (
     _resolve_model,
     _retry_delay,
-    should_compact,
-    _compact_conversation,
     _emergency_truncate_to_limit,
 )
 
@@ -52,6 +50,7 @@ class ClaudeProxy(ClaudeProxyNonstreamMixin, ClaudeProxyStreamMixin):
         auth_key_prefix: str = "",
         account: Optional[Dict[str, Any]] = None,
     ) -> Any:
+        pool.start()
         while not pool.exhausted:
             actual_alias = pool.current_model
             model_alias_val = None
@@ -64,17 +63,23 @@ class ClaudeProxy(ClaudeProxyNonstreamMixin, ClaudeProxyStreamMixin):
                 estimated_tokens = est_input + max_output
                 model_alias_val, model_id_val, api_key_val, litellm_model_val, reservation = await _resolve_model(body, actual_alias, account=account, estimated_tokens=estimated_tokens, retry_attempt=pool.total_attempts, pool_mode=True)
                 logger.info(
-                    "[Pool Reserve] Reserved key ...%s for model_alias=%s (resolved model_id=%s) | Attempt: %d/%d | Estimated tokens: %d",
-                    api_key_val[-8:] if api_key_val else "N/A", actual_alias, model_id_val, pool.total_attempts + 1, pool.max_attempts, estimated_tokens
+                    "[Pool Reserve] Reserved key ...%s for model_alias=%s (resolved model_id=%s) | Attempt: %d (remaining=%ds) | Estimated tokens: %d",
+                    api_key_val[-8:] if api_key_val else "N/A", actual_alias, model_id_val, pool.total_attempts + 1, int(pool.remaining_time()), estimated_tokens
                 )
             except HTTPException as e:
                 if e.status_code in (429, 503):
-                    logger.info("[Pool Retry] _resolve_model returned %d for %s (cooldown=%s), retrying (attempt %d/%d)",
+                    logger.info("[Pool Retry] _resolve_model returned %d for %s (cooldown=%s), retrying (attempt %d, remaining=%ds)",
                                 e.status_code, actual_alias,
                                 "global cooldown" if e.status_code == 503 else "all keys frozen",
-                                pool.total_attempts + 1, pool.max_attempts)
+                                pool.total_attempts + 1, int(pool.remaining_time()))
                     if pool.record_failure(actual_alias, "rate_limit"):
-                        pool.swap()
+                        if not pool.swap():
+                            if pool.exhausted:
+                                break
+                            wait = min(15.0, pool.remaining_time())
+                            await asyncio.sleep(wait)
+                            pool.reset_cycle()
+                            continue
                     await asyncio.sleep(_retry_delay(pool.total_attempts))
                     continue
                 raise
@@ -87,13 +92,6 @@ class ClaudeProxy(ClaudeProxyNonstreamMixin, ClaudeProxyStreamMixin):
                         input_tokens = max(1, len(str(openai_messages)) // 4)
 
                     attempt_val = pool.total_attempts
-                    if should_compact(openai_messages, input_tokens, retry_attempt=attempt_val):
-                        openai_messages[:] = await _compact_conversation(body, openai_messages, openai_tools, input_tokens, retry_attempt=attempt_val)
-                        try:
-                            input_tokens = await asyncio.to_thread(litellm.token_counter, model=litellm_model_val, messages=openai_messages)
-                        except Exception:
-                            input_tokens = max(1, len(str(openai_messages)) // 4)
-
                     is_lite = "lite" in str(litellm_model_val).lower()
                     limit = config.LITE_EMERGENCY_MAX_INPUT_TOKENS if is_lite else config.EMERGENCY_MAX_INPUT_TOKENS
                     if attempt_val >= 10:
@@ -111,7 +109,13 @@ class ClaudeProxy(ClaudeProxyNonstreamMixin, ClaudeProxyStreamMixin):
                         apply_error_penalty(api_key_val, "rate_limit_rpm_tpm", model_id_val)
                         router.freeze_key(api_key_val, 15, model_id_val, "rate_limit")
                         if pool.record_failure(actual_alias, "rate_limit"):
-                            pool.swap()
+                            if not pool.swap():
+                                if pool.exhausted:
+                                    break
+                                wait = min(15.0, pool.remaining_time())
+                                await asyncio.sleep(wait)
+                                pool.reset_cycle()
+                                continue
                         await asyncio.sleep(_retry_delay(pool.total_attempts))
                         continue
 
@@ -158,7 +162,13 @@ class ClaudeProxy(ClaudeProxyNonstreamMixin, ClaudeProxyStreamMixin):
                         apply_error_penalty(api_key_val, "billing_error", model_id_val)
                     router.record_failure("billing_error")
                     if pool.record_failure(actual_alias, "billing_error"):
-                        pool.swap()
+                        if not pool.swap():
+                            if pool.exhausted:
+                                break
+                            wait = min(15.0, pool.remaining_time())
+                            await asyncio.sleep(wait)
+                            pool.reset_cycle()
+                            continue
                     await asyncio.sleep(_retry_delay(pool.total_attempts))
                     continue
 
@@ -181,15 +191,21 @@ class ClaudeProxy(ClaudeProxyNonstreamMixin, ClaudeProxyStreamMixin):
                         apply_error_penalty(api_key_val, reason, model_id_val)
                 router.record_failure(reason)
                 failure_state = pool.failure_state_after_next(actual_alias, reason)
-                logger.warning("[Pool Failure] Key ...%s failed on model %s | Reason: %s | Action: %s (model failures: %d/%d, pool total attempts: %d/%d)",
+                logger.warning("[Pool Failure] Key ...%s failed on model %s | Reason: %s | Action: %s (model failures: %d/%d, pool total attempts: %d, remaining=%ds)",
                               (api_key_val or "N/A")[-4:], actual_alias, reason, failure_state["action"],
                               failure_state["failures_after"], failure_state["threshold"],
-                              pool.total_attempts + 1, pool.max_attempts)
+                              pool.total_attempts + 1, int(pool.remaining_time()))
                 if pool.record_failure(actual_alias, reason):
-                    pool.swap()
+                    if not pool.swap():
+                        if pool.exhausted:
+                            break
+                        wait = min(15.0, pool.remaining_time())
+                        await asyncio.sleep(wait)
+                        pool.reset_cycle()
+                        continue
                 await asyncio.sleep(_retry_delay(pool.total_attempts))
 
-        logger.warning("[Pool Exhausted] All model swap attempts failed after %d total attempts.", pool.max_attempts)
+        logger.warning("[Pool Exhausted] Request timed out after %.1fs.", pool.elapsed)
         raise HTTPException(status_code=503, detail={
             "type": "error", "error": {"type": "api_error", "message": "Pool exhausted."}
         })

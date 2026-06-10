@@ -42,7 +42,7 @@ async def _openai_chat_completion(body: Dict[str, Any], account: Optional[Dict[s
     import litellm
     from google.genai import types as gt
     import asyncio
-    from src.api.claude_proxy.utils import _compact_conversation, should_compact, _emergency_truncate_to_limit
+    from src.api.claude_proxy.utils import _emergency_truncate_to_limit
 
     model_alias = router.resolve_model_alias(body.get("model"))
     messages = body.get("messages") or []
@@ -73,14 +73,6 @@ async def _openai_chat_completion(body: Dict[str, Any], account: Optional[Dict[s
         input_tokens = await asyncio.to_thread(litellm.token_counter, model=litellm_model, messages=messages)
     except Exception:
         input_tokens = max(1, len(str(messages)) // 2)
-
-    has_huge_msg = any(isinstance(m.get("content"), str) and len(m["content"]) > 250000 for m in messages)
-
-    if should_compact(messages, input_tokens) or has_huge_msg:
-        openai_tools = body.get("tools") or []
-        compacted_messages = await _compact_conversation(body, messages, openai_tools, input_tokens)
-        body["messages"] = compacted_messages
-        messages = compacted_messages
 
     # Failsafe emergency truncation for OpenAI completion
     is_lite = "lite" in str(model_alias).lower() or "lite" in str(body.get("model", "")).lower()
@@ -230,23 +222,21 @@ async def _openai_chat_completion(body: Dict[str, Any], account: Optional[Dict[s
             logger.warning("[AccountEndpoint] Model %s not enabled on custom endpoint %s, trying pool fallback", model_to_use, ep["name"])
         else:
             try:
-                litellm_model = f"openai/{model_to_use}"
-                resp = await litellm.acompletion(
-                    model=litellm_model,
+                result = await _custom_endpoint_manager._call_chat(
+                    base_url=ep["base_url"],
+                    auth_key=ep["auth_key"],
+                    model=model_to_use,
                     messages=custom_messages,
-                    api_key=ep["auth_key"],
-                    api_base=ep["base_url"],
                     max_tokens=max_tokens,
                     temperature=temperature,
                     top_p=top_p,
-                    stream=False,
-                    request_timeout=config.REQUEST_TIMEOUT_SECONDS,
+                    stream=body.get("stream", False),
+                    timeout=config.REQUEST_TIMEOUT_SECONDS,
                 )
-                resp_usage = getattr(resp, "usage", None)
-                input_tokens = getattr(resp_usage, "prompt_tokens", 0) or 0
-                output_tokens = getattr(resp_usage, "completion_tokens", 0) or 0
-                text = resp.choices[0].message.content if resp.choices else ""
-                return {"text": text, "model_alias": model_alias, "finish_reason": "stop", "input_tokens": input_tokens, "output_tokens": output_tokens}
+                return {"text": result["text"], "model_alias": model_alias,
+                        "finish_reason": result.get("finish_reason", "stop"),
+                        "input_tokens": result.get("input_tokens", 0),
+                        "output_tokens": result.get("output_tokens", 0)}
             except Exception as e:
                 logger.warning("[AccountEndpoint] %s failed (%s), trying pool fallback", model_alias, e)
 
@@ -265,22 +255,21 @@ async def _openai_chat_completion(body: Dict[str, Any], account: Optional[Dict[s
                 logger.warning("Custom pool model %s rate limited (RPM=%d)", model_to_call, _CUSTOM_POOL_RPM)
                 continue
             try:
-                resp = await litellm.acompletion(
-                    model=f"openai/{model_to_call}",
+                result = await _custom_endpoint_manager._call_chat(
+                    base_url=ep["base_url"],
+                    auth_key=ep["auth_key"],
+                    model=model_to_call,
                     messages=custom_messages,
-                    api_key=ep["auth_key"],
-                    api_base=ep["base_url"],
                     max_tokens=max_tokens,
                     temperature=temperature,
                     top_p=top_p,
-                    stream=False,
-                    request_timeout=config.REQUEST_TIMEOUT_SECONDS,
+                    stream=body.get("stream", False),
+                    timeout=config.REQUEST_TIMEOUT_SECONDS,
                 )
-                resp_usage = getattr(resp, "usage", None)
-                input_tokens = getattr(resp_usage, "prompt_tokens", 0) or 0
-                output_tokens = getattr(resp_usage, "completion_tokens", 0) or 0
-                text = resp.choices[0].message.content if resp.choices else ""
-                return {"text": text, "model_alias": model_alias, "finish_reason": "stop", "input_tokens": input_tokens, "output_tokens": output_tokens}
+                return {"text": result["text"], "model_alias": model_alias,
+                        "finish_reason": result.get("finish_reason", "stop"),
+                        "input_tokens": result.get("input_tokens", 0),
+                        "output_tokens": result.get("output_tokens", 0)}
             except Exception as pe:
                 logger.warning("Pool custom model %s failed: %s", model_to_call, pe)
         return None
@@ -364,6 +353,7 @@ async def _openai_chat_completion(body: Dict[str, Any], account: Optional[Dict[s
             raise
 
     has_gemini = bool(config.GEMINI_API_KEYS)
+    result = None
 
     # Try custom pool first (pool-assigned endpoints have priority)
     if pool_models:
