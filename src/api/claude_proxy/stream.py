@@ -107,6 +107,16 @@ async def _process_anthropic_stream(
                     if getattr(tc.function, "name", None):
                         tool_buffers[tc_idx]["name"] = tc.function.name
 
+                    if not tool_buffers[tc_idx]["started"]:
+                        tool_buffers[tc_idx]["started"] = True
+                        tool_to_cbidx[tc_idx] = next_block_idx
+                        next_block_idx += 1
+                        yield _sse("content_block_start", {
+                            "type": "content_block_start", "index": tool_to_cbidx[tc_idx],
+                            "content_block": {"type": "tool_use", "id": tool_buffers[tc_idx]["id"],
+                                              "name": tool_buffers[tc_idx]["name"], "input": {}}
+                        })
+
                     args_value = getattr(tc.function, "arguments", None)
                     if args_value:
                         if isinstance(args_value, dict):
@@ -115,16 +125,6 @@ async def _process_anthropic_stream(
                             args_str = str(args_value)
                         else:
                             args_str = args_value
-
-                        if not tool_buffers[tc_idx]["started"]:
-                            tool_buffers[tc_idx]["started"] = True
-                            tool_to_cbidx[tc_idx] = next_block_idx
-                            next_block_idx += 1
-                            yield _sse("content_block_start", {
-                                "type": "content_block_start", "index": tool_to_cbidx[tc_idx],
-                                "content_block": {"type": "tool_use", "id": tool_buffers[tc_idx]["id"],
-                                                  "name": tool_buffers[tc_idx]["name"], "input": {}}
-                            })
 
                         tool_buffers[tc_idx]["args"] += args_str
                         yield _sse("content_block_delta", {
@@ -139,6 +139,17 @@ async def _process_anthropic_stream(
 
             for tc_idx in sorted(tool_to_cbidx.keys()):
                 yield _sse("content_block_stop", {"type": "content_block_stop", "index": tool_to_cbidx[tc_idx]})
+
+            for tc_idx, buf in tool_buffers.items():
+                if tc_idx not in tool_to_cbidx and buf["name"] != "Task":
+                    fallback_idx = next_block_idx
+                    next_block_idx += 1
+                    yield _sse("content_block_start", {
+                        "type": "content_block_start", "index": fallback_idx,
+                        "content_block": {"type": "tool_use", "id": buf["id"],
+                                          "name": buf["name"], "input": {}}
+                    })
+                    yield _sse("content_block_stop", {"type": "content_block_stop", "index": fallback_idx})
 
             for tc_idx, buf in tool_buffers.items():
                 if buf["name"] == "Task":

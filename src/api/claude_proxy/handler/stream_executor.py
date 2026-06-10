@@ -17,8 +17,6 @@ from src.api.claude_proxy.utils import (
     is_claude_code_body,
     _sse,
     _tool_call_names,
-    should_compact,
-    _compact_conversation,
     _emergency_truncate_to_limit,
     _dict_to_sse_events,
     _retry_delay,
@@ -33,8 +31,12 @@ async def _execute_stream(proxy_instance: Any, kwargs: Dict[str, Any], api_key: 
         tool.get("function", {}).get("name") == "WebSearch"
         for tool in tools
     )
+    has_webfetch = any(
+        tool.get("function", {}).get("name") == "WebFetch"
+        for tool in tools
+    )
 
-    if has_websearch:
+    if has_websearch or has_webfetch:
         kwargs_ns = {k: v for k, v in kwargs.items() if k != "stream"}
 
         async def _nonstream_wrapper():
@@ -214,6 +216,7 @@ async def _stream_with_pool(
     pool: Any, model_alias: str, auth_key_prefix: str = "", account: Optional[Dict[str, Any]] = None
 ) -> AsyncIterator[bytes]:
     committed = False
+    pool.start()
     while not pool.exhausted:
         yield _sse("ping", {"type": "ping", "retry": pool.total_attempts, "reason": "initial"})
         actual_alias = pool.current_model
@@ -225,21 +228,14 @@ async def _stream_with_pool(
             estimated_tokens = est_input + max_output
             model_alias_val, model_id_val, api_key_val, litellm_model_val, reservation = await _resolve_model(body, actual_alias, account=account, estimated_tokens=estimated_tokens, retry_attempt=pool.total_attempts, pool_mode=True)
             logger.info(
-                "[Pool Reserve Stream] Reserved key ...%s for model_alias=%s (resolved model_id=%s) | Attempt: %d/%d | Estimated tokens: %d",
-                api_key_val[-8:] if api_key_val else "N/A", actual_alias, model_id_val, pool.total_attempts + 1, pool.max_attempts, estimated_tokens
+                "[Pool Reserve Stream] Reserved key ...%s for model_alias=%s (resolved model_id=%s) | Attempt: %d (remaining=%ds) | Estimated tokens: %d",
+                api_key_val[-8:] if api_key_val else "N/A", actual_alias, model_id_val, pool.total_attempts + 1, int(pool.remaining_time()), estimated_tokens
             )
             try:
                 try:
                     input_tokens = await asyncio.to_thread(litellm.token_counter, model=litellm_model_val, messages=openai_messages)
                 except Exception:
                     input_tokens = max(1, len(str(openai_messages)) // 4)
-
-                if should_compact(openai_messages, input_tokens):
-                    openai_messages[:] = await _compact_conversation(body, openai_messages, openai_tools, input_tokens)
-                    try:
-                        input_tokens = await asyncio.to_thread(litellm.token_counter, model=litellm_model_val, messages=openai_messages)
-                    except Exception:
-                        input_tokens = max(1, len(str(openai_messages)) // 4)
 
                 is_lite = "lite" in str(litellm_model_val).lower()
                 limit = config.LITE_EMERGENCY_MAX_INPUT_TOKENS if is_lite else config.EMERGENCY_MAX_INPUT_TOKENS
@@ -255,7 +251,15 @@ async def _stream_with_pool(
                     apply_error_penalty(api_key_val, "rate_limit_rpm_tpm", model_id_val)
                     router.freeze_key(api_key_val, 15, model_id_val, "rate_limit")
                     if pool.record_failure(actual_alias, "rate_limit"):
-                        pool.swap()
+                        if not pool.swap():
+                            if pool.exhausted:
+                                break
+                            wait = min(15.0, pool.remaining_time())
+                            for _ in range(int(wait)):
+                                yield _sse("ping", {"type": "ping", "retry": 0, "reason": "backoff"})
+                                await asyncio.sleep(1)
+                            pool.reset_cycle()
+                            continue
                     yield _sse("ping", {"type": "ping", "retry": pool.total_attempts, "reason": "rate_limit"})
                     await asyncio.sleep(_retry_delay(pool.total_attempts))
                     continue
@@ -299,11 +303,19 @@ async def _stream_with_pool(
                 apply_error_penalty(_err_key, "rate_limit", model_id_val)
             router.record_failure("rate_limit")
             if pool.record_failure(actual_alias, "rate_limit"):
-                pool.swap()
+                if not pool.swap():
+                    if pool.exhausted:
+                        break
+                    wait = min(15.0, pool.remaining_time())
+                    for _ in range(int(wait)):
+                        yield _sse("ping", {"type": "ping", "retry": 0, "reason": "backoff"})
+                        await asyncio.sleep(1)
+                    pool.reset_cycle()
+                    continue
             yield _sse("ping", {"type": "ping", "retry": pool.total_attempts, "reason": "rate_limit"})
             await asyncio.sleep(_retry_delay(pool.total_attempts))
         except asyncio.CancelledError:
-            logger.warning("[Pool Cancelled] Stream cancelled by client during pool retry loop for alias=%s (attempt %d/%d)", actual_alias, pool.total_attempts, pool.max_attempts)
+            logger.warning("[Pool Cancelled] Stream cancelled by client during pool retry loop for alias=%s (attempt %d)", actual_alias, pool.total_attempts)
             raise
         except Exception as e:
             if committed:
@@ -326,7 +338,15 @@ async def _stream_with_pool(
                     apply_error_penalty(api_key_val, "billing_error", model_id_val)
                 router.record_failure("billing_error")
                 if pool.record_failure(actual_alias, "billing_error"):
-                    pool.swap()
+                    if not pool.swap():
+                        if pool.exhausted:
+                            break
+                        wait = min(15.0, pool.remaining_time())
+                        for _ in range(int(wait)):
+                            yield _sse("ping", {"type": "ping", "retry": 0, "reason": "backoff"})
+                            await asyncio.sleep(1)
+                        pool.reset_cycle()
+                        continue
                 yield _sse("ping", {"type": "ping", "retry": pool.total_attempts, "reason": "billing_error"})
                 await asyncio.sleep(_retry_delay(pool.total_attempts))
                 continue
@@ -351,16 +371,24 @@ async def _stream_with_pool(
             router.record_failure(reason)
             _err_key2 = api_key_val or saved_key or "N/A"
             failure_state = pool.failure_state_after_next(actual_alias, reason)
-            logger.warning("[Pool Failure] Key ...%s failed on model %s | Reason: %s | Action: %s (model failures: %d/%d, pool total attempts: %d/%d)",
+            logger.warning("[Pool Failure] Key ...%s failed on model %s | Reason: %s | Action: %s (model failures: %d/%d, pool total attempts: %d, remaining=%ds)",
                           _err_key2[-4:] if len(_err_key2) >= 4 else _err_key2, actual_alias, reason, failure_state["action"],
                           failure_state["failures_after"], failure_state["threshold"],
-                          pool.total_attempts + 1, pool.max_attempts)
+                          pool.total_attempts + 1, int(pool.remaining_time()))
             if pool.record_failure(actual_alias, reason):
-                pool.swap()
+                if not pool.swap():
+                    if pool.exhausted:
+                        break
+                    wait = min(15.0, pool.remaining_time())
+                    for _ in range(int(wait)):
+                        yield _sse("ping", {"type": "ping", "retry": 0, "reason": "backoff"})
+                        await asyncio.sleep(1)
+                    pool.reset_cycle()
+                    continue
             yield _sse("ping", {"type": "ping", "retry": pool.total_attempts, "reason": reason})
             await asyncio.sleep(_retry_delay(pool.total_attempts))
 
-    logger.warning("[Pool Exhausted] All model swap attempts failed after %d total attempts.", pool.max_attempts)
+    logger.warning("[Pool Exhausted] Request timed out after %.1fs.", pool.elapsed)
     summary_text = get_system_status_summary(model_alias)
     fake_result = {
         "id": "msg_err_" + uuid.uuid4().hex[:8],

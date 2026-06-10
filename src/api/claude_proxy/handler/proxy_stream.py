@@ -14,8 +14,6 @@ from src.api.claude_proxy.utils import (
     _retry_delay,
     _convert_messages,
     _intercept_sub_agent,
-    should_compact,
-    _compact_conversation,
     _emergency_truncate_to_limit,
     _dict_to_sse_events,
     _sse,
@@ -121,13 +119,6 @@ class ClaudeProxyStreamMixin:
                         input_tokens = await asyncio.to_thread(litellm.token_counter, model=litellm_model_val, messages=openai_messages)
                     except Exception:
                         input_tokens = max(1, len(str(openai_messages)) // 4)
-
-                    if should_compact(openai_messages, input_tokens, retry_attempt=attempt):
-                        openai_messages[:] = await _compact_conversation(body, openai_messages, openai_tools, input_tokens, retry_attempt=attempt)
-                        try:
-                            input_tokens = await asyncio.to_thread(litellm.token_counter, model=litellm_model_val, messages=openai_messages)
-                        except Exception:
-                            input_tokens = max(1, len(str(openai_messages)) // 4)
 
                     is_lite = "lite" in str(litellm_model_val).lower()
                     limit = config.LITE_EMERGENCY_MAX_INPUT_TOKENS if is_lite else config.EMERGENCY_MAX_INPUT_TOKENS

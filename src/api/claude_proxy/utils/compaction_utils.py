@@ -46,70 +46,57 @@ def should_compact(messages: List[Dict[str, Any]], input_tokens: int, retry_atte
     return input_tokens > threshold
 
 def _emergency_truncate_to_limit(messages: List[Dict[str, Any]], limit: int) -> List[Dict[str, Any]]:
-    system_prompt = ""
-    for m in messages:
-        if m.get("role") == "system":
-            content = m.get("content", "")
-            if isinstance(content, list):
-                content_str = " ".join(str(c) for c in content)
+    def _size(msgs):
+        s = 0
+        for m in msgs:
+            c = m.get("content", "")
+            if isinstance(c, str):
+                s += len(c)
+            elif isinstance(c, list):
+                for item in c:
+                    if isinstance(item, dict):
+                        s += len(item.get("text", "") or "")
+                    else:
+                        s += len(str(item))
             else:
-                content_str = str(content or "")
-            system_prompt += content_str
-            
-    is_claude_code = False
-    system_prompt_lower = system_prompt.lower()
-    if (
-        "you are claude code" in system_prompt_lower 
-        or "cc_version=" in system_prompt_lower 
-        or "claude-code" in system_prompt_lower
-    ):
-        is_claude_code = True
+                s += len(str(c))
+        return s // 4
 
-    if is_claude_code:
-        limit = min(limit, getattr(config, "CLAUDE_CODE_EMERGENCY_MAX_INPUT_TOKENS", 90000))
-
-    def total_tokens(msgs):
-        return sum(_estimate_msg_tokens(m) for m in msgs)
-        
-    if total_tokens(messages) <= limit:
+    if _size(messages) <= limit:
         return messages
-        
-    logger.warning("[Emergency Limit] Compacted message size (%d) exceeds limit (%d). Truncating...", total_tokens(messages), limit)
-    
+
+    logger.warning("[Emergency] Messages exceed limit (%d), truncating...", limit)
+
     system_msgs = [m for m in messages if m.get("role") == "system"]
     chat_msgs = [m for m in messages if m.get("role") != "system"]
-    
+
     if not chat_msgs:
         return system_msgs
-        
-    accumulated = sum(_estimate_msg_tokens(m) for m in system_msgs)
+
+    sys_size = _size(system_msgs)
+    accumulated = sys_size
     split_idx = len(chat_msgs) - 1
-    
+
     for idx in range(len(chat_msgs) - 1, -1, -1):
-        msg_tokens = _estimate_msg_tokens(chat_msgs[idx])
-        if accumulated + msg_tokens > limit:
-            if idx < len(chat_msgs) - 1:
-                split_idx = idx + 1
-            else:
-                split_idx = len(chat_msgs) - 1
+        c = chat_msgs[idx].get("content", "")
+        if isinstance(c, str):
+            msg_size = len(c)
+        elif isinstance(c, list):
+            msg_size = sum(len(item.get("text", "") or "") for item in c if isinstance(item, dict))
+        else:
+            msg_size = len(str(c))
+        msg_size = msg_size // 4
+        if accumulated + msg_size > limit:
+            split_idx = idx + 1 if idx < len(chat_msgs) - 1 else len(chat_msgs) - 1
             break
-        accumulated += msg_tokens
+        accumulated += msg_size
     else:
         split_idx = 0
 
     while split_idx > 0 and chat_msgs[split_idx].get("role") != "user":
         split_idx -= 1
-        
-    retained_chat = chat_msgs[split_idx:]
-    
-    if total_tokens(system_msgs + retained_chat) > limit:
-        logger.warning("[Emergency Limit] Retained chat after alignment still exceeds limit. Truncating last message content.")
-        last_msg = retained_chat[-1]
-        accumulated_prefix = sum(_estimate_msg_tokens(m) for m in system_msgs + retained_chat[:-1])
-        truncated_last = _truncate_huge_message(last_msg, max_chars=int(max(1000, (limit - accumulated_prefix) * 2)))
-        retained_chat = retained_chat[:-1] + [truncated_last]
-        
-    return system_msgs + retained_chat
+
+    return system_msgs + chat_msgs[split_idx:]
 
 def find_workspace_roots(messages: List[Dict[str, Any]]) -> List[Any]:
     import json

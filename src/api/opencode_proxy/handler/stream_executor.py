@@ -315,6 +315,7 @@ async def _stream_with_pool(
     account: Optional[Dict[str, Any]] = None,
 ) -> AsyncIterator[bytes]:
     committed = False
+    pool.start()
     while not pool.exhausted:
         actual_alias = pool.current_model
         api_key_val = None
@@ -329,8 +330,8 @@ async def _stream_with_pool(
                 retry_attempt=pool.total_attempts, pool_mode=True
             )
             logger.info(
-                "[OpenCode Pool Reserve Stream] Reserved key ...%s for model_alias=%s (model_id=%s) | Attempt: %d/%d",
-                api_key_val[-8:] if api_key_val else "N/A", actual_alias, model_id_val, pool.total_attempts + 1, pool.max_attempts
+                "[OpenCode Pool Reserve Stream] Reserved key ...%s for model_alias=%s (model_id=%s) | Attempt: %d (remaining=%ds)",
+                api_key_val[-8:] if api_key_val else "N/A", actual_alias, model_id_val, pool.total_attempts + 1, int(pool.remaining_time())
             )
 
             try:
@@ -345,7 +346,15 @@ async def _stream_with_pool(
                     apply_error_penalty(api_key_val, "rate_limit_rpm_tpm", model_id_val)
                     router.freeze_key(api_key_val, 15, model_id_val, "rate_limit")
                     if pool.record_failure(actual_alias, "rate_limit"):
-                        pool.swap()
+                        if not pool.swap():
+                            if pool.exhausted:
+                                break
+                            wait = min(15.0, pool.remaining_time())
+                            for _ in range(int(wait)):
+                                yield b": keepalive\n\n"
+                                await asyncio.sleep(1)
+                            pool.reset_cycle()
+                            continue
                     await asyncio.sleep(_retry_delay(pool.total_attempts))
                     continue
 
@@ -395,7 +404,15 @@ async def _stream_with_pool(
                 apply_error_penalty(_err_key, "rate_limit", model_id_val)
             router.record_failure("rate_limit")
             if pool.record_failure(actual_alias, "rate_limit"):
-                pool.swap()
+                if not pool.swap():
+                    if pool.exhausted:
+                        break
+                    wait = min(15.0, pool.remaining_time())
+                    for _ in range(int(wait)):
+                        yield b": keepalive\n\n"
+                        await asyncio.sleep(1)
+                    pool.reset_cycle()
+                    continue
             await asyncio.sleep(_retry_delay(pool.total_attempts))
 
         except asyncio.CancelledError:
@@ -424,7 +441,15 @@ async def _stream_with_pool(
                     apply_error_penalty(api_key_val, "billing_error", model_id_val)
                 router.record_failure("billing_error")
                 if pool.record_failure(actual_alias, "billing_error"):
-                    pool.swap()
+                    if not pool.swap():
+                        if pool.exhausted:
+                            break
+                        wait = min(15.0, pool.remaining_time())
+                        for _ in range(int(wait)):
+                            yield b": keepalive\n\n"
+                            await asyncio.sleep(1)
+                        pool.reset_cycle()
+                        continue
                 await asyncio.sleep(_retry_delay(pool.total_attempts))
                 continue
 
@@ -449,7 +474,15 @@ async def _stream_with_pool(
             router.record_failure(reason)
 
             if pool.record_failure(actual_alias, reason):
-                pool.swap()
+                if not pool.swap():
+                    if pool.exhausted:
+                        break
+                    wait = min(15.0, pool.remaining_time())
+                    for _ in range(int(wait)):
+                        yield b": keepalive\n\n"
+                        await asyncio.sleep(1)
+                    pool.reset_cycle()
+                    continue
 
             if is_region_quota:
                 logger.warning("[OpenCode Region Quota] Hit region limit, waiting 25s before retry...")
@@ -457,7 +490,7 @@ async def _stream_with_pool(
             else:
                 await asyncio.sleep(_retry_delay(pool.total_attempts))
 
-    logger.warning("[OpenCode Pool Exhausted] All model swap attempts failed.")
+    logger.warning("[OpenCode Pool Exhausted] Request timed out after %.1fs.", pool.elapsed)
     err_resp = proxy_instance._error_response(body, model_alias, "pool_exhausted")
     for chunk in error_sse(err_resp):
         yield chunk

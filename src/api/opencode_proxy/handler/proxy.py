@@ -28,6 +28,7 @@ from src.api.claude_proxy.handler.helpers import (
 from .detection import detect_sub_agent_override
 from .nonstream_executor import _execute_nonstream
 from .stream_executor import _stream_with_pool, _stream_standalone, LiteLLMTransientError
+from src.api.claude_proxy.utils import _sanitize_schema_for_gemini
 
 _TODO_INSTRUCTION = (
     "## Task Management\n"
@@ -279,6 +280,7 @@ class OpenCodeProxy:
         self, body: Dict[str, Any], messages: List[Dict[str, Any]], tools: List[Dict[str, Any]],
         pool: Any, account: Optional[Dict[str, Any]] = None
     ) -> Dict[str, Any]:
+        pool.start()
         while not pool.exhausted:
             api_key_val = None
             model_id_val = None
@@ -340,7 +342,13 @@ class OpenCodeProxy:
             "request_timeout": config.REQUEST_TIMEOUT_SECONDS,
         }
         if openai_tools:
-            kwargs["tools"] = openai_tools
+            sanitized = []
+            for tool in openai_tools:
+                fn = tool.get("function", {})
+                if fn.get("parameters"):
+                    fn = {**fn, "parameters": _sanitize_schema_for_gemini(fn["parameters"])}
+                sanitized.append({**tool, "function": fn})
+            kwargs["tools"] = sanitized
         if reservation.get("provider") == "custom":
             kwargs["api_base"] = reservation["api_base"]
         return kwargs
@@ -516,7 +524,11 @@ class OpenCodeProxy:
                     apply_error_penalty(api_key_val, "billing_error", model_id_val)
                 router.record_failure("billing_error")
                 pool.record_failure(actual_alias, "billing_error")
-                pool.swap()
+                if not pool.swap():
+                    if pool.exhausted:
+                        raise HTTPException(status_code=503, detail={"error": {"message": "Pool exhausted", "type": "api_error"}})
+                    await asyncio.sleep(min(15.0, pool.remaining_time()))
+                    pool.reset_cycle()
                 return True
 
             if "499" in error_text or "cancelled" in error_text:
@@ -540,7 +552,15 @@ class OpenCodeProxy:
         logger.warning("[OpenCode Pool Retry] key=...%s model=%s reason=%s region_quota=%s", (api_key_val or "N/A")[-4:], actual_alias, reason, is_region_quota)
 
         pool.record_failure(actual_alias, reason)
-        pool.swap()
+        if not pool.swap():
+            if pool.exhausted:
+                raise HTTPException(status_code=503, detail={"error": {"message": "Pool exhausted", "type": "api_error"}})
+            if is_region_quota:
+                await asyncio.sleep(25)
+            wait = min(15.0, pool.remaining_time())
+            await asyncio.sleep(wait)
+            pool.reset_cycle()
+            return True
 
         if is_region_quota:
             logger.warning("[Region Quota] Hit region limit, waiting 25s before retry...")

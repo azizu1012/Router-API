@@ -188,12 +188,37 @@ class CustomEndpointManager:
 
     # ── Model fetching ───────────────────────────────────────────
 
+    async def _probe_chat_endpoint(self, base: str, auth_key: str) -> bool:
+        headers = {
+            "Authorization": f"Bearer {auth_key}",
+            "Content-Type": "application/json",
+        }
+        payload = {
+            "model": "test",
+            "messages": [{"role": "user", "content": "hi"}],
+            "max_tokens": 1,
+            "stream": False,
+        }
+        try:
+            async with aiohttp.ClientSession(headers=headers) as session:
+                async with session.post(
+                    f"{base}/chat/completions",
+                    json=payload,
+                    timeout=aiohttp.ClientTimeout(total=5),
+                ) as resp:
+                    if resp.status in (200, 400, 404):
+                        return True
+                    logger.warning("Chat probe %s/chat/completions returned HTTP %d", base, resp.status)
+                    return False
+        except Exception as e:
+            logger.warning("Chat probe failed for %s: %s", base, e)
+            return False
+
     async def _try_fetch_models(self, base_url: str, auth_key: str) -> dict:
-        candidates = [
-            f"{base_url}/models",
-            f"{base_url}/v1/models",
-            f"{base_url}/api/v1/models",
-        ]
+        candidates = []
+        raw = base_url.rstrip("/")
+        for prefix in ("", "/v1", "/api/v1", "/openai/v1"):
+            candidates.append(f"{raw}{prefix}/models")
         headers = {"Authorization": f"Bearer {auth_key}"}
         async with aiohttp.ClientSession(headers=headers) as session:
             for url in candidates:
@@ -213,13 +238,96 @@ class CustomEndpointManager:
                     logger.warning("Fetch models error for %s: %s", url, e)
         raise ValueError(f"Cannot reach models endpoint at {base_url}")
 
-    async def fetch_models(self, name: str) -> List[str]:
+    async def _call_chat(self, base_url: str, auth_key: str, model: str, messages: list,
+                         max_tokens: int = 4096, temperature: float = 0.7, top_p: float = 0.95,
+                         stream: bool = False, timeout: int = 120) -> Dict[str, Any]:
+        """Raw HTTP call to custom endpoint. Merges SSE if server returns stream despite settings."""
+        import json as _json
+        url = f"{base_url.rstrip('/')}/chat/completions"
+        headers = {
+            "Authorization": f"Bearer {auth_key}",
+            "Content-Type": "application/json",
+            "Accept": "application/json, text/event-stream",
+        }
+        payload = {
+            "model": model,
+            "messages": messages,
+            "max_tokens": max_tokens,
+            "temperature": temperature,
+            "top_p": top_p,
+            "stream": stream,
+        }
+        async with aiohttp.ClientSession(headers=headers) as session:
+            async with session.post(url, json=payload, timeout=aiohttp.ClientTimeout(total=timeout)) as resp:
+                ct = resp.headers.get("Content-Type", "")
+
+                if "text/event-stream" in ct or "text/event-stream" in ct.lower():
+                    # SSE response — read & merge all chunks
+                    full_text = ""
+                    finish_reason = "stop"
+                    in_tokens = 0
+                    out_tokens = 0
+                    async for line in resp.content:
+                        line = line.decode("utf-8", errors="replace").strip()
+                        if not line.startswith("data: "):
+                            continue
+                        data_str = line[6:]
+                        if data_str.strip() == "[DONE]":
+                            break
+                        try:
+                            chunk = _json.loads(data_str)
+                        except _json.JSONDecodeError:
+                            continue
+                        choices = chunk.get("choices") or []
+                        for ch in choices:
+                            delta = ch.get("delta", {})
+                            content = delta.get("content")
+                            if content:
+                                full_text += content
+                            fr = ch.get("finish_reason")
+                            if fr:
+                                finish_reason = fr
+                        usage = chunk.get("usage")
+                        if usage:
+                            in_tokens = usage.get("prompt_tokens", 0) or 0
+                            out_tokens = usage.get("completion_tokens", 0) or 0
+                    if not out_tokens and full_text:
+                        out_tokens = max(1, len(full_text) // 4)
+                    return {"text": full_text, "finish_reason": finish_reason,
+                            "input_tokens": in_tokens, "output_tokens": out_tokens}
+
+                # Normal JSON response
+                data = await resp.json()
+                if resp.status != 200:
+                    err = data.get("error", {}).get("message", str(data))
+                    raise RuntimeError(f"Custom endpoint returned HTTP {resp.status}: {err}")
+
+                choice = (data.get("choices") or [None])[0]
+                text = ""
+                finish_reason = "stop"
+                if choice:
+                    msg = choice.get("message", {})
+                    text = msg.get("content") or ""
+                    finish_reason = choice.get("finish_reason") or "stop"
+                usage = data.get("usage", {})
+                in_tokens = usage.get("prompt_tokens", 0) or 0
+                out_tokens = usage.get("completion_tokens", 0) or 0
+                return {"text": text, "finish_reason": finish_reason,
+                        "input_tokens": in_tokens, "output_tokens": out_tokens}
+
+    async def fetch_models(self, name: str, verify_chat: bool = True) -> List[str]:
         ep = get_endpoint_db(name)
         if not ep:
             raise ValueError(f"Endpoint '{name}' not found")
 
         result = await self._try_fetch_models(ep["base_url"], ep["auth_key"])
+        base = result["base"]
         data = result["data"]
+
+        if verify_chat:
+            ok = await self._probe_chat_endpoint(base, ep["auth_key"])
+            if not ok:
+                logger.warning("Chat endpoint probe failed for %s (base=%s), models may still work", name, base)
 
         raw_models = []
         if isinstance(data, dict):

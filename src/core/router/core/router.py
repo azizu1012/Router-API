@@ -203,8 +203,8 @@ class APIRouter(KeyResolverMixin):
             pool_cfg = {
                 **pool_cfg,
                 "members": members,
-                "max_attempts": config.POOL_MAX_ATTEMPTS,
-                "swap_failures": config.POOL_SWAP_FAILURES
+                "swap_failures": config.POOL_SWAP_FAILURES,
+                "max_retry_seconds": config.POOL_RETRY_SECONDS,
             }
             return ModelPool(pool_cfg)
         return None
@@ -285,16 +285,6 @@ class APIRouter(KeyResolverMixin):
                     pm_entry = pm.setdefault(model_id, {"failures": 0, "frozen_until": 0.0})
                     pm_entry["frozen_until"] = until_ts
                     pm_entry["failures"] = pm_entry.get("failures", 0) + 1
-
-                    # Also apply a SHORT global freeze for transient errors so that when
-                    # the pool rotates to a different model member, this key is not
-                    # immediately re-selected. 10s minimum, or adj_duration if smaller.
-                    transient = {"rate_limit", "rate_limit_rpm_tpm", "unknown_error", "server_error", "timeout", "unavailable"}
-                    if reason in transient:
-                        min_global = min(adj_duration, 12)  # at most 12s global freeze
-                        global_until = time.time() + min_global
-                        if ks.get("frozen_until", 0.0) < global_until:
-                            ks["frozen_until"] = global_until
                 else:
                     ks["frozen_until"] = until_ts
             atomic_freeze_key(key, until_ts, model_id, cf)
