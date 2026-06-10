@@ -31,36 +31,52 @@ async def _resolve_model(body: Dict[str, Any], pool_alias_override: Optional[str
         model_alias = config.DEFAULT_MODEL_ALIAS
     model_id = router.get_model_id(model_alias)
 
-    # If account has dedicated endpoint, route 100% there
+    # If account has dedicated endpoint, route 100% there on first attempt
     # Nếu endpoint lỗi → fallback Gemini Lite (pool_mode xử lý retry)
     ep = _custom_endpoint_manager.get_endpoint_for_account(account)
-    if ep and ep.get("enabled", True):
+    if ep and ep.get("enabled", True) and retry_attempt == 0:
         model_to_use = body.get("model", model_id)
         enabled_models = ep.get("enabled_models", [])
-        if model_to_use not in enabled_models and model_id not in enabled_models:
-            logger.warning("[AccountEndpoint] Model %s is not enabled on custom endpoint %s, fallback to Gemini Lite pool", model_to_use or model_id, ep["name"])
-        else:
-            try:
-                import litellm
-                test = await litellm.acompletion(
-                    model=f"openai/{model_id}",
-                    messages=[{"role": "user", "content": "ping"}],
-                    api_key=ep["auth_key"],
-                    api_base=ep["base_url"],
-                    max_tokens=1,
-                    stream=False,
-                    request_timeout=5,
-                )
-                litellm_model = f"openai/{model_id}"
-                return model_alias, model_id, ep["auth_key"], litellm_model, {
-                    "key": ep["auth_key"],
-                    "model_alias": model_alias,
-                    "model_id": model_id,
-                    "provider": "custom",
-                    "api_base": ep["base_url"],
-                }
-            except Exception as e:
-                logger.warning("[AccountEndpoint] %s ping failed (%s), fallback to Gemini Lite pool", model_id, e)
+        all_models = ep.get("models", [])
+
+        # Resolve target model for custom endpoint
+        target_model = model_id
+        if enabled_models:
+            if model_to_use in enabled_models:
+                target_model = model_to_use
+            elif model_id in enabled_models:
+                target_model = model_id
+            else:
+                target_model = enabled_models[0]
+        elif all_models:
+            if model_to_use in all_models:
+                target_model = model_to_use
+            elif model_id in all_models:
+                target_model = model_id
+            else:
+                target_model = all_models[0]
+
+        try:
+            import litellm
+            test = await litellm.acompletion(
+                model=f"openai/{target_model}",
+                messages=[{"role": "user", "content": "ping"}],
+                api_key=ep["auth_key"],
+                api_base=ep["base_url"],
+                max_tokens=1,
+                stream=False,
+                request_timeout=5,
+            )
+            litellm_model = f"openai/{target_model}"
+            return model_alias, target_model, ep["auth_key"], litellm_model, {
+                "key": ep["auth_key"],
+                "model_alias": model_alias,
+                "model_id": target_model,
+                "provider": "custom",
+                "api_base": ep["base_url"],
+            }
+        except Exception as e:
+            logger.warning("[AccountEndpoint] %s ping failed (%s), fallback to Gemini Lite pool", target_model, e)
 
     # In pool_mode, don't wait long — the pool loop handles retry timing.
     # In standalone mode, wait up to 15s for a key to become available.
@@ -97,6 +113,21 @@ async def _resolve_model(body: Dict[str, Any], pool_alias_override: Optional[str
         if wait_time <= 0:
             break
         await asyncio.sleep(wait_time)
+
+    # If standard keys are overloaded/frozen, try to use a fallback custom endpoint
+    fallback_info = _custom_endpoint_manager.get_first_fallback_model()
+    if fallback_info:
+        fb_ep = fallback_info["endpoint"]
+        fb_model = fallback_info["model_id"]
+        litellm_model = f"openai/{fb_model}"
+        logger.info("[FallbackEndpoint] Standard keys overloaded, routing to fallback endpoint %s with model %s", fb_ep["name"], fb_model)
+        return model_alias, fb_model, fb_ep["auth_key"], litellm_model, {
+            "key": fb_ep["auth_key"],
+            "model_alias": model_alias,
+            "model_id": fb_model,
+            "provider": "custom",
+            "api_base": fb_ep["base_url"],
+        }
 
     if router.is_global_cooldown_active():
         raise HTTPException(status_code=503, detail={

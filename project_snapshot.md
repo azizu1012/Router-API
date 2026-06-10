@@ -350,7 +350,7 @@ Request input -> Verify Account Quota -> Check Global Cooldown
 Select Key Candidates (not frozen, active_requests == 0, check limiters)
                                                   │
                                                   ▼
-Priority Rank Keys (apply error penalty score, pick random from top 10)
+Priority Rank Keys (apply error penalty score, pick random from top 50%)
                                                   │
                                                   ▼
 Reserve Key (atomic DB increment) -> Execute Gemini call -> Release Key
@@ -388,7 +388,8 @@ Reserve Key (atomic DB increment) -> Execute Gemini call -> Release Key
 2. **Per-Tier Semaphore**: Concurrency capped per account tier: admin=6, premium=4, free=2 — independent semaphores, not global.
 3. **In-Memory Rate Limits**: All RPM/TPM/RPD tracking via `deque` sliding windows — zero DB reads on hot path. Account lookup cached 10s TTL.
 4. **Throttle Pacing 1–2.6s**: Global + per-key minimum intervals enforced with jitter before every API call.
-5. **Proxy Auto-Managed Progress**: Compaction handles the `progress_report.md` lifecycle automatically under the hood without client inputs, merging previous logs on disk using `gemini-flash-lite`.
+5. **Key Caching Strategy (v2.2)**: Key resolver now caches top 50% of available keys, refreshing every 10 requests to optimize CPU usage while maintaining distribution uniformity.
+6. **Proxy Auto-Managed Progress**: Compaction handles the `progress_report.md` lifecycle automatically under the hood without client inputs, merging previous logs on disk using `gemini-flash-lite`.
 6. **WebSearch Interception**: Proxy intercepts all client WebSearch calls, runs a localized crawler and consensus ranking logic, and maps findings to structured link citations.
 7. **Paced Multi-attempt Pool Swap**: If a reserved key encounters rate limits, the request swaps to another model in the pool (e.g. flash-35 to flash-30), retry-spacing the request up to 13 times.
 8. **Adaptive Cooldown & Penalty Jitter**: Model cooldowns apply randomized jitter (0-15%) plus gaussian margins to avoid key starvation and 429 concurrency collisions.

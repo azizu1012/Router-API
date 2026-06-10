@@ -155,6 +155,37 @@ class CustomEndpointManager:
             self._invalidate_cache()
         return r
 
+    # ── Pool assignments ─────────────────────────────────────────
+
+    def assign_pool_model(self, name: str, pool_name: str, model_id: str) -> Optional[Dict[str, Any]]:
+        ep = self.get(name)
+        if not ep:
+            return None
+        pool_assignments = dict(ep.get("pool_assignments", {}))
+        pool_assignments[pool_name] = model_id
+        r = update_endpoint_db(name, pool_assignments=pool_assignments)
+        if r:
+            self._invalidate_cache()
+        return r
+
+    def remove_pool_model(self, name: str, pool_name: str) -> Optional[Dict[str, Any]]:
+        ep = self.get(name)
+        if not ep:
+            return None
+        pool_assignments = dict(ep.get("pool_assignments", {}))
+        if pool_name in pool_assignments:
+            del pool_assignments[pool_name]
+        r = update_endpoint_db(name, pool_assignments=pool_assignments)
+        if r:
+            self._invalidate_cache()
+        return r
+
+    def get_pool_assignments(self, name: str) -> Dict[str, str]:
+        ep = self.get(name)
+        if not ep:
+            return {}
+        return ep.get("pool_assignments", {})
+
     # ── Model fetching ───────────────────────────────────────────
 
     async def _try_fetch_models(self, base_url: str, auth_key: str) -> dict:

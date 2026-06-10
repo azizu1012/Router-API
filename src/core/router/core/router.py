@@ -312,7 +312,18 @@ class APIRouter(KeyResolverMixin):
             logger.error("release_key error: %s", exc)
 
     def get_pool_custom_models(self, pool_name: str) -> List[Dict[str, Any]]:
-        return []
+        from src.core.providers import _custom_endpoint_manager
+        results = []
+        for ep in _custom_endpoint_manager.list_endpoints():
+            if not ep.get("enabled", True):
+                continue
+            pool_assignments = ep.get("pool_assignments", {})
+            if pool_name in pool_assignments:
+                model_id = pool_assignments[pool_name]
+                enabled_models = ep.get("enabled_models", [])
+                if model_id in enabled_models:
+                    results.append({"endpoint": ep, "model_id": model_id})
+        return results
 
     def freeze_all_keys(self, duration: int) -> None:
         try:

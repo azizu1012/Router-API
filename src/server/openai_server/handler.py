@@ -221,16 +221,13 @@ async def _openai_chat_completion(body: Dict[str, Any], account: Optional[Dict[s
     temperature = float(body.get("temperature", 0.7))
     top_p = float(body.get("top_p", 0.95))
 
-    # ── Account-dedicated endpoint: 100% priority ──
-    # Nếu endpoint bị lỗi → fallback về Gemini Lite (không raise)
-    _account_endpoint_failed = False
+    # ── 1. Account-dedicated endpoint: 100% priority ──
     ep = _custom_endpoint_manager.get_endpoint_for_account(account)
     if ep and ep.get("enabled", True):
         model_to_use = body.get("model", model_alias)
         enabled_models = ep.get("enabled_models", [])
         if model_to_use not in enabled_models:
-            logger.warning("[AccountEndpoint] Model %s is not enabled on custom endpoint %s, fallback to Gemini Lite", model_to_use, ep["name"])
-            _account_endpoint_failed = True
+            logger.warning("[AccountEndpoint] Model %s not enabled on custom endpoint %s, trying pool fallback", model_to_use, ep["name"])
         else:
             try:
                 litellm_model = f"openai/{model_to_use}"
@@ -251,14 +248,9 @@ async def _openai_chat_completion(body: Dict[str, Any], account: Optional[Dict[s
                 text = resp.choices[0].message.content if resp.choices else ""
                 return {"text": text, "model_alias": model_alias, "finish_reason": "stop", "input_tokens": input_tokens, "output_tokens": output_tokens}
             except Exception as e:
-                logger.warning("[AccountEndpoint] %s failed (%s), fallback to Gemini Lite", model_alias, e)
-                _account_endpoint_failed = True
+                logger.warning("[AccountEndpoint] %s failed (%s), trying pool fallback", model_alias, e)
 
-    # ── Fallback: nếu account có endpoint nhưng lỗi, hoặc ko có endpoint → về Gemini Lite ──
-    if _account_endpoint_failed:
-        model_alias = "gemini-flash-lite"
-        model_id = router.get_model_id(model_alias)
-
+    # ── 2. Pool-assigned custom endpoints (from pool_assignments) ──
     pool_models = router.get_pool_custom_models(model_alias)
 
     async def _try_custom_pool() -> Optional[Dict[str, Any]]:
@@ -292,6 +284,12 @@ async def _openai_chat_completion(body: Dict[str, Any], account: Optional[Dict[s
             except Exception as pe:
                 logger.warning("Pool custom model %s failed: %s", model_to_call, pe)
         return None
+
+    # ── 3. Fallback: if no custom pool models, fall back to gemini-flash-lite ──
+    fallback_to_lite = not pool_models
+    if fallback_to_lite:
+        model_alias = "gemini-flash-lite"
+        model_id = router.get_model_id(model_alias)
 
     async def _call_gemini_pool() -> Optional[Dict[str, Any]]:
         try:
@@ -365,19 +363,21 @@ async def _openai_chat_completion(body: Dict[str, Any], account: Optional[Dict[s
                 return None
             raise
 
-    if pool_models:
-        has_gemini = bool(config.GEMINI_API_KEYS)
-        try_gemini_first = has_gemini and (random.random() < 0.5 if pool_models else True)
+    has_gemini = bool(config.GEMINI_API_KEYS)
 
-        if try_gemini_first:
+    # Try custom pool first (pool-assigned endpoints have priority)
+    if pool_models:
+        result = await _try_custom_pool()
+        if not result and has_gemini:
             result = await _call_gemini_pool()
-            if not result:
-                result = await _try_custom_pool()
-        else:
-            result = await _try_custom_pool()
-            if not result and has_gemini:
-                result = await _call_gemini_pool()
-    else:
+    elif has_gemini:
+        result = await _call_gemini_pool()
+
+    # Final fallback: if everything failed and we haven't already switched to lite
+    if not result and not fallback_to_lite:
+        logger.warning("All pool options failed, falling back to gemini-flash-lite")
+        model_alias = "gemini-flash-lite"
+        model_id = router.get_model_id(model_alias)
         result = await _call_gemini_pool()
 
     if not result:

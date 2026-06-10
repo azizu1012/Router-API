@@ -33,6 +33,7 @@ def init_config_tables() -> None:
                     enabled_models TEXT DEFAULT '[]',
                     account_id TEXT DEFAULT '',
                     fallback INTEGER DEFAULT 0,
+                    pool_assignments TEXT DEFAULT '{}',
                     updated_at TEXT
                 );
                 CREATE TABLE IF NOT EXISTS oauth_clients (
@@ -109,6 +110,12 @@ def init_config_tables() -> None:
             # Migration: add enabled_models to custom_endpoints
             try:
                 c.execute("ALTER TABLE custom_endpoints ADD COLUMN enabled_models TEXT DEFAULT '[]'")
+            except Exception:
+                pass
+
+            # Migration: add pool_assignments to custom_endpoints
+            try:
+                c.execute("ALTER TABLE custom_endpoints ADD COLUMN pool_assignments TEXT DEFAULT '{}'")
             except Exception:
                 pass
 
@@ -259,13 +266,14 @@ def migrate_from_json() -> None:
                 for name, ep in raw.items():
                     c.execute(
                         """INSERT OR REPLACE INTO custom_endpoints
-                           (name, base_url, auth_key, enabled, models, account_id, fallback, updated_at)
-                           VALUES (?,?,?,?,?,?,?,?)""",
+                           (name, base_url, auth_key, enabled, models, account_id, fallback, pool_assignments, updated_at)
+                           VALUES (?,?,?,?,?,?,?,?,?)""",
                         (name, ep.get("base_url", ""), ep.get("auth_key", ""),
                          1 if ep.get("enabled", True) else 0,
                          json.dumps(ep.get("models", [])),
                          "",
                          1 if ep.get("fallback", False) else 0,
+                         json.dumps(ep.get("pool_assignments", {})),
                          ep.get("updated_at", "")),
                     )
                 logger.info("[Schema] Migrated custom endpoints from %s", custom_path)
