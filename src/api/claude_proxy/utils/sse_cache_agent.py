@@ -273,15 +273,27 @@ def _dict_to_sse_events(result: Dict[str, Any]) -> Iterator[bytes]:
     yield _sse("message_stop", {"type": "message_stop"})
 
 
-def save_resolved_model_for_cwd(system_prompt: str, model_alias: str, model_id: str) -> None:
+def save_resolved_model_for_cwd(system_prompt: Any, model_alias: str, model_id: str) -> None:
     if not system_prompt:
         return
-    m = re.search(r"Primary working directory:\s*([^\r\n]+)", system_prompt, re.IGNORECASE)
+        
+    if isinstance(system_prompt, list):
+        parts = []
+        for item in system_prompt:
+            if isinstance(item, dict):
+                parts.append(str(item.get("text", "")))
+            else:
+                parts.append(str(item))
+        system_prompt_str = "\n".join(parts)
+    else:
+        system_prompt_str = str(system_prompt)
+
+    m = re.search(r"Primary working directory:\s*([^\r\n]+)", system_prompt_str, re.IGNORECASE)
     cwd = None
     if m:
         cwd = m.group(1).strip()
     else:
-        m = re.search(r"working directory:\s*([^\r\n]+)", system_prompt, re.IGNORECASE)
+        m = re.search(r"working directory:\s*([^\r\n]+)", system_prompt_str, re.IGNORECASE)
         if m:
             cwd = m.group(1).strip()
             

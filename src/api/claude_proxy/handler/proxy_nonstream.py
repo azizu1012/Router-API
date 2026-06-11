@@ -86,6 +86,11 @@ class ClaudeProxyNonstreamMixin:
                     req_id, api_key_val[-8:] if api_key_val else "N/A", model_alias, model_id_val, attempt + 1, config.MAX_RETRIES, estimated_tokens
                 )
                 try:
+                    from src.api.claude_proxy.utils import save_resolved_model_for_cwd
+                    save_resolved_model_for_cwd(body.get("system", ""), model_alias_val, model_id_val)
+                except Exception as ex_sync:
+                    logger.error("[Statusline Sync Error] Failed to call sync helper in non-pool nonstream: %s", ex_sync)
+                try:
                     try:
                         input_tokens = await token_counter(model=litellm_model_val, messages=openai_messages)
                     except Exception:
