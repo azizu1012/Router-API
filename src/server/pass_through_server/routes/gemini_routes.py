@@ -182,6 +182,117 @@ async def _stream_gemini_native_real(
         error_payload = {"error": {"message": str(e), "type": "server_error"}}
         yield f"data: {json.dumps(error_payload, ensure_ascii=False)}\n\n".encode("utf-8")
 
+async def _stream_custom_endpoint_native(
+    base_url: str,
+    auth_key: str,
+    model: str,
+    messages: list,
+    max_tokens: int,
+    temperature: float,
+    top_p: float,
+    auth_key_prefix: str,
+) -> AsyncIterator[bytes]:
+    import json as _json
+    import aiohttp
+    
+    url = f"{base_url.rstrip('/')}/chat/completions"
+    headers = {
+        "Authorization": f"Bearer {auth_key}",
+        "Content-Type": "application/json",
+        "Accept": "text/event-stream",
+    }
+    payload = {
+        "model": model,
+        "messages": messages,
+        "max_tokens": max_tokens,
+        "temperature": temperature,
+        "top_p": top_p,
+        "stream": True,
+    }
+    
+    input_tokens = 0
+    output_tokens = 0
+    full_text = ""
+    
+    try:
+        async with aiohttp.ClientSession(headers=headers) as session:
+            async with session.post(url, json=payload, timeout=aiohttp.ClientTimeout(total=config.REQUEST_TIMEOUT_SECONDS)) as resp:
+                if resp.status != 200:
+                    err_text = await resp.text()
+                    error_payload = {"error": {"message": f"Custom endpoint returned HTTP {resp.status}: {err_text}", "type": "stream_error"}}
+                    yield f"data: {_json.dumps(error_payload, ensure_ascii=False)}\n\n".encode("utf-8")
+                    return
+
+                async for line in resp.content:
+                    line = line.decode("utf-8", errors="replace").strip()
+                    if not line.startswith("data: "):
+                        continue
+                    data_str = line[6:]
+                    if data_str.strip() == "[DONE]":
+                        break
+                    try:
+                        chunk = _json.loads(data_str)
+                    except _json.JSONDecodeError:
+                        continue
+                        
+                    choices = chunk.get("choices") or []
+                    for ch in choices:
+                        delta = ch.get("delta", {})
+                        content = delta.get("content")
+                        if content:
+                            full_text += content
+                            gemini_chunk = {
+                                "candidates": [
+                                    {
+                                        "content": {
+                                            "parts": [{"text": content}],
+                                            "role": "model"
+                                        },
+                                        "index": 0
+                                    }
+                                ]
+                            }
+                            yield f"data: {_json.dumps(gemini_chunk, ensure_ascii=False)}\n\n".encode("utf-8")
+                            
+                    usage = chunk.get("usage")
+                    if usage:
+                        input_tokens = usage.get("prompt_tokens", 0) or 0
+                        output_tokens = usage.get("completion_tokens", 0) or 0
+                        
+        if not output_tokens and full_text:
+            output_tokens = max(1, len(full_text) // 4)
+        if not input_tokens:
+            input_tokens = len(str(messages)) // 4
+            
+        final_gemini_chunk = {
+            "candidates": [
+                {
+                    "finishReason": "STOP",
+                    "index": 0
+                }
+            ],
+            "usageMetadata": {
+                "promptTokenCount": input_tokens,
+                "candidatesTokenCount": output_tokens,
+                "totalTokenCount": input_tokens + output_tokens
+            }
+        }
+        yield f"data: {_json.dumps(final_gemini_chunk, ensure_ascii=False)}\n\n".encode("utf-8")
+        
+        await log_usage(
+            model,
+            "custom",
+            input_tokens,
+            output_tokens,
+            auth_key_prefix,
+            0,
+            0,
+        )
+    except Exception as e:
+        logger_api.error("Stream custom endpoint failed: %s", e)
+        error_payload = {"error": {"message": str(e), "type": "stream_error"}}
+        yield f"data: {_json.dumps(error_payload, ensure_ascii=False)}\n\n".encode("utf-8")
+
 async def _handle_gemini_native(
     model_id: str,
     request: Request,
@@ -326,7 +437,84 @@ async def _handle_gemini_native(
                 )
                 system_instruction = (system_instruction + context_block) if system_instruction else context_block.strip()
                 
-    # 8. Execute Gemini Call
+    # 8. Check custom endpoint first
+    from src.core.providers.custom_endpoint_manager import _custom_endpoint_manager
+    ep = _custom_endpoint_manager.get_endpoint_for_account(account)
+    if ep and ep.get("enabled", True):
+        model_to_use = model_alias
+        enabled_models = ep.get("enabled_models", [])
+        if model_to_use in enabled_models:
+            # Convert contents and system_instruction to OpenAI messages format
+            openai_messages = []
+            if system_instruction:
+                openai_messages.append({"role": "system", "content": system_instruction})
+            for c in contents:
+                role = "assistant" if c.role == "model" else "user"
+                text = "".join([getattr(p, "text", "") or "" for p in getattr(c, "parts", []) or []])
+                openai_messages.append({"role": role, "content": text})
+                
+            try:
+                if stream:
+                    return StreamingResponse(
+                        _stream_custom_endpoint_native(
+                            base_url=ep["base_url"],
+                            auth_key=ep["auth_key"],
+                            model=model_to_use,
+                            messages=openai_messages,
+                            max_tokens=max_tokens,
+                            temperature=temperature,
+                            top_p=top_p,
+                            auth_key_prefix=auth_key_prefix,
+                        ),
+                        media_type="text/event-stream"
+                    )
+                else:
+                    result = await _custom_endpoint_manager._call_chat(
+                        base_url=ep["base_url"],
+                        auth_key=ep["auth_key"],
+                        model=model_to_use,
+                        messages=openai_messages,
+                        max_tokens=max_tokens,
+                        temperature=temperature,
+                        top_p=top_p,
+                        stream=False,
+                        timeout=config.REQUEST_TIMEOUT_SECONDS,
+                    )
+                    
+                    # Construct Gemini native response payload
+                    resp_dict = {
+                        "candidates": [
+                            {
+                                "content": {
+                                    "parts": [{"text": result["text"]}],
+                                    "role": "model"
+                                },
+                                "finishReason": "STOP",
+                                "index": 0
+                            }
+                        ],
+                        "usageMetadata": {
+                            "promptTokenCount": result.get("input_tokens", 0),
+                            "candidatesTokenCount": result.get("output_tokens", 0),
+                            "totalTokenCount": result.get("input_tokens", 0) + result.get("output_tokens", 0)
+                        }
+                    }
+                    
+                    # Log usage
+                    await log_usage(
+                        model_to_use,
+                        "custom",
+                        result.get("input_tokens", 0),
+                        result.get("output_tokens", 0),
+                        auth_key_prefix,
+                        0,
+                        0,
+                    )
+                    return JSONResponse(content=resp_dict)
+            except Exception as e:
+                logger_api.warning("[AccountEndpoint Pass-through] %s failed (%s), trying pool fallback", model_alias, e)
+
+    # 9. Execute Gemini Call (Fallback)
     if stream:
         return StreamingResponse(_stream_gemini_native_real(
             model_alias=model_alias,
