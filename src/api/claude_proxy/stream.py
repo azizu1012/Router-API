@@ -1,12 +1,16 @@
-import asyncio
 import json
 import uuid
 from typing import Any, AsyncIterator, Dict, List, Optional
 
-import litellm
-
+from src.core.providers.litellm_wrapper import token_counter
 from src.core.usage_logger import log_usage
-from src.api.claude_proxy.utils import _sse, _get_simulated_cache_usage, is_claude_code_body, is_sub_agent_body
+from src.api.claude_proxy.utils import (
+    _sse,
+    _get_simulated_cache_usage,
+    is_claude_code_body,
+    is_sub_agent_body,
+    StreamingTextNormalizer,
+)
 
 
 async def _process_anthropic_stream(
@@ -36,6 +40,7 @@ async def _process_anthropic_stream(
     text_block_idx = None
     text_started = False
     text_stopped = False
+    thought_block_idx = None
     thought_started = False
     thought_stopped = False
     tool_buffers: Dict[int, Dict[str, Any]] = {}
@@ -75,34 +80,34 @@ async def _process_anthropic_stream(
             except StopAsyncIteration:
                 break
 
+    normalizer = StreamingTextNormalizer()
+
     async for chunk in _iter_safe():
         delta = chunk.choices[0].delta if chunk.choices else None
 
         if delta:
             reasoning = getattr(delta, "reasoning_content", None) or getattr(delta, "thought", None) or getattr(delta, "reasoning", None)
             if reasoning:
-                if not text_started:
-                    text_block_idx = next_block_idx
+                if not thought_started:
+                    thought_block_idx = next_block_idx
                     next_block_idx += 1
                     yield _sse("content_block_start", {
-                        "type": "content_block_start", "index": text_block_idx,
-                        "content_block": {"type": "text", "text": ""}
+                        "type": "content_block_start", "index": thought_block_idx,
+                        "content_block": {"type": "thinking", "thinking": ""}
                     })
-                    text_started = True
-                if not thought_started:
-                    yield _sse("content_block_delta", {
-                        "type": "content_block_delta", "index": text_block_idx,
-                        "delta": {"type": "text_delta", "text": "<thought>\n"}
-                    })
-                    text_chunks.append("<thought>\n")
                     thought_started = True
-                yield _sse("content_block_delta", {
-                    "type": "content_block_delta", "index": text_block_idx,
-                    "delta": {"type": "text_delta", "text": reasoning}
-                })
-                text_chunks.append(reasoning)
+                norm_reasoning = normalizer.feed(reasoning)
+                if norm_reasoning:
+                    yield _sse("content_block_delta", {
+                        "type": "content_block_delta", "index": thought_block_idx,
+                        "delta": {"type": "thinking_delta", "thinking": norm_reasoning}
+                    })
+                    text_chunks.append(norm_reasoning)
 
             if getattr(delta, "content", None):
+                if thought_started and not thought_stopped:
+                    yield _sse("content_block_stop", {"type": "content_block_stop", "index": thought_block_idx})
+                    thought_stopped = True
                 if not text_started:
                     text_block_idx = next_block_idx
                     next_block_idx += 1
@@ -111,20 +116,33 @@ async def _process_anthropic_stream(
                         "content_block": {"type": "text", "text": ""}
                     })
                     text_started = True
-                if thought_started and not thought_stopped:
+                norm_content = normalizer.feed(delta.content)
+                if norm_content:
                     yield _sse("content_block_delta", {
                         "type": "content_block_delta", "index": text_block_idx,
-                        "delta": {"type": "text_delta", "text": "\n</thought>\n\n"}
+                        "delta": {"type": "text_delta", "text": norm_content}
                     })
-                    text_chunks.append("\n</thought>\n\n")
-                    thought_stopped = True
-                yield _sse("content_block_delta", {
-                    "type": "content_block_delta", "index": text_block_idx,
-                    "delta": {"type": "text_delta", "text": delta.content}
-                })
-                text_chunks.append(delta.content)
+                    text_chunks.append(norm_content)
 
             if getattr(delta, "tool_calls", None):
+                if thought_started and not thought_stopped:
+                    yield _sse("content_block_stop", {"type": "content_block_stop", "index": thought_block_idx})
+                    thought_stopped = True
+                flushed = normalizer.flush()
+                if flushed:
+                    if not text_started:
+                        text_block_idx = next_block_idx
+                        next_block_idx += 1
+                        yield _sse("content_block_start", {
+                            "type": "content_block_start", "index": text_block_idx,
+                            "content_block": {"type": "text", "text": ""}
+                        })
+                        text_started = True
+                    yield _sse("content_block_delta", {
+                        "type": "content_block_delta", "index": text_block_idx,
+                        "delta": {"type": "text_delta", "text": flushed}
+                    })
+                    text_chunks.append(flushed)
                 if text_started and not text_stopped:
                     yield _sse("content_block_stop", {"type": "content_block_stop", "index": text_block_idx})
                     text_stopped = True
@@ -166,8 +184,27 @@ async def _process_anthropic_stream(
 
         finish = chunk.choices[0].finish_reason if chunk.choices else None
         if finish:
+            if thought_started and not thought_stopped:
+                yield _sse("content_block_stop", {"type": "content_block_stop", "index": thought_block_idx})
+                thought_stopped = True
+            flushed = normalizer.flush()
+            if flushed:
+                if not text_started:
+                    text_block_idx = next_block_idx
+                    next_block_idx += 1
+                    yield _sse("content_block_start", {
+                        "type": "content_block_start", "index": text_block_idx,
+                        "content_block": {"type": "text", "text": ""}
+                    })
+                    text_started = True
+                yield _sse("content_block_delta", {
+                    "type": "content_block_delta", "index": text_block_idx,
+                    "delta": {"type": "text_delta", "text": flushed}
+                })
+                text_chunks.append(flushed)
             if text_started and not text_stopped:
                 yield _sse("content_block_stop", {"type": "content_block_stop", "index": text_block_idx})
+                text_stopped = True
 
             for tc_idx in sorted(tool_to_cbidx.keys()):
                 yield _sse("content_block_stop", {"type": "content_block_stop", "index": tool_to_cbidx[tc_idx]})
@@ -207,11 +244,7 @@ async def _process_anthropic_stream(
 
             full_text = "".join(text_chunks)
             try:
-                output_tokens = await asyncio.to_thread(
-                    litellm.token_counter,
-                    model=model,
-                    messages=[{"role": "assistant", "content": full_text}]
-                )
+                output_tokens = await token_counter(model=model, messages=[{"role": "assistant", "content": full_text}])
             except Exception:
                 output_tokens = max(1, len(full_text) // 4) if full_text else 0
             output_tokens += len(tool_buffers) * 50

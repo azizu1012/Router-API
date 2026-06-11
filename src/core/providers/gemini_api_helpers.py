@@ -3,7 +3,7 @@ import random
 import re
 import time
 from typing import Any, Dict, List, Optional
-from google.genai import types
+from src.core.providers.genai_types import types
 
 from src.core.config_n_logg import config
 from src.core.config_n_logg.logger import logger_keys as logger

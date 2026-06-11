@@ -98,14 +98,9 @@ async def get_effective_limits(account: Dict[str, Any]) -> tuple[int, int, int]:
         l_prem_rpd = 0
         
     # Compute Admin limits
-    total_all_rpm = Cap_free_rpm + Cap_prem_rpm + Cap_admin_rpm
-    l_admin_rpm = max(0, total_all_rpm - (N_free * l_free_rpm + N_prem * l_prem_rpm)) / N_admin
-    
-    total_all_tpm = Cap_free_tpm + Cap_prem_tpm + Cap_admin_tpm
-    l_admin_tpm = max(0, total_all_tpm - (N_free * l_free_tpm + N_prem * l_prem_tpm)) / N_admin
-    
-    total_all_rpd = Cap_free_rpd + Cap_prem_rpd + Cap_admin_rpd
-    l_admin_rpd = max(0, total_all_rpd - (N_free * l_free_rpd + N_prem * l_prem_rpd)) / N_admin
+    l_admin_rpm = Cap_free_rpm + Cap_prem_rpm + Cap_admin_rpm
+    l_admin_tpm = Cap_free_tpm + Cap_prem_tpm + Cap_admin_tpm
+    l_admin_rpd = Cap_free_rpd + Cap_prem_rpd + Cap_admin_rpd
     
     # Cap by configured limits
     if tier == "admin":
@@ -227,14 +222,9 @@ async def get_effective_limits_by_pool(account: Dict[str, Any], pool_type: str =
         l_prem_rpd = 0
         
     # Compute Admin limits
-    total_all_rpm = Cap_free_rpm + Cap_prem_rpm + Cap_admin_rpm
-    l_admin_rpm = max(0, total_all_rpm - (N_free * l_free_rpm + N_prem * l_prem_rpm)) / N_admin
-    
-    total_all_tpm = Cap_free_tpm + Cap_prem_tpm + Cap_admin_tpm
-    l_admin_tpm = max(0, total_all_tpm - (N_free * l_free_tpm + N_prem * l_prem_tpm)) / N_admin
-    
-    total_all_rpd = Cap_free_rpd + Cap_prem_rpd + Cap_admin_rpd
-    l_admin_rpd = max(0, total_all_rpd - (N_free * l_free_rpd + N_prem * l_prem_rpd)) / N_admin
+    l_admin_rpm = Cap_free_rpm + Cap_prem_rpm + Cap_admin_rpm
+    l_admin_tpm = Cap_free_tpm + Cap_prem_tpm + Cap_admin_tpm
+    l_admin_rpd = Cap_free_rpd + Cap_prem_rpd + Cap_admin_rpd
     
     # Cap by configured limits
     if tier == "admin":

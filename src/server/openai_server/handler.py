@@ -1,11 +1,9 @@
 import json
-import random
 import time
 import uuid
 from collections import defaultdict
 from typing import Any, AsyncIterator, Dict, List, Optional
 
-from fastapi import HTTPException
 
 from src.core.config_n_logg import config
 from src.core.config_n_logg.logger import logger_system as logger
@@ -39,8 +37,7 @@ def _extract_openai_text(content: Any) -> str:
 
 
 async def _openai_chat_completion(body: Dict[str, Any], account: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
-    import litellm
-    from google.genai import types as gt
+    from src.core.providers.genai_types import types as gt
     import asyncio
     from src.api.claude_proxy.utils import _emergency_truncate_to_limit
 
@@ -65,14 +62,6 @@ async def _openai_chat_completion(body: Dict[str, Any], account: Optional[Dict[s
             config.GEMINI_AUTO_GROUNDING or
             (account and account.get("web_search_enabled"))
         )
-
-    # Estimate input tokens
-    try:
-        model_id = router.get_model_id(model_alias)
-        litellm_model = f"gemini/{model_id}"
-        input_tokens = await asyncio.to_thread(litellm.token_counter, model=litellm_model, messages=messages)
-    except Exception:
-        input_tokens = max(1, len(str(messages)) // 2)
 
     # Failsafe emergency truncation for OpenAI completion
     is_lite = "lite" in str(model_alias).lower() or "lite" in str(body.get("model", "")).lower()
@@ -109,7 +98,8 @@ async def _openai_chat_completion(body: Dict[str, Any], account: Optional[Dict[s
                     parts.append(gt.Part.from_text(text=str(item.get("text") or "")))
                 elif item.get("type") == "image_url":
                     url = item.get("image_url", {}).get("url", "")
-                    import base64, re
+                    import base64
+                    import re
                     match = re.match(r"^data:([^;]+);base64,(.+)$", str(url), re.DOTALL)
                     if match:
                         data = base64.b64decode(match.group(2))
@@ -117,7 +107,8 @@ async def _openai_chat_completion(body: Dict[str, Any], account: Optional[Dict[s
                         image_count += 1
                     elif str(url).startswith(("http://", "https://")):
                         try:
-                            import requests, mimetypes
+                            import requests
+                            import mimetypes
                             response = await asyncio.to_thread(requests.get, url, timeout=12)
                             if response.status_code == 200:
                                 data = response.content
@@ -213,6 +204,19 @@ async def _openai_chat_completion(body: Dict[str, Any], account: Optional[Dict[s
     temperature = float(body.get("temperature", 0.7))
     top_p = float(body.get("top_p", 0.95))
 
+    # ── Thinking params (raw — config built per-model inside pool) ─
+    thinking_level = body.get("thinking_level")
+    thinking_budget = body.get("thinking_budget")
+    include_thoughts = body.get("include_thoughts")
+
+    # ── Extra body (forward unknown params to custom endpoints) ─
+    _consumed_keys = {
+        "model", "messages", "stream", "max_tokens", "max_completion_tokens",
+        "temperature", "top_p", "web_search", "search", "grounding", "google_search",
+        "thinking_level", "thinking_budget", "include_thoughts",
+    }
+    extra_body = {k: v for k, v in body.items() if k not in _consumed_keys}
+
     # ── 1. Account-dedicated endpoint: 100% priority ──
     ep = _custom_endpoint_manager.get_endpoint_for_account(account)
     if ep and ep.get("enabled", True):
@@ -232,6 +236,7 @@ async def _openai_chat_completion(body: Dict[str, Any], account: Optional[Dict[s
                     top_p=top_p,
                     stream=body.get("stream", False),
                     timeout=config.REQUEST_TIMEOUT_SECONDS,
+                    extra_body=extra_body,
                 )
                 return {"text": result["text"], "model_alias": model_alias,
                         "finish_reason": result.get("finish_reason", "stop"),
@@ -266,6 +271,7 @@ async def _openai_chat_completion(body: Dict[str, Any], account: Optional[Dict[s
                     top_p=top_p,
                     stream=body.get("stream", False),
                     timeout=config.REQUEST_TIMEOUT_SECONDS,
+                    extra_body=extra_body,
                 )
                 return {"text": result["text"], "model_alias": model_alias,
                         "finish_reason": result.get("finish_reason", "stop"),
@@ -294,10 +300,24 @@ async def _openai_chat_completion(body: Dict[str, Any], account: Optional[Dict[s
                 image_count=image_count,
                 account=account,
                 web_search=native_grounding_active,
+                thinking_level=thinking_level,
+                thinking_budget=thinking_budget,
+                include_thoughts=include_thoughts,
             )
             response = gresult["response"]
             text = getattr(response, "text", "") or ""
             
+            # Extract thought text from candidates
+            thought_text = ""
+            try:
+                for c in getattr(response, "candidates", None) or []:
+                    for p in getattr(getattr(c, "content", None), "parts", []) or []:
+                        if getattr(p, "thought", False):
+                            pt = getattr(p, "text", "") or ""
+                            if pt:
+                                thought_text += pt
+            except Exception:
+                pass
 
             # Extract and format grounding citations if available
             try:
@@ -342,6 +362,7 @@ async def _openai_chat_completion(body: Dict[str, Any], account: Optional[Dict[s
             kp = used_key[-8:] if used_key else ""
             return {
                 "text": text,
+                "thought": thought_text or None,
                 "model_alias": model_alias,
                 "finish_reason": finish_reason,
                 "input_tokens": gresult.get("input_tokens", 0),
@@ -382,6 +403,12 @@ def _completion_response(body: Dict[str, Any], result: Dict[str, Any]) -> Dict[s
     now = int(time.time())
     text = result["text"]
     model = body.get("model") or result["model_alias"]
+    thought = result.get("thought")
+    if thought:
+        text = f"<think>\n{thought}\n</think>\n\n{text}"
+    msg: Dict[str, Any] = {"role": "assistant", "content": text}
+    if thought:
+        msg["reasoning_content"] = thought
     return {
         "id": f"chatcmpl-{uuid.uuid4().hex}",
         "object": "chat.completion",
@@ -390,7 +417,7 @@ def _completion_response(body: Dict[str, Any], result: Dict[str, Any]) -> Dict[s
         "choices": [
             {
                 "index": 0,
-                "message": {"role": "assistant", "content": text},
+                "message": msg,
                 "finish_reason": result.get("finish_reason") or "stop",
             }
         ],
@@ -406,6 +433,30 @@ async def _stream_response(body: Dict[str, Any], result: Dict[str, Any]) -> Asyn
     cid = f"chatcmpl-{uuid.uuid4().hex}"
     created = int(time.time())
     model = body.get("model") or result["model_alias"]
+
+    # Emit thought first if present wrapped in <think> tags
+    thought = result.get("thought")
+    if thought:
+        think_start = {
+            "id": cid, "object": "chat.completion.chunk", "created": created, "model": model,
+            "choices": [{"index": 0, "delta": {"content": "<think>\n"}, "finish_reason": None}],
+        }
+        yield f"data: {json.dumps(think_start, ensure_ascii=False)}\n\n".encode("utf-8")
+
+        for offset in range(0, len(thought), 900):
+            chunk_text = thought[offset:offset + 900]
+            thought_chunk = {
+                "id": cid, "object": "chat.completion.chunk", "created": created, "model": model,
+                "choices": [{"index": 0, "delta": {"content": chunk_text, "reasoning_content": chunk_text}, "finish_reason": None}],
+            }
+            yield f"data: {json.dumps(thought_chunk, ensure_ascii=False)}\n\n".encode("utf-8")
+
+        think_end = {
+            "id": cid, "object": "chat.completion.chunk", "created": created, "model": model,
+            "choices": [{"index": 0, "delta": {"content": "\n</think>\n\n"}, "finish_reason": None}],
+        }
+        yield f"data: {json.dumps(think_end, ensure_ascii=False)}\n\n".encode("utf-8")
+
     first = {
         "id": cid, "object": "chat.completion.chunk", "created": created, "model": model,
         "choices": [{"index": 0, "delta": {"role": "assistant"}, "finish_reason": None}],

@@ -1,7 +1,6 @@
 from typing import Any, Dict
 
-from fastapi import HTTPException, Request, Response
-from fastapi.responses import JSONResponse
+from fastapi import HTTPException
 
 from src.core.config_n_logg import config
 from src.core.limits import account_limiter

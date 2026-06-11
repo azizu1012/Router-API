@@ -4,12 +4,11 @@ import uuid
 import time
 from typing import Any, Dict, List, Tuple, Optional
 
-import litellm
-from src.core.config_n_logg import config
+from src.core.providers.litellm_wrapper import acompletion, token_counter
 from src.core.config_n_logg.logger import logger_proxy as logger
 from src.core.router import router
 from src.core.usage_logger import log_usage
-from src.api.claude_proxy.utils import _get_simulated_cache_usage
+from src.api.claude_proxy.utils import _get_simulated_cache_usage, normalize_text
 
 
 async def _resolve_gemini_with_tools(
@@ -19,21 +18,22 @@ async def _resolve_gemini_with_tools(
     auth_key_prefix: str = "",
     account: Optional[Dict[str, Any]] = None,
     _recursion_depth: int = 0,
-) -> Tuple[str, List[Dict[str, Any]], str]:
+) -> Tuple[str, List[Dict[str, Any]], str, str]:
     try:
         kwargs["stream"] = False
-        resp = await litellm.acompletion(**kwargs)
+        resp = await acompletion(**kwargs)
     except Exception as e:
         logger.error("[_resolve_gemini_with_tools] litellm.acompletion error: %s", e, exc_info=True)
         raise
 
     choice = resp.choices[0] if resp.choices else None
     if not choice:
-        return "", [], "stop"
+        return "", [], "stop", ""
 
     msg = choice.message
     text = getattr(msg, "content", "") or ""
     finish_reason = getattr(choice, "finish_reason", "stop") or "stop"
+    thought_text = getattr(msg, "reasoning_content", None) or getattr(msg, "thinking", None) or ""
 
     raw_tool_calls = getattr(msg, "tool_calls", None) or []
     tool_calls = []
@@ -51,7 +51,7 @@ async def _resolve_gemini_with_tools(
 
     if _recursion_depth >= 3:
         logger.warning("[OpenCode ToolRecursion] Max recursion depth reached (3), returning tool calls as-is")
-        return text, tool_calls, finish_reason
+        return text, tool_calls, finish_reason, thought_text
 
     web_call = next((tc for tc in tool_calls if tc.get("name") == "WebSearch"), None)
     if web_call:
@@ -90,9 +90,10 @@ async def _resolve_gemini_with_tools(
         new_kwargs = dict(kwargs)
         new_kwargs["messages"] = list(kwargs["messages"]) + [assistant_msg, tool_result_msg]
 
-        return await _resolve_gemini_with_tools(new_kwargs, body, proxy_instance, auth_key_prefix=auth_key_prefix, account=account, _recursion_depth=_recursion_depth + 1)
+        ntext, ntools, nfr, nth = await _resolve_gemini_with_tools(new_kwargs, body, proxy_instance, auth_key_prefix=auth_key_prefix, account=account, _recursion_depth=_recursion_depth + 1)
+        return ntext, ntools, nfr, nth
 
-    return text, tool_calls, finish_reason
+    return text, tool_calls, finish_reason, thought_text
 
 
 async def _execute_nonstream(
@@ -108,7 +109,7 @@ async def _execute_nonstream(
     account: Optional[Dict[str, Any]] = None,
 ) -> Dict[str, Any]:
     t0 = asyncio.get_event_loop().time()
-    text, tool_calls, finish_reason = await _resolve_gemini_with_tools(
+    text, tool_calls, finish_reason, thought_text = await _resolve_gemini_with_tools(
         kwargs, body, proxy_instance, auth_key_prefix=auth_key_prefix, account=account
     )
     elapsed = asyncio.get_event_loop().time() - t0
@@ -119,7 +120,7 @@ async def _execute_nonstream(
     )
 
     try:
-        out_tokens = await asyncio.to_thread(litellm.token_counter, model=kwargs.get("model", "gemini/gemini-1.5-flash"), messages=[{"role": "assistant", "content": text}])
+        out_tokens = await token_counter(model=kwargs.get("model", "gemini/gemini-1.5-flash"), messages=[{"role": "assistant", "content": text}])
     except Exception:
         out_tokens = max(1, len(text) // 4) if text else 1
     out_tokens += len(tool_calls) * 50
@@ -135,11 +136,18 @@ async def _execute_nonstream(
     if pool:
         pool.record_success()
 
-    from .proxy import get_client_model_name
+    from .response import get_client_model_name
     requested_model = body.get("model") or model_alias
     model_name = get_client_model_name(requested_model)
 
-    message_content = {"role": "assistant", "content": text or None}
+    content_val = normalize_text(text) if text else ""
+    if thought_text:
+        thought_norm = normalize_text(thought_text)
+        content_val = f"<think>\n{thought_norm}\n</think>\n\n{content_val}"
+
+    message_content: Dict[str, Any] = {"role": "assistant", "content": content_val if content_val else None}
+    if thought_text:
+        message_content["reasoning_content"] = normalize_text(thought_text)
     if tool_calls:
         message_content["tool_calls"] = [
             {

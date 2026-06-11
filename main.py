@@ -8,12 +8,11 @@ from pathlib import Path
 # Ensure src/ is on the path
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
-import litellm
-litellm.suppress_debug_info = True
 import uvicorn
 from src.core.config_n_logg import config, logger
 from src.core.config_n_logg.logger import CONSOLE_LOG_SYSTEM, CONSOLE_LOG_WEB, _ensure_log_dir
 from src.core.api_config import AVAILABLE_MODELS, is_sunset_25
+from src.core.providers.litellm_wrapper import register_models
 
 
 def _free_port(host: str, port: int) -> None:
@@ -55,8 +54,7 @@ def main():
         if is_sunset_25() and _alias in ("gemini-flash-25", "gemini-flash-25-lite"):
             continue
         _litellm_name = f"gemini/{_mid}"
-        if _litellm_name not in litellm.model_list:
-            litellm.model_list.append(_litellm_name)
+        register_models([_litellm_name])
 
     logger.info(
         "Starting Router API v2 on %s:%d with %d Gemini keys",

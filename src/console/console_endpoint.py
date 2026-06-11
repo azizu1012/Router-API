@@ -1,9 +1,8 @@
 import asyncio
 import secrets
-import sys
 
 from src.core.providers import _custom_endpoint_manager
-from .console_helpers import _prompt_hidden, _prompt_yesno, _select_models_interactively
+from .console_helpers import _prompt_hidden, _prompt_yesno
 
 
 def _wizard_add_endpoint() -> None:
@@ -125,9 +124,9 @@ def _ping_endpoint() -> None:
             return
 
     print(f"\n  🏓 Pinging {ep['name']}:{model_id} ...")
-    import litellm
+    from src.core.providers.litellm_wrapper import acompletion
     try:
-        resp = asyncio.run(litellm.acompletion(
+        resp = asyncio.run(acompletion(
             model=f"openai/{model_id}",
             messages=[{"role": "user", "content": "Hi, reply OK in 1 word."}],
             api_key=ep["auth_key"],

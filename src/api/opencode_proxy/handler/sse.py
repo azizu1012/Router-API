@@ -3,14 +3,19 @@ import uuid
 from typing import Any, List, Optional
 
 
-def openai_chunks(chunk: Any, model_name: str) -> List[bytes]:
+def openai_chunks(
+    chunk: Any,
+    model_name: str,
+    override_content: Optional[str] = None,
+    override_reasoning: Optional[str] = None,
+) -> List[bytes]:
     if not chunk.choices:
         return []
 
     delta = chunk.choices[0].delta
-    content = getattr(delta, "content", None)
-    reasoning = getattr(delta, "reasoning_content", None)
-    if reasoning is None:
+    content = override_content if override_content is not None else getattr(delta, "content", None)
+    reasoning = override_reasoning if override_reasoning is not None else getattr(delta, "reasoning_content", None)
+    if reasoning is None and override_reasoning is None:
         # Some providers might use thought or reasoning instead
         reasoning = getattr(delta, "thought", None) or getattr(delta, "reasoning", None)
     

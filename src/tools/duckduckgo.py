@@ -2,8 +2,8 @@ import asyncio
 import re
 import os
 import time
-from datetime import datetime, timedelta
-from typing import Dict, List, Any, Optional, Set, Tuple, Union
+from datetime import datetime
+from typing import Dict, List, Optional, Tuple, Union
 
 try:
     from ddgs import DDGS

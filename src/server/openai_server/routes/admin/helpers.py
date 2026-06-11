@@ -1,8 +1,7 @@
 """Shared helpers for admin endpoints — environment / DB key management."""
-import json
 import uuid
 
-from src.core.config_n_logg import config, ENV_PATH
+from src.core.config_n_logg import ENV_PATH
 from src.backend._db import _LOCK, conn as _conn
 
 

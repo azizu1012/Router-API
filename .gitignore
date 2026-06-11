@@ -1,6 +1,8 @@
 # ─── Runtime data ───
 .env
 usage.db
+usage.db-shm
+usage.db-wal
 usage_logs.db
 logs/
 

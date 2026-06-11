@@ -1,7 +1,7 @@
 import asyncio
-from typing import Any, AsyncIterator, Dict, List, Optional
+from typing import Any, AsyncIterator, List, Optional
 
-from google.genai import types
+from src.core.providers.genai_types import types
 
 from src.core.config_n_logg import config
 from .pool import ClientPool
@@ -19,6 +19,7 @@ def _build_config(
     top_p: float,
     max_tokens: int,
     tools: Optional[List[types.Tool]],
+    thinking_config: Optional[types.ThinkingConfig] = None,
 ) -> types.GenerateContentConfig:
     return types.GenerateContentConfig(
         system_instruction=system_instruction or None,
@@ -27,6 +28,7 @@ def _build_config(
         max_output_tokens=max_tokens,
         safety_settings=_build_safety_settings(),
         tools=tools or None,
+        thinking_config=thinking_config,
     )
 
 
@@ -41,11 +43,12 @@ async def generate_content(
     top_p: float,
     tools: Optional[List[types.Tool]] = None,
     tier: str = "free",
+    thinking_config: Optional[types.ThinkingConfig] = None,
 ) -> Any:
     """Make a synchronous-style Gemini API call (non-streaming)."""
     client = await pool.get_client(api_key)
     async with ClientPool.get_semaphore(tier):
-        gen_config = _build_config(system_instruction, temperature, top_p, max_tokens, tools)
+        gen_config = _build_config(system_instruction, temperature, top_p, max_tokens, tools, thinking_config)
         return await asyncio.wait_for(
             asyncio.to_thread(
                 client.models.generate_content,
@@ -97,14 +100,14 @@ async def generate_content_stream(
     top_p: float,
     tools: Optional[List[types.Tool]] = None,
     tier: str = "free",
+    thinking_config: Optional[types.ThinkingConfig] = None,
 ) -> AsyncIterator[Any]:
     """Make a streaming Gemini API call — yields chunks."""
     client = await pool.get_client(api_key)
     async with ClientPool.get_semaphore(tier):
-        gen_config = _build_config(system_instruction, temperature, top_p, max_tokens, tools)
+        gen_config = _build_config(system_instruction, temperature, top_p, max_tokens, tools, thinking_config)
         stream = await asyncio.wait_for(
-            asyncio.to_thread(
-                client.models.generate_content_stream,
+            client.aio.models.generate_content_stream(
                 model=model_id,
                 contents=contents,
                 config=gen_config,

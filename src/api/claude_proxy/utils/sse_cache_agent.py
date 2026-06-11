@@ -2,9 +2,8 @@ import datetime
 import json
 import re
 from pathlib import Path
-from typing import Any, Dict, Iterator, List, Optional
+from typing import Any, Dict, Iterator, Optional
 
-from src.core.config_n_logg import config
 from src.core.config_n_logg.logger import logger_proxy as logger
 
 _PROJECT_ROOT = Path(__file__).resolve().parents[4]

@@ -6,7 +6,7 @@ cost estimation, and client model name mapping.
 
 import time
 import uuid
-from typing import Any, Dict, Optional
+from typing import Any, Dict
 
 from src.core.config_n_logg.logger import logger_proxy as logger
 from src.core.usage_logger import log_usage
@@ -49,10 +49,11 @@ def build_response(
 
     choice = resp.choices[0] if resp.choices else None
     if not choice:
-        text, finish = "", "stop"
+        text, finish, thinking = "", "stop", ""
     else:
         text = _extract_text(choice)
         finish = getattr(choice, "finish_reason", "stop")
+        thinking = getattr(choice.message, "reasoning_content", "") or getattr(choice.message, "thinking", "") or ""
 
     out_tokens = 0
     usage = getattr(resp, "usage", None)
@@ -71,12 +72,15 @@ def build_response(
     requested_model = body.get("model") or model_alias
     model_name = get_client_model_name(requested_model)
 
+    msg: Dict[str, Any] = {"role": "assistant", "content": text}
+    if thinking:
+        msg["reasoning_content"] = thinking
     return {
         "id": f"chatcmpl-{uuid.uuid4().hex}",
         "object": "chat.completion",
         "created": int(time.time()),
         "model": model_name,
-        "choices": [{"index": 0, "message": {"role": "assistant", "content": text}, "finish_reason": finish}],
+        "choices": [{"index": 0, "message": msg, "finish_reason": finish}],
         "usage": {"prompt_tokens": input_tokens, "completion_tokens": out_tokens, "total_tokens": input_tokens + out_tokens, "cost": cost},
     }
 

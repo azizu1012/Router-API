@@ -4,16 +4,7 @@ import sys
 import httpx
 
 def get_auth_key():
-    try:
-        import sys
-        sys.path.append('.')
-        from src.core.accounts import account_manager
-        accs = account_manager.list_accounts(include_disabled=False)
-        if accs:
-            return accs[0]['auth_key']
-    except Exception as e:
-        print(f"Error reading accounts from db: {e}")
-    return 'test'
+    return 'sk-iiVUNH2k3QedJAroueymIo0q9qL5TimQ95vJpbNTOK4'
 
 async def _consume_stream(client, url, json_body, auth_key):
     chunks = []

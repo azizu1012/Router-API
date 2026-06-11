@@ -5,7 +5,7 @@ orchestrator applies penalties / freeze decisions.
 """
 
 import re
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Optional
 
 
 def parse_project(text: str) -> Optional[str]:

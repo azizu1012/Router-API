@@ -16,10 +16,8 @@ from .message_converter import (
     UNSUPPORTED_OR_HEAVY_TOOLS,
 )
 
-from .compaction_utils import (
-    _compact_conversation,
-    _emergency_truncate_to_limit,
-    should_compact,
+from .truncation import (
+    emergency_truncate_to_limit as _emergency_truncate_to_limit,
 )
 
 from .sse_cache_agent import (
@@ -31,5 +29,10 @@ from .sse_cache_agent import (
     _intercept_sub_agent,
     _dict_to_sse_events,
     _sse,
+)
+
+from .format_normalizer import (
+    normalize_text,
+    StreamingTextNormalizer,
 )
 

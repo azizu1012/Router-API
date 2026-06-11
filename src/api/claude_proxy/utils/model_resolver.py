@@ -57,8 +57,8 @@ async def _resolve_model(body: Dict[str, Any], pool_alias_override: Optional[str
                 target_model = all_models[0]
 
         try:
-            import litellm
-            test = await litellm.acompletion(
+            from src.core.providers.litellm_wrapper import acompletion
+            test = await acompletion(
                 model=f"openai/{target_model}",
                 messages=[{"role": "user", "content": "ping"}],
                 api_key=ep["auth_key"],

@@ -1,12 +1,9 @@
 import uuid
 import time
-from typing import Any, Dict
 from fastapi import Header, HTTPException, Request
 from fastapi.responses import JSONResponse, StreamingResponse
 
-from src.core.config_n_logg import config
 from src.core.config_n_logg.logger import logger_api
-from src.core.router import router
 from src.core.limits import account_limiter
 from src.core.providers import _custom_endpoint_manager
 from src.api.claude_proxy import claude_proxy
@@ -310,7 +307,7 @@ async def anthropic_messages(
 
 @app.post("/api/ping-model")
 async def ping_model(request: Request):
-    import litellm
+    from src.core.providers.litellm_wrapper import acompletion
 
     body = await request.json()
     model = body.get("model", "")
@@ -328,7 +325,7 @@ async def ping_model(request: Request):
         return JSONResponse(status_code=404, content={"ok": False, "error": f"Model '{model}' not found in any endpoint"})
 
     try:
-        resp = await litellm.acompletion(
+        resp = await acompletion(
             model=f"openai/{model}",
             messages=[{"role": "user", "content": "OK"}],
             api_key=target["auth_key"],

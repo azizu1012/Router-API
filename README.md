@@ -207,6 +207,69 @@ src/
 | POST | `/v1/chat/completions` | OpenAI chat |
 | POST | `/v1/messages` | Anthropic messages |
 
+## Thinking / Reasoning
+
+Router API hỗ trợ `thinking` (reasoning) cho tất cả Gemini models. Mặc định **tự động bật thinking** với level phù hợp theo từng dòng model:
+- **V3 models** (`gemini-3.*`): `thinking_level = "medium"`
+- **V2.5 models** (`gemini-2.5.*`): `thinking_budget = -1` (dynamic)
+
+### Cách dùng với OpenAI-compatible clients
+
+Gửi kèm các tham số sau trong request body:
+
+| Tham số | Kiểu | Mô tả |
+|---------|------|-------|
+| `thinking_level` | string | `"low"`, `"medium"`, `"high"` — chỉ dùng cho V3 |
+| `thinking_budget` | int | Số token tối đa cho thinking (`-1` = dynamic) |
+| `include_thoughts` | bool | `true` để nhận nội dung thinking trong response |
+
+Ví dụ:
+
+```bash
+curl http://127.0.0.1:58100/v1/chat/completions \
+  -H "Content-Type: application/json" \
+  -H "Authorization: Bearer sk-<key>" \
+  -d '{
+    "model": "gemini-flash-35",
+    "messages": [{"role": "user", "content": "Giải thích quantum computing"}],
+    "thinking_level": "high",
+    "include_thoughts": true
+  }'
+```
+
+Response sẽ có thêm trường `reasoning_content` trong `message`:
+
+```json
+{
+  "choices": [{
+    "message": {
+      "role": "assistant",
+      "content": "Quantum computing...",
+      "reasoning_content": "Let me think about this step by step..."
+    }
+  }]
+}
+```
+
+### Cách dùng với Anthropic-style clients
+
+Gửi kèm field `thinking` trong body:
+
+```json
+{
+  "thinking": {
+    "type": "enabled",
+    "budget_tokens": 16000
+  }
+}
+```
+
+Response sẽ có content block `type: "thinking"`.
+
+### Custom endpoints
+
+Proxy tự động forward mọi tham số thinking (bao gồm `enableThinking` của LM Studio) đến custom endpoint backend qua `extra_body`.
+
 ## Env chính
 
 | Variable | Default | Mô tả |

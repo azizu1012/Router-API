@@ -1,16 +1,10 @@
-import json
-import asyncio
-import random
-import time
 from datetime import datetime
 from typing import Dict, List, Tuple, Optional, Any
 
-from google.genai import types as gt
-from src.core.config_n_logg import config
+from src.core.providers.genai_types import types as gt
 from src.core.config_n_logg.logger import logger_proxy as logger
 from src.core.providers.gemini_api_manager import api_manager
 from src.core.providers.search_manager import execute_hybrid_search
-from src.core.router import router
 
 
 async def execute_opencode_search(
