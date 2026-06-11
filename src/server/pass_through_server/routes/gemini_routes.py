@@ -442,6 +442,9 @@ async def _handle_gemini_native(
     ep = _custom_endpoint_manager.get_endpoint_for_account(account)
     if ep and ep.get("enabled", True):
         model_to_use = model_alias
+        pool_assignments = ep.get("pool_assignments", {})
+        if model_alias in pool_assignments:
+            model_to_use = pool_assignments[model_alias]
         enabled_models = ep.get("enabled_models", [])
         if model_to_use in enabled_models:
             # Convert contents and system_instruction to OpenAI messages format
