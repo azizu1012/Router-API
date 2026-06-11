@@ -9,7 +9,6 @@ from src.core.config_n_logg.logger import logger_keys as logger
 from src.backend.key_status import (
     get_key_tiers_db,
     atomic_reserve_key,
-    atomic_freeze_key,
 )
 from src.core.limits.gemini_rate_limiter import (
     get_key_priority,

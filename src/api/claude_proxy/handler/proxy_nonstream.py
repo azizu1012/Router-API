@@ -1,9 +1,9 @@
 import asyncio
 import uuid
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, Optional
 
-import litellm
 from fastapi import HTTPException
+from src.core.providers.litellm_wrapper import token_counter
 
 from src.core.config_n_logg import config
 from src.core.config_n_logg.logger import logger_proxy as logger
@@ -86,7 +86,7 @@ class ClaudeProxyNonstreamMixin:
                 )
                 try:
                     try:
-                        input_tokens = await asyncio.to_thread(litellm.token_counter, model=litellm_model_val, messages=openai_messages)
+                        input_tokens = await token_counter(model=litellm_model_val, messages=openai_messages)
                     except Exception:
                         input_tokens = max(1, len(str(openai_messages)) // 4)
 
@@ -97,7 +97,7 @@ class ClaudeProxyNonstreamMixin:
                         limit = max(20000, limit // _div)
                     openai_messages[:] = _emergency_truncate_to_limit(openai_messages, limit)
                     try:
-                        input_tokens = await asyncio.to_thread(litellm.token_counter, model=litellm_model_val, messages=openai_messages)
+                        input_tokens = await token_counter(model=litellm_model_val, messages=openai_messages)
                     except Exception:
                         input_tokens = max(1, len(str(openai_messages)) // 4)
 
@@ -136,6 +136,9 @@ class ClaudeProxyNonstreamMixin:
                     }
                     if reservation.get("provider") == "custom":
                         kwargs["api_base"] = reservation["api_base"]
+
+                    from .proxy import _clean_kwargs_for_model
+                    kwargs = _clean_kwargs_for_model(kwargs, litellm_model_val)
 
                     result = await _execute_nonstream(self, kwargs, api_key_val, model_id_val, model_alias_val, input_tokens, None, body, auth_key_prefix, account=account)
                     router.record_success(api_key_val, model_id_val)

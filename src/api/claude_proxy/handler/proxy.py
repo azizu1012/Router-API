@@ -1,8 +1,8 @@
 import asyncio
 from typing import Any, Dict, List, Optional
 
-import litellm
 from fastapi import HTTPException
+from src.core.providers.litellm_wrapper import token_counter
 
 from src.core.config_n_logg import config
 from src.core.config_n_logg.logger import logger_proxy as logger
@@ -20,6 +20,80 @@ from .stream_executor import _execute_stream
 
 from .proxy_nonstream import ClaudeProxyNonstreamMixin
 from .proxy_stream import ClaudeProxyStreamMixin
+
+
+def _is_gemini_v3(litellm_model: str) -> bool:
+    """Check if the model is Gemini 3+ (temperature/top_p deprecated)."""
+    m = litellm_model.lower()
+    return "gemini-3" in m and "gemini-2" not in m
+
+
+def _clean_kwargs_for_model(kwargs: Dict[str, Any], litellm_model: str) -> Dict[str, Any]:
+    """Remove deprecated params for Gemini 3+; litellm defaults to 1.0."""
+    if _is_gemini_v3(litellm_model):
+        kwargs.pop("temperature", None)
+        kwargs.pop("top_p", None)
+        kwargs.pop("top_k", None)
+    return kwargs
+
+
+def _build_litellm_thinking(body: Dict[str, Any], model_id: str) -> Dict[str, Any]:
+    """Build litellm kwargs for thinking from body params.
+
+    litellm natively translates ``reasoning_effort`` and ``thinking``
+    to Gemini's ``thinkingConfig`` — no ``extra_body`` needed.
+    Returns ``{}`` when no thinking params given — each model uses API default.
+    """
+    m = model_id.lower()
+    is_v3 = _is_gemini_v3(m)
+
+    # 1. Anthropic-style thinking — pass directly, litellm handles it
+    thinking = body.get("thinking")
+    if isinstance(thinking, dict):
+        if thinking.get("type") == "enabled":
+            if is_v3:
+                return {"reasoning_effort": "medium"}
+            budget = thinking.get("budget_tokens")
+            if budget == -1 or budget is None:
+                budget = 32768 if "pro" in m else 24576
+            t_copy = thinking.copy()
+            t_copy["budget_tokens"] = budget
+            return {"thinking": t_copy}
+        return {}  # disabled
+
+    # 2. OpenAI-style explicit params
+    thinking_level = body.get("thinking_level")
+    thinking_budget = body.get("thinking_budget")
+    include_thoughts = body.get("include_thoughts", False)
+
+    # No user params → no defaults (let each model use API default)
+    if thinking_level is None and thinking_budget is None and not include_thoughts:
+        return {}
+
+    # 3. If V3 model, translate all thinking requests to reasoning_effort
+    if is_v3:
+        if thinking_level is not None:
+            return {"reasoning_effort": thinking_level}
+        return {"reasoning_effort": "medium"}
+
+    # 4. V2.5 thinking_level overrides
+    if thinking_level is not None:
+        budget_map = {"low": 1024, "medium": 2048, "high": 4096}
+        return {"thinking": {"type": "enabled", "budget_tokens": budget_map.get(thinking_level, 2048)}}
+
+    # 5. V2.5 thinking_budget / include_thoughts
+    d: Dict[str, Any] = {}
+    budget = thinking_budget
+    if budget == -1 or (budget is None and include_thoughts):
+        budget = 32768 if "pro" in m else 24576
+    if budget is not None:
+        d["budget_tokens"] = budget
+    if include_thoughts:
+        d["include_thoughts"] = True
+    if d:
+        d["type"] = "enabled"
+        return {"thinking": d}
+    return {}
 
 class ClaudeProxy(ClaudeProxyNonstreamMixin, ClaudeProxyStreamMixin):
 
@@ -42,7 +116,17 @@ class ClaudeProxy(ClaudeProxyNonstreamMixin, ClaudeProxyStreamMixin):
             
         if reservation.get("provider") == "custom":
             kwargs["api_base"] = reservation["api_base"]
-        return kwargs
+            # Forward raw thinking params to custom endpoints
+            extra: Dict[str, Any] = {}
+            for k in ("thinking", "thinking_level", "thinking_budget", "include_thoughts", "enableThinking"):
+                if k in body:
+                    extra[k] = body[k]
+            if extra:
+                kwargs["extra_body"] = extra
+        else:
+            kwargs.update(_build_litellm_thinking(body, litellm_model_val))
+
+        return _clean_kwargs_for_model(kwargs, litellm_model_val)
 
     async def _call_lm_with_retry(
         self, body: Dict[str, Any], openai_messages: List[Dict[str, Any]], openai_tools: List[Dict[str, Any]],
@@ -87,7 +171,7 @@ class ClaudeProxy(ClaudeProxyNonstreamMixin, ClaudeProxyStreamMixin):
             try:
                 try:
                     try:
-                        input_tokens = await asyncio.to_thread(litellm.token_counter, model=litellm_model_val, messages=openai_messages)
+                        input_tokens = await token_counter(model=litellm_model_val, messages=openai_messages)
                     except Exception:
                         input_tokens = max(1, len(str(openai_messages)) // 4)
 
@@ -99,7 +183,7 @@ class ClaudeProxy(ClaudeProxyNonstreamMixin, ClaudeProxyStreamMixin):
                         limit = max(20000, limit // _div)
                     openai_messages[:] = _emergency_truncate_to_limit(openai_messages, limit)
                     try:
-                        input_tokens = await asyncio.to_thread(litellm.token_counter, model=litellm_model_val, messages=openai_messages)
+                        input_tokens = await token_counter(model=litellm_model_val, messages=openai_messages)
                     except Exception:
                         input_tokens = max(1, len(str(openai_messages)) // 4)
 

@@ -4,7 +4,7 @@ Functions here handle error classification, key freezing, penalty
 application, and pool-swap coordination.
 """
 
-from typing import Any, Dict, Optional
+from typing import Any, Optional
 
 from fastapi import HTTPException
 

@@ -6,8 +6,6 @@ from src.api.opencode_proxy import opencode_proxy
 
 from src.server.openai_server.auth import _resolve_auth, _check_auth, _apply_account_limit
 from src.core.limits.account_limiter import get_effective_limits_by_pool
-from src.core.router import router
-from src.core.config_n_logg import config
 from .app_init import app
 
 

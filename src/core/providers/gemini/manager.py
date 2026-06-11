@@ -3,7 +3,7 @@ import random
 import time
 from typing import Any, AsyncIterator, Dict, List, Optional
 
-from google.genai import types
+from src.core.providers.genai_types import types
 
 from src.core.config_n_logg import config
 from src.core.config_n_logg.logger import logger_keys as logger
@@ -13,6 +13,7 @@ from src.core.limits import apply_error_penalty, get_rate_limiter
 from .pool import ClientPool
 from . import caller
 from . import error as gerror
+from .thinking_config import build_thinking_config
 
 
 class GeminiAPIManager:
@@ -31,6 +32,14 @@ class GeminiAPIManager:
     def refresh_pool_size(self) -> None:
         self.pool.refresh_pool_size()
 
+    @staticmethod
+    def _flatten_contents_text(contents: List[types.Content]) -> str:
+        return caller.flatten_contents_text(contents)
+
+    @staticmethod
+    def _has_media_or_files(contents: List[types.Content]) -> bool:
+        return caller.has_media_or_files(contents)
+
     # ── Public entry points ─────────────────────────────────────
 
     async def call_gemini(
@@ -45,6 +54,9 @@ class GeminiAPIManager:
         image_count: int = 0,
         account: Optional[Dict[str, Any]] = None,
         web_search: bool = False,
+        thinking_level: Optional[str] = None,
+        thinking_budget: Optional[int] = None,
+        include_thoughts: Optional[bool] = None,
     ) -> Dict[str, Any]:
         prompt_text = caller.flatten_contents_text(contents)
         has_quota = await self._acquire_quota(prompt_text, model_alias, image_count)
@@ -68,6 +80,10 @@ class GeminiAPIManager:
                     await asyncio.sleep(0.3 + random.uniform(0, 0.3))
 
                 if self._all_models_excluded(model_failures, model_alias):
+                    logger.warning(
+                        "[Quota] all_models_excluded for alias %s. failures: %s, excluded: %s",
+                        model_alias, model_failures, self._get_excluded_models(model_failures, model_alias)
+                    )
                     raise RuntimeError("quota_exhausted")
 
                 api_key, model_id, _, reservation = await self._get_best_key(
@@ -93,10 +109,11 @@ class GeminiAPIManager:
                     use_grounding, request_tools = self._prepare_tools(
                         tools, model_id, image_count, contents, web_search,
                     )
+                    tc = build_thinking_config(model_id, thinking_level, thinking_budget, include_thoughts)
                     response = await self._call_with_grounding_fallback(
                         api_key, model_id, system_instruction, contents,
                         max_tokens, temperature, top_p, request_tools,
-                        tier, use_grounding,
+                        tier, use_grounding, thinking_config=tc,
                     )
 
                     usage = getattr(response, "usage_metadata", None)
@@ -196,6 +213,9 @@ class GeminiAPIManager:
         image_count: int = 0,
         account: Optional[Dict[str, Any]] = None,
         web_search: bool = False,
+        thinking_level: Optional[str] = None,
+        thinking_budget: Optional[int] = None,
+        include_thoughts: Optional[bool] = None,
     ) -> AsyncIterator[Dict[str, Any]]:
         prompt_text = caller.flatten_contents_text(contents)
         has_quota = await self._acquire_quota(prompt_text, model_alias, image_count)
@@ -244,13 +264,14 @@ class GeminiAPIManager:
                     use_grounding, request_tools = self._prepare_tools(
                         tools, model_id, image_count, contents, web_search,
                     )
-
+                    tc = build_thinking_config(model_id, thinking_level, thinking_budget, include_thoughts)
                     try:
                         stream_gen = caller.generate_content_stream(
                             self.pool, api_key, model_id,
                             system_instruction, contents,
                             max_tokens, temperature, top_p,
                             tools=request_tools or None, tier=tier,
+                            thinking_config=tc,
                         )
                     except Exception as ge_err:
                         if use_grounding and gerror.is_grounding_suppression(str(ge_err)):
@@ -262,6 +283,7 @@ class GeminiAPIManager:
                                 system_instruction, contents,
                                 max_tokens, temperature, top_p,
                                 tools=non_grounding or None, tier=tier,
+                                thinking_config=tc,
                             )
                         else:
                             raise ge_err
@@ -355,6 +377,7 @@ class GeminiAPIManager:
     async def _call_with_grounding_fallback(
         self, api_key, model_id, system_instruction, contents,
         max_tokens, temperature, top_p, request_tools, tier, use_grounding,
+        thinking_config=None,
     ):
         try:
             return await caller.generate_content(
@@ -362,6 +385,7 @@ class GeminiAPIManager:
                 system_instruction, contents,
                 max_tokens, temperature, top_p,
                 tools=request_tools or None, tier=tier,
+                thinking_config=thinking_config,
             )
         except Exception as ge_err:
             if use_grounding and gerror.is_grounding_suppression(str(ge_err)):
@@ -373,6 +397,7 @@ class GeminiAPIManager:
                     system_instruction, contents,
                     max_tokens, temperature, top_p,
                     tools=non_grounding or None, tier=tier,
+                    thinking_config=thinking_config,
                 )
             raise ge_err
 
@@ -408,8 +433,8 @@ class GeminiAPIManager:
             return
 
         model_failures[model_id] = model_failures.get(model_id, 0) + 1
-        logger.warning("Model %s failed on key ...%s (failures=%d)",
-                       model_id, api_key[-4:], model_failures[model_id])
+        logger.warning("Model %s failed on key ...%s (failures=%d): %s",
+                       model_id, api_key[-4:], model_failures[model_id], error_text)
 
         if reason == "project_quota_429":
             project_id = gerror.parse_project(str(e))

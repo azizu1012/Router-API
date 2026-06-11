@@ -1,10 +1,9 @@
 import base64
-import copy
 import json
 from typing import Any, Dict, AsyncIterator, List, Optional
 from fastapi import Header, HTTPException, Request
 from fastapi.responses import JSONResponse, StreamingResponse
-from google.genai import types as gt
+from src.core.providers.genai_types import types as gt
 
 from src.core.config_n_logg import config
 from src.core.config_n_logg.logger import logger_api

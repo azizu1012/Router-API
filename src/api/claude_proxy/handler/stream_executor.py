@@ -1,9 +1,9 @@
 import asyncio
 import json
 import uuid
-from typing import Any, Dict, List, Tuple, AsyncIterator, Optional
+from typing import Any, Dict, List, AsyncIterator, Optional
 
-import litellm
+from src.core.providers.litellm_wrapper import acompletion, token_counter
 from fastapi import HTTPException
 from src.core.config_n_logg import config
 from src.core.config_n_logg.logger import logger_proxy as logger
@@ -20,6 +20,7 @@ from src.api.claude_proxy.utils import (
     _emergency_truncate_to_limit,
     _dict_to_sse_events,
     _retry_delay,
+    normalize_text,
 )
 from src.api.claude_proxy.stream import _process_anthropic_stream
 from .helpers import get_system_status_summary, _classify_error_reason, _reinforce_messages_for_retry
@@ -76,7 +77,7 @@ async def _execute_stream(proxy_instance: Any, kwargs: Dict[str, Any], api_key: 
                             logger.info("[Stream Keepalive] Still waiting for %s response (WebSearch capable) (elapsed=%.1fs), sending ping", model_alias, elapsed)
                         yield _sse("ping", {"type": "ping", "retry": 0, "reason": "keepalive"})
 
-                text, tool_calls, finish_reason = await fetch_task
+                text, tool_calls, finish_reason, _ = await fetch_task
                 elapsed = asyncio.get_event_loop().time() - t0_wait
                 logger.info(
                     "[ToolResolve Stream] model=%s elapsed=%.2fs text_len=%d emitted_tools=%d tool_names=%s websearch_capable=true",
@@ -102,7 +103,7 @@ async def _execute_stream(proxy_instance: Any, kwargs: Dict[str, Any], api_key: 
                     })
                     yield _sse("content_block_delta", {
                         "type": "content_block_delta", "index": block_idx,
-                        "delta": {"type": "text_delta", "text": text}
+                        "delta": {"type": "text_delta", "text": normalize_text(text)}
                     })
                     yield _sse("content_block_stop", {"type": "content_block_stop", "index": block_idx})
                     block_idx += 1
@@ -129,7 +130,7 @@ async def _execute_stream(proxy_instance: Any, kwargs: Dict[str, Any], api_key: 
                         yield _sse("content_block_stop", {"type": "content_block_stop", "index": block_idx})
                     block_idx += 1
                 try:
-                    out_tokens = await asyncio.to_thread(litellm.token_counter, model=kwargs.get("model", "gemini/gemini-1.5-pro"), messages=[{"role": "assistant", "content": text}])
+                    out_tokens = await token_counter(model=kwargs.get("model", "gemini/gemini-1.5-pro"), messages=[{"role": "assistant", "content": text}])
                 except Exception:
                     out_tokens = max(1, len(text) // 4) if text else 1
                 out_tokens += len(tool_calls) * 50
@@ -168,7 +169,7 @@ async def _execute_stream(proxy_instance: Any, kwargs: Dict[str, Any], api_key: 
         fetch_task = None
         try:
             async def _fetch_stream():
-                g = await litellm.acompletion(**kwargs)
+                g = await acompletion(**kwargs)
                 fc = await g.__anext__()
                 return g, fc
 
@@ -233,7 +234,7 @@ async def _stream_with_pool(
             )
             try:
                 try:
-                    input_tokens = await asyncio.to_thread(litellm.token_counter, model=litellm_model_val, messages=openai_messages)
+                    input_tokens = await token_counter(model=litellm_model_val, messages=openai_messages)
                 except Exception:
                     input_tokens = max(1, len(str(openai_messages)) // 4)
 
@@ -241,7 +242,7 @@ async def _stream_with_pool(
                 limit = config.LITE_EMERGENCY_MAX_INPUT_TOKENS if is_lite else config.EMERGENCY_MAX_INPUT_TOKENS
                 openai_messages[:] = _emergency_truncate_to_limit(openai_messages, limit)
                 try:
-                    input_tokens = await asyncio.to_thread(litellm.token_counter, model=litellm_model_val, messages=openai_messages)
+                    input_tokens = await token_counter(model=litellm_model_val, messages=openai_messages)
                 except Exception:
                     input_tokens = max(1, len(str(openai_messages)) // 4)
 

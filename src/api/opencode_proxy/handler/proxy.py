@@ -11,11 +11,10 @@ Orchestrates the request lifecycle:
 import asyncio
 from typing import Any, AsyncIterator, Dict, List, Optional
 
-import litellm
+from src.core.providers.litellm_wrapper import token_counter
 from fastapi import HTTPException
 
 from src.core.config_n_logg import config
-from src.core.config_n_logg.logger import logger_proxy as logger
 from src.core.router import router
 from src.api.claude_proxy.utils import (
     _resolve_model,
@@ -28,14 +27,61 @@ from src.api.claude_proxy.handler.helpers import _reinforce_messages_for_retry
 from .detection import detect_sub_agent_override
 from .websearch import (
     should_enable_web_search,
-    with_search_context,
     get_auth_key_prefix,
 )
-from .response import build_response, error_response, get_client_model_name
-from src.api.claude_proxy.handler.helpers import _classify_error_reason as _classify_error_reason_static
+from .response import build_response, error_response
 from . import error as ocerror
 from .nonstream_executor import _execute_nonstream
 from .stream_executor import _stream_with_pool, _stream_standalone
+
+
+def _is_gemini_v3(litellm_model: str) -> bool:
+    m = litellm_model.lower()
+    return "gemini-3" in m and "gemini-2" not in m
+
+
+def _clean_kwargs_for_model(kwargs: Dict[str, Any], litellm_model: str) -> Dict[str, Any]:
+    if _is_gemini_v3(litellm_model):
+        kwargs.pop("temperature", None)
+        kwargs.pop("top_p", None)
+    return kwargs
+
+
+def _build_litellm_thinking(body: Dict[str, Any], model_id: str) -> Dict[str, Any]:
+    m = model_id.lower()
+    is_v3 = _is_gemini_v3(m)
+
+    thinking_level = body.get("thinking_level")
+    thinking_budget = body.get("thinking_budget")
+    include_thoughts = body.get("include_thoughts", False)
+
+    if thinking_level is None and thinking_budget is None and not include_thoughts:
+        return {}
+
+    # 1. If V3 model, translate all thinking requests to reasoning_effort
+    if is_v3:
+        if thinking_level is not None:
+            return {"reasoning_effort": thinking_level}
+        return {"reasoning_effort": "medium"}
+
+    # 2. V2.5 thinking_level overrides
+    if thinking_level is not None:
+        budget_map = {"low": 1024, "medium": 2048, "high": 4096}
+        return {"thinking": {"type": "enabled", "budget_tokens": budget_map.get(thinking_level, 2048)}}
+
+    # 3. V2.5 thinking_budget / include_thoughts
+    d: Dict[str, Any] = {}
+    budget = thinking_budget
+    if budget == -1 or (budget is None and include_thoughts):
+        budget = 32768 if "pro" in m else 24576
+    if budget is not None:
+        d["budget_tokens"] = budget
+    if include_thoughts:
+        d["include_thoughts"] = True
+    if d:
+        d["type"] = "enabled"
+        return {"thinking": d}
+    return {}
 
 
 class OpenCodeProxy:
@@ -68,7 +114,7 @@ class OpenCodeProxy:
 
         pool = router.resolve_pool(model_alias)
         if pool:
-            return await self._nonstream_pool(body, messages, tools, pool, account=account)
+            return await self._nonstream_pool(body, messages, tools, pool, model_alias=model_alias, account=account)
         return await self._nonstream_standalone(body, messages, tools, model_alias, account=account)
 
 
@@ -83,13 +129,15 @@ class OpenCodeProxy:
         if pool:
             async for chunk in _stream_with_pool(
                 self, body, messages, tools, pool, model_alias,
-                auth_key_prefix=get_auth_key_prefix(account), account=account
+                auth_key_prefix=get_auth_key_prefix(account), account=account,
+                is_opencode=is_opencode
             ):
                 yield chunk
         else:
             async for chunk in _stream_standalone(
                 self, body, messages, tools, model_alias,
-                auth_key_prefix=get_auth_key_prefix(account), account=account
+                auth_key_prefix=get_auth_key_prefix(account), account=account,
+                is_opencode=is_opencode
             ):
                 yield chunk
 
@@ -102,7 +150,7 @@ class OpenCodeProxy:
         messages = _emergency_truncate_to_limit(messages, limit)
         try:
             model_id = router.get_model_id(model_alias)
-            input_tokens = await asyncio.to_thread(litellm.token_counter, model=f"gemini/{model_id}", messages=messages)
+            input_tokens = await token_counter(model=f"gemini/{model_id}", messages=messages)
         except Exception:
             input_tokens = max(1, len(str(messages)) // 4)
         return messages, input_tokens
@@ -114,12 +162,12 @@ class OpenCodeProxy:
         model_alias: str, pool: Any, account: Optional[Dict[str, Any]] = None,
     ) -> Dict[str, Any]:
         if pool:
-            return await self._nonstream_pool(body, messages, tools, pool, account=account)
+            return await self._nonstream_pool(body, messages, tools, pool, model_alias=model_alias, account=account)
         return await self._nonstream_standalone(body, messages, tools, model_alias, account=account)
 
     async def _nonstream_pool(
         self, body: Dict[str, Any], messages: List[Dict[str, Any]], tools: List[Dict[str, Any]],
-        pool: Any, account: Optional[Dict[str, Any]] = None,
+        pool: Any, model_alias: str = "", account: Optional[Dict[str, Any]] = None,
     ) -> Dict[str, Any]:
         pool.start()
         while not pool.exhausted:
@@ -196,7 +244,15 @@ class OpenCodeProxy:
             kwargs["tools"] = sanitized
         if reservation.get("provider") == "custom":
             kwargs["api_base"] = reservation["api_base"]
-        return kwargs
+            extra: Dict[str, Any] = {}
+            for k in ("thinking_level", "thinking_budget", "include_thoughts", "enableThinking", "thinking"):
+                if k in body:
+                    extra[k] = body[k]
+            if extra:
+                kwargs["extra_body"] = extra
+        else:
+            kwargs.update(_build_litellm_thinking(body, litellm_model_val))
+        return _clean_kwargs_for_model(kwargs, litellm_model_val)
 
     async def _resolve_and_call(
         self, body: Dict[str, Any], messages: List[Dict[str, Any]], tools: List[Dict[str, Any]],
@@ -221,7 +277,7 @@ class OpenCodeProxy:
         truncated = _emergency_truncate_to_limit(reinforced_messages, limit)
 
         try:
-            input_tokens = await asyncio.to_thread(litellm.token_counter, model=litellm_model_val, messages=truncated)
+            input_tokens = await token_counter(model=litellm_model_val, messages=truncated)
         except Exception:
             input_tokens = max(1, len(str(truncated)) // 4)
 

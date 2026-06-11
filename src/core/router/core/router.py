@@ -12,7 +12,6 @@ from src.core.limits.gemini_rate_limiter import (
 )
 from src.backend.key_status import (
     get_key_status_db,
-    atomic_reserve_key,
     atomic_release_key,
     atomic_freeze_key,
     atomic_record_success,

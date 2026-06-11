@@ -2,9 +2,9 @@ import asyncio
 import json
 import uuid
 import time
-from typing import Any, Dict, List, Tuple, AsyncIterator, Optional
+from typing import Any, Dict, List, AsyncIterator, Optional
 
-import litellm
+from src.core.providers.litellm_wrapper import acompletion, token_counter
 from fastapi import HTTPException
 from src.core.config_n_logg import config
 from src.core.config_n_logg.logger import logger_proxy as logger
@@ -15,6 +15,8 @@ from src.api.claude_proxy.utils import (
     _resolve_model,
     _get_simulated_cache_usage,
     _retry_delay,
+    StreamingTextNormalizer,
+    normalize_text,
 )
 from .sse import openai_chunks, error_sse
 from .nonstream_executor import _resolve_gemini_with_tools
@@ -33,6 +35,7 @@ def _openai_sse(
     tool_calls: Optional[List[dict]] = None,
     finish_reason: Optional[str] = None,
     chunk_id: Optional[str] = None,
+    reasoning_content: Optional[str] = None,
 ) -> bytes:
     if not chunk_id:
         chunk_id = f"chatcmpl-{uuid.uuid4().hex}"
@@ -51,6 +54,8 @@ def _openai_sse(
     }
     if content is not None:
         data["choices"][0]["delta"]["content"] = content
+    if reasoning_content is not None:
+        data["choices"][0]["delta"]["reasoning_content"] = reasoning_content
     if tool_calls:
         data["choices"][0]["delta"]["tool_calls"] = [
             {
@@ -78,13 +83,14 @@ async def _execute_stream(
     body: Dict[str, Any],
     auth_key_prefix: str = "",
     account: Optional[Dict[str, Any]] = None,
+    is_opencode: bool = False,
 ) -> AsyncIterator[bytes]:
     tools = kwargs.get("tools") or []
     has_websearch = any(
         tool.get("function", {}).get("name") == "WebSearch"
         for tool in tools
     )
-    from .proxy import get_client_model_name
+    from .response import get_client_model_name
     requested_model = body.get("model") or model_alias
     model_name = get_client_model_name(requested_model)
 
@@ -122,27 +128,42 @@ async def _execute_stream(
                         # Yield a keepalive ping or empty chunk to keep connection open
                         yield b": keepalive\n\n"
 
-                text, tool_calls, finish_reason = await fetch_task
+                text, tool_calls, finish_reason, thought_text = await fetch_task
                 elapsed = asyncio.get_event_loop().time() - t0_wait
                 logger.info(
-                    "[OpenCode ToolResolve Stream] model=%s elapsed=%.2fs text_len=%d tools=%d",
-                    model_alias, elapsed, len(text), len(tool_calls)
+                    "[OpenCode ToolResolve Stream] model=%s elapsed=%.2fs text_len=%d tools=%d thought_len=%d",
+                    model_alias, elapsed, len(text), len(tool_calls), len(thought_text) if thought_text else 0
                 )
+
+                # Stream thought back in chunks to simulate streaming
+                if thought_text:
+                    norm_thought = normalize_text(thought_text)
+                    if is_opencode:
+                        yield _openai_sse(model_name, content="<think>\n", chunk_id=chunk_id)
+                    chunk_size = 40
+                    for i in range(0, len(norm_thought), chunk_size):
+                        chunk_val = norm_thought[i:i+chunk_size]
+                        if is_opencode:
+                            yield _openai_sse(model_name, content=chunk_val, reasoning_content=chunk_val, chunk_id=chunk_id)
+                        else:
+                            yield _openai_sse(model_name, reasoning_content=chunk_val, chunk_id=chunk_id)
+                        await asyncio.sleep(0.01)
+                    if is_opencode:
+                        yield _openai_sse(model_name, content="\n</think>\n\n", chunk_id=chunk_id)
 
                 # Stream text back in chunks to simulate streaming
                 if text:
+                    norm_txt = normalize_text(text)
                     chunk_size = 40
-                    for i in range(0, len(text), chunk_size):
-                        yield _openai_sse(model_name, content=text[i:i+chunk_size], chunk_id=chunk_id)
+                    for i in range(0, len(norm_txt), chunk_size):
+                        yield _openai_sse(model_name, content=norm_txt[i:i+chunk_size], chunk_id=chunk_id)
                         await asyncio.sleep(0.01)
 
                 if tool_calls:
                     yield _openai_sse(model_name, tool_calls=tool_calls, chunk_id=chunk_id)
 
                 try:
-                    out_tokens = await asyncio.to_thread(
-                        litellm.token_counter, model=kwargs.get("model", "gemini/gemini-1.5-flash"), messages=[{"role": "assistant", "content": text}]
-                    )
+                    out_tokens = await token_counter(model=kwargs.get("model", "gemini/gemini-1.5-flash"), messages=[{"role": "assistant", "content": text}])
                 except Exception:
                     out_tokens = max(1, len(text) // 4) if text else 1
                 out_tokens += len(tool_calls) * 50
@@ -208,7 +229,7 @@ async def _execute_stream(
         fetch_task = None
         try:
             async def _fetch_stream():
-                g = await litellm.acompletion(**kwargs)
+                g = await acompletion(**kwargs)
                 if g is None:
                     raise LiteLLMTransientError("litellm.acompletion returned None")
                 first = await g.__anext__()
@@ -235,21 +256,76 @@ async def _execute_stream(
             ttfb = asyncio.get_event_loop().time() - t0_wait
             logger.info("[OpenCode Stream] model=%s ttfb=%.2fs", model_alias, ttfb)
 
+            normalizer = StreamingTextNormalizer()
             out_len = 0
-            for sse_bytes in openai_chunks(first_chunk, model_name):
-                yield sse_bytes
-                if first_chunk.choices and first_chunk.choices[0].delta:
-                    c = getattr(first_chunk.choices[0].delta, "content", None)
-                    if c:
-                        out_len += len(c)
 
+            thought_started = False
+            thought_stopped = False
+
+            # Process first_chunk
+            delta_1 = first_chunk.choices[0].delta if first_chunk.choices else None
+            content_1 = getattr(delta_1, "content", None) if delta_1 else None
+            reasoning_1 = (getattr(delta_1, "reasoning_content", None) or 
+                           getattr(delta_1, "thought", None) or 
+                           getattr(delta_1, "reasoning", None)) if delta_1 else None
+            
+            norm_content_1 = normalizer.feed(content_1) if content_1 is not None else None
+            norm_reasoning_1 = normalizer.feed(reasoning_1) if reasoning_1 is not None else None
+
+            if norm_reasoning_1:
+                thought_started = True
+                if is_opencode:
+                    yield _openai_sse(model_name, content="<think>\n")
+                    yield _openai_sse(model_name, content=norm_reasoning_1, reasoning_content=norm_reasoning_1)
+                else:
+                    yield _openai_sse(model_name, reasoning_content=norm_reasoning_1)
+                out_len += len(norm_reasoning_1)
+            elif norm_content_1:
+                yield _openai_sse(model_name, content=norm_content_1)
+                if content_1:
+                    out_len += len(content_1)
+
+            # Process subsequent chunks
             async for chunk in gen:
-                for sse_bytes in openai_chunks(chunk, model_name):
-                    yield sse_bytes
-                if chunk.choices and chunk.choices[0].delta:
-                    c = getattr(chunk.choices[0].delta, "content", None)
-                    if c:
-                        out_len += len(c)
+                delta = chunk.choices[0].delta if chunk.choices else None
+                content = getattr(delta, "content", None) if delta else None
+                reasoning = (getattr(delta, "reasoning_content", None) or 
+                             getattr(delta, "thought", None) or 
+                             getattr(delta, "reasoning", None)) if delta else None
+
+                norm_content = normalizer.feed(content) if content is not None else None
+                norm_reasoning = normalizer.feed(reasoning) if reasoning is not None else None
+
+                if norm_reasoning:
+                    if not thought_started:
+                        thought_started = True
+                        if is_opencode:
+                            yield _openai_sse(model_name, content="<think>\n")
+                    if is_opencode:
+                        yield _openai_sse(model_name, content=norm_reasoning, reasoning_content=norm_reasoning)
+                    else:
+                        yield _openai_sse(model_name, reasoning_content=norm_reasoning)
+                    out_len += len(norm_reasoning)
+
+                if norm_content:
+                    if is_opencode and thought_started and not thought_stopped:
+                        yield _openai_sse(model_name, content="\n</think>\n\n")
+                        thought_stopped = True
+                    yield _openai_sse(model_name, content=norm_content)
+                    if content:
+                        out_len += len(content)
+
+            # Flush normalizer at the end of the stream
+            flushed_content = normalizer.flush()
+            if flushed_content:
+                if is_opencode and thought_started and not thought_stopped:
+                    yield _openai_sse(model_name, content="\n</think>\n\n")
+                    thought_stopped = True
+                yield _openai_sse(model_name, content=flushed_content)
+                out_len += len(flushed_content)
+            elif is_opencode and thought_started and not thought_stopped:
+                yield _openai_sse(model_name, content="\n</think>\n\n")
+                thought_stopped = True
 
             out_tokens = max(1, out_len // 4)
             cache_usage = _get_simulated_cache_usage(body, input_tokens)
@@ -313,6 +389,7 @@ async def _stream_with_pool(
     model_alias: str,
     auth_key_prefix: str = "",
     account: Optional[Dict[str, Any]] = None,
+    is_opencode: bool = False,
 ) -> AsyncIterator[bytes]:
     committed = False
     pool.start()
@@ -336,7 +413,7 @@ async def _stream_with_pool(
 
             try:
                 try:
-                    input_tokens = await asyncio.to_thread(litellm.token_counter, model=litellm_model_val, messages=messages)
+                    input_tokens = await token_counter(model=litellm_model_val, messages=messages)
                 except Exception:
                     input_tokens = max(1, len(str(messages)) // 4)
 
@@ -372,7 +449,8 @@ async def _stream_with_pool(
 
                 gen = await _execute_stream(
                     proxy_instance, kwargs, api_key_val, model_id_val, model_alias_val,
-                    input_tokens, pool, body, auth_key_prefix, account=account
+                    input_tokens, pool, body, auth_key_prefix, account=account,
+                    is_opencode=is_opencode
                 )
                 saved_key = api_key_val
                 api_key_val = None
@@ -460,7 +538,7 @@ async def _stream_with_pool(
             if is_region_quota:
                 reason = "rate_limit"
             else:
-                from .proxy import _classify_error_reason_static
+                from src.api.claude_proxy.handler.helpers import _classify_error_reason as _classify_error_reason_static
                 reason = _classify_error_reason_static(error_text, api_key_val, model_id_val)
 
             if reason == "rate_limit":
@@ -504,6 +582,7 @@ async def _stream_standalone(
     model_alias: str,
     auth_key_prefix: str = "",
     account: Optional[Dict[str, Any]] = None,
+    is_opencode: bool = False,
 ) -> AsyncIterator[bytes]:
     committed = False
     for attempt in range(config.MAX_RETRIES):
@@ -521,7 +600,7 @@ async def _stream_standalone(
 
             try:
                 try:
-                    input_tokens = await asyncio.to_thread(litellm.token_counter, model=litellm_model_val, messages=messages)
+                    input_tokens = await token_counter(model=litellm_model_val, messages=messages)
                 except Exception:
                     input_tokens = max(1, len(str(messages)) // 4)
 
@@ -543,10 +622,12 @@ async def _stream_standalone(
                     reservation=reservation,
                     is_stream=True,
                 )
+                logger.info("[Test Standalone Kwargs] %s", {k: v for k, v in kwargs.items() if k != 'api_key'})
 
                 gen = await _execute_stream(
                     proxy_instance, kwargs, api_key_val, model_id_val, model_alias_val,
-                    input_tokens, None, body, auth_key_prefix, account=account
+                    input_tokens, None, body, auth_key_prefix, account=account,
+                    is_opencode=is_opencode
                 )
                 saved_key = api_key_val
                 api_key_val = None
@@ -607,7 +688,7 @@ async def _stream_standalone(
             if is_region_quota:
                 reason = "rate_limit"
             else:
-                from .proxy import _classify_error_reason_static
+                from src.api.claude_proxy.handler.helpers import _classify_error_reason as _classify_error_reason_static
                 reason = _classify_error_reason_static(error_text, api_key_val, model_id_val)
 
             if reason == "rate_limit":

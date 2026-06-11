@@ -1,0 +1,316 @@
+@import "tailwindcss";
+@plugin "daisyui";
+
+@theme {
+  --font-sans: "Inter", sans-serif;
+  --font-mono: "JetBrains Mono", monospace;
+}
+
+:root {
+  --radius-box: 1.25rem;
+  --radius-btn: 0.75rem;
+  --radius-badge: 1.9rem;
+}
+
+@layer base {
+  body {
+    @apply font-sans m-0 p-0 overflow-x-hidden min-h-screen select-none text-base-content;
+    background: radial-gradient(150% 150% at 50% 0%, #0a0c16 0%, #05060b 70%, #010103 100%);
+    color: #f3f4f6;
+  }
+}
+
+[data-theme="light"] body {
+  background: linear-gradient(135deg, #bae6fd 0%, #e0f2fe 35%, #fafaf9 100%);
+  color: #1f2937;
+}
+
+[data-theme="valentine"] body {
+  background: linear-gradient(135deg, #fce7f3 0%, #ffe4e6 45%, #fff1f2 100%);
+  color: #590d22;
+}
+
+/* ─── Custom scrollbars for clean UI ─── */
+::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+::-webkit-scrollbar-thumb {
+  background: rgba(255, 255, 255, 0.08);
+  border-radius: 3px;
+}
+[data-theme="light"] ::-webkit-scrollbar-thumb {
+  background: rgba(0, 0, 0, 0.08);
+}
+::-webkit-scrollbar-thumb:hover {
+  background: rgba(255, 255, 255, 0.18);
+}
+
+/* ─── Animated Particles Background ─── */
+#particles-canvas {
+  position: fixed;
+  top: 0;
+  left: 0;
+  width: 100vw;
+  height: 100vh;
+  z-index: 0;
+  pointer-events: none;
+}
+
+/* ─── Glassmorphism navigation & sidebar ─── */
+.glass-nav {
+  background: rgba(8, 12, 24, 0.45);
+  backdrop-filter: blur(20px);
+  -webkit-backdrop-filter: blur(20px);
+  border-right: 1px solid rgba(255, 255, 255, 0.03);
+  border-bottom: 1px solid rgba(255, 255, 255, 0.03);
+  transition: all 0.4s cubic-bezier(0.16, 1, 0.3, 1);
+}
+
+[data-theme="light"] .glass-nav {
+  background: rgba(255, 255, 255, 0.45);
+  border-right: 1px solid rgba(0, 0, 0, 0.03);
+  border-bottom: 1px solid rgba(0, 0, 0, 0.03);
+}
+
+[data-theme="valentine"] .glass-nav {
+  background: rgba(255, 229, 236, 0.45);
+  border-right: 1px solid rgba(255, 77, 109, 0.06);
+  border-bottom: 1px solid rgba(255, 77, 109, 0.06);
+}
+
+/* ─── Interactive Glass Cards ─── */
+.glass-card {
+  background: rgba(13, 18, 30, 0.4);
+  backdrop-filter: blur(16px);
+  -webkit-backdrop-filter: blur(16px);
+  border: 1px solid rgba(255, 255, 255, 0.04);
+  box-shadow: 0 12px 40px 0 rgba(0, 0, 0, 0.25);
+  transition: all 0.45s cubic-bezier(0.16, 1, 0.3, 1);
+}
+
+.glass-card:hover {
+  border-color: rgba(99, 102, 241, 0.15);
+  box-shadow: 0 16px 40px 0 rgba(99, 102, 241, 0.05);
+}
+
+[data-theme="light"] .glass-card {
+  background: rgba(255, 255, 255, 0.55);
+  border: 1px solid rgba(0, 0, 0, 0.03);
+  box-shadow: 0 12px 40px 0 rgba(0, 0, 0, 0.03);
+}
+
+[data-theme="light"] .glass-card:hover {
+  border-color: rgba(79, 70, 229, 0.1);
+  box-shadow: 0 16px 40px 0 rgba(79, 70, 229, 0.03);
+}
+
+[data-theme="valentine"] .glass-card {
+  background: rgba(255, 255, 255, 0.65);
+  border: 1px solid rgba(255, 77, 109, 0.04);
+  box-shadow: 0 12px 40px 0 rgba(255, 77, 109, 0.03);
+}
+
+[data-theme="valentine"] .glass-card:hover {
+  border-color: rgba(255, 77, 109, 0.15);
+  box-shadow: 0 16px 40px 0 rgba(255, 77, 109, 0.05);
+}
+
+/* Interactive Card Modifier */
+.glass-card-interactive {
+  cursor: pointer;
+}
+.glass-card-interactive:hover {
+  border-color: rgba(99, 102, 241, 0.35) !important;
+  box-shadow: 0 24px 60px -15px rgba(99, 102, 241, 0.22) !important;
+  transform: translateY(-4px) scale(1.015) !important;
+}
+.glass-card-interactive:active {
+  transform: translateY(-1px) scale(0.99) !important;
+}
+
+[data-theme="light"] .glass-card-interactive:hover {
+  border-color: rgba(79, 70, 229, 0.3) !important;
+  box-shadow: 0 24px 60px -15px rgba(79, 70, 229, 0.12) !important;
+}
+
+[data-theme="valentine"] .glass-card-interactive:hover {
+  border-color: rgba(255, 77, 109, 0.45) !important;
+  box-shadow: 0 24px 60px -15px rgba(255, 77, 109, 0.18) !important;
+}
+
+/* ─── Shake error animation ─── */
+.animate-shake {
+  animation: shake 0.4s ease-in-out;
+}
+
+@keyframes shake {
+  0%, 100% { transform: translateX(0); }
+  10%, 30%, 50%, 70%, 90% { transform: translateX(-4px); }
+  20%, 40%, 60%, 80% { transform: translateX(4px); }
+}
+
+/* ─── Hacker green console style ─── */
+.matrix-text {
+  color: #22c55e !important;
+  font-family: "JetBrains Mono", monospace !important;
+  border-color: #22c55e !important;
+  text-shadow: 0 0 5px rgba(34, 197, 94, 0.5);
+  background: rgba(0, 0, 0, 0.75) !important;
+}
+
+
+/* ─── Premium Inputs & Selects ─── */
+.input, .select {
+  background: rgba(255, 255, 255, 0.01) !important;
+  border: 1px solid rgba(255, 255, 255, 0.06) !important;
+  border-radius: 0.75rem;
+  transition: all 0.3s cubic-bezier(0.16, 1, 0.3, 1) !important;
+}
+
+.select option {
+  background-color: #0f172a !important;
+  color: #f3f4f6 !important;
+}
+
+.input:focus, .select:focus {
+  border-color: #6366f1 !important;
+  box-shadow: 0 0 0 3px rgba(99, 102, 241, 0.15) !important;
+  background: rgba(255, 255, 255, 0.03) !important;
+  transform: scale(1.005);
+}
+
+[data-theme="light"] .input, [data-theme="light"] .select {
+  background: rgba(0, 0, 0, 0.01) !important;
+  border-color: rgba(0, 0, 0, 0.06) !important;
+}
+
+[data-theme="light"] .select option {
+  background-color: #ffffff !important;
+  color: #1f2937 !important;
+}
+
+[data-theme="light"] .input:focus, [data-theme="light"] .select:focus {
+  border-color: #4f46e5 !important;
+  box-shadow: 0 0 0 3px rgba(79, 70, 229, 0.12) !important;
+  background: rgba(0, 0, 0, 0.02) !important;
+}
+
+[data-theme="valentine"] .input, [data-theme="valentine"] .select {
+  background: rgba(255, 255, 255, 0.5) !important;
+  border-color: rgba(255, 77, 109, 0.1) !important;
+  color: #590d22 !important;
+}
+
+[data-theme="valentine"] .select option {
+  background-color: #fff1f2 !important;
+  color: #590d22 !important;
+}
+
+[data-theme="valentine"] .input:focus, [data-theme="valentine"] .select:focus {
+  border-color: #ff4d6d !important;
+  box-shadow: 0 0 0 3px rgba(255, 77, 109, 0.15) !important;
+}
+
+/* ─── Clean Tables ─── */
+.table tr {
+  transition: background-color 0.2s ease;
+  border-bottom-color: rgba(255, 255, 255, 0.02) !important;
+}
+.table th {
+  background: rgba(0, 0, 0, 0.15) !important;
+  color: rgba(255, 255, 255, 0.5) !important;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+}
+[data-theme="light"] .table th {
+  background: rgba(0, 0, 0, 0.01) !important;
+  color: rgba(0, 0, 0, 0.5) !important;
+  border-bottom-color: rgba(0, 0, 0, 0.03) !important;
+}
+[data-theme="valentine"] .table th {
+  background: rgba(255, 77, 109, 0.03) !important;
+  color: #800f2f !important;
+  border-bottom-color: rgba(255, 77, 109, 0.08) !important;
+}
+
+/* ─── DevTools Warning fullscreen overlay ─── */
+#dtw-screen {
+  position: fixed;
+  top: 0;
+  left: 0;
+  width: 100vw;
+  height: 100vh;
+  z-index: 99999;
+  background: rgba(9, 13, 22, 0.98);
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  color: #f43f5e;
+  font-family: 'Inter', sans-serif;
+  text-align: center;
+}
+
+#dtw-screen svg {
+  width: 64px;
+  height: 64px;
+  animation: dtwPulse 2s infinite ease-in-out;
+  margin-bottom: 16px;
+}
+
+@keyframes dtwPulse {
+  0%, 100% { transform: scale(1); opacity: 0.9; }
+  50% { transform: scale(1.1); opacity: 0.5; }
+}
+
+/* ─── Premium Entrance & Cascade Animations ─── */
+.animate-tab-in {
+  opacity: 0;
+  animation: tabIn 0.6s cubic-bezier(0.16, 1, 0.3, 1) forwards;
+}
+
+@keyframes tabIn {
+  from {
+    opacity: 0;
+    transform: translateY(12px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+.animate-fade-in-up {
+  opacity: 0;
+  animation: fadeInUp 0.55s cubic-bezier(0.16, 1, 0.3, 1) forwards;
+}
+
+@keyframes fadeInUp {
+  from {
+    opacity: 0;
+    transform: translateY(16px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+/* Cascade delays matching staggered DOM structures */
+.cascade-1 { animation-delay: 75ms !important; }
+.cascade-2 { animation-delay: 150ms !important; }
+.cascade-3 { animation-delay: 225ms !important; }
+.cascade-4 { animation-delay: 300ms !important; }
+.cascade-5 { animation-delay: 375ms !important; }
+.cascade-6 { animation-delay: 450ms !important; }
+.cascade-7 { animation-delay: 525ms !important; }
+.cascade-8 { animation-delay: 600ms !important; }
+.cascade-9 { animation-delay: 675ms !important; }
+.cascade-10 { animation-delay: 750ms !important; }
+
+

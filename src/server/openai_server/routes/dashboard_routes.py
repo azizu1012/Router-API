@@ -1,12 +1,10 @@
 import asyncio
 import time
-from typing import Any, Dict
 
 from fastapi import Request
 from fastapi.responses import JSONResponse
 
 from src.core.config_n_logg import config
-from src.core.router import router
 from src.core.limits import account_limiter
 from src.backend.accounts import (
     find_account_by_key, find_account_by_name, list_accounts_db

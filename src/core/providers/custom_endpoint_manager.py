@@ -6,12 +6,10 @@ from typing import Any, Dict, List, Optional
 
 import aiohttp
 
-from src.core.config_n_logg import config
 from src.core.config_n_logg.logger import logger_api as logger
 from src.backend.endpoints import (
     list_endpoints_db,
     get_endpoint_db,
-    get_endpoint_by_account_db,
     add_endpoint_db,
     remove_endpoint_db,
     enable_endpoint_db,
@@ -240,7 +238,8 @@ class CustomEndpointManager:
 
     async def _call_chat(self, base_url: str, auth_key: str, model: str, messages: list,
                          max_tokens: int = 4096, temperature: float = 0.7, top_p: float = 0.95,
-                         stream: bool = False, timeout: int = 120) -> Dict[str, Any]:
+                         stream: bool = False, timeout: int = 120,
+                         extra_body: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
         """Raw HTTP call to custom endpoint. Merges SSE if server returns stream despite settings."""
         import json as _json
         url = f"{base_url.rstrip('/')}/chat/completions"
@@ -257,6 +256,8 @@ class CustomEndpointManager:
             "top_p": top_p,
             "stream": stream,
         }
+        if extra_body:
+            payload.update(extra_body)
         async with aiohttp.ClientSession(headers=headers) as session:
             async with session.post(url, json=payload, timeout=aiohttp.ClientTimeout(total=timeout)) as resp:
                 ct = resp.headers.get("Content-Type", "")

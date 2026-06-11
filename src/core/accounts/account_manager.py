@@ -7,7 +7,6 @@ from typing import Any, Dict, List, Optional
 from src.core.config_n_logg import config
 from src.backend.accounts import (
     find_account_by_key as _find_by_key,
-    find_account_by_name as _find_by_name,
     list_accounts_db as _list_accounts,
     create_account_db as _create_account,
     update_account_db as _update_account,

@@ -3,22 +3,21 @@ import json
 import uuid
 from typing import Any, Dict, List, Tuple, Optional
 
-import litellm
-from src.core.config_n_logg import config
+from src.core.providers.litellm_wrapper import acompletion, token_counter
 from src.core.config_n_logg.logger import logger_proxy as logger
 from src.core.router import router
 from src.core.usage_logger import log_usage
 from src.api.claude_proxy.utils import (
-    _resolve_model,
     _get_simulated_cache_usage,
     is_sub_agent_body,
     is_claude_code_body,
+    normalize_text,
 )
 
-async def _resolve_gemini_with_tools(kwargs: Dict[str, Any], body: Dict[str, Any], proxy_instance: Any, auth_key_prefix: str = "", account: Optional[Dict[str, Any]] = None, _recursion_depth: int = 0) -> Tuple[str, List[Dict[str, Any]], str]:
+async def _resolve_gemini_with_tools(kwargs: Dict[str, Any], body: Dict[str, Any], proxy_instance: Any, auth_key_prefix: str = "", account: Optional[Dict[str, Any]] = None, _recursion_depth: int = 0) -> Tuple[str, List[Dict[str, Any]], str, str]:
     try:
         kwargs["stream"] = True
-        gen = await litellm.acompletion(**kwargs)
+        gen = await acompletion(**kwargs)
     except Exception as e:
         logger.error("[_resolve_gemini_with_tools] litellm.acompletion error: %s", e, exc_info=True)
         raise
@@ -26,6 +25,7 @@ async def _resolve_gemini_with_tools(kwargs: Dict[str, Any], body: Dict[str, Any
     text_buf = []
     tool_call_buf = {}
     finish_reason = "stop"
+    thought_buf = []
 
     async for chunk in gen:
         if not chunk.choices:
@@ -35,6 +35,9 @@ async def _resolve_gemini_with_tools(kwargs: Dict[str, Any], body: Dict[str, Any
 
         if getattr(delta, "content", None):
             text_buf.append(delta.content)
+        rc = getattr(delta, "reasoning_content", None)
+        if rc:
+            thought_buf.append(rc)
         if getattr(delta, "tool_calls", None):
             for tc in delta.tool_calls:
                 idx = tc.index
@@ -54,11 +57,12 @@ async def _resolve_gemini_with_tools(kwargs: Dict[str, Any], body: Dict[str, Any
             finish_reason = finish
 
     text = "".join(text_buf)
+    thought_text = "".join(thought_buf)
     tool_calls = list(tool_call_buf.values())
 
     if _recursion_depth >= 3:
         logger.warning("[ToolRecursion] Max recursion depth reached (3), returning tool calls as-is")
-        return text, tool_calls, finish_reason
+        return text, tool_calls, finish_reason, thought_text
 
     web_call = next((tc for tc in tool_calls if tc.get("name") == "WebSearch"), None)
     if web_call:
@@ -97,7 +101,8 @@ async def _resolve_gemini_with_tools(kwargs: Dict[str, Any], body: Dict[str, Any
         new_kwargs = dict(kwargs)
         new_kwargs["messages"] = list(kwargs["messages"]) + [assistant_msg, tool_result_msg]
 
-        return await _resolve_gemini_with_tools(new_kwargs, body, proxy_instance, auth_key_prefix=auth_key_prefix, account=account, _recursion_depth=_recursion_depth + 1)
+        ntext, ntools, nfr, nth = await _resolve_gemini_with_tools(new_kwargs, body, proxy_instance, auth_key_prefix=auth_key_prefix, account=account, _recursion_depth=_recursion_depth + 1)
+        return ntext, ntools, nfr, nth
 
     web_fetch_call = next((tc for tc in tool_calls if tc.get("name") == "WebFetch"), None)
     if web_fetch_call:
@@ -129,13 +134,14 @@ async def _resolve_gemini_with_tools(kwargs: Dict[str, Any], body: Dict[str, Any
         new_kwargs = dict(kwargs)
         new_kwargs["messages"] = list(kwargs["messages"]) + [assistant_msg, tool_result_msg]
 
-        return await _resolve_gemini_with_tools(new_kwargs, body, proxy_instance, auth_key_prefix=auth_key_prefix, account=account, _recursion_depth=_recursion_depth + 1)
+        ntext2, ntools2, nfr2, nth2 = await _resolve_gemini_with_tools(new_kwargs, body, proxy_instance, auth_key_prefix=auth_key_prefix, account=account, _recursion_depth=_recursion_depth + 1)
+        return ntext2, ntools2, nfr2, nth2
 
-    return text, tool_calls, finish_reason
+    return text, tool_calls, finish_reason, thought_text
 
 async def _execute_nonstream(proxy_instance: Any, kwargs: Dict[str, Any], api_key: str, model_id: str, model_alias: str, input_tokens: int, pool: Any, body: Dict[str, Any], auth_key_prefix: str = "", account: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
     t0 = asyncio.get_event_loop().time()
-    text, tool_calls, finish_reason = await _resolve_gemini_with_tools(kwargs, body, proxy_instance, auth_key_prefix=auth_key_prefix, account=account)
+    text, tool_calls, finish_reason, thought_text = await _resolve_gemini_with_tools(kwargs, body, proxy_instance, auth_key_prefix=auth_key_prefix, account=account)
     elapsed = asyncio.get_event_loop().time() - t0
     logger.info("[NonStream] model=%s elapsed=%.2fs tools=%d text_len=%d",
                 model_alias, elapsed, len(tool_calls), len(text))
@@ -161,8 +167,10 @@ async def _execute_nonstream(proxy_instance: Any, kwargs: Dict[str, Any], api_ke
         text = warning_message + text
 
     content_blocks = []
+    if thought_text:
+        content_blocks.append({"type": "thinking", "thinking": normalize_text(thought_text)})
     if text:
-        content_blocks.append({"type": "text", "text": text})
+        content_blocks.append({"type": "text", "text": normalize_text(text)})
     for tc in tool_calls:
         try:
             args = json.loads(tc["arguments"]) if isinstance(tc["arguments"], str) else tc["arguments"]
@@ -182,8 +190,7 @@ async def _execute_nonstream(proxy_instance: Any, kwargs: Dict[str, Any], api_ke
 
     finish_str = "tool_use" if tool_calls else ("length" if "max" in str(finish_reason).lower() else "end_turn")
     try:
-        out_tokens = await asyncio.to_thread(
-            litellm.token_counter,
+        out_tokens = await token_counter(
             model=kwargs.get("model", "gemini/gemini-1.5-pro"),
             messages=[{"role": "assistant", "content": text}]
         )

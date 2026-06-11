@@ -1,7 +1,7 @@
 import json
 import asyncio
 from typing import Dict, List, Tuple, Optional, Any
-from google.genai import types as gt
+from src.core.providers.genai_types import types as gt
 from src.core.config_n_logg.logger import logger_system as logger
 from src.core.providers.gemini_api_manager import api_manager
 
