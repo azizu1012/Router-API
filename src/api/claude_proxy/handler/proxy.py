@@ -38,6 +38,13 @@ def _clean_kwargs_for_model(kwargs: Dict[str, Any], litellm_model: str) -> Dict[
     return kwargs
 
 
+def _model_supports_thinking(model_id: str) -> bool:
+    m = model_id.lower()
+    if "lite" in m:
+        return False
+    return any(x in m for x in ["gemini-2", "gemini-2.5", "gemini-3", "gemini-3.5"])
+
+
 def _build_litellm_thinking(body: Dict[str, Any], model_id: str) -> Dict[str, Any]:
     """Build litellm kwargs for thinking from body params.
 
@@ -50,6 +57,25 @@ def _build_litellm_thinking(body: Dict[str, Any], model_id: str) -> Dict[str, An
 
     # 1. Anthropic-style thinking — pass directly, litellm handles it
     thinking = body.get("thinking")
+    
+    # Auto-enable thinking for main agent if not specified and model supports it
+    if thinking is None:
+        try:
+            from src.api.claude_proxy.utils import is_sub_agent_body
+            is_sub = is_sub_agent_body(body)
+            supports = _model_supports_thinking(model_id)
+            logger.info("[Thinking Sync] Checking auto-enable: is_sub_agent=%s, supports_thinking=%s", is_sub, supports)
+            if not is_sub and supports:
+                thinking = {
+                    "type": "enabled",
+                    "budget_tokens": 4096 if "pro" in m else 2048
+                }
+        except Exception as ex:
+            logger.error("[Thinking Sync Error] Failed to detect sub-agent: %s", ex, exc_info=True)
+            pass
+
+    logger.info("[Thinking Config] model_id=%s, auto_thinking=%s", model_id, thinking)
+
     if isinstance(thinking, dict):
         if thinking.get("type") == "enabled":
             if is_v3:
