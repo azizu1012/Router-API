@@ -67,7 +67,19 @@ def _parse_gemini_contents(raw_contents: list) -> List[gt.Content]:
                 name = fc.get("name")
                 args = fc.get("args") or {}
                 if name:
-                    parts.append(gt.Part.from_function_call(name=name, args=args))
+                    thought = p.get("thought")
+                    thought_sig = p.get("thoughtSignature") or p.get("thought_signature")
+                    if isinstance(thought_sig, str):
+                        try:
+                            # Parse base64 string if it was serialized as b64
+                            thought_sig = base64.b64decode(thought_sig)
+                        except Exception:
+                            thought_sig = thought_sig.encode("utf-8")
+                    parts.append(gt.Part(
+                        function_call=gt.FunctionCall(name=name, args=args),
+                        thought=thought,
+                        thought_signature=thought_sig
+                    ))
             elif "functionResponse" in p or "function_response" in p:
                 fr = p.get("functionResponse") or p.get("function_response") or {}
                 name = fr.get("name")
