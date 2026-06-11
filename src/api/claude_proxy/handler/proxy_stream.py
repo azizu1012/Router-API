@@ -19,7 +19,8 @@ from src.api.claude_proxy.utils import (
     _sse,
 )
 
-from .helpers import get_system_status_summary, _classify_error_reason, _reinforce_messages_for_retry
+from .helpers import get_system_status_summary, _reinforce_messages_for_retry
+from src.core.providers.gemini.error import classify
 from .compaction import _pre_compact_and_truncate
 from .stream_executor import _execute_stream, _stream_with_pool
 
@@ -82,8 +83,7 @@ class ClaudeProxyStreamMixin:
                 raise
             except Exception as stream_err:
                 logger.error("[%s] [Stream Pool Exception] %s", req_id, stream_err, exc_info=True)
-                err_str = str(stream_err).lower()
-                err_reason = _classify_error_reason(err_str) if err_str else "pool_exhausted"
+                err_reason = classify(stream_err) if stream_err else "pool_exhausted"
                 summary_text = get_system_status_summary(model_alias, err_reason)
                 fake_result = {
                     "id": "msg_err_" + uuid.uuid4().hex[:8],

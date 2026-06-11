@@ -17,7 +17,8 @@ from src.api.claude_proxy.utils import (
     _emergency_truncate_to_limit,
 )
 
-from .helpers import get_system_status_summary, _classify_error_reason, _reinforce_messages_for_retry
+from .helpers import get_system_status_summary, _reinforce_messages_for_retry
+from src.core.providers.gemini.error import classify
 from .compaction import _pre_compact_and_truncate
 from .nonstream_executor import _execute_nonstream
 
@@ -209,11 +210,11 @@ class ClaudeProxyNonstreamMixin:
                         "type": "error", "error": {"type": "api_error", "message": "Request cancelled by client"}
                     })
 
-                reason = _classify_error_reason(error_text, api_key_val, model_id_val)
+                reason = classify(e)
                 if reason == "rate_limit":
                     router.record_429()
 
-                if reason == "unknown_error":
+                if reason == "unknown":
                     logger.error("[Retry Failure Detail] Unexpected error on key ...%s: %s", (api_key_val or "N/A")[-4:], e, exc_info=True)
 
                 if api_key_val:

@@ -14,7 +14,8 @@ from src.api.claude_proxy.utils import (
     _emergency_truncate_to_limit,
 )
 
-from .helpers import _classify_error_reason, _reinforce_messages_for_retry
+from .helpers import _reinforce_messages_for_retry
+from src.core.providers.gemini.error import classify
 from .nonstream_executor import _execute_nonstream
 from .stream_executor import _execute_stream
 
@@ -150,6 +151,11 @@ class ClaudeProxy(ClaudeProxyNonstreamMixin, ClaudeProxyStreamMixin):
                     "[Pool Reserve] Reserved key ...%s for model_alias=%s (resolved model_id=%s) | Attempt: %d (remaining=%ds) | Estimated tokens: %d",
                     api_key_val[-8:] if api_key_val else "N/A", actual_alias, model_id_val, pool.total_attempts + 1, int(pool.remaining_time()), estimated_tokens
                 )
+                try:
+                    from src.api.claude_proxy.utils import save_resolved_model_for_cwd
+                    save_resolved_model_for_cwd(body.get("system", ""), model_alias_val, model_id_val)
+                except Exception as ex_sync:
+                    logger.error("[Statusline Sync Error] Failed to call sync helper: %s", ex_sync)
             except HTTPException as e:
                 if e.status_code in (429, 503):
                     logger.info("[Pool Retry] _resolve_model returned %d for %s (cooldown=%s), retrying (attempt %d, remaining=%ds)",
@@ -262,11 +268,11 @@ class ClaudeProxy(ClaudeProxyNonstreamMixin, ClaudeProxyStreamMixin):
                     })
 
                 duration = config.KEY_UNKNOWN_ERROR_COOLDOWN_SECONDS
-                reason = _classify_error_reason(error_text, api_key_val, model_id_val)
+                reason = classify(e)
                 if reason == "rate_limit":
                     router.record_429()
 
-                if reason == "unknown_error":
+                if reason == "unknown":
                     logger.error("[Pool Failure Detail] Unexpected error on key ...%s: %s", (api_key_val or "N/A")[-4:], e, exc_info=True)
 
                 if api_key_val:

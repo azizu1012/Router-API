@@ -271,3 +271,45 @@ def _dict_to_sse_events(result: Dict[str, Any]) -> Iterator[bytes]:
             yield _sse("content_block_stop", {"type": "content_block_stop", "index": idx})
     yield _sse("message_delta", {"type": "message_delta", "delta": {"stop_reason": result.get("stop_reason", "end_turn"), "stop_sequence": None}, "usage": {"output_tokens": result.get("usage", {}).get("output_tokens", 0)}})
     yield _sse("message_stop", {"type": "message_stop"})
+
+
+def save_resolved_model_for_cwd(system_prompt: str, model_alias: str, model_id: str) -> None:
+    if not system_prompt:
+        return
+    m = re.search(r"Primary working directory:\s*([^\r\n]+)", system_prompt, re.IGNORECASE)
+    cwd = None
+    if m:
+        cwd = m.group(1).strip()
+    else:
+        m = re.search(r"working directory:\s*([^\r\n]+)", system_prompt, re.IGNORECASE)
+        if m:
+            cwd = m.group(1).strip()
+            
+    if not cwd:
+        return
+
+    try:
+        import time
+        mapping_file = _PROJECT_ROOT / "logs" / "session_models.json"
+        mapping_file.parent.mkdir(parents=True, exist_ok=True)
+        
+        models_map = {}
+        if mapping_file.exists():
+            try:
+                with open(mapping_file, "r", encoding="utf-8") as mf:
+                    models_map = json.load(mf)
+            except Exception:
+                pass
+        
+        models_map[cwd] = {
+            "model_alias": model_alias,
+            "model_id": model_id,
+            "timestamp": int(time.time())
+        }
+        
+        with open(mapping_file, "w", encoding="utf-8") as mf:
+            json.dump(models_map, mf, ensure_ascii=False, indent=2)
+            
+        logger.info("[Statusline Sync] Saved resolved model for cwd %s: %s (id: %s)", cwd, model_alias, model_id)
+    except Exception as ex:
+        logger.error("[Statusline Sync Error] Failed to save resolved model: %s", ex)

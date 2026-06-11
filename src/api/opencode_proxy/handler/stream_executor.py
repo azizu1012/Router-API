@@ -17,6 +17,7 @@ from src.api.claude_proxy.utils import (
     _retry_delay,
     StreamingTextNormalizer,
     normalize_text,
+    XMLThinkingExtractor,
 )
 from .sse import openai_chunks, error_sse
 from .nonstream_executor import _resolve_gemini_with_tools
@@ -144,7 +145,7 @@ async def _execute_stream(
                     for i in range(0, len(norm_thought), chunk_size):
                         chunk_val = norm_thought[i:i+chunk_size]
                         if is_opencode:
-                            yield _openai_sse(model_name, content=chunk_val, reasoning_content=chunk_val, chunk_id=chunk_id)
+                            yield _openai_sse(model_name, content=chunk_val, chunk_id=chunk_id)
                         else:
                             yield _openai_sse(model_name, reasoning_content=chunk_val, chunk_id=chunk_id)
                         await asyncio.sleep(0.01)
@@ -257,10 +258,33 @@ async def _execute_stream(
             logger.info("[OpenCode Stream] model=%s ttfb=%.2fs", model_alias, ttfb)
 
             normalizer = StreamingTextNormalizer()
+            extractor = XMLThinkingExtractor()
             out_len = 0
 
-            thought_started = False
-            thought_stopped = False
+            async def _yield_reasoning(val: str):
+                nonlocal out_len
+                if not val:
+                    return
+                yield _openai_sse(model_name, reasoning_content=val)
+                out_len += len(val)
+
+            async def _yield_text(val: str):
+                nonlocal out_len
+                if not val:
+                    return
+                norm_text = normalizer.feed(val)
+                if norm_text:
+                    yield _openai_sse(model_name, content=norm_text)
+                    out_len += len(norm_text)
+
+            async def _process_extractor_events(events):
+                for ev_type, ev_val in events:
+                    if ev_type == "thinking" and ev_val:
+                        async for chunk in _yield_reasoning(ev_val):
+                            yield chunk
+                    elif ev_type == "text" and ev_val:
+                        async for chunk in _yield_text(ev_val):
+                            yield chunk
 
             # Process first_chunk
             delta_1 = first_chunk.choices[0].delta if first_chunk.choices else None
@@ -269,21 +293,12 @@ async def _execute_stream(
                            getattr(delta_1, "thought", None) or 
                            getattr(delta_1, "reasoning", None)) if delta_1 else None
             
-            norm_content_1 = normalizer.feed(content_1) if content_1 is not None else None
-            norm_reasoning_1 = normalizer.feed(reasoning_1) if reasoning_1 is not None else None
-
-            if norm_reasoning_1:
-                thought_started = True
-                if is_opencode:
-                    yield _openai_sse(model_name, content="<think>\n")
-                    yield _openai_sse(model_name, content=norm_reasoning_1, reasoning_content=norm_reasoning_1)
-                else:
-                    yield _openai_sse(model_name, reasoning_content=norm_reasoning_1)
-                out_len += len(norm_reasoning_1)
-            elif norm_content_1:
-                yield _openai_sse(model_name, content=norm_content_1)
-                if content_1:
-                    out_len += len(content_1)
+            if reasoning_1:
+                async for chunk_bytes in _yield_reasoning(reasoning_1):
+                    yield chunk_bytes
+            elif content_1:
+                async for chunk_bytes in _process_extractor_events(extractor.feed(content_1)):
+                    yield chunk_bytes
 
             # Process subsequent chunks
             async for chunk in gen:
@@ -293,39 +308,23 @@ async def _execute_stream(
                              getattr(delta, "thought", None) or 
                              getattr(delta, "reasoning", None)) if delta else None
 
-                norm_content = normalizer.feed(content) if content is not None else None
-                norm_reasoning = normalizer.feed(reasoning) if reasoning is not None else None
+                if reasoning:
+                    async for chunk_bytes in _yield_reasoning(reasoning):
+                        yield chunk_bytes
 
-                if norm_reasoning:
-                    if not thought_started:
-                        thought_started = True
-                        if is_opencode:
-                            yield _openai_sse(model_name, content="<think>\n")
-                    if is_opencode:
-                        yield _openai_sse(model_name, content=norm_reasoning, reasoning_content=norm_reasoning)
-                    else:
-                        yield _openai_sse(model_name, reasoning_content=norm_reasoning)
-                    out_len += len(norm_reasoning)
+                if content:
+                    async for chunk_bytes in _process_extractor_events(extractor.feed(content)):
+                        yield chunk_bytes
 
-                if norm_content:
-                    if is_opencode and thought_started and not thought_stopped:
-                        yield _openai_sse(model_name, content="\n</think>\n\n")
-                        thought_stopped = True
-                    yield _openai_sse(model_name, content=norm_content)
-                    if content:
-                        out_len += len(content)
+            # Flush extractor at the end of the stream
+            async for chunk_bytes in _process_extractor_events(extractor.flush()):
+                yield chunk_bytes
 
             # Flush normalizer at the end of the stream
             flushed_content = normalizer.flush()
             if flushed_content:
-                if is_opencode and thought_started and not thought_stopped:
-                    yield _openai_sse(model_name, content="\n</think>\n\n")
-                    thought_stopped = True
-                yield _openai_sse(model_name, content=flushed_content)
-                out_len += len(flushed_content)
-            elif is_opencode and thought_started and not thought_stopped:
-                yield _openai_sse(model_name, content="\n</think>\n\n")
-                thought_stopped = True
+                async for chunk_bytes in _yield_text(flushed_content):
+                    yield chunk_bytes
 
             out_tokens = max(1, out_len // 4)
             cache_usage = _get_simulated_cache_usage(body, input_tokens)

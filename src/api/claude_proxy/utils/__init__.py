@@ -29,10 +29,12 @@ from .sse_cache_agent import (
     _intercept_sub_agent,
     _dict_to_sse_events,
     _sse,
+    save_resolved_model_for_cwd,
 )
 
 from .format_normalizer import (
     normalize_text,
     StreamingTextNormalizer,
+    XMLThinkingExtractor,
 )
 
