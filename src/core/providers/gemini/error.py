@@ -5,7 +5,7 @@ orchestrator applies penalties / freeze decisions.
 """
 
 import re
-from typing import Optional
+from typing import Optional, Dict, Any
 
 
 def parse_project(text: str) -> Optional[str]:
@@ -19,21 +19,109 @@ def parse_project(text: str) -> Optional[str]:
     return None
 
 
-def classify(text: str) -> str:
-    """Classify an error text into a machine-readable reason code.
+def get_error_info(exc: Exception) -> Dict[str, Any]:
+    """Extract structured info from any Exception (e.g., google-genai APIError or litellm errors)."""
+    info = {
+        "code": None,
+        "status": None,
+        "message": str(exc),
+    }
+
+    # 1. Check if it's a google-genai APIError
+    try:
+        from google.genai import errors as gerrors
+        if isinstance(exc, gerrors.APIError):
+            info["code"] = getattr(exc, "code", None)
+            info["status"] = getattr(exc, "status", None)
+            info["message"] = getattr(exc, "message", str(exc))
+            return info
+    except ImportError:
+        pass
+
+    # 2. Check if it's a litellm exception (which might have status_code)
+    status_code = getattr(exc, "status_code", None)
+    if status_code is not None:
+        try:
+            info["code"] = int(status_code)
+        except ValueError:
+            pass
+
+    # 3. Fallback: Parse code and status from string representation
+    text = str(exc)
+    match_code = re.search(r"\b(400|401|403|404|429|499|500|503|504)\b", text)
+    if match_code:
+        info["code"] = int(match_code.group(1))
+
+    for status_str in ["RESOURCE_EXHAUSTED", "PERMISSION_DENIED", "INVALID_ARGUMENT", "UNAVAILABLE", "INTERNAL"]:
+        if status_str in text:
+            info["status"] = status_str
+            break
+
+    return info
+
+
+def classify(exc: Any) -> str:
+    """Classify an exception (Exception object or text string) into a machine-readable reason code.
 
     Returns one of:
       ``bad_request``, ``project_denied``, ``permission_denied``,
       ``unavailable``, ``project_quota_429``, ``rate_limit``,
       ``grounding_fallback``, ``unknown``.
     """
-    lowered = text.lower()
+    if isinstance(exc, Exception):
+        info = get_error_info(exc)
+        code = info["code"]
+        status = info["status"]
+        message = info["message"]
+    else:
+        text = str(exc)
+        # Parse from string
+        info = get_error_info(Exception(text))
+        code = info["code"]
+        status = info["status"]
+        message = info["message"]
 
-    if "400" in text and "failed_precondition" not in lowered:
+    lowered = message.lower()
+
+    # 1. Check HTTP Status Code first (extremely precise)
+    if code == 400:
+        if "failed_precondition" not in lowered and status != "FAILED_PRECONDITION":
+            return "bad_request"
+    elif code == 401:
+        return "invalid_key"
+    elif code == 403:
+        if "denied access" in lowered or status == "PERMISSION_DENIED" and "denied access" in lowered:
+            return "project_denied"
+        return "permission_denied"
+    elif code == 404:
+        return "unavailable"
+    elif code == 429:
+        if "rate_limit_exceeded" in lowered or ("quota exceeded" in lowered and ("day" in lowered or "daily" in lowered)) or status == "RESOURCE_EXHAUSTED" and ("day" in lowered or "daily" in lowered):
+            return "project_quota_429"
+        return "rate_limit"
+    elif code in (500, 503, 504):
+        return "unavailable"
+
+    # 2. Check Status String if code is None
+    if status == "RESOURCE_EXHAUSTED":
+        if "day" in lowered or "daily" in lowered:
+            return "project_quota_429"
+        return "rate_limit"
+    elif status == "PERMISSION_DENIED":
+        if "denied access" in lowered:
+            return "project_denied"
+        return "permission_denied"
+    elif status == "INVALID_ARGUMENT":
+        return "bad_request"
+    elif status == "UNAVAILABLE":
+        return "unavailable"
+
+    # 3. Fallback string-matching for non-structured errors
+    if "400" in message and "failed_precondition" not in lowered:
         if "invalid_argument" in lowered or "bad_request" in lowered:
             return "bad_request"
 
-    if "403" in text and "permission_denied" in lowered:
+    if "403" in message and "permission_denied" in lowered:
         if "denied access" in lowered:
             return "project_denied"
         return "permission_denied"
@@ -58,13 +146,13 @@ def classify(text: str) -> str:
     if any(kw in lowered for kw in [
         "grounding", "google_search", "google-search",
         "search tool", "tool is not allowed", "tool not supported",
-    ]) or ("403" in text and "permission" in lowered) or ("400" in text and "invalid" in lowered):
+    ]) or ("403" in message and "permission" in lowered) or ("400" in message and "invalid" in lowered):
         return "grounding_fallback"
 
-    if is_bad_request_simple(text):
+    if is_bad_request_simple(message):
         return "bad_request"
 
-    if is_invalid_key_simple(text):
+    if is_invalid_key_simple(message):
         return "invalid_key"
 
     return "unknown"

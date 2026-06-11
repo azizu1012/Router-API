@@ -248,3 +248,128 @@ def normalize_text(text: str) -> str:
     res = normalizer.feed(text)
     res += normalizer.flush()
     return res
+
+
+class XMLThinkingExtractor:
+    """Stateful parser that extracts `<thinking>...</thinking>` and `<think>...</think>`
+    from a text stream, yielding events of type (event_type, text_content).
+    """
+    def __init__(self):
+        self.buffer = ""
+        self.in_thinking = False
+        self.current_tag = None  # "thinking" or "think"
+
+    def feed(self, chunk: str) -> list:
+        if not chunk:
+            return []
+        self.buffer += chunk
+        events = []
+        
+        while True:
+            if not self.buffer:
+                break
+            
+            if not self.in_thinking:
+                # Tìm thẻ mở đầu tiên: <thinking> hoặc <think>
+                idx = self.buffer.find('<')
+                if idx == -1:
+                    # Không có '<', toàn bộ buffer là text thường
+                    events.append(("text", self.buffer))
+                    self.buffer = ""
+                    break
+                else:
+                    # Có '<' ở idx. Phần trước idx là text thường.
+                    if idx > 0:
+                        events.append(("text", self.buffer[:idx]))
+                        self.buffer = self.buffer[idx:]
+                    
+                    # Kiểm tra xem self.buffer có khớp với thẻ mở nào không
+                    # Hoặc xem nó có thể là tiền tố của tag mở không.
+                    # Tag mở dài nhất là "<thinking>" (11 ký tự)
+                    buf_len = len(self.buffer)
+                    open_tags = ["<thinking>", "<think>"]
+                    
+                    matched_tag = None
+                    for tag in open_tags:
+                        if self.buffer.startswith(tag):
+                            matched_tag = tag
+                            break
+                    
+                    if matched_tag:
+                        self.in_thinking = True
+                        self.current_tag = "thinking" if matched_tag == "<thinking>" else "think"
+                        self.buffer = self.buffer[len(matched_tag):]
+                        events.append(("start_thinking", ""))
+                        continue
+                    
+                    # Kiểm tra xem có là tiền tố của bất kỳ tag mở nào không
+                    is_prefix = False
+                    for tag in open_tags:
+                        if tag.startswith(self.buffer):
+                            is_prefix = True
+                            break
+                    
+                    if is_prefix and buf_len < 11:
+                        # Giữ lại để chờ thêm dữ liệu
+                        break
+                    else:
+                        # Không phải tag mở, coi '<' là text thường
+                        events.append(("text", self.buffer[0]))
+                        self.buffer = self.buffer[1:]
+                        continue
+            else:
+                # Đang suy nghĩ. Tìm thẻ đóng: </thinking> hoặc </think>
+                close_tag = "</thinking>" if self.current_tag == "thinking" else "</think>"
+                idx = self.buffer.find('</')
+                if idx == -1:
+                    # Kiểm tra xem cuối buffer có là tiền tố của close_tag không
+                    buf_len = len(self.buffer)
+                    found_potential = False
+                    potential_idx = -1
+                    for i in range(max(0, buf_len - len(close_tag)), buf_len):
+                        sub = self.buffer[i:]
+                        if close_tag.startswith(sub):
+                            found_potential = True
+                            potential_idx = i
+                            break
+                    
+                    if found_potential:
+                        if potential_idx > 0:
+                            events.append(("thinking", self.buffer[:potential_idx]))
+                            self.buffer = self.buffer[potential_idx:]
+                        break
+                    else:
+                        events.append(("thinking", self.buffer))
+                        self.buffer = ""
+                        break
+                else:
+                    if idx > 0:
+                        events.append(("thinking", self.buffer[:idx]))
+                        self.buffer = self.buffer[idx:]
+                    
+                    if self.buffer.startswith(close_tag):
+                        self.in_thinking = False
+                        self.current_tag = None
+                        self.buffer = self.buffer[len(close_tag):]
+                        events.append(("end_thinking", ""))
+                        continue
+                    
+                    if close_tag.startswith(self.buffer) and len(self.buffer) < len(close_tag):
+                        break
+                    else:
+                        events.append(("thinking", self.buffer[:2]))
+                        self.buffer = self.buffer[2:]
+                        continue
+                        
+        return events
+
+    def flush(self) -> list:
+        events = []
+        if self.buffer:
+            if self.in_thinking:
+                events.append(("thinking", self.buffer))
+            else:
+                events.append(("text", self.buffer))
+            self.buffer = ""
+        return events
+

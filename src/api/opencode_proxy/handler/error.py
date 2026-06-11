@@ -12,7 +12,7 @@ from src.core.config_n_logg import config
 from src.core.config_n_logg.logger import logger_proxy as logger
 from src.core.router import router
 from src.core.limits import apply_error_penalty
-from src.api.claude_proxy.handler.helpers import _classify_error_reason
+from src.core.providers.gemini.error import classify
 from .stream_executor import LiteLLMTransientError
 
 
@@ -32,18 +32,20 @@ async def classify_pool_error(
         reason = "rate_limit"
         is_region_quota = e.is_region_quota
     else:
-        error_text = str(e).lower()
+        text = str(e).lower()
 
-        if "400" in error_text and "failed_precondition" not in error_text and ("invalid_argument" in error_text or "bad_request" in error_text):
-            logger.error("[OpenCode Bad Request] %s", error_text[:200])
+        # Bad Request (400) — instant fail, no retry
+        if "400" in text and "failed_precondition" not in text and ("invalid_argument" in text or "bad_request" in text):
+            logger.error("[OpenCode Bad Request] %s", text[:200])
             if api_key_val:
                 router.freeze_key(api_key_val, 2, model_id_val, "bad_request_spam_prevent")
             raise HTTPException(status_code=400, detail={
-                "error": {"message": f"LLM rejected payload: {error_text[:200]}", "type": "invalid_request_error"}
+                "error": {"message": f"LLM rejected payload: {text[:200]}", "type": "invalid_request_error"}
             })
 
-        if "400" in error_text and "failed_precondition" in error_text:
-            logger.error("[OpenCode Billing] %s", error_text[:200])
+        # Billing/Failed Precondition (400) — freeze hard, swap pool
+        if "400" in text and "failed_precondition" in text:
+            logger.error("[OpenCode Billing] %s", text[:200])
             if api_key_val:
                 router.freeze_key(api_key_val, 300, model_id_val, "billing_error")
                 apply_error_penalty(api_key_val, "billing_error", model_id_val)
@@ -57,17 +59,18 @@ async def classify_pool_error(
                 pool.reset_cycle()
             return True
 
-        if "499" in error_text or "cancelled" in error_text:
+        # Client Cancelled
+        if "499" in text or "cancelled" in text:
             raise HTTPException(status_code=503, detail={
                 "error": {"message": "Request cancelled by client", "type": "api_error"}
             })
 
-        is_region_quota = "apirequestsperminuteperprojectperregion" in error_text or "api_requests_per_minute_per_project_per_region" in error_text
-        reason = _classify_error_reason(error_text, api_key_val, model_id_val)
+        is_region_quota = "apirequestsperminuteperprojectperregion" in text or "api_requests_per_minute_per_project_per_region" in text
+        reason = classify(e)
 
     if reason == "rate_limit":
         router.record_429()
-    if reason == "unknown_error":
+    if reason == "unknown":
         logger.error("[OpenCode Pool Error] key=...%s model=%s: %s", (api_key_val or "N/A")[-4:], actual_alias, e)
 
     if api_key_val:
@@ -108,21 +111,21 @@ def classify_standalone_error(
 
     Returns True if the caller should retry.
     """
-    error_text = str(e).lower()
+    text = str(e).lower()
 
-    if "400" in error_text and "failed_precondition" not in error_text and ("invalid_argument" in error_text or "bad_request" in error_text):
-        logger.error("[OpenCode Bad Request] %s", error_text[:200])
+    if "400" in text and "failed_precondition" not in text and ("invalid_argument" in text or "bad_request" in text):
+        logger.error("[OpenCode Bad Request] %s", text[:200])
         if api_key_val:
             router.freeze_key(api_key_val, 2, model_id_val, "bad_request_spam_prevent")
         return False
 
-    if "499" in error_text or "cancelled" in error_text:
+    if "499" in text or "cancelled" in text:
         return False
 
-    reason = _classify_error_reason(error_text, api_key_val, model_id_val)
+    reason = classify(e)
     if reason == "rate_limit":
         router.record_429()
-    if reason == "unknown_error":
+    if reason == "unknown":
         logger.error("[OpenCode Error] key=...%s: %s", (api_key_val or "N/A")[-4:], e)
 
     if api_key_val:
