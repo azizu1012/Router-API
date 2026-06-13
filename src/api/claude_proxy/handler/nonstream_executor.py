@@ -16,6 +16,153 @@ from src.api.claude_proxy.utils import (
     XMLThinkingExtractor,
 )
 
+async def _resolve_gemini_with_tools_stream(
+    kwargs: Dict[str, Any],
+    body: Dict[str, Any],
+    proxy_instance: Any,
+    auth_key_prefix: str = "",
+    account: Optional[Dict[str, Any]] = None,
+    _recursion_depth: int = 0,
+):
+    """Async generator — yields real-time (type, data) tuples from LiteLLM stream.
+
+    Types:
+      ("reasoning", str)   — thinking/reasoning content, emit as thinking_delta
+      ("text", str)        — visible text content, emit as text_delta
+      ("result", text, tool_calls, finish_reason, thought_text) — final accumulated data
+    """
+    try:
+        kwargs["stream"] = True
+        gen = await acompletion(**kwargs)
+    except Exception as e:
+        logger.error("[_resolve_gemini_with_tools_stream] litellm.acompletion error: %s", e, exc_info=True)
+        raise
+
+    text_buf: List[str] = []
+    tool_call_buf: Dict = {}
+    finish_reason = "stop"
+    thought_buf: List[str] = []
+
+    async for chunk in gen:
+        if not chunk.choices:
+            continue
+        delta = chunk.choices[0].delta
+        finish = chunk.choices[0].finish_reason
+
+        content = getattr(delta, "content", None)
+        rc = getattr(delta, "reasoning_content", None)
+
+        if content:
+            text_buf.append(content)
+            yield ("text", content)
+        if rc:
+            thought_buf.append(rc)
+            yield ("reasoning", rc)
+        if getattr(delta, "tool_calls", None):
+            for tc in delta.tool_calls:
+                idx = tc.index
+                if idx not in tool_call_buf:
+                    tool_call_buf[idx] = {"id": getattr(tc, "id", f"call_{uuid.uuid4().hex}"), "name": "", "arguments": ""}
+                if getattr(tc.function, "name", None):
+                    tool_call_buf[idx]["name"] = tc.function.name
+                args_val = getattr(tc.function, "arguments", None)
+                if args_val:
+                    if isinstance(args_val, dict):
+                        args_val = json.dumps(args_val)
+                    elif not isinstance(args_val, str):
+                        args_val = str(args_val)
+                    cur = tool_call_buf[idx]["arguments"]
+                    tool_call_buf[idx]["arguments"] = cur + args_val if isinstance(cur, str) else args_val
+        if finish:
+            finish_reason = finish
+
+    text = "".join(text_buf)
+    thought_text = "".join(thought_buf)
+    tool_calls = list(tool_call_buf.values())
+
+    if _recursion_depth >= 3:
+        logger.warning("[ToolRecursion] Max recursion depth reached (3), returning tool calls as-is")
+        yield ("result", text, tool_calls, finish_reason, thought_text)
+        return
+
+    web_call = next((tc for tc in tool_calls if tc.get("name") == "WebSearch"), None)
+    if web_call:
+        try:
+            args = json.loads(web_call["arguments"]) if isinstance(web_call["arguments"], str) else web_call["arguments"]
+            query = args.get("query", "")
+            logger.info("[WebSearch] executing query=%r model=%s", query[:160], kwargs.get("model", "-"))
+
+            from src.core.providers.search_manager import execute_hybrid_search
+            search_context, combined_citations = await execute_hybrid_search([query], auth_key_prefix=auth_key_prefix, account=account)
+
+            if search_context:
+                result_lines = [search_context]
+                unique_links = []
+                for c in combined_citations:
+                    url = c.get("url")
+                    if url and url not in search_context:
+                        title = c.get("title") or "Source"
+                        unique_links.append(f"- [{title}]({url})")
+                if unique_links:
+                    result_lines.append("\n**Sources / Citations:**\n" + "\n".join(unique_links))
+                result = "\n".join(result_lines)
+            else:
+                result = "No search results found."
+        except Exception as e:
+            result = f"Search error: {e}"
+            logger.warning("[WebSearch] query failed: %s", e)
+
+        assistant_msg = {
+            "role": "assistant",
+            "content": text or None,
+            "tool_calls": [{"id": web_call["id"], "type": "function", "function": {"name": "WebSearch", "arguments": web_call["arguments"]}}]
+        }
+        tool_result_msg = {"role": "tool", "tool_call_id": web_call["id"], "content": result}
+
+        new_kwargs = dict(kwargs)
+        new_kwargs["messages"] = list(kwargs["messages"]) + [assistant_msg, tool_result_msg]
+
+        async for evt in _resolve_gemini_with_tools_stream(new_kwargs, body, proxy_instance, auth_key_prefix=auth_key_prefix, account=account, _recursion_depth=_recursion_depth + 1):
+            yield evt
+        return
+
+    web_fetch_call = next((tc for tc in tool_calls if tc.get("name") == "WebFetch"), None)
+    if web_fetch_call:
+        try:
+            args = json.loads(web_fetch_call["arguments"]) if isinstance(web_fetch_call["arguments"], str) else web_fetch_call["arguments"]
+            url = args.get("url", "")
+            logger.info("[WebFetch] fetching url=%r model=%s", url[:200], kwargs.get("model", "-"))
+
+            import aiohttp
+            async with aiohttp.ClientSession() as session:
+                async with session.get(url, timeout=aiohttp.ClientTimeout(total=10),
+                                       headers={"User-Agent": "Mozilla/5.0 (Router API; +http://127.0.0.1:58100)"}) as resp:
+                    if resp.status == 200:
+                        raw = await resp.text()
+                        result = raw[:8000]
+                    else:
+                        result = f"HTTP error {resp.status}"
+        except Exception as e:
+            result = f"WebFetch error: {e}"
+            logger.warning("[WebFetch] fetch failed: %s", e)
+
+        assistant_msg = {
+            "role": "assistant",
+            "content": text or None,
+            "tool_calls": [{"id": web_fetch_call["id"], "type": "function", "function": {"name": "WebFetch", "arguments": web_fetch_call["arguments"]}}]
+        }
+        tool_result_msg = {"role": "tool", "tool_call_id": web_fetch_call["id"], "content": result}
+
+        new_kwargs = dict(kwargs)
+        new_kwargs["messages"] = list(kwargs["messages"]) + [assistant_msg, tool_result_msg]
+
+        async for evt in _resolve_gemini_with_tools_stream(new_kwargs, body, proxy_instance, auth_key_prefix=auth_key_prefix, account=account, _recursion_depth=_recursion_depth + 1):
+            yield evt
+        return
+
+    yield ("result", text, tool_calls, finish_reason, thought_text)
+
+
 async def _resolve_gemini_with_tools(kwargs: Dict[str, Any], body: Dict[str, Any], proxy_instance: Any, auth_key_prefix: str = "", account: Optional[Dict[str, Any]] = None, _recursion_depth: int = 0) -> Tuple[str, List[Dict[str, Any]], str, str]:
     try:
         kwargs["stream"] = True

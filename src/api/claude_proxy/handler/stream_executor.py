@@ -25,7 +25,7 @@ from src.api.claude_proxy.utils import (
 )
 from src.api.claude_proxy.stream import _process_anthropic_stream
 from .helpers import get_system_status_summary, _classify_error_reason, _reinforce_messages_for_retry
-from .nonstream_executor import _resolve_gemini_with_tools
+from .nonstream_executor import _resolve_gemini_with_tools, _resolve_gemini_with_tools_stream
 
 async def _execute_stream(proxy_instance: Any, kwargs: Dict[str, Any], api_key: str, model_id: str, model_alias: str, input_tokens: int, pool: Any, body: Dict[str, Any], auth_key_prefix: str = "", account: Optional[Dict[str, Any]] = None) -> Any:
     tools = kwargs.get("tools") or []
@@ -96,12 +96,88 @@ async def _execute_stream(proxy_instance: Any, kwargs: Dict[str, Any], api_key: 
 
                 yield _sse("content_block_stop", {"type": "content_block_stop", "index": 0})
 
-                text, tool_calls, finish_reason, thought_text = await fetch_task
                 elapsed = asyncio.get_event_loop().time() - t0_wait
+                block_idx = 1
+                thinking_active = False
+                text_active = False
+                thinking_buf: List[str] = []
+                text_buf: List[str] = []
+                stream_tool_calls: List[Dict[str, Any]] = []
+                stream_fr = "stop"
+                stream_thought: str = ""
+                t_last_chunk = asyncio.get_event_loop().time()
+
+                async for evt_type, *evt_vals in _resolve_gemini_with_tools_stream(
+                    kwargs_ns, body, proxy_instance, auth_key_prefix=auth_key_prefix, account=account
+                ):
+                    now = asyncio.get_event_loop().time()
+                    if evt_type == "reasoning":
+                        val = evt_vals[0]
+                        if not thinking_active:
+                            yield _sse("content_block_start", {
+                                "type": "content_block_start", "index": block_idx,
+                                "content_block": {"type": "thinking", "thinking": ""}
+                            })
+                            thinking_active = True
+                        yield _sse("content_block_delta", {
+                            "type": "content_block_delta", "index": block_idx,
+                            "delta": {"type": "thinking_delta", "thinking": val}
+                        })
+                        thinking_buf.append(val)
+                        t_last_chunk = now
+                    elif evt_type == "text":
+                        val = evt_vals[0]
+                        if thinking_active:
+                            full_thought = "".join(thinking_buf)
+                            sig = "gmni_" + hashlib.sha256(full_thought.encode()).hexdigest()[:60]
+                            yield _sse("content_block_delta", {
+                                "type": "content_block_delta", "index": block_idx,
+                                "delta": {"type": "signature_delta", "signature": sig}
+                            })
+                            yield _sse("content_block_stop", {"type": "content_block_stop", "index": block_idx})
+                            block_idx += 1
+                            thinking_active = False
+                        if not text_active:
+                            yield _sse("content_block_start", {
+                                "type": "content_block_start", "index": block_idx,
+                                "content_block": {"type": "text", "text": ""}
+                            })
+                            text_active = True
+                        yield _sse("content_block_delta", {
+                            "type": "content_block_delta", "index": block_idx,
+                            "delta": {"type": "text_delta", "text": normalize_text(val)}
+                        })
+                        text_buf.append(val)
+                        t_last_chunk = now
+                    elif evt_type == "result":
+                        stream_accumulated_text, stream_tool_calls, stream_fr, stream_thought = evt_vals
+
+                text = stream_accumulated_text or "".join(text_buf)
+                thought_text = stream_thought or "".join(thinking_buf)
+                tool_calls = stream_tool_calls
+                finish_reason = stream_fr
+
+                elapsed_total = asyncio.get_event_loop().time() - t0_wait
                 logger.info(
                     "[ToolResolve Stream] model=%s elapsed=%.2fs text_len=%d emitted_tools=%d tool_names=%s websearch_capable=true",
-                    model_alias, elapsed, len(text), len(tool_calls), _tool_call_names(tool_calls)
+                    model_alias, elapsed_total, len(text), len(tool_calls), _tool_call_names(tool_calls)
                 )
+
+                # Close any still-open blocks
+                if thinking_active:
+                    full_thought = "".join(thinking_buf)
+                    sig = "gmni_" + hashlib.sha256(full_thought.encode()).hexdigest()[:60]
+                    yield _sse("content_block_delta", {
+                        "type": "content_block_delta", "index": block_idx,
+                        "delta": {"type": "signature_delta", "signature": sig}
+                    })
+                    yield _sse("content_block_stop", {"type": "content_block_stop", "index": block_idx})
+                    block_idx += 1
+                    thinking_active = False
+                if text_active:
+                    yield _sse("content_block_stop", {"type": "content_block_stop", "index": block_idx})
+                    block_idx += 1
+                    text_active = False
 
                 is_sub = is_sub_agent_body(body)
                 warning_threshold = 178000 if is_claude_code_body(body) else 170000
@@ -113,36 +189,23 @@ async def _execute_stream(proxy_instance: Any, kwargs: Dict[str, Any], api_key: 
                         "Vui lòng chạy lệnh '/compact' ngay lập tức để tránh bị lỗi giới hạn 250k TPM! ⚠️\n\n"
                     ) % (input_tokens / 1000.0, input_tokens / 1000.0)
                     text = warning_message + text
+                    if text_active:
+                        yield _sse("content_block_delta", {
+                            "type": "content_block_delta", "index": block_idx,
+                            "delta": {"type": "text_delta", "text": warning_message}
+                        })
+                    else:
+                        yield _sse("content_block_start", {
+                            "type": "content_block_start", "index": block_idx,
+                            "content_block": {"type": "text", "text": ""}
+                        })
+                        yield _sse("content_block_delta", {
+                            "type": "content_block_delta", "index": block_idx,
+                            "delta": {"type": "text_delta", "text": warning_message}
+                        })
+                        yield _sse("content_block_stop", {"type": "content_block_stop", "index": block_idx})
+                        block_idx += 1
 
-                block_idx = 1
-                if thought_text:
-                    norm_thought = normalize_text(thought_text)
-                    sig = "gmni_" + hashlib.sha256(norm_thought.encode()).hexdigest()[:60]
-                    yield _sse("content_block_start", {
-                        "type": "content_block_start", "index": block_idx,
-                        "content_block": {"type": "thinking", "thinking": ""}
-                    })
-                    yield _sse("content_block_delta", {
-                        "type": "content_block_delta", "index": block_idx,
-                        "delta": {"type": "thinking_delta", "thinking": norm_thought}
-                    })
-                    yield _sse("content_block_delta", {
-                        "type": "content_block_delta", "index": block_idx,
-                        "delta": {"type": "signature_delta", "signature": sig}
-                    })
-                    yield _sse("content_block_stop", {"type": "content_block_stop", "index": block_idx})
-                    block_idx += 1
-                if text:
-                    yield _sse("content_block_start", {
-                        "type": "content_block_start", "index": block_idx,
-                        "content_block": {"type": "text", "text": ""}
-                    })
-                    yield _sse("content_block_delta", {
-                        "type": "content_block_delta", "index": block_idx,
-                        "delta": {"type": "text_delta", "text": normalize_text(text)}
-                    })
-                    yield _sse("content_block_stop", {"type": "content_block_stop", "index": block_idx})
-                    block_idx += 1
                 for tc in tool_calls:
                     try:
                         args = json.loads(tc["arguments"]) if isinstance(tc["arguments"], str) else tc["arguments"]
