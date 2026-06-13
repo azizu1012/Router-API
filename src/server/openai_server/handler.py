@@ -209,6 +209,13 @@ async def _openai_chat_completion(body: Dict[str, Any], account: Optional[Dict[s
     thinking_budget = body.get("thinking_budget")
     include_thoughts = body.get("include_thoughts")
 
+    if thinking_level is None and thinking_budget is None and include_thoughts is None:
+        include_thoughts = True
+        if "gemini-3" in (model_id or "").lower():
+            thinking_level = "medium"
+        else:
+            thinking_budget = -1
+
     # ── Extra body (forward unknown params to custom endpoints) ─
     _consumed_keys = {
         "model", "messages", "stream", "max_tokens", "max_completion_tokens",
@@ -404,6 +411,23 @@ def _completion_response(body: Dict[str, Any], result: Dict[str, Any]) -> Dict[s
     text = result["text"]
     model = body.get("model") or result["model_alias"]
     thought = result.get("thought")
+
+    # Extract <think>/<thinking> XML tags from text if SDK didn't provide thought
+    if not thought and text:
+        from src.api.claude_proxy.utils import XMLThinkingExtractor
+        _ex = XMLThinkingExtractor()
+        _evs = _ex.feed(text) + _ex.flush()
+        _extracted = []
+        _clean = []
+        for _et, _ev in _evs:
+            if _et == "thinking":
+                _extracted.append(_ev)
+            elif _et == "text":
+                _clean.append(_ev)
+        if _extracted:
+            thought = "".join(_extracted)
+            text = "".join(_clean) if _clean else ""
+
     if thought:
         text = f"<think>\n{thought}\n</think>\n\n{text}"
     msg: Dict[str, Any] = {"role": "assistant", "content": text}

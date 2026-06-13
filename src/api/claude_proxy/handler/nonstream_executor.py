@@ -1,4 +1,5 @@
 import asyncio
+import hashlib
 import json
 import uuid
 from typing import Any, Dict, List, Tuple, Optional
@@ -12,6 +13,7 @@ from src.api.claude_proxy.utils import (
     is_sub_agent_body,
     is_claude_code_body,
     normalize_text,
+    XMLThinkingExtractor,
 )
 
 async def _resolve_gemini_with_tools(kwargs: Dict[str, Any], body: Dict[str, Any], proxy_instance: Any, auth_key_prefix: str = "", account: Optional[Dict[str, Any]] = None, _recursion_depth: int = 0) -> Tuple[str, List[Dict[str, Any]], str, str]:
@@ -166,9 +168,27 @@ async def _execute_nonstream(proxy_instance: Any, kwargs: Dict[str, Any], api_ke
         ) % (input_tokens / 1000.0, input_tokens / 1000.0)
         text = warning_message + text
 
+    # Strip <think>/<thinking> XML tags from text, extract as thinking
+    if text:
+        _extractor = XMLThinkingExtractor()
+        _events = _extractor.feed(text) + _extractor.flush()
+        _extracted = ""
+        _clean = []
+        for _et, _ev in _events:
+            if _et == "thinking":
+                _extracted += _ev
+            elif _et == "text":
+                _clean.append(_ev)
+        if _extracted:
+            if not thought_text:
+                thought_text = _extracted
+            text = "".join(_clean) if _clean else ""
+
     content_blocks = []
     if thought_text:
-        content_blocks.append({"type": "thinking", "thinking": normalize_text(thought_text)})
+        norm_thought = normalize_text(thought_text)
+        sig = "gmni_" + hashlib.sha256(norm_thought.encode()).hexdigest()[:60]
+        content_blocks.append({"type": "thinking", "thinking": norm_thought, "signature": sig})
     if text:
         content_blocks.append({"type": "text", "text": normalize_text(text)})
     for tc in tool_calls:
