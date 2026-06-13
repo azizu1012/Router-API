@@ -91,6 +91,7 @@ async def _resolve_gemini_with_tools_stream(
             args = json.loads(web_call["arguments"]) if isinstance(web_call["arguments"], str) else web_call["arguments"]
             query = args.get("query", "")
             logger.info("[WebSearch] executing query=%r model=%s", query[:160], kwargs.get("model", "-"))
+            yield ("search_info", f"🔍 Searching: \"{query}\"\n")
 
             from src.core.providers.search_manager import execute_hybrid_search
             search_context, combined_citations = await execute_hybrid_search([query], auth_key_prefix=auth_key_prefix, account=account)
@@ -106,11 +107,14 @@ async def _resolve_gemini_with_tools_stream(
                 if unique_links:
                     result_lines.append("\n**Sources / Citations:**\n" + "\n".join(unique_links))
                 result = "\n".join(result_lines)
+                yield ("search_info", f"📄 Found {len(combined_citations)} sources\n")
             else:
                 result = "No search results found."
+                yield ("search_info", "⚠️ No results found\n")
         except Exception as e:
             result = f"Search error: {e}"
             logger.warning("[WebSearch] query failed: %s", e)
+            yield ("search_info", f"⚠️ Search error: {e}\n")
 
         assistant_msg = {
             "role": "assistant",

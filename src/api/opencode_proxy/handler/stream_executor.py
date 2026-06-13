@@ -137,7 +137,10 @@ async def _execute_stream(
                     try:
                         evt_type, *evt_vals = await asyncio.wait_for(stream_iter.__anext__(), timeout=2.0)
                         elapsed = asyncio.get_event_loop().time() - t0_wait
-                        if evt_type == "reasoning":
+                        if evt_type == "search_info":
+                            val = evt_vals[0]
+                            yield _openai_sse(model_name, content=val, chunk_id=chunk_id)
+                        elif evt_type == "reasoning":
                             val = evt_vals[0]
                             thinking_buf.append(val)
                             yield _openai_sse(model_name, reasoning_content=val, chunk_id=chunk_id)

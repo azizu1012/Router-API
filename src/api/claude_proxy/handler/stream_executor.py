@@ -111,7 +111,20 @@ async def _execute_stream(proxy_instance: Any, kwargs: Dict[str, Any], api_key: 
                     kwargs_ns, body, proxy_instance, auth_key_prefix=auth_key_prefix, account=account
                 ):
                     now = asyncio.get_event_loop().time()
-                    if evt_type == "reasoning":
+                    if evt_type == "search_info":
+                        val = evt_vals[0]
+                        if not text_active:
+                            yield _sse("content_block_start", {
+                                "type": "content_block_start", "index": block_idx,
+                                "content_block": {"type": "text", "text": ""}
+                            })
+                            text_active = True
+                        yield _sse("content_block_delta", {
+                            "type": "content_block_delta", "index": block_idx,
+                            "delta": {"type": "text_delta", "text": val}
+                        })
+                        text_buf.append(val)
+                    elif evt_type == "reasoning":
                         val = evt_vals[0]
                         if not thinking_active:
                             yield _sse("content_block_start", {
