@@ -68,7 +68,7 @@ def _build_litellm_thinking(body: Dict[str, Any], model_id: str) -> Dict[str, An
             if not is_sub and supports:
                 thinking = {
                     "type": "enabled",
-                    "budget_tokens": 4096 if "pro" in m else 2048
+                    "budget_tokens": 32768 if "pro" in m else 24576
                 }
         except Exception as ex:
             logger.error("[Thinking Sync Error] Failed to detect sub-agent: %s", ex, exc_info=True)

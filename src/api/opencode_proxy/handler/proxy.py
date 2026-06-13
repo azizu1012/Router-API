@@ -56,7 +56,10 @@ def _build_litellm_thinking(body: Dict[str, Any], model_id: str) -> Dict[str, An
     include_thoughts = body.get("include_thoughts", False)
 
     if thinking_level is None and thinking_budget is None and not include_thoughts:
-        return {}
+        if is_v3:
+            return {"reasoning_effort": "medium"}
+        budget = 32768 if "pro" in m else 24576
+        return {"thinking": {"type": "enabled", "budget_tokens": budget}}
 
     # 1. If V3 model, translate all thinking requests to reasoning_effort
     if is_v3:

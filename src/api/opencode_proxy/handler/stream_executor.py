@@ -136,21 +136,14 @@ async def _execute_stream(
                     model_alias, elapsed, len(text), len(tool_calls), len(thought_text) if thought_text else 0
                 )
 
-                # Stream thought back in chunks to simulate streaming
+                # Stream thought back in chunks as reasoning_content only
                 if thought_text:
                     norm_thought = normalize_text(thought_text)
-                    if is_opencode:
-                        yield _openai_sse(model_name, content="<think>\n", chunk_id=chunk_id)
-                    chunk_size = 40
+                    chunk_size = 80
                     for i in range(0, len(norm_thought), chunk_size):
                         chunk_val = norm_thought[i:i+chunk_size]
-                        if is_opencode:
-                            yield _openai_sse(model_name, content=chunk_val, chunk_id=chunk_id)
-                        else:
-                            yield _openai_sse(model_name, reasoning_content=chunk_val, chunk_id=chunk_id)
+                        yield _openai_sse(model_name, reasoning_content=chunk_val, chunk_id=chunk_id)
                         await asyncio.sleep(0.01)
-                    if is_opencode:
-                        yield _openai_sse(model_name, content="\n</think>\n\n", chunk_id=chunk_id)
 
                 # Stream text back in chunks to simulate streaming
                 if text:
@@ -260,18 +253,41 @@ async def _execute_stream(
             normalizer = StreamingTextNormalizer()
             extractor = XMLThinkingExtractor()
             out_len = 0
+            _reasoning_buf: List[str] = []
+            _BUF_FLUSH_SIZE = 80
+
+            def _has_sentence_boundary(text: str) -> bool:
+                for i, ch in enumerate(text):
+                    if ch in '.!?\n' and (i + 1 >= len(text) or text[i + 1] in ' \n'):
+                        return True
+                return False
+
+            async def _flush_reasoning():
+                nonlocal _reasoning_buf
+                if not _reasoning_buf:
+                    return
+                text = "".join(_reasoning_buf)
+                _reasoning_buf = []
+                yield _openai_sse(model_name, reasoning_content=text)
 
             async def _yield_reasoning(val: str):
-                nonlocal out_len
+                nonlocal out_len, _reasoning_buf
                 if not val:
                     return
-                yield _openai_sse(model_name, reasoning_content=val)
+                _reasoning_buf.append(val)
                 out_len += len(val)
+                total = sum(len(s) for s in _reasoning_buf)
+                buf_text = "".join(_reasoning_buf)
+                if total >= _BUF_FLUSH_SIZE or _has_sentence_boundary(buf_text):
+                    async for chunk in _flush_reasoning():
+                        yield chunk
 
             async def _yield_text(val: str):
                 nonlocal out_len
                 if not val:
                     return
+                async for chunk in _flush_reasoning():
+                    yield chunk
                 norm_text = normalizer.feed(val)
                 if norm_text:
                     yield _openai_sse(model_name, content=norm_text)
@@ -286,6 +302,19 @@ async def _execute_stream(
                         async for chunk in _yield_text(ev_val):
                             yield chunk
 
+            # Helper: process content through extractor, skip thinking if reasoning already from delta
+            async def _process_content(content_val: str, has_reasoning: bool):
+                if not content_val:
+                    return
+                if has_reasoning:
+                    for _et, _ev in extractor.feed(content_val):
+                        if _et == "text" and _ev:
+                            async for c in _yield_text(_ev):
+                                yield c
+                else:
+                    async for c in _process_extractor_events(extractor.feed(content_val)):
+                        yield c
+
             # Process first_chunk
             delta_1 = first_chunk.choices[0].delta if first_chunk.choices else None
             content_1 = getattr(delta_1, "content", None) if delta_1 else None
@@ -296,8 +325,9 @@ async def _execute_stream(
             if reasoning_1:
                 async for chunk_bytes in _yield_reasoning(reasoning_1):
                     yield chunk_bytes
-            elif content_1:
-                async for chunk_bytes in _process_extractor_events(extractor.feed(content_1)):
+
+            if content_1:
+                async for chunk_bytes in _process_content(content_1, bool(reasoning_1)):
                     yield chunk_bytes
 
             # Process subsequent chunks
@@ -313,11 +343,19 @@ async def _execute_stream(
                         yield chunk_bytes
 
                 if content:
-                    async for chunk_bytes in _process_extractor_events(extractor.feed(content)):
+                    async for chunk_bytes in _process_content(content, bool(reasoning)):
                         yield chunk_bytes
+
+            # Flush remaining reasoning buffer
+            async for chunk_bytes in _flush_reasoning():
+                yield chunk_bytes
 
             # Flush extractor at the end of the stream
             async for chunk_bytes in _process_extractor_events(extractor.flush()):
+                yield chunk_bytes
+
+            # Flush any remaining reasoning from extractor flush
+            async for chunk_bytes in _flush_reasoning():
                 yield chunk_bytes
 
             # Flush normalizer at the end of the stream

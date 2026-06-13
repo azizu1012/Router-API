@@ -1,3 +1,4 @@
+import hashlib
 import json
 import uuid
 from typing import Any, AsyncIterator, Dict, List, Optional
@@ -47,7 +48,18 @@ async def _process_anthropic_stream(
     tool_buffers: Dict[int, Dict[str, Any]] = {}
     tool_to_cbidx: Dict[int, int] = {}
     text_chunks: List[str] = []
+    thought_parts: List[str] = []
     output_tokens = 0
+
+    async def _yield_signature(idx: Optional[int]):
+        if idx is None or not thought_parts:
+            return
+        full_thought = "".join(thought_parts)
+        sig = "gmni_" + hashlib.sha256(full_thought.encode()).hexdigest()[:60]
+        yield _sse("content_block_delta", {
+            "type": "content_block_delta", "index": idx,
+            "delta": {"type": "signature_delta", "signature": sig}
+        })
 
     is_sub = is_sub_agent_body(body or {})
     warning_threshold = 178000 if is_claude_code_body(body or {}) else 170000
@@ -84,12 +96,14 @@ async def _process_anthropic_stream(
     normalizer = StreamingTextNormalizer()
     extractor = XMLThinkingExtractor()
 
-    async def _process_extractor_events(events):
+    async def _process_extractor_events(events) -> AsyncIterator[bytes]:
         nonlocal next_block_idx, text_block_idx, text_started, text_stopped
         nonlocal thought_block_idx, thought_started, thought_stopped
         for ev_type, ev_val in events:
             if ev_type == "start_thinking":
                 if thought_started and not thought_stopped:
+                    async for sig_bytes in _yield_signature(thought_block_idx):
+                        yield sig_bytes
                     yield _sse("content_block_stop", {"type": "content_block_stop", "index": thought_block_idx})
                     thought_stopped = True
                 thought_block_idx = next_block_idx
@@ -110,17 +124,21 @@ async def _process_anthropic_stream(
                     })
                     thought_started = True
                     thought_stopped = False
+                thought_parts.append(ev_val)
                 yield _sse("content_block_delta", {
                     "type": "content_block_delta", "index": thought_block_idx,
                     "delta": {"type": "thinking_delta", "thinking": ev_val}
                 })
-                text_chunks.append(ev_val)
             elif ev_type == "end_thinking":
                 if thought_started and not thought_stopped:
+                    async for sig_bytes in _yield_signature(thought_block_idx):
+                        yield sig_bytes
                     yield _sse("content_block_stop", {"type": "content_block_stop", "index": thought_block_idx})
                     thought_stopped = True
             elif ev_type == "text" and ev_val:
                 if thought_started and not thought_stopped:
+                    async for sig_bytes in _yield_signature(thought_block_idx):
+                        yield sig_bytes
                     yield _sse("content_block_stop", {"type": "content_block_stop", "index": thought_block_idx})
                     thought_stopped = True
                 if not text_started or text_stopped:
@@ -155,11 +173,11 @@ async def _process_anthropic_stream(
                     })
                     thought_started = True
                     thought_stopped = False
+                thought_parts.append(reasoning)
                 yield _sse("content_block_delta", {
                     "type": "content_block_delta", "index": thought_block_idx,
                     "delta": {"type": "thinking_delta", "thinking": reasoning}
                 })
-                text_chunks.append(reasoning)
 
             content_val = getattr(delta, "content", None)
             if content_val:
@@ -168,6 +186,8 @@ async def _process_anthropic_stream(
 
             if getattr(delta, "tool_calls", None):
                 if thought_started and not thought_stopped:
+                    async for sig_bytes in _yield_signature(thought_block_idx):
+                        yield sig_bytes
                     yield _sse("content_block_stop", {"type": "content_block_stop", "index": thought_block_idx})
                     thought_stopped = True
                 
@@ -235,6 +255,8 @@ async def _process_anthropic_stream(
         finish = chunk.choices[0].finish_reason if chunk.choices else None
         if finish:
             if thought_started and not thought_stopped:
+                async for sig_bytes in _yield_signature(thought_block_idx):
+                    yield sig_bytes
                 yield _sse("content_block_stop", {"type": "content_block_stop", "index": thought_block_idx})
                 thought_stopped = True
             

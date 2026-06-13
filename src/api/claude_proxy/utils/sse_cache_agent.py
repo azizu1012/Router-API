@@ -1,4 +1,5 @@
 import datetime
+import hashlib
 import json
 import re
 from pathlib import Path
@@ -201,7 +202,7 @@ def is_sub_agent_body(body: Dict[str, Any]) -> bool:
         if "you are an interactive agent" in system_prompt_lower:
             return False
         if "you are claude code" in system_prompt_lower:
-            return True
+            return False
 
         sub_agent_keywords = [
             "general-purpose agent",
@@ -261,6 +262,14 @@ def _dict_to_sse_events(result: Dict[str, Any]) -> Iterator[bytes]:
         if block.get("type") == "text":
             yield _sse("content_block_start", {"type": "content_block_start", "index": idx, "content_block": {"type": "text", "text": ""}})
             yield _sse("content_block_delta", {"type": "content_block_delta", "index": idx, "delta": {"type": "text_delta", "text": block.get("text", "")}})
+            yield _sse("content_block_stop", {"type": "content_block_stop", "index": idx})
+        elif block.get("type") == "thinking":
+            yield _sse("content_block_start", {"type": "content_block_start", "index": idx, "content_block": {"type": "thinking", "thinking": ""}})
+            thinking_text = block.get("thinking", "")
+            if thinking_text:
+                yield _sse("content_block_delta", {"type": "content_block_delta", "index": idx, "delta": {"type": "thinking_delta", "thinking": thinking_text}})
+            sig = block.get("signature") or "gmni_" + hashlib.sha256(thinking_text.encode()).hexdigest()[:60]
+            yield _sse("content_block_delta", {"type": "content_block_delta", "index": idx, "delta": {"type": "signature_delta", "signature": sig}})
             yield _sse("content_block_stop", {"type": "content_block_stop", "index": idx})
         elif block.get("type") == "tool_use":
             yield _sse("content_block_start", {"type": "content_block_start", "index": idx, "content_block": {"type": "tool_use", "id": block.get("id"), "name": block.get("name"), "input": {}}})

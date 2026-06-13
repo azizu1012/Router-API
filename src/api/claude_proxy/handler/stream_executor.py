@@ -1,4 +1,5 @@
 import asyncio
+import hashlib
 import json
 import uuid
 from typing import Any, Dict, List, AsyncIterator, Optional
@@ -77,7 +78,7 @@ async def _execute_stream(proxy_instance: Any, kwargs: Dict[str, Any], api_key: 
                             logger.info("[Stream Keepalive] Still waiting for %s response (WebSearch capable) (elapsed=%.1fs), sending ping", model_alias, elapsed)
                         yield _sse("ping", {"type": "ping", "retry": 0, "reason": "keepalive"})
 
-                text, tool_calls, finish_reason, _ = await fetch_task
+                text, tool_calls, finish_reason, thought_text = await fetch_task
                 elapsed = asyncio.get_event_loop().time() - t0_wait
                 logger.info(
                     "[ToolResolve Stream] model=%s elapsed=%.2fs text_len=%d emitted_tools=%d tool_names=%s websearch_capable=true",
@@ -96,6 +97,23 @@ async def _execute_stream(proxy_instance: Any, kwargs: Dict[str, Any], api_key: 
                     text = warning_message + text
 
                 block_idx = 0
+                if thought_text:
+                    norm_thought = normalize_text(thought_text)
+                    sig = "gmni_" + hashlib.sha256(norm_thought.encode()).hexdigest()[:60]
+                    yield _sse("content_block_start", {
+                        "type": "content_block_start", "index": block_idx,
+                        "content_block": {"type": "thinking", "thinking": ""}
+                    })
+                    yield _sse("content_block_delta", {
+                        "type": "content_block_delta", "index": block_idx,
+                        "delta": {"type": "thinking_delta", "thinking": norm_thought}
+                    })
+                    yield _sse("content_block_delta", {
+                        "type": "content_block_delta", "index": block_idx,
+                        "delta": {"type": "signature_delta", "signature": sig}
+                    })
+                    yield _sse("content_block_stop", {"type": "content_block_stop", "index": block_idx})
+                    block_idx += 1
                 if text:
                     yield _sse("content_block_start", {
                         "type": "content_block_start", "index": block_idx,
