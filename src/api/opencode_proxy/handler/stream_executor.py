@@ -106,21 +106,7 @@ async def _execute_stream(
                 chunk_id = f"chatcmpl-{uuid.uuid4().hex}"
                 yield _openai_sse(model_name, content="", chunk_id=chunk_id)
 
-                async def _fetch_websearch():
-                    return await _resolve_gemini_with_tools(
-                        kwargs_ns, body, proxy_instance, auth_key_prefix=auth_key_prefix, account=account
-                    )
-
-                fetch_task = asyncio.create_task(asyncio.to_thread(lambda: None))  # dummy, real work below
                 t0_wait = asyncio.get_event_loop().time()
-                search_statuses = [
-                    (0, "🔍 Searching..."),
-                    (3, "📡 Querying DuckDuckGo..."),
-                    (6, "📄 Reading results..."),
-                    (9, "⚡ Synthesizing data..."),
-                    (12, "⏳ Almost done..."),
-                ]
-                status_sent = 0
                 text_buf: List[str] = []
                 thinking_buf: List[str] = []
                 stream_tool_calls: List[Dict[str, Any]] = []
@@ -128,37 +114,23 @@ async def _execute_stream(
                 stream_thought: str = ""
                 reasoning_active = False
 
-                # Start streaming from the stream generator directly
-                stream_iter = _resolve_gemini_with_tools_stream(
+                # Stream directly from generator — no timeout/emoji
+                async for evt_type, *evt_vals in _resolve_gemini_with_tools_stream(
                     kwargs_ns, body, proxy_instance, auth_key_prefix=auth_key_prefix, account=account
-                ).__aiter__()
-                stream_done = False
-                while not stream_done:
-                    try:
-                        evt_type, *evt_vals = await asyncio.wait_for(stream_iter.__anext__(), timeout=2.0)
-                        elapsed = asyncio.get_event_loop().time() - t0_wait
-                        if evt_type == "reasoning":
-                            val = evt_vals[0]
-                            thinking_buf.append(val)
-                            yield _openai_sse(model_name, reasoning_content=val, chunk_id=chunk_id)
-                        elif evt_type == "text":
-                            val = evt_vals[0]
-                            text_buf.append(val)
-                            yield _openai_sse(model_name, content=val, chunk_id=chunk_id)
-                        elif evt_type == "result":
-                            text_buf, stream_tool_calls, stream_fr, stream_thought = evt_vals
-                            if isinstance(text_buf, str):
-                                text_buf = [text_buf]
-                            stream_done = True
-                    except asyncio.TimeoutError:
-                        elapsed = asyncio.get_event_loop().time() - t0_wait
-                        for t, msg in search_statuses:
-                            if elapsed >= t and status_sent <= t:
-                                status_sent = t + 0.01
-                                logger.info("[OpenCode Search Status] %.1fs: %s", elapsed, msg)
-                                yield _openai_sse(model_name, content=msg + "\n", chunk_id=chunk_id)
-                    except StopAsyncIteration:
-                        stream_done = True
+                ):
+                    if evt_type == "reasoning":
+                        val = evt_vals[0]
+                        thinking_buf.append(val)
+                        yield _openai_sse(model_name, reasoning_content=val, chunk_id=chunk_id)
+                    elif evt_type == "text":
+                        val = evt_vals[0]
+                        text_buf.append(val)
+                        yield _openai_sse(model_name, content=val, chunk_id=chunk_id)
+                    elif evt_type == "result":
+                        text_buf, stream_tool_calls, stream_fr, stream_thought = evt_vals
+                        if isinstance(text_buf, str):
+                            text_buf = [text_buf]
+                        break
 
                 text = "".join(text_buf) if text_buf else ""
                 thought_text = "".join(thinking_buf) if thinking_buf else stream_thought
