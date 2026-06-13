@@ -149,49 +149,102 @@ Dành cho các thư viện OpenAI SDK chuẩn. Router sẽ dịch payload OpenAI
 main.py                          # Entry point (auto-kill old instance)
 src/
 ├── api/claude_proxy/            # Anthropic→Gemini proxy (stream + non-stream)
-│   ├── handler.py               #   ClaudeProxy: msg convert, pool retry, WebSearch
-│   ├── utils.py                 #   SSE helpers, token estimation, tool merge
-│   └── stream.py                #   Anthropic SSE chunk conversion
+│   ├── handler/                 #   Orchestrator, pool retry, WebSearch intercept
+│   │   ├── proxy.py             #     ClaudeProxy singleton: thinking, retry loop
+│   │   ├── proxy_stream.py      #     Streaming call mixer with keepalive
+│   │   ├── proxy_nonstream.py   #     Non-streaming call mixer
+│   │   ├── stream_executor.py   #     Search status streaming, SSE yield
+│   │   ├── nonstream_executor.py#     WebSearch, tool recursion, thinking
+│   │   └── helpers.py           #     Error classification, system status
+│   ├── utils/                   #   Utilities
+│   │   ├── format_normalizer.py #     StreamingTextNormalizer + XMLThinkingExtractor
+│   │   ├── sse_cache_agent.py   #     SSE builders, cache simulation
+│   │   ├── message_converter.py #     Claude→OpenAI schema converter
+│   │   ├── model_resolver.py    #     Model alias + key concurrency
+│   │   └── truncation.py        #     Emergency truncation
+│   └── stream.py                #     Anthropic SSE: thinking_delta + signature_delta
 │
-├── server/openai_server/        # FastAPI app (OpenAI + Anthropic endpoints)
-│   ├── routes.py                #   HTTP routes, auth, stats dashboard
-│   ├── handler.py               #   Chat completion logic, pool dispatch
-│   └── auth.py                  #   Bearer token + account rate limiter
+├── api/opencode_proxy/          # OpenCode→Gemini proxy (OpenAI-compatible)
+│   ├── handler/
+│   │   ├── proxy.py             #     OpenCodeProxy orchestrator
+│   │   ├── stream_executor.py   #     OpenAI streaming + search status
+│   │   ├── nonstream_executor.py#     Non-streaming + tool recursion
+│   │   ├── search.py            #     Sub-agent web search
+│   │   ├── websearch.py         #     Search intent detection
+│   │   ├── detection.py         #     Sub-agent override detector
+│   │   ├── response.py          #     Response builders + cost
+│   │   ├── sse.py               #     OpenAI SSE formatter
+│   │   └── error.py             #     Error classification
+│   └── sse.py                   #     SSE event builder
 │
-├── core/
-│   ├── config_n_logg/           # Config + logging
-│   │   ├── config.py            #   RouterApiConfig dataclass (từ .env)
-│   │   ├── logger.py            #   stdout + rotating file handler
-│   │   └── __init__.py          #   Re-exports
-│   ├── router/
-│   │   ├── core.py              #   APIRouter: key reserve, freeze, cooldown
-│   │   └── pool.py              #   ModelPool: swap logic, failure tracking
-│   ├── limits/
-│   │   ├── gemini_rate_limiter.py # RPM/TPM/RPD limiter + per-key usage + penalty
-│   │   └── account_limiter.py   #   Per-account RPM/TPM/RPD
-│   ├── providers/
-│   │   ├── gemini_api_manager.py # Gemini genai SDK pipeline + retry
-│   │   └── custom_endpoint_manager.py # Custom endpoint CRUD + pool
-│   ├── accounts/
-│   │   └── account_manager.py   # Account auth facade
-│   ├── api_config.py            # Model definitions + pools + sunset
-│   ├── preflight.py             # Health check
-│   └── usage_logger.py          # Async → SQLite batch flush
+├── server/                      # HTTP server
+│   ├── openai_server/           #   OpenAI + Anthropic endpoints
+│   │   ├── handler.py           #     Chat completion, grounding
+│   │   ├── auth.py              #     Bearer token + rate limiter
+│   │   ├── security.py          #     Brute force protection
+│   │   └── routes/              #     Route modules
+│   │       ├── app_init.py      #       FastAPI app factory + lifespan
+│   │       ├── standard_routes.py#      Health, models, MCP
+│   │       ├── completions_routes.py#   /v1/chat/completions + /v1/messages
+│   │       ├── opencode_routes.py#     /opencode/v1/chat/completions
+│   │       ├── dashboard_routes.py#    Stats dashboard HTML + JSON
+│   │       ├── auth_session.py  #       Dashboard JWT
+│   │       └── admin/           #       Admin REST API
+│   │           ├── accounts.py  #         Account CRUD
+│   │           ├── endpoints.py #         Endpoint CRUD
+│   │           └── keys.py      #         Gemini key mgmt
+│   └── pass_through_server/     #   Native Gemini pass-through
+│       └── routes/gemini_routes.py#   generateContent/streamGenerateContent
+│
+├── core/                        # Core engine
+│   ├── config_n_logg/           #   Config + logging
+│   │   ├── config.py            #     RouterApiConfig từ .env
+│   │   └── logger.py            #     6 rotating handlers + console
+│   ├── router/                  #   Key pool & routing
+│   │   ├── core/router.py       #     APIRouter: key registry, scoring
+│   │   ├── core/key_resolver.py #     Circuit breaker, adaptive cooldown
+│   │   └── pool.py              #     ModelPool: failover state machine
+│   ├── limits/                  #   Rate limiters
+│   │   ├── gemini_rate_limiter.py#    Per-model RPM/TPM/RPD sliding window
+│   │   └── account_limiter/     #     Per-account limits
+│   │       ├── limiter.py       #       Sliding window
+│   │       ├── capacity.py      #       Pool capacity by tier
+│   │       └── effective_limits.py#     Limits after sharing
+│   ├── providers/               #   LLM backends
+│   │   ├── gemini/              #     Gemini SDK pipeline
+│   │   │   ├── manager.py       #       Semaphore, retry
+│   │   │   ├── caller.py        #       SDK caller + safety
+│   │   │   ├── pool.py          #       ClientPool health
+│   │   │   ├── error.py         #       Error classification
+│   │   │   └── thinking_config.py#      ThinkingConfig builder
+│   │   ├── gemini_api_manager.py#     Thin facade → gemini/
+│   │   ├── gemini_api_helpers.py#     Error classification mixin
+│   │   ├── litellm_wrapper.py   #     LiteLLM acompletion wrapper
+│   │   ├── search_manager.py    #     Search intent + grounding
+│   │   └── custom_endpoint_manager.py# Non-Gemini endpoints CRUD
+│   ├── accounts/account_manager.py # Account auth facade (10s cache)
+│   ├── api_config.py            #   Model pools + sunset
+│   ├── preflight.py             #   Health diagnostics
+│   └── usage_logger.py          #   Async → SQLite batch flush
 │
 ├── backend/                     # SQLite DB layer
-│   ├── _db.py                   #   Shared connection + RLock
-│   ├── schema.py                #   DDL + migration from JSON
+│   ├── _db.py                   #   Shared connection + WAL + RLock
+│   ├── schema.py                #   DDL + migration
 │   ├── accounts.py              #   Account CRUD
-│   ├── endpoints.py             #   Custom endpoint CRUD + pool assignment
-│   └── key_status.py            #   Key status + usage atomic ops
+│   ├── endpoints.py             #   Custom endpoint CRUD
+│   ├── key_status.py            #   Key circuit breaker
+│   └── model_prices.py          #   Cost lookup
 │
-├── console/                     # CLI admin console
-│   ├── admin_console.py         #   Entry: main() + AccountConsole (cmd.Cmd)
-│   ├── console_endpoint.py      #   Endpoint wizard: add, pool assign, ping
-│   └── console_helpers.py       #   Helpers: print, keypress, interactive selector
+├── console/                     # CLI admin
+│   ├── admin_console.py         #   Main shell (cmd.Cmd)
+│   ├── console_endpoint.py      #   Endpoint wizard
+│   └── console_helpers.py       #   Helpers + selectors
 │
-└── tools/
-    └── duckduckgo.py            # WebSearch tool (dùng trong proxy)
+└── tools/                       # Web search engine
+    ├── duckduckgo.py            #   AdvancedSearchManager
+    ├── ddg_ranking.py           #   Consensus ranking
+    ├── ddg_utils.py             #   URL normalization + dedup
+    └── ddg_data.py              #   Topic data + cache
 ```
 
 ## Endpoints
@@ -204,8 +257,14 @@ src/
 | GET | `/preflight` | Check keys, models, auth |
 | GET | `/account` | Account info + usage |
 | GET | `/v1/models` | List models |
-| POST | `/v1/chat/completions` | OpenAI chat |
+| POST | `/v1/chat/completions` | OpenAI chat (stream → OpenCodeProxy) |
 | POST | `/v1/messages` | Anthropic messages |
+| POST | `/opencode/v1/chat/completions` | OpenCode proxy routing |
+| POST | `/v1/{version}/models/{model}:generateContent` | Gemini pass-through (non-stream) |
+| POST | `/v1/{version}/models/{model}:streamGenerateContent` | Gemini pass-through (stream) |
+| POST | `/dashboard/admin/keys/add` | Add Gemini key |
+| POST | `/dashboard/admin/accounts/*` | Account CRUD |
+| POST | `/dashboard/admin/endpoints/*` | Endpoint CRUD |
 
 ## Thinking / Reasoning
 

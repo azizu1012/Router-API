@@ -126,6 +126,9 @@ async def _stream_gemini_native_real(
     web_search: bool,
     hybrid_citations: List[Dict[str, Any]],
     auth_key_prefix: str,
+    thinking_level: Optional[str] = None,
+    thinking_budget: Optional[int] = None,
+    include_thoughts: Optional[bool] = None,
 ) -> AsyncIterator[bytes]:
     try:
         stream_generator = api_manager.call_gemini_stream(
@@ -139,6 +142,9 @@ async def _stream_gemini_native_real(
             image_count=image_count,
             account=account,
             web_search=web_search,
+            thinking_level=thinking_level,
+            thinking_budget=thinking_budget,
+            include_thoughts=include_thoughts,
         )
 
         last_chunk_dict = None
@@ -351,6 +357,14 @@ async def _handle_gemini_native(
     max_tokens = int(gen_config.get("maxOutputTokens") or gen_config.get("max_output_tokens") or config.MAX_OUTPUT_TOKENS)
     max_tokens = max(1, min(max_tokens, config.MAX_OUTPUT_TOKENS))
     
+    # Extract thinkingConfig from generationConfig
+    tcfg = gen_config.get("thinkingConfig") or gen_config.get("thinking_config") or {}
+    thinking_level = tcfg.get("thinkingLevel") or tcfg.get("thinking_level")
+    thinking_budget = tcfg.get("thinkingBudget")
+    if thinking_budget is None:
+        thinking_budget = tcfg.get("thinking_budget")
+    include_thoughts = tcfg.get("includeThoughts") if tcfg.get("includeThoughts") is not None else tcfg.get("include_thoughts")
+    
     # 4. Count image inputs
     image_count = sum(
         1 for c in contents
@@ -553,6 +567,9 @@ async def _handle_gemini_native(
             web_search=native_grounding_active,
             hybrid_citations=hybrid_citations,
             auth_key_prefix=auth_key_prefix,
+            thinking_level=thinking_level,
+            thinking_budget=thinking_budget,
+            include_thoughts=include_thoughts,
         ), media_type="text/event-stream")
 
     gresult = await api_manager.call_gemini(
@@ -566,6 +583,9 @@ async def _handle_gemini_native(
         image_count=image_count,
         account=account,
         web_search=native_grounding_active,
+        thinking_level=thinking_level,
+        thinking_budget=thinking_budget,
+        include_thoughts=include_thoughts,
     )
     
     # 9. Format response payload safely (using model_dump_json to serialize bytes to base64 strings)

@@ -113,21 +113,25 @@ async def _execute_stream(
 
                 fetch_task = asyncio.create_task(_fetch_websearch())
                 t0_wait = asyncio.get_event_loop().time()
-                ping_count = 0
+                search_statuses = [
+                    (0, "🔍 Searching..."),
+                    (3, "📡 Querying DuckDuckGo..."),
+                    (6, "📄 Reading results..."),
+                    (9, "⚡ Synthesizing data..."),
+                    (12, "⏳ Almost done..."),
+                ]
+                status_sent = 0
                 while not fetch_task.done():
                     try:
-                        await asyncio.wait_for(asyncio.shield(fetch_task), timeout=3.0)
+                        await asyncio.wait_for(asyncio.shield(fetch_task), timeout=2.0)
                         break
                     except asyncio.TimeoutError:
                         elapsed = asyncio.get_event_loop().time() - t0_wait
-                        ping_count += 1
-                        if ping_count % 5 == 1:
-                            logger.info(
-                                "[OpenCode Keepalive] Still waiting for %s response (WebSearch capable) (elapsed=%.1fs)",
-                                model_alias, elapsed
-                            )
-                        # Yield a keepalive ping or empty chunk to keep connection open
-                        yield b": keepalive\n\n"
+                        for t, msg in search_statuses:
+                            if elapsed >= t and status_sent <= t:
+                                status_sent = t + 0.01
+                                logger.info("[OpenCode Search Status] %.1fs: %s", elapsed, msg)
+                                yield _openai_sse(model_name, content=msg + "\n", chunk_id=chunk_id)
 
                 text, tool_calls, finish_reason, thought_text = await fetch_task
                 elapsed = asyncio.get_event_loop().time() - t0_wait

@@ -64,19 +64,37 @@ async def _execute_stream(proxy_instance: Any, kwargs: Dict[str, Any], api_key: 
                 async def _fetch_websearch():
                     return await _resolve_gemini_with_tools(kwargs_ns, body, proxy_instance, auth_key_prefix=auth_key_prefix, account=account)
 
+                # Search status block — stream progress live
+                yield _sse("content_block_start", {
+                    "type": "content_block_start", "index": 0,
+                    "content_block": {"type": "text", "text": ""}
+                })
+                status_clock = 0
+                search_statuses = [
+                    (0, "🔍 Đang tìm kiếm thông tin...\n"),
+                    (3, "📡 Đang truy vấn DuckDuckGo...\n"),
+                    (6, "📄 Đang đọc kết quả...\n"),
+                    (9, "⚡ Đang tổng hợp dữ liệu...\n"),
+                    (12, "⏳ Gần xong rồi...\n"),
+                ]
                 fetch_task = asyncio.create_task(_fetch_websearch())
                 t0_wait = asyncio.get_event_loop().time()
-                ping_count = 0
                 while not fetch_task.done():
                     try:
-                        await asyncio.wait_for(asyncio.shield(fetch_task), timeout=3.0)
+                        await asyncio.wait_for(asyncio.shield(fetch_task), timeout=2.0)
                         break
                     except asyncio.TimeoutError:
                         elapsed = asyncio.get_event_loop().time() - t0_wait
-                        ping_count += 1
-                        if ping_count % 5 == 1:
-                            logger.info("[Stream Keepalive] Still waiting for %s response (WebSearch capable) (elapsed=%.1fs), sending ping", model_alias, elapsed)
-                        yield _sse("ping", {"type": "ping", "retry": 0, "reason": "keepalive"})
+                        for t, msg in search_statuses:
+                            if elapsed >= t and status_clock <= t:
+                                status_clock = t + 0.01
+                                logger.info("[WebSearch Status] %.1fs: %s", elapsed, msg.strip())
+                                yield _sse("content_block_delta", {
+                                    "type": "content_block_delta", "index": 0,
+                                    "delta": {"type": "text_delta", "text": msg}
+                                })
+
+                yield _sse("content_block_stop", {"type": "content_block_stop", "index": 0})
 
                 text, tool_calls, finish_reason, thought_text = await fetch_task
                 elapsed = asyncio.get_event_loop().time() - t0_wait
@@ -96,7 +114,7 @@ async def _execute_stream(proxy_instance: Any, kwargs: Dict[str, Any], api_key: 
                     ) % (input_tokens / 1000.0, input_tokens / 1000.0)
                     text = warning_message + text
 
-                block_idx = 0
+                block_idx = 1
                 if thought_text:
                     norm_thought = normalize_text(thought_text)
                     sig = "gmni_" + hashlib.sha256(norm_thought.encode()).hexdigest()[:60]
