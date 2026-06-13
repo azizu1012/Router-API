@@ -2,7 +2,7 @@ import asyncio
 import re
 import os
 import time
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import Dict, List, Optional, Tuple, Union
 
 try:
@@ -47,6 +47,25 @@ class AdvancedSearchManager(SearchRankingMixin):
         self.search_time_sensitive_cache_ttl_seconds = int(os.getenv("SEARCH_TIME_SENSITIVE_CACHE_TTL_SEC", "1800"))
         self.search_failed_query_cooldown_seconds = int(os.getenv("SEARCH_FAILED_QUERY_COOLDOWN_SEC", "15"))
         self.search_empty_evidence_cache_ttl_seconds = int(os.getenv("SEARCH_EMPTY_EVIDENCE_CACHE_TTL_SEC", "600"))
+
+    def get_web_search_cache(self, key: str) -> Optional[str]:
+        item = self.web_search_cache.get(key)
+        if not item:
+            return None
+        ttl = item.get("ttl_seconds", 7200)
+        if datetime.now() - item["timestamp"] > timedelta(seconds=ttl):
+            del self.web_search_cache[key]
+            return None
+        return item.get("text", "")
+
+    def set_web_search_cache(self, key: str, text: str, time_sensitive: bool = False, ttl_seconds: Optional[int] = None):
+        if ttl_seconds is None:
+            ttl_seconds = self.search_time_sensitive_cache_ttl_seconds if time_sensitive else self.search_general_cache_ttl_seconds
+        self.web_search_cache[key] = {
+            "text": text,
+            "timestamp": datetime.now(),
+            "ttl_seconds": ttl_seconds,
+        }
 
     async def _fetch_page_evidence(self, url: str) -> str:
         cached = self._get_deep_read_cache(url)
@@ -280,7 +299,7 @@ class AdvancedSearchManager(SearchRankingMixin):
             return ""
 
         cache_key = f"{mode}|{clean_query}"
-        normalized_key = self._normalize_search_cache_key(cache_key)
+        normalized_key = cache_key.lower().strip()
         time_sensitive = self._is_time_sensitive_query(clean_query)
         bypass_cache = time_sensitive and not force_fallback
 

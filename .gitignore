@@ -19,6 +19,10 @@ __pycache__/
 # ─── Secrets / keys ───
 banned-keys.txt
 
+# ─── Test / experiment files ───
+tests/
+scripts/
+
 # ─── Dev utilities ───
 clean_cache.bat
 
@@ -33,4 +37,7 @@ stop_router_ssl.sh
 
 # ─── IDE ───
 .vscode/
+
+# ─── Local Claude Code config ───
+.claude/settings.local.json
 
