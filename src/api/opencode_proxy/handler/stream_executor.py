@@ -20,7 +20,7 @@ from src.api.claude_proxy.utils import (
     XMLThinkingExtractor,
 )
 from .sse import openai_chunks, error_sse
-from .nonstream_executor import _resolve_gemini_with_tools
+from .nonstream_executor import _resolve_gemini_with_tools, _resolve_gemini_with_tools_stream
 
 
 class LiteLLMTransientError(Exception):
@@ -111,7 +111,7 @@ async def _execute_stream(
                         kwargs_ns, body, proxy_instance, auth_key_prefix=auth_key_prefix, account=account
                     )
 
-                fetch_task = asyncio.create_task(_fetch_websearch())
+                fetch_task = asyncio.create_task(asyncio.to_thread(lambda: None))  # dummy, real work below
                 t0_wait = asyncio.get_event_loop().time()
                 search_statuses = [
                     (0, "🔍 Searching..."),
@@ -121,10 +121,35 @@ async def _execute_stream(
                     (12, "⏳ Almost done..."),
                 ]
                 status_sent = 0
-                while not fetch_task.done():
+                text_buf: List[str] = []
+                thinking_buf: List[str] = []
+                stream_tool_calls: List[Dict[str, Any]] = []
+                stream_fr = "stop"
+                stream_thought: str = ""
+                reasoning_active = False
+
+                # Start streaming from the stream generator directly
+                stream_iter = _resolve_gemini_with_tools_stream(
+                    kwargs_ns, body, proxy_instance, auth_key_prefix=auth_key_prefix, account=account
+                ).__aiter__()
+                stream_done = False
+                while not stream_done:
                     try:
-                        await asyncio.wait_for(asyncio.shield(fetch_task), timeout=2.0)
-                        break
+                        evt_type, *evt_vals = await asyncio.wait_for(stream_iter.__anext__(), timeout=2.0)
+                        elapsed = asyncio.get_event_loop().time() - t0_wait
+                        if evt_type == "reasoning":
+                            val = evt_vals[0]
+                            thinking_buf.append(val)
+                            yield _openai_sse(model_name, reasoning_content=val, chunk_id=chunk_id)
+                        elif evt_type == "text":
+                            val = evt_vals[0]
+                            text_buf.append(val)
+                            yield _openai_sse(model_name, content=val, chunk_id=chunk_id)
+                        elif evt_type == "result":
+                            text_buf, stream_tool_calls, stream_fr, stream_thought = evt_vals
+                            if isinstance(text_buf, str):
+                                text_buf = [text_buf]
+                            stream_done = True
                     except asyncio.TimeoutError:
                         elapsed = asyncio.get_event_loop().time() - t0_wait
                         for t, msg in search_statuses:
@@ -132,30 +157,19 @@ async def _execute_stream(
                                 status_sent = t + 0.01
                                 logger.info("[OpenCode Search Status] %.1fs: %s", elapsed, msg)
                                 yield _openai_sse(model_name, content=msg + "\n", chunk_id=chunk_id)
+                    except StopAsyncIteration:
+                        stream_done = True
 
-                text, tool_calls, finish_reason, thought_text = await fetch_task
-                elapsed = asyncio.get_event_loop().time() - t0_wait
+                text = "".join(text_buf) if text_buf else ""
+                thought_text = "".join(thinking_buf) if thinking_buf else stream_thought
+                tool_calls = stream_tool_calls
+                finish_reason = stream_fr
+
+                elapsed_total = asyncio.get_event_loop().time() - t0_wait
                 logger.info(
                     "[OpenCode ToolResolve Stream] model=%s elapsed=%.2fs text_len=%d tools=%d thought_len=%d",
-                    model_alias, elapsed, len(text), len(tool_calls), len(thought_text) if thought_text else 0
+                    model_alias, elapsed_total, len(text), len(tool_calls), len(thought_text)
                 )
-
-                # Stream thought back in chunks as reasoning_content only
-                if thought_text:
-                    norm_thought = normalize_text(thought_text)
-                    chunk_size = 80
-                    for i in range(0, len(norm_thought), chunk_size):
-                        chunk_val = norm_thought[i:i+chunk_size]
-                        yield _openai_sse(model_name, reasoning_content=chunk_val, chunk_id=chunk_id)
-                        await asyncio.sleep(0.01)
-
-                # Stream text back in chunks to simulate streaming
-                if text:
-                    norm_txt = normalize_text(text)
-                    chunk_size = 40
-                    for i in range(0, len(norm_txt), chunk_size):
-                        yield _openai_sse(model_name, content=norm_txt[i:i+chunk_size], chunk_id=chunk_id)
-                        await asyncio.sleep(0.01)
 
                 if tool_calls:
                     yield _openai_sse(model_name, tool_calls=tool_calls, chunk_id=chunk_id)
