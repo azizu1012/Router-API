@@ -249,7 +249,7 @@ async def anthropic_messages(
                     )
 
     if not body.get("max_tokens"):
-        body["max_tokens"] = 4096
+        body["max_tokens"] = config.MAX_OUTPUT_TOKENS
 
     akp = _auth_key_prefix(account)
 
