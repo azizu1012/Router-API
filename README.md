@@ -154,6 +154,7 @@ src/
 │   │   ├── proxy_stream.py      #     Streaming call mixer with keepalive
 │   │   ├── proxy_nonstream.py   #     Non-streaming call mixer
 │   │   ├── stream_executor.py   #     Search status streaming, SSE yield
+│   │   ├── pool_stream.py       #     Pool retry wrapper for streaming
 │   │   ├── nonstream_executor.py#     WebSearch, tool recursion, thinking
 │   │   └── helpers.py           #     Error classification, system status
 │   ├── utils/                   #   Utilities
@@ -178,8 +179,12 @@ src/
 │   └── sse.py                   #     SSE event builder
 │
 ├── server/                      # HTTP server
+│   ├── websocket_manager.py     #   WebSocket connection manager
+│   ├── log_watcher.py           #   Async log tail + ring buffer
+│   ├── stats_pusher.py          #   Real-time stats pusher
 │   ├── openai_server/           #   OpenAI + Anthropic endpoints
 │   │   ├── handler.py           #     Chat completion, grounding
+│   │   ├── completion_helpers.py#     Response/stream builders
 │   │   ├── auth.py              #     Bearer token + rate limiter
 │   │   ├── security.py          #     Brute force protection
 │   │   └── routes/              #     Route modules
@@ -188,13 +193,18 @@ src/
 │   │       ├── completions_routes.py#   /v1/chat/completions + /v1/messages
 │   │       ├── opencode_routes.py#     /opencode/v1/chat/completions
 │   │       ├── dashboard_routes.py#    Stats dashboard HTML + JSON
+│   │       ├── ws_routes.py     #       Dashboard WebSocket
 │   │       ├── auth_session.py  #       Dashboard JWT
 │   │       └── admin/           #       Admin REST API
 │   │           ├── accounts.py  #         Account CRUD
 │   │           ├── endpoints.py #         Endpoint CRUD
 │   │           └── keys.py      #         Gemini key mgmt
 │   └── pass_through_server/     #   Native Gemini pass-through
-│       └── routes/gemini_routes.py#   generateContent/streamGenerateContent
+│       └── routes/
+│           ├── gemini_routes.py     #   generateContent/streamGenerateContent routes
+│           ├── gemini_handlers.py   #   Main pass-through handler with grounding
+│           ├── gemini_parsers.py    #   Auth + content/tool parsing
+│           └── gemini_streaming.py  #   Streaming + custom endpoint streaming
 │
 ├── core/                        # Core engine
 │   ├── config_n_logg/           #   Config + logging
@@ -216,7 +226,8 @@ src/
 │   │   │   ├── caller.py        #       SDK caller + safety
 │   │   │   ├── pool.py          #       ClientPool health
 │   │   │   ├── error.py         #       Error classification
-│   │   │   └── thinking_config.py#      ThinkingConfig builder
+│   │   │   ├── thinking_config.py#      ThinkingConfig builder
+│   │   │   └── utils.py         #       Error handling, tools, backoff
 │   │   ├── gemini_api_manager.py#     Thin facade → gemini/
 │   │   ├── gemini_api_helpers.py#     Error classification mixin
 │   │   ├── litellm_wrapper.py   #     LiteLLM acompletion wrapper

@@ -167,6 +167,7 @@ class ClaudeProxy(ClaudeProxyNonstreamMixin, ClaudeProxyStreamMixin):
             model_alias_val = None
             api_key_val = None
             litellm_model_val = None
+            model_id_val = ""
 
             try:
                 est_input = len(str(openai_messages)) // 4

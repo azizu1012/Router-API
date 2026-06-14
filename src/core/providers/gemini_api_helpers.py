@@ -1,3 +1,5 @@
+# pyright: reportAttributeAccessIssue=false
+
 import asyncio
 import random
 import re

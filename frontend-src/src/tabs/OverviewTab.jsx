@@ -1,32 +1,43 @@
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useState, useRef } from 'react';
 import { useApp } from '../context/AppContext';
 import { t } from '../utils/i18n';
 import { fmt } from '../utils/format';
+import { useWebSocket } from '../utils/useWebSocket';
 import { 
   Chart as ChartJS, CategoryScale, LinearScale, PointElement, 
   LineElement, Title, Tooltip, Legend, ArcElement 
 } from 'chart.js';
 import { Line, Doughnut } from 'react-chartjs-2';
-import { Calendar, BarChart3, TrendingUp, Cpu } from 'lucide-react';
+import { Calendar, BarChart3, TrendingUp, Cpu, Wifi, WifiOff } from 'lucide-react';
 
 ChartJS.register(
   CategoryScale, LinearScale, PointElement, LineElement, 
   Title, Tooltip, Legend, ArcElement
 );
 
-// Colors matching global app theme
 const CLR = [
   '#6366f1', '#10b981', '#f59e0b', '#ec4899', '#3b82f6', 
   '#8b5cf6', '#14b8a6', '#f43f5e', '#a855f7', '#06b6d4'
 ];
 
 export default function OverviewTab() {
-  const { tabData, lang, theme, refreshTab } = useApp();
+  const { tabData, lang, theme, refreshTab, token } = useApp();
   const ovData = tabData.ov;
 
   const [tickingSavings, setTickingSavings] = useState(0);
   const [clrOffset, setClrOffset] = useState(0);
   const [flipped, setFlipped] = useState(false);
+  const [liveStats, setLiveStats] = useState(null);
+
+  const wsHook = useWebSocket(token);
+
+  useEffect(() => {
+    if (!wsHook.connected) return;
+    const unsub = wsHook.subscribe('stats:overview', (msg) => {
+      if (msg.type === 'stats_snapshot') setLiveStats(msg);
+    });
+    return unsub;
+  }, [wsHook.connected]);
 
   // Set up savings animated ticker
   useEffect(() => {
@@ -225,6 +236,48 @@ export default function OverviewTab() {
         <h1 className="text-2xl font-black tracking-tight">{t('ov_title', lang)}</h1>
         <p className="text-xs text-base-content/60 mt-1">{t('ov_sub', lang)}</p>
       </div>
+
+      {/* Live Rate Limit Gauges */}
+      {liveStats && (
+        <div className="animate-fade-in-up cascade-0 space-y-2">
+          <div className="flex items-center gap-2 text-[10px] font-bold text-base-content/40 uppercase tracking-wider">
+            {wsHook.connected ? (
+              <><Wifi className="w-3 h-3 text-success" /> Live Rate Limits</>
+            ) : (
+              <><WifiOff className="w-3 h-3 text-error" /> Offline</>
+            )}
+          </div>
+          <div className="grid grid-cols-2 lg:grid-cols-4 gap-3">
+            {Object.entries(liveStats.models || {}).map(([alias, ms]) => {
+              const rpmPct = ms.rpm_limit > 0 ? Math.round((1 - ms.rpm_remaining / ms.rpm_limit) * 100) : 0;
+              const tpmPct = ms.tpm_limit > 0 ? Math.round((1 - ms.tpm_remaining / ms.tpm_limit) * 100) : 0;
+              const rpmColor = rpmPct > 80 ? 'bg-error' : rpmPct > 50 ? 'bg-warning' : 'bg-success';
+              const tpmColor = tpmPct > 80 ? 'bg-error' : tpmPct > 50 ? 'bg-warning' : 'bg-success';
+              return (
+                <div key={alias} className="card glass-card p-3 rounded-xl border border-base-content/5">
+                  <div className="text-[10px] font-bold text-base-content/60 truncate mb-2">{alias}</div>
+                  <div className="space-y-1.5">
+                    <div className="flex items-center justify-between text-[9px]">
+                      <span className="font-semibold text-base-content/50">RPM</span>
+                      <span className="font-mono font-bold">{ms.rpm_remaining}/{ms.rpm_limit}</span>
+                    </div>
+                    <div className="w-full h-1.5 bg-base-300/50 rounded-full overflow-hidden">
+                      <div className={`h-full rounded-full transition-all duration-500 ${rpmColor}`} style={{width: `${rpmPct}%`}}></div>
+                    </div>
+                    <div className="flex items-center justify-between text-[9px]">
+                      <span className="font-semibold text-base-content/50">TPM</span>
+                      <span className="font-mono font-bold">{fmt(ms.tpm_remaining)}/{fmt(ms.tpm_limit)}</span>
+                    </div>
+                    <div className="w-full h-1.5 bg-base-300/50 rounded-full overflow-hidden">
+                      <div className={`h-full rounded-full transition-all duration-500 ${tpmColor}`} style={{width: `${tpmPct}%`}}></div>
+                    </div>
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+        </div>
+      )}
 
       {/* KPI Cards: 2x2 grid */}
       <div className="grid grid-cols-2 lg:grid-cols-4 gap-4 animate-fade-in-up cascade-1">

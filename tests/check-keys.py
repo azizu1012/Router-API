@@ -1,4 +1,6 @@
 """Check Router API health + per-key status via proxy (not direct Google calls)."""
+# pyright: reportMissingImports=false
+
 import sys
 import time
 import json

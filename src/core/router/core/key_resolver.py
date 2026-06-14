@@ -1,3 +1,5 @@
+# pyright: reportAttributeAccessIssue=false
+
 import time
 import random
 from datetime import datetime, timedelta
@@ -214,11 +216,11 @@ class KeyResolverMixin:
                                         self._key_status[selected_key]["usage"] = max(0, self._key_status[selected_key]["usage"] - 1)
                                         self._key_status[selected_key]["active_requests"] = max(0, self._key_status[selected_key]["active_requests"] - 1)
                                 continue
-                            record_key_model_usage(selected_key, selected_mid, estimated_tokens)
+                            record_key_model_usage(selected_key, selected_mid or "", estimated_tokens)
                             return {
                                 "key": selected_key,
                                 "model_alias": member,
-                                "model_id": selected_mid,
+                                "model_id": selected_mid or "",
                                 "provider": "gemini",
                             }
                 logger.warning("All keys frozen or rate limited for pool %s members=%s", model_alias, pool_cfg["members"])
@@ -353,11 +355,11 @@ class KeyResolverMixin:
                                 self._key_status[selected_key]["usage"] = max(0, self._key_status[selected_key]["usage"] - 1)
                                 self._key_status[selected_key]["active_requests"] = max(0, self._key_status[selected_key]["active_requests"] - 1)
                         continue
-                    record_key_model_usage(selected_key, selected_mid, estimated_tokens)
+                    record_key_model_usage(selected_key, selected_mid or "", estimated_tokens)
                     return {
                         "key": selected_key,
                         "model_alias": model_alias,
-                        "model_id": selected_mid,
+                        "model_id": selected_mid or "",
                         "provider": "gemini",
                     }
 

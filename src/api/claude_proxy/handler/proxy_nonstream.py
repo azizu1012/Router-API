@@ -2,6 +2,8 @@ import asyncio
 import uuid
 from typing import Any, Dict, Optional
 
+# pyright: reportAttributeAccessIssue=false
+
 from fastapi import HTTPException
 from src.core.providers.litellm_wrapper import token_counter
 
@@ -75,6 +77,7 @@ class ClaudeProxyNonstreamMixin:
         for attempt in range(config.MAX_RETRIES):
             model_alias_val = None
             api_key_val = None
+            model_id_val = ""
             litellm_model_val = None
             try:
                 est_input = len(str(openai_messages)) // 4

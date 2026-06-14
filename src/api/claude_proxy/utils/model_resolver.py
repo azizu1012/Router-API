@@ -1,6 +1,9 @@
 import asyncio
 import time
 from typing import Any, Dict, Optional, Tuple
+
+# pyright: reportAttributeAccessIssue=false
+
 from fastapi import HTTPException
 
 from src.core.config_n_logg import config

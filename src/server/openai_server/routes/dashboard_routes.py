@@ -288,6 +288,14 @@ async def dashboard_endpoints(request: Request):
     return {"endpoints": safe}
 
 
+@app.get("/dashboard/logs/history")
+async def dashboard_logs_history(request: Request, channel: str = "proxy", lines: int = 200):
+    _require_dashboard(request)
+    from ...log_watcher import log_watcher
+    history = log_watcher.get_history(channel, max(1, min(5000, lines)))
+    return {"channel": channel, "lines": len(history), "history": history}
+
+
 @app.get("/dashboard/my-stats")
 async def dashboard_my_stats(request: Request, days: int = 30):
     payload = _require_dashboard(request)

@@ -3,6 +3,7 @@ import time
 from fastapi import Header, HTTPException, Request
 from fastapi.responses import JSONResponse, StreamingResponse
 
+from src.core.config_n_logg import config
 from src.core.config_n_logg.logger import logger_api
 from src.core.limits import account_limiter
 from src.core.providers import _custom_endpoint_manager
@@ -10,7 +11,8 @@ from src.api.claude_proxy import claude_proxy
 from src.core.usage_logger import log_usage
 
 from src.server.openai_server.auth import _resolve_auth, _check_auth, _apply_account_limit, _auth_key_prefix
-from src.server.openai_server.handler import _openai_chat_completion, _completion_response, _stream_response
+from src.server.openai_server.handler import _openai_chat_completion
+from src.server.openai_server.completion_helpers import completion_response, stream_response
 from .app_init import app
 
 @app.post("/v1/chat/completions")
@@ -39,7 +41,7 @@ async def chat_completions(
             )
         else:
             result = await _openai_chat_completion(body, account=account)
-            return _completion_response(body, result)
+            return completion_response(body, result)
     except Exception as e:
         logger_api.error("chat_completion failed: %s", e)
         msg = str(e)
@@ -112,7 +114,7 @@ async def completions(
     )
 
     if chat_body.get("stream"):
-        return StreamingResponse(_stream_response(chat_body, result), media_type="text/event-stream")
+        return StreamingResponse(stream_response(chat_body, result), media_type="text/event-stream")
 
     now = int(time.time())
     return {

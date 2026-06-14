@@ -2,6 +2,8 @@ import asyncio
 import uuid
 from typing import Any, Dict, Optional, AsyncIterator
 
+# pyright: reportAttributeAccessIssue=false
+
 from fastapi import HTTPException
 from src.core.providers.litellm_wrapper import token_counter
 
@@ -22,7 +24,8 @@ from src.api.claude_proxy.utils import (
 from .helpers import get_system_status_summary, _reinforce_messages_for_retry
 from src.core.providers.gemini.error import classify
 from .compaction import _pre_compact_and_truncate
-from .stream_executor import _execute_stream, _stream_with_pool
+from .stream_executor import _execute_stream
+from .pool_stream import _stream_with_pool
 
 class ClaudeProxyStreamMixin:
 
@@ -105,6 +108,7 @@ class ClaudeProxyStreamMixin:
         for attempt in range(config.MAX_RETRIES):
             model_alias_val = None
             api_key_val = None
+            model_id_val = ""
             try:
                 est_input = len(str(openai_messages)) // 4
                 max_output = min(int(body.get("max_tokens", 4096)), config.MAX_OUTPUT_TOKENS)

@@ -1,3 +1,5 @@
+# pyright: reportAttributeAccessIssue=false
+
 import re
 import unicodedata
 import dateparser

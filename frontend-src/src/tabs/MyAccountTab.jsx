@@ -3,11 +3,22 @@ import { useApp } from '../context/AppContext';
 import { t } from '../utils/i18n';
 import { fmt } from '../utils/format';
 import { api } from '../utils/api';
-import { User, Shield, Search, Zap, Calendar, Activity, Info, HelpCircle } from 'lucide-react';
+import { useWebSocket } from '../utils/useWebSocket';
+import { Wifi, WifiOff, User, Shield, Search, Zap, Calendar, Activity, Info, HelpCircle } from 'lucide-react';
 
 export default function MyAccountTab() {
   const { tabData, token, lang, refreshTab } = useApp();
   const data = tabData.myacc;
+  const wsHook = useWebSocket(token);
+  const [liveActivity, setLiveActivity] = useState(null);
+
+  useEffect(() => {
+    if (!wsHook.connected) return;
+    const unsub = wsHook.subscribe('stats:overview', (msg) => {
+      if (msg.type === 'stats_snapshot') setLiveActivity(msg);
+    });
+    return unsub;
+  }, [wsHook.connected]);
 
   const [wsLoading, setWsLoading] = useState(false);
   const [resetCountdown, setResetCountdown] = useState('');
@@ -164,6 +175,25 @@ export default function MyAccountTab() {
           </p>
         </div>
       </div>
+
+      {/* Live Activity Indicator */}
+      {wsHook.connected && liveActivity && (
+        <div className="card glass-card p-3 rounded-xl flex flex-row items-center gap-4 text-left border border-base-content/5 shadow-sm">
+          <div className="flex items-center gap-2 text-xs font-bold text-base-content/50">
+            <Wifi className="w-3 h-3 text-success" />
+            <span>Live</span>
+          </div>
+          <div className="flex items-center gap-4 text-[10px] font-mono text-base-content/50">
+            <span>Active Keys: <span className="text-base-content font-bold">{liveActivity.active_keys}</span></span>
+            <span>|</span>
+            <span>Connections: <span className="text-base-content font-bold">{liveActivity.connections}</span></span>
+            <span>|</span>
+            <span>Penalties: <span className="text-error font-bold">{liveActivity.penalties}</span></span>
+            <span>|</span>
+            <span>Channels: <span className="text-base-content font-bold">{liveActivity.channels}</span></span>
+          </div>
+        </div>
+      )}
 
       {/* Web Search Toggle wrapper */}
       <div className="card glass-card p-4 rounded-2xl flex flex-row items-center justify-between text-left border border-base-content/5 shadow-sm">

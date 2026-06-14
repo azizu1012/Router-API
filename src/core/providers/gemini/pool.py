@@ -37,7 +37,7 @@ class ClientPool:
         self._key_last_used: Dict[str, float] = {}
 
         self._project_id_of_key: Dict[str, str] = {}
-        self._project_frozen_until: Dict[str, float] = {}
+        self._project_frozen_until: Dict[tuple[str, str], float] = {}
         self._pool_size: int = len(config.GEMINI_API_KEYS) if config.GEMINI_API_KEYS else 101
 
     # ── Semaphore (class-level, shared across instances) ──────────

@@ -10,6 +10,8 @@ from src.core.config_n_logg.logger import logger_system as logger
 from src.backend.schema import init_config_tables, migrate_from_json
 from src.core.usage_logger import init_db, start_flush_loop
 from src.core.limits import account_limiter
+from ...log_watcher import log_watcher
+from ...stats_pusher import stats_pusher
 
 app = FastAPI(title="Router API v2", version="2.0.0")
 
@@ -118,5 +120,8 @@ async def _init_usage_db():
     task = asyncio.create_task(_watch_env_file())
     _background_tasks.add(task)
     task.add_done_callback(_background_tasks.discard)
+
+    log_watcher.start_all()
+    stats_pusher.start()
 
 
