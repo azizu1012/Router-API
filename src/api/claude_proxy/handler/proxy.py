@@ -139,8 +139,16 @@ class ClaudeProxy(ClaudeProxyNonstreamMixin, ClaudeProxyStreamMixin):
             "request_timeout": config.REQUEST_TIMEOUT_SECONDS,
         }
         if openai_tools:
-            kwargs["tools"] = openai_tools
-            
+            if reservation.get("provider") == "custom":
+                tools = [
+                    t for t in openai_tools
+                    if t.get("function", {}).get("name") not in ("WebSearch", "WebFetch")
+                ]
+                if tools:
+                    kwargs["tools"] = tools
+            else:
+                kwargs["tools"] = openai_tools
+
         if reservation.get("provider") == "custom":
             kwargs["api_base"] = reservation["api_base"]
             # Forward raw thinking params to custom endpoints

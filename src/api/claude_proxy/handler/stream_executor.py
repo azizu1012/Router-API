@@ -48,6 +48,8 @@ async def _execute_stream(proxy_instance: Any, kwargs: Dict[str, Any], api_key: 
                 msg_id = "msg_" + uuid.uuid4().hex
                 adjusted_input_tokens = input_tokens
                 cache_usage = _get_simulated_cache_usage(body, adjusted_input_tokens)
+                t0_wait = asyncio.get_event_loop().time()
+
                 yield _sse("message_start", {
                     "type": "message_start",
                     "message": {

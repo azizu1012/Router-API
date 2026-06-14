@@ -26,7 +26,7 @@ d:\AI_Projects\router_api/
 │
 ├── logs/                         # Rotating file logs (daily auto-clean)
 │
-├── src/                          # 105 Python files, ~14,609 lines total
+├── src/                          # 105 Python files, ~14,631 lines total
 │   ├── api/                      #   ~4,200 lines — proxy layers
 │   │   ├── claude_proxy/         #     Anthropic→Gemini proxy (stream + non-stream)
 │   │   │   ├── stream.py         #       Anthropic SSE converter: thinking_delta + signature_delta
@@ -154,7 +154,7 @@ d:\AI_Projects\router_api/
 | `core/router/core/key_resolver.py` | 349 | Circuit breaker, adaptive cooldown, key caching |
 | `console/admin_console.py` | 345 | Interactive CLI admin shell |
 | `api/claude_proxy/utils/format_normalizer.py` | 343 | StreamingTextNormalizer + XMLThinkingExtractor |
-| `api/claude_proxy/handler/nonstream_executor.py` | 339 | Non-stream: WebSearch, thinking extraction |
+| `api/claude_proxy/handler/nonstream_executor.py` | 343 | Non-stream: WebSearch, thinking extraction |
 | `server/openai_server/routes/completions_routes.py` | 336 | /v1/chat/completions + /v1/messages routes |
 | `core/providers/custom_endpoint_manager.py` | 336 | Custom endpoint CRUD + pool + health |
 | `core/providers/gemini/manager.py` | 325 | GeminiAPIManager: SDK pipeline, semaphore |
@@ -163,15 +163,15 @@ d:\AI_Projects\router_api/
 | `core/providers/search_manager.py` | 310 | Search intent + Google grounding + hybrid search |
 | `core/limits/gemini_rate_limiter.py` | 308 | Per-model RPM/TPM/RPD sliding window |
 | `api/claude_proxy/utils/sse_cache_agent.py` | 306 | Cache simulator, sub-agent detection, SSE helpers |
-| `api/opencode_proxy/handler/proxy.py` | 300 | OpenCode proxy orchestrator |
+| `api/opencode_proxy/handler/proxy.py` | 308 | OpenCode proxy orchestrator |
 | `core/router/core/router.py` | 295 | APIRouter: key registry, scoring, pool selection |
 | `core/limits/account_limiter/capacity.py` | 295 | Pool capacity by tier calculations |
-| `api/claude_proxy/handler/proxy.py` | 290 | ClaudeProxy singleton: thinking, retry loop |
+| `api/claude_proxy/handler/proxy.py` | 297 | ClaudeProxy singleton: thinking, retry loop |
 | `server/pass_through_server/routes/gemini_handlers.py` | 288 | Main pass-through handler with grounding |
 | `backend/key_status.py` | 274 | Key circuit breaker, freeze/cooldown DB ops |
 | `backend/schema.py` | 264 | DDL definitions + JSON→SQLite migration |
-| `api/claude_proxy/handler/stream_executor.py` | 263 | Streaming: search status, WebSearch intercept, SSE |
-| `api/opencode_proxy/handler/nonstream_executor.py` | 262 | Non-stream OpenCode with tool recursion |
+| `api/claude_proxy/handler/stream_executor.py` | 264 | Streaming: search status, WebSearch intercept, SSE |
+| `api/opencode_proxy/handler/nonstream_executor.py` | 264 | Non-stream OpenCode with tool recursion |
 | `tools/ddg_ranking.py` | 259 | Consensus ranking, topic classification |
 | `api/claude_proxy/handler/proxy_nonstream.py` | 241 | Non-streaming call mixer |
 | `core/limits/account_limiter/effective_limits.py` | 240 | Effective limits after pool sharing |
@@ -428,3 +428,4 @@ Client request → [WebSearch interceptor]
 13. **Customizable Agent Models**: Sub-agent models overrideable per account (`subagent_model` in DB) or globally via env vars, fallback `gemini-flash-lite`.
 14. **Thinking Auto-Enable & SSE Compliance (v2.3)**: Proxy auto-enables extended thinking for main agent requests on Gemini 2/2.5/3 models. Claude proxy SSE converter emits spec-compliant `signature_delta`. OpenCode proxy applies sentence-boundary + 80-char chunking for progressive thinking streaming.
 15. **Gemini SDK Refactoring (v2.3)**: `gemini_api_manager.py` refactored into `gemini/` sub-package with separate modules for manager, caller, pool, error classification, and thinking config.
+16. **Custom Endpoint Tool Strip (v2.3.1)**: When backend is a custom endpoint (LM Studio, 9Router, etc.), `WebSearch`/`WebFetch` tools are stripped from the forwarded request to prevent unexpected tool calls that trigger unnecessary sub-agent spawning. Applied in both proxies (`_prepare_litellm_kwargs`) with defense-in-depth in `_resolve_gemini_with_tools_stream`/`_resolve_gemini_with_tools`.

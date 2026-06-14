@@ -238,13 +238,21 @@ class OpenCodeProxy:
             "request_timeout": config.REQUEST_TIMEOUT_SECONDS,
         }
         if openai_tools:
-            sanitized = []
-            for tool in openai_tools:
-                fn = tool.get("function", {})
-                if fn.get("parameters"):
-                    fn = {**fn, "parameters": _sanitize_schema_for_gemini(fn["parameters"])}
-                sanitized.append({**tool, "function": fn})
-            kwargs["tools"] = sanitized
+            if reservation.get("provider") == "custom":
+                tools = [
+                    t for t in openai_tools
+                    if t.get("function", {}).get("name") not in ("WebSearch", "WebFetch")
+                ]
+            else:
+                tools = openai_tools
+            if tools:
+                sanitized = []
+                for tool in tools:
+                    fn = tool.get("function", {})
+                    if fn.get("parameters"):
+                        fn = {**fn, "parameters": _sanitize_schema_for_gemini(fn["parameters"])}
+                    sanitized.append({**tool, "function": fn})
+                kwargs["tools"] = sanitized
         if reservation.get("provider") == "custom":
             kwargs["api_base"] = reservation["api_base"]
             extra: Dict[str, Any] = {}
