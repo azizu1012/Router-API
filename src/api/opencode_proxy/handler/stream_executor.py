@@ -114,10 +114,27 @@ async def _execute_stream(
                 stream_thought: str = ""
                 reasoning_active = False
 
-                # Stream directly from generator — no timeout/emoji
-                async for evt_type, *evt_vals in _resolve_gemini_with_tools_stream(
-                    kwargs_ns, body, proxy_instance, auth_key_prefix=auth_key_prefix, account=account
-                ):
+                async def _iter_events():
+                    it = _resolve_gemini_with_tools_stream(
+                        kwargs_ns, body, proxy_instance, auth_key_prefix=auth_key_prefix, account=account
+                    ).__aiter__()
+                    while True:
+                        try:
+                            while True:
+                                try:
+                                    evt = await asyncio.wait_for(it.__anext__(), timeout=4.0)
+                                    yield ("event", evt)
+                                    break
+                                except asyncio.TimeoutError:
+                                    yield ("ping", None)
+                        except StopAsyncIteration:
+                            break
+
+                async for item_type, val in _iter_events():
+                    if item_type == "ping":
+                        yield _openai_sse(model_name, chunk_id=chunk_id)
+                        continue
+                    evt_type, *evt_vals = val
                     if evt_type == "reasoning":
                         val = str(evt_vals[0] or "")
                         thinking_buf.append(val)
@@ -212,6 +229,7 @@ async def _execute_stream(
 
     async def _stream_wrapper():
         kp = api_key[-8:] if api_key else ""
+        chunk_id = f"chatcmpl-{uuid.uuid4().hex}"
         fetch_task = None
         try:
             async def _fetch_stream():
@@ -236,11 +254,54 @@ async def _execute_stream(
                             "[OpenCode Stream Keepalive] Still waiting for %s response (elapsed=%.1fs)",
                             model_alias, elapsed
                         )
-                    yield b": keepalive\n\n"
+                    yield _openai_sse(model_name, chunk_id=chunk_id)
 
             gen, first_chunk = await fetch_task
             ttfb = asyncio.get_event_loop().time() - t0_wait
             logger.info("[OpenCode Stream] model=%s ttfb=%.2fs", model_alias, ttfb)
+
+            def _get_reasoning(delta_obj) -> Optional[str]:
+                if not delta_obj:
+                    return None
+                for attr in ("reasoning_content", "thought", "reasoning"):
+                    v = getattr(delta_obj, attr, None)
+                    if v:
+                        return v
+                if hasattr(delta_obj, "get"):
+                    for key in ("reasoning_content", "thought", "reasoning"):
+                        try:
+                            v = delta_obj.get(key)
+                            if v:
+                                return v
+                        except Exception:
+                            pass
+                for attr in ("model_extra", "extra_fields", "additional_kwargs"):
+                    extra = getattr(delta_obj, attr, None)
+                    if extra and isinstance(extra, dict):
+                        for key in ("reasoning_content", "thought", "reasoning"):
+                            if extra.get(key):
+                                return extra[key]
+                return None
+
+            def _get_content(delta_obj) -> Optional[str]:
+                if not delta_obj:
+                    return None
+                v = getattr(delta_obj, "content", None)
+                if v:
+                    return v
+                if hasattr(delta_obj, "get"):
+                    try:
+                        v = delta_obj.get("content")
+                        if v:
+                            return v
+                    except Exception:
+                        pass
+                for attr in ("model_extra", "extra_fields", "additional_kwargs"):
+                    extra = getattr(delta_obj, attr, None)
+                    if extra and isinstance(extra, dict):
+                        if extra.get("content"):
+                            return extra["content"]
+                return None
 
             normalizer = StreamingTextNormalizer()
             extractor = XMLThinkingExtractor()
@@ -273,6 +334,13 @@ async def _execute_stream(
                 if total >= _BUF_FLUSH_SIZE or _has_sentence_boundary(buf_text):
                     async for chunk in _flush_reasoning():
                         yield chunk
+
+            async def _yield_native_reasoning(val: str):
+                nonlocal out_len
+                if not val:
+                    return
+                out_len += len(val)
+                yield _openai_sse(model_name, reasoning_content=val)
 
             async def _yield_text(val: str):
                 nonlocal out_len
@@ -309,29 +377,43 @@ async def _execute_stream(
 
             # Process first_chunk
             delta_1 = first_chunk.choices[0].delta if first_chunk.choices else None
-            content_1 = getattr(delta_1, "content", None) if delta_1 else None
-            reasoning_1 = (getattr(delta_1, "reasoning_content", None) or 
-                           getattr(delta_1, "thought", None) or 
-                           getattr(delta_1, "reasoning", None)) if delta_1 else None
+            content_1 = _get_content(delta_1)
+            reasoning_1 = _get_reasoning(delta_1)
             
             if reasoning_1:
-                async for chunk_bytes in _yield_reasoning(reasoning_1):
+                async for chunk_bytes in _yield_native_reasoning(reasoning_1):
                     yield chunk_bytes
 
             if content_1:
                 async for chunk_bytes in _process_content(content_1, bool(reasoning_1)):
                     yield chunk_bytes
 
-            # Process subsequent chunks
-            async for chunk in gen:
+            # Process subsequent chunks with a keepalive timeout
+            async def _iter_chunks():
+                it = gen.__aiter__()
+                while True:
+                    try:
+                        while True:
+                            try:
+                                chunk = await asyncio.wait_for(it.__anext__(), timeout=4.0)
+                                yield ("chunk", chunk)
+                                break
+                            except asyncio.TimeoutError:
+                                yield ("ping", None)
+                    except StopAsyncIteration:
+                        break
+
+            async for item_type, val in _iter_chunks():
+                if item_type == "ping":
+                    yield _openai_sse(model_name, chunk_id=chunk_id)
+                    continue
+                chunk = val
                 delta = chunk.choices[0].delta if chunk.choices else None
-                content = getattr(delta, "content", None) if delta else None
-                reasoning = (getattr(delta, "reasoning_content", None) or 
-                             getattr(delta, "thought", None) or 
-                             getattr(delta, "reasoning", None)) if delta else None
+                content = _get_content(delta)
+                reasoning = _get_reasoning(delta)
 
                 if reasoning:
-                    async for chunk_bytes in _yield_reasoning(reasoning):
+                    async for chunk_bytes in _yield_native_reasoning(reasoning):
                         yield chunk_bytes
 
                 if content:
@@ -420,6 +502,11 @@ async def _stream_with_pool(
     account: Optional[Dict[str, Any]] = None,
     is_opencode: bool = False,
 ) -> AsyncIterator[bytes]:
+    from .response import get_client_model_name
+    requested_model = body.get("model") or model_alias
+    model_name = get_client_model_name(requested_model)
+    chunk_id = f"chatcmpl-{uuid.uuid4().hex}"
+
     committed = False
     pool.start()
     while not pool.exhausted:
@@ -457,7 +544,7 @@ async def _stream_with_pool(
                                 break
                             wait = min(15.0, pool.remaining_time())
                             for _ in range(int(wait)):
-                                yield b": keepalive\n\n"
+                                yield _openai_sse(model_name, chunk_id=chunk_id)
                                 await asyncio.sleep(1)
                             pool.reset_cycle()
                             continue
@@ -516,7 +603,7 @@ async def _stream_with_pool(
                         break
                     wait = min(15.0, pool.remaining_time())
                     for _ in range(int(wait)):
-                        yield b": keepalive\n\n"
+                        yield _openai_sse(model_name, chunk_id=chunk_id)
                         await asyncio.sleep(1)
                     pool.reset_cycle()
                     continue
@@ -553,7 +640,7 @@ async def _stream_with_pool(
                             break
                         wait = min(15.0, pool.remaining_time())
                         for _ in range(int(wait)):
-                            yield b": keepalive\n\n"
+                            yield _openai_sse(model_name, chunk_id=chunk_id)
                             await asyncio.sleep(1)
                         pool.reset_cycle()
                         continue
@@ -586,7 +673,7 @@ async def _stream_with_pool(
                         break
                     wait = min(15.0, pool.remaining_time())
                     for _ in range(int(wait)):
-                        yield b": keepalive\n\n"
+                        yield _openai_sse(model_name, chunk_id=chunk_id)
                         await asyncio.sleep(1)
                     pool.reset_cycle()
                     continue

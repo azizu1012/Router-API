@@ -75,9 +75,28 @@ async def _execute_stream(proxy_instance: Any, kwargs: Dict[str, Any], api_key: 
                 t_last_chunk = asyncio.get_event_loop().time()
                 t0_wait = t_last_chunk
 
-                async for evt_type, *evt_vals in _resolve_gemini_with_tools_stream(
-                    kwargs_ns, body, proxy_instance, auth_key_prefix=auth_key_prefix, account=account
-                ):
+                async def _iter_events():
+                    it = _resolve_gemini_with_tools_stream(
+                        kwargs_ns, body, proxy_instance, auth_key_prefix=auth_key_prefix, account=account
+                    ).__aiter__()
+                    while True:
+                        try:
+                            while True:
+                                try:
+                                    evt = await asyncio.wait_for(it.__anext__(), timeout=4.0)
+                                    yield ("event", evt)
+                                    break
+                                except asyncio.TimeoutError:
+                                    yield ("ping", None)
+                        except StopAsyncIteration:
+                            break
+
+                async for item_type, val in _iter_events():
+                    if item_type == "ping":
+                        yield _sse("ping", {"type": "ping", "retry": 0, "reason": "keepalive"})
+                        continue
+                    
+                    evt_type, *evt_vals = val
                     now = asyncio.get_event_loop().time()
                     if evt_type == "reasoning":
                         val = str(evt_vals[0] or "")

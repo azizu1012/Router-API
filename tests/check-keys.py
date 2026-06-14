@@ -8,30 +8,34 @@ import urllib.request
 import urllib.error
 from pathlib import Path
 
-ROOT = Path(__file__).resolve().parent
-OUTPUT = ROOT / "check-log-api.txt"
+ROOT = Path(__file__).resolve().parent.parent
+OUTPUT = ROOT / "tests" / "check-log-api.txt"
 TEST_COUNT = 2
 
 
 def get_config():
+    sys.path.insert(0, str(ROOT))
     sys.path.insert(0, str(ROOT / "src"))
-    from core.config import config
+    from core.config_n_logg import config
     return config
 
 
 def get_accounts():
+    sys.path.insert(0, str(ROOT))
     sys.path.insert(0, str(ROOT / "src"))
     from backend.accounts import list_accounts_db
     return list_accounts_db()
 
 
 def get_gemini_keys():
+    sys.path.insert(0, str(ROOT))
     sys.path.insert(0, str(ROOT / "src"))
-    from core.config import config
+    from core.config_n_logg import config
     return list(config.GEMINI_API_KEYS)
 
 
 def get_key_status_db_with_retry():
+    sys.path.insert(0, str(ROOT))
     sys.path.insert(0, str(ROOT / "src"))
     from backend.key_status import get_key_status_db
     for _ in range(3):
@@ -45,8 +49,9 @@ def get_key_status_db_with_retry():
 def get_penalties():
     """Read in-memory penalty state from rate limiter."""
     try:
+        sys.path.insert(0, str(ROOT))
         sys.path.insert(0, str(ROOT / "src"))
-        from core.gemini_rate_limiter import _score_penalties
+        from core.limits.gemini_rate_limiter import _score_penalties
         return dict(_score_penalties)
     except Exception:
         return {}
@@ -70,7 +75,7 @@ def test_proxy(url: str, auth_key: str) -> list[dict]:
         )
         try:
             t0 = time.time()
-            with urllib.request.urlopen(req, timeout=5) as resp:
+            with urllib.request.urlopen(req, timeout=15) as resp:
                 latency = time.time() - t0
             results.append({"ok": True, "latency": latency})
         except urllib.error.HTTPError as e:
