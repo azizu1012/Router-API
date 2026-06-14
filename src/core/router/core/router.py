@@ -153,14 +153,18 @@ class APIRouter(KeyResolverMixin):
                 continue
             if is_sunset_25() and alias in ("gemini-flash-25", "gemini-flash-25-lite"):
                 continue
-            models.append({
+            m = {
                 "id": alias,
                 "object": "model",
                 "created": 0,
                 "owned_by": "router_api",
                 "root": cfg["model_id"],
                 "display": cfg["display"],
-            })
+            }
+            cl = cfg.get("context_length")
+            if cl:
+                m["context_length"] = cl
+            models.append(m)
         return models
 
     def resolve_model_alias(self, model: Optional[str]) -> str:

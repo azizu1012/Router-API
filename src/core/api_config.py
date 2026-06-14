@@ -8,6 +8,8 @@ def is_sunset_25() -> bool:
     return _date.today() >= SUNSET_DATE_25
 
 
+MODEL_CONTEXT_LENGTH: int = int(os.getenv("MODEL_CONTEXT_LENGTH", "220000"))
+
 AVAILABLE_MODELS: Dict[str, Dict[str, Any]] = {
     "gemini-flash-35": {
         "display": "Gemini Flash Latest",
@@ -16,6 +18,7 @@ AVAILABLE_MODELS: Dict[str, Dict[str, Any]] = {
         "rpm": int(os.getenv("GEMINI_FLASH_35_RPM", "2")),
         "tpm": int(os.getenv("GEMINI_FLASH_35_TPM", "250000")),
         "rpd": int(os.getenv("GEMINI_FLASH_35_RPD", "50")),
+        "context_length": MODEL_CONTEXT_LENGTH,
         "hidden": True,
     },
     "gemini-flash-30": {
@@ -25,6 +28,7 @@ AVAILABLE_MODELS: Dict[str, Dict[str, Any]] = {
         "rpm": int(os.getenv("GEMINI_FLASH_30_RPM", "2")),
         "tpm": int(os.getenv("GEMINI_FLASH_30_TPM", "250000")),
         "rpd": int(os.getenv("GEMINI_FLASH_30_RPD", "50")),
+        "context_length": MODEL_CONTEXT_LENGTH,
         "hidden": True,
     },
     "gemini-flash": {
@@ -34,6 +38,7 @@ AVAILABLE_MODELS: Dict[str, Dict[str, Any]] = {
         "rpm": int(os.getenv("GEMINI_FLASH_35_RPM", "2")) + int(os.getenv("GEMINI_FLASH_30_RPM", "2")) + int(os.getenv("GEMINI_FLASH_25_RPM", "5")),
         "tpm": int(os.getenv("GEMINI_FLASH_35_TPM", "250000")) + int(os.getenv("GEMINI_FLASH_30_TPM", "250000")) + int(os.getenv("GEMINI_FLASH_25_TPM", "250000")),
         "rpd": int(os.getenv("GEMINI_FLASH_35_RPD", "50")) + int(os.getenv("GEMINI_FLASH_30_RPD", "50")) + int(os.getenv("GEMINI_FLASH_25_RPD", "20")),
+        "context_length": MODEL_CONTEXT_LENGTH,
     },
     "gemini-flash-lite": {
         "display": "Gemini Flash Lite Pool (1.0↔2.5)",
@@ -42,6 +47,7 @@ AVAILABLE_MODELS: Dict[str, Dict[str, Any]] = {
         "rpm": int(os.getenv("GEMINI_FLASH_LITE_RPM", "3")) + int(os.getenv("GEMINI_FLASH_25_LITE_RPM", "3")),
         "tpm": int(os.getenv("GEMINI_FLASH_LITE_TPM", "250000")) + int(os.getenv("GEMINI_FLASH_25_LITE_TPM", "250000")),
         "rpd": int(os.getenv("GEMINI_FLASH_LITE_RPD", "500")) + int(os.getenv("GEMINI_FLASH_25_LITE_RPD", "20")),
+        "context_length": MODEL_CONTEXT_LENGTH,
     },
     "gemini-flash-25": {
         "display": "Gemini Flash 2.5",
@@ -50,6 +56,7 @@ AVAILABLE_MODELS: Dict[str, Dict[str, Any]] = {
         "rpm": int(os.getenv("GEMINI_FLASH_25_RPM", "5")),
         "tpm": int(os.getenv("GEMINI_FLASH_25_TPM", "250000")),
         "rpd": int(os.getenv("GEMINI_FLASH_25_RPD", "20")),
+        "context_length": MODEL_CONTEXT_LENGTH,
         "hidden": True,
     },
     "gemini-flash-25-lite": {
@@ -59,6 +66,7 @@ AVAILABLE_MODELS: Dict[str, Dict[str, Any]] = {
         "rpm": int(os.getenv("GEMINI_FLASH_25_LITE_RPM", "3")),
         "tpm": int(os.getenv("GEMINI_FLASH_25_LITE_TPM", "250000")),
         "rpd": int(os.getenv("GEMINI_FLASH_25_LITE_RPD", "20")),
+        "context_length": MODEL_CONTEXT_LENGTH,
         "hidden": True,
     },
 }
