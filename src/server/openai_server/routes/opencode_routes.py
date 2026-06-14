@@ -53,6 +53,9 @@ async def opencode_chat_completions(
             "anthropic-ratelimit-unified-5h-utilization": f"{utilization_val:.4f}",
             "anthropic-ratelimit-unified-7d-utilization": f"{utilization_val:.4f}",
             "anthropic-ratelimit-unified-status": "allowed",
+            "Cache-Control": "no-cache",
+            "Connection": "keep-alive",
+            "X-Accel-Buffering": "no",
         }
 
         is_stream = body.get("stream", False)
