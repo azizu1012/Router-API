@@ -1,3 +1,4 @@
+import asyncio
 import hashlib
 import json
 import uuid
@@ -85,11 +86,16 @@ async def _process_anthropic_stream(
 
     async def _iter_safe():
         if first_chunk is not None:
-            yield first_chunk
+            yield ("chunk", first_chunk)
         while True:
             try:
-                c = await gen_iterator.__anext__()
-                yield c
+                while True:
+                    try:
+                        c = await asyncio.wait_for(gen_iterator.__anext__(), timeout=4.0)
+                        yield ("chunk", c)
+                        break
+                    except asyncio.TimeoutError:
+                        yield ("ping", None)
             except StopAsyncIteration:
                 break
 
@@ -158,7 +164,11 @@ async def _process_anthropic_stream(
                     })
                     text_chunks.append(norm_content)
 
-    async for chunk in _iter_safe():
+    async for item_type, val in _iter_safe():
+        if item_type == "ping":
+            yield _sse("ping", {"type": "ping", "retry": 0, "reason": "keepalive"})
+            continue
+        chunk = val
         delta = chunk.choices[0].delta if chunk.choices else None
 
         if delta:
