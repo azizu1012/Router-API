@@ -340,6 +340,19 @@ Response sẽ có content block `type: "thinking"`.
 
 Proxy tự động forward mọi tham số thinking (bao gồm `enableThinking` của LM Studio) đến custom endpoint backend qua `extra_body`.
 
+## Streaming Keepalive & Robust Extraction
+
+### 1. Cơ chế Keepalive Ping cho Streaming
+Khi sử dụng giao thức Streaming (Server-Sent Events - SSE) qua Claude Proxy hoặc OpenCode Proxy, nếu mô hình Gemini mất nhiều thời gian để xử lý hoặc mạng bị chậm:
+- Hệ thống áp dụng cơ chế timeout **4.0 giây** trên iterator luồng.
+- Nếu sau 4.0 giây không nhận được chunk dữ liệu mới nào từ Gemini, Router API sẽ tự động gửi một sự kiện ping giữ kết nối (`keepalive` comment hoặc `ping` event).
+- **Mục đích:** Giúp giữ kết nối HTTP luôn ấm (warm), tránh tình trạng các proxy trung gian (Cloudflare, Nginx...) hoặc client CLI (Claude Code) tự ngắt kết nối do quá thời gian chờ (Read Timeout).
+
+### 2. Rút trích Delta linh hoạt trong OpenCode Proxy
+Hệ thống tự động phát hiện và trích xuất cả `content` lẫn `reasoning_content` (thinking) từ các chunk dữ liệu trả về một cách linh hoạt:
+- Hỗ trợ cả dạng đối tượng (Attribute dot-notation) lẫn dạng từ điển (Dictionary/JSON key-value).
+- Tương thích tốt với các thuộc tính bổ sung như `model_extra`, `extra_fields`, `additional_kwargs` từ các phiên bản OpenAI SDK hoặc thư viện Client khác nhau, đảm bảo việc hiển thị thinking ổn định.
+
 ## Env chính
 
 | Variable | Default | Mô tả |
