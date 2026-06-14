@@ -80,8 +80,10 @@ async def _resolve_gemini_with_tools_stream(
         yield ("result", text, tool_calls, finish_reason, thought_text)
         return
 
+    is_custom_endpoint = bool(kwargs.get("api_base"))
+
     web_call = next((tc for tc in tool_calls if tc.get("name") == "WebSearch"), None)
-    if web_call:
+    if web_call and not is_custom_endpoint:
         try:
             args = json.loads(web_call["arguments"]) if isinstance(web_call["arguments"], str) else web_call["arguments"]
             query = args.get("query", "")
@@ -173,8 +175,10 @@ async def _resolve_gemini_with_tools(
         logger.warning("[OpenCode ToolRecursion] Max recursion depth reached (3), returning tool calls as-is")
         return text, tool_calls, finish_reason, thought_text
 
+    is_custom_endpoint = bool(kwargs.get("api_base"))
+
     web_call = next((tc for tc in tool_calls if tc.get("name") == "WebSearch"), None)
-    if web_call:
+    if web_call and not is_custom_endpoint:
         try:
             args = json.loads(web_call["arguments"]) if isinstance(web_call["arguments"], str) else web_call["arguments"]
             query = args.get("query", "")
