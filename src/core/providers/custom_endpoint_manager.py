@@ -7,6 +7,7 @@ from typing import Any, Dict, List, Optional
 import aiohttp
 
 from src.core.config_n_logg.logger import logger_api as logger
+from src.server.websocket_manager import ws_manager
 from src.backend.endpoints import (
     list_endpoints_db,
     get_endpoint_db,
@@ -239,9 +240,12 @@ class CustomEndpointManager:
     async def _call_chat(self, base_url: str, auth_key: str, model: str, messages: list,
                          max_tokens: int = 4096, temperature: float = 0.7, top_p: float = 0.95,
                          stream: bool = False, timeout: int = 120,
-                         extra_body: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+                         extra_body: Optional[Dict[str, Any]] = None,
+                         endpoint_name: str = "") -> Dict[str, Any]:
         """Raw HTTP call to custom endpoint. Merges SSE if server returns stream despite settings."""
         import json as _json
+        import time as _time
+        start_ts = _time.time()
         url = f"{base_url.rstrip('/')}/chat/completions"
         headers = {
             "Authorization": f"Bearer {auth_key}",
@@ -261,9 +265,9 @@ class CustomEndpointManager:
         async with aiohttp.ClientSession(headers=headers) as session:
             async with session.post(url, json=payload, timeout=aiohttp.ClientTimeout(total=timeout)) as resp:
                 ct = resp.headers.get("Content-Type", "")
+                latency = round((_time.time() - start_ts) * 1000)
 
                 if "text/event-stream" in ct or "text/event-stream" in ct.lower():
-                    # SSE response — read & merge all chunks
                     full_text = ""
                     finish_reason = "stop"
                     in_tokens = 0
@@ -294,10 +298,11 @@ class CustomEndpointManager:
                             out_tokens = usage.get("completion_tokens", 0) or 0
                     if not out_tokens and full_text:
                         out_tokens = max(1, len(full_text) // 4)
-                    return {"text": full_text, "finish_reason": finish_reason,
-                            "input_tokens": in_tokens, "output_tokens": out_tokens}
+                    result = {"text": full_text, "finish_reason": finish_reason,
+                              "input_tokens": in_tokens, "output_tokens": out_tokens}
+                    await self._broadcast_live(endpoint_name, model, "success", latency, result)
+                    return result
 
-                # Normal JSON response
                 data = await resp.json()
                 if resp.status != 200:
                     err = data.get("error", {}).get("message", str(data))
@@ -313,8 +318,27 @@ class CustomEndpointManager:
                 usage = data.get("usage", {})
                 in_tokens = usage.get("prompt_tokens", 0) or 0
                 out_tokens = usage.get("completion_tokens", 0) or 0
-                return {"text": text, "finish_reason": finish_reason,
-                        "input_tokens": in_tokens, "output_tokens": out_tokens}
+                result = {"text": text, "finish_reason": finish_reason,
+                          "input_tokens": in_tokens, "output_tokens": out_tokens}
+                await self._broadcast_live(endpoint_name, model, "success", latency, result)
+                return result
+
+    async def _broadcast_live(self, endpoint_name: str, model: str, status: str, latency_ms: int,
+                              result: dict) -> None:
+        if not endpoint_name:
+            return
+        try:
+            await ws_manager.broadcast(f"live:{endpoint_name}", {
+                "type": "live_api_call",
+                "endpoint": endpoint_name,
+                "model": model,
+                "status": status,
+                "latency_ms": latency_ms,
+                "input_tokens": result.get("input_tokens", 0),
+                "output_tokens": result.get("output_tokens", 0),
+            })
+        except Exception:
+            pass
 
     async def fetch_models(self, name: str, verify_chat: bool = True) -> List[str]:
         ep = get_endpoint_db(name)

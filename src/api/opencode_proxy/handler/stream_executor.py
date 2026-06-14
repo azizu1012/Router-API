@@ -119,17 +119,19 @@ async def _execute_stream(
                     kwargs_ns, body, proxy_instance, auth_key_prefix=auth_key_prefix, account=account
                 ):
                     if evt_type == "reasoning":
-                        val = evt_vals[0]
+                        val = str(evt_vals[0] or "")
                         thinking_buf.append(val)
                         yield _openai_sse(model_name, reasoning_content=val, chunk_id=chunk_id)
                     elif evt_type == "text":
-                        val = evt_vals[0]
+                        val = str(evt_vals[0] or "")
                         text_buf.append(val)
                         yield _openai_sse(model_name, content=val, chunk_id=chunk_id)
                     elif evt_type == "result":
-                        text_buf, stream_tool_calls, stream_fr, stream_thought = evt_vals
-                        if isinstance(text_buf, str):
-                            text_buf = [text_buf]
+                        raw_text = evt_vals[0] if len(evt_vals) > 0 else ""
+                        stream_tool_calls = evt_vals[1] if len(evt_vals) > 1 and isinstance(evt_vals[1], list) else []
+                        stream_fr = str(evt_vals[2] or "stop") if len(evt_vals) > 2 else "stop"
+                        stream_thought = str(evt_vals[3] or "") if len(evt_vals) > 3 else ""
+                        text_buf = [str(raw_text)] if not isinstance(raw_text, list) else [str(x) for x in raw_text]
                         break
 
                 text = "".join(text_buf) if text_buf else ""

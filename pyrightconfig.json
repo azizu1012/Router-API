@@ -1,0 +1,8 @@
+{
+  "include": ["src", "main.py"],
+  "exclude": ["tests", "frontend-src", "node_modules", ".venv"],
+  "typeCheckingMode": "standard",
+  "reportMissingImports": "error",
+  "reportAttributeAccessIssue": "error",
+  "reportPossiblyUnboundVariable": "error"
+}

@@ -8,6 +8,21 @@ from pathlib import Path
 # Ensure src/ is on the path
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
+# ── Block LiteLLM botocore pre-load (harmless AWS dependency, we don't use it) ──
+from unittest.mock import MagicMock as _Mock
+_boto = _Mock()
+_boto.exceptions = _Mock()
+_boto.compat = _Mock()
+_boto.awsrequest = _Mock()
+sys.modules["botocore"] = _boto
+sys.modules["botocore.exceptions"] = _boto.exceptions
+sys.modules["botocore.compat"] = _boto.compat
+sys.modules["botocore.awsrequest"] = _boto.awsrequest
+import logging as _ll
+_ll.getLogger("LiteLLM").setLevel(_ll.ERROR)
+_ll.getLogger("litellm").setLevel(_ll.ERROR)
+_ll.getLogger("LiteLLM").addFilter(lambda r: not any(x in r.getMessage() for x in ["botocore", "bedrock", "sagemaker"]))
+
 import uvicorn
 from src.core.config_n_logg import config, logger
 from src.core.config_n_logg.logger import CONSOLE_LOG_SYSTEM, CONSOLE_LOG_WEB, _ensure_log_dir
@@ -128,10 +143,7 @@ def main():
 
     ssl_keyfile = os.getenv("SSL_KEYFILE", "")
     ssl_certfile = os.getenv("SSL_CERTFILE", "")
-    ssl_kwargs = {}
-    if ssl_keyfile and ssl_certfile:
-        if Path(ssl_keyfile).is_file() and Path(ssl_certfile).is_file():
-            ssl_kwargs = {"ssl_keyfile": ssl_keyfile, "ssl_certfile": ssl_certfile}
+    use_ssl = ssl_keyfile and ssl_certfile and Path(ssl_keyfile).is_file() and Path(ssl_certfile).is_file()
 
     uvicorn.run(
         "src.server.openai_server:app",
@@ -139,7 +151,8 @@ def main():
         port=config.PORT,
         log_config=log_config,
         reload=config.RELOAD,
-        **ssl_kwargs,
+        ssl_keyfile=ssl_keyfile if use_ssl else None,
+        ssl_certfile=ssl_certfile if use_ssl else None,
     )
 
 

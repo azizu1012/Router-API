@@ -14,6 +14,10 @@ from .pool import ClientPool
 from . import caller
 from . import error as gerror
 from .thinking_config import build_thinking_config
+from .utils import (
+    get_excluded_models, all_models_excluded, prepare_tools,
+    wait_global_cooldown, backoff, accumulate_parts, extract_stream_usage, handle_error,
+)
 
 
 class GeminiAPIManager:
@@ -69,7 +73,7 @@ class GeminiAPIManager:
         tier = self.pool.resolve_tier(account)
 
         for attempt in range(1, config.MAX_RETRIES + 1):
-            await self._wait_global_cooldown(attempt)
+            await wait_global_cooldown(attempt)
             estimated_total = self._estimate_tokens(prompt_text, max_tokens, image_count)
 
             tried_keys: set = set()
@@ -79,16 +83,16 @@ class GeminiAPIManager:
                 if _ > 0:
                     await asyncio.sleep(0.3 + random.uniform(0, 0.3))
 
-                if self._all_models_excluded(model_failures, model_alias):
+                if all_models_excluded(model_failures, model_alias):
                     logger.warning(
                         "[Quota] all_models_excluded for alias %s. failures: %s, excluded: %s",
-                        model_alias, model_failures, self._get_excluded_models(model_failures, model_alias)
+                        model_alias, model_failures, get_excluded_models(model_failures, model_alias)
                     )
                     raise RuntimeError("quota_exhausted")
 
                 api_key, model_id, _, reservation = await self._get_best_key(
                     model_alias, account, estimated_total,
-                    self._get_excluded_models(model_failures, model_alias),
+                    get_excluded_models(model_failures, model_alias),
                 )
                 if not api_key:
                     break
@@ -106,7 +110,7 @@ class GeminiAPIManager:
                     await self.pool.throttle(api_key, self.pool.get_key_last_used(api_key))
                     self.pool.record_key_usage(api_key)
 
-                    use_grounding, request_tools = self._prepare_tools(
+                    use_grounding, request_tools = prepare_tools(
                         tools, model_id, image_count, contents, web_search,
                     )
                     tc = build_thinking_config(model_id, thinking_level, thinking_budget, include_thoughts)
@@ -134,8 +138,8 @@ class GeminiAPIManager:
 
                 except Exception as e:
                     last_error = e
-                    await self._handle_error(
-                        e, api_key, model_id, model_failures, attempt,
+                    await handle_error(
+                        e, api_key, model_id, model_failures, attempt, self.pool,
                     )
                 finally:
                     router.release_key(api_key)
@@ -145,7 +149,7 @@ class GeminiAPIManager:
                     logger.info("Key scan: %s", msg)
 
             if attempt < config.MAX_RETRIES:
-                await self._backoff(attempt, model_failures, model_alias)
+                await backoff(attempt, model_failures, model_alias)
 
         raise RuntimeError(f"call_gemini_failed: {last_error or 'no keys available'}")
 
@@ -161,8 +165,8 @@ class GeminiAPIManager:
         tier = self.pool.resolve_tier(account)
 
         for attempt in range(1, 4):
-            exclude_models = self._get_excluded_models(model_failures, model_alias)
-            if self._all_models_excluded(model_failures, model_alias):
+            exclude_models = get_excluded_models(model_failures, model_alias)
+            if all_models_excluded(model_failures, model_alias):
                 break
 
             api_key, model_id, _, reservation = await self._get_best_key(
@@ -228,7 +232,7 @@ class GeminiAPIManager:
         tier = self.pool.resolve_tier(account)
 
         for attempt in range(1, config.MAX_RETRIES + 1):
-            await self._wait_global_cooldown(attempt)
+            await wait_global_cooldown(attempt)
             estimated_total = self._estimate_tokens(prompt_text, max_tokens, image_count)
 
             tried_keys: set = set()
@@ -238,12 +242,12 @@ class GeminiAPIManager:
                 if _ > 0:
                     await asyncio.sleep(0.3 + random.uniform(0, 0.3))
 
-                if self._all_models_excluded(model_failures, model_alias):
+                if all_models_excluded(model_failures, model_alias):
                     raise RuntimeError("quota_exhausted")
 
                 api_key, model_id, _, reservation = await self._get_best_key(
                     model_alias, account, estimated_total,
-                    self._get_excluded_models(model_failures, model_alias),
+                    get_excluded_models(model_failures, model_alias),
                 )
                 if not api_key:
                     break
@@ -261,7 +265,7 @@ class GeminiAPIManager:
                     await self.pool.throttle(api_key, self.pool.get_key_last_used(api_key))
                     self.pool.record_key_usage(api_key)
 
-                    use_grounding, request_tools = self._prepare_tools(
+                    use_grounding, request_tools = prepare_tools(
                         tools, model_id, image_count, contents, web_search,
                     )
                     tc = build_thinking_config(model_id, thinking_level, thinking_budget, include_thoughts)
@@ -289,6 +293,7 @@ class GeminiAPIManager:
                             raise ge_err
 
                     full_parts: List[str] = []
+                    chunk = None
                     async for chunk in stream_gen:
                         chunk_dict = chunk.model_dump(by_alias=True, exclude_none=True)
                         yield {
@@ -297,9 +302,9 @@ class GeminiAPIManager:
                             "model_id": model_id,
                             "api_key": api_key,
                         }
-                        self._accumulate_parts(chunk, full_parts)
+                        accumulate_parts(chunk, full_parts)
 
-                    input_tokens, output_tokens = self._extract_stream_usage(
+                    input_tokens, output_tokens = extract_stream_usage(
                         chunk, full_parts,
                     )
                     self._commit_key(api_key, model_id)
@@ -309,8 +314,8 @@ class GeminiAPIManager:
 
                 except Exception as e:
                     last_error = e
-                    await self._handle_error(
-                        e, api_key, model_id, model_failures, attempt,
+                    await handle_error(
+                        e, api_key, model_id, model_failures, attempt, self.pool,
                     )
                 finally:
                     router.release_key(api_key)
@@ -320,7 +325,7 @@ class GeminiAPIManager:
                     logger.info("Key scan: %s", msg)
 
             if attempt < config.MAX_RETRIES:
-                await self._backoff(attempt, model_failures, model_alias)
+                await backoff(attempt, model_failures, model_alias)
 
         raise RuntimeError(f"call_gemini_stream_failed: {last_error or 'no keys available'}")
 
@@ -346,33 +351,6 @@ class GeminiAPIManager:
 
     def _commit_key(self, api_key: str, model_id: str) -> None:
         router.record_success(api_key, model_id)
-
-    def _get_excluded_models(self, model_failures: Dict[str, int], model_alias: str) -> List[str]:
-        return [mid for mid, count in model_failures.items() if count >= config.POOL_SWAP_FAILURES]
-
-    def _all_models_excluded(self, model_failures: Dict[str, int], model_alias: str) -> bool:
-        from src.core.api_config import MODEL_POOLS, is_sunset_25
-        excluded = self._get_excluded_models(model_failures, model_alias)
-        pool_cfg = MODEL_POOLS.get(model_alias)
-        if pool_cfg:
-            members = [m for m in pool_cfg["members"]
-                       if not (is_sunset_25() and m in ("gemini-flash-25", "gemini-flash-25-lite"))]
-            return all(router.get_model_id(m) in excluded or m in excluded for m in members)
-        concrete = router.get_model_id(model_alias)
-        return model_alias in excluded or concrete in excluded
-
-    def _prepare_tools(
-        self, tools: Optional[List[types.Tool]], model_id: str,
-        image_count: int, contents: List[types.Content], web_search: bool,
-    ) -> tuple:
-        request_tools = list(tools) if tools else []
-        has_files = image_count > 0 or caller.has_media_or_files(contents)
-        use_grounding = web_search and ("gemini" in str(model_id).lower()) and not has_files
-        if use_grounding:
-            injected = caller.inject_grounding_tool(request_tools, model_id, has_files, web_search)
-            if injected:
-                request_tools = list(injected)
-        return use_grounding, request_tools
 
     async def _call_with_grounding_fallback(
         self, api_key, model_id, system_instruction, contents,
@@ -400,100 +378,6 @@ class GeminiAPIManager:
                     thinking_config=thinking_config,
                 )
             raise ge_err
-
-    async def _handle_error(
-        self, e: Exception, api_key: str, model_id: str,
-        model_failures: Dict[str, int], attempt: int,
-    ) -> None:
-        """Classify the error and apply penalty/freeze.
-
-        Raises ``RuntimeError`` for fatal errors (bad_request, project_denied).
-        Freezes keys and records penalties for transient errors, then returns.
-        """
-        error_text = str(e)
-        reason = gerror.classify(error_text)
-
-        if reason == "bad_request":
-            raise RuntimeError(f"bad_request: {error_text[:500]}")
-
-        if reason == "project_denied":
-            raise RuntimeError(f"project_denied: {error_text[:300]}")
-
-        if reason == "unavailable":
-            wait = config.GEMINI_UNAVAILABLE_DELAY_SEC * (attempt + 1)
-            logger.warning("Key ...%s unavailable (attempt %d), wait %.1fs", api_key[-4:], attempt, wait)
-            await asyncio.sleep(wait)
-            return
-
-        if reason == "permission_denied":
-            router.freeze_key(api_key, config.KEY_INVALID_COOLDOWN_SECONDS, model_id, "permission_denied")
-            apply_error_penalty(api_key, "permission_denied", model_id)
-            logger.warning("Key ...%s PERMISSION_DENIED, frozen + penalty", api_key[-4:])
-            await asyncio.sleep(0.5)
-            return
-
-        model_failures[model_id] = model_failures.get(model_id, 0) + 1
-        logger.warning("Model %s failed on key ...%s (failures=%d): %s",
-                       model_id, api_key[-4:], model_failures[model_id], error_text)
-
-        if reason == "project_quota_429":
-            project_id = gerror.parse_project(str(e))
-            if project_id:
-                self.pool.set_key_project(api_key, project_id)
-                self.pool.freeze_project(project_id, model_id, float(config.GEMINI_PROJECT_FREEZE_SEC))
-            else:
-                from src.core.limits.gemini_rate_limiter import get_key_rpd_status
-                today_count, target_rpd, is_exhausted = get_key_rpd_status(api_key, model_id)
-                if is_exhausted:
-                    router.freeze_key(api_key, config.GEMINI_PROJECT_FREEZE_SEC, model_id, "rate_limit_rpd")
-                    apply_error_penalty(api_key, "rate_limit_rpd", model_id)
-                    router.global_cooldown_until = time.time() + config.GEMINI_GLOBAL_COOLDOWN_SEC
-                else:
-                    router.freeze_key(api_key, config.KEY_429_COOLDOWN_SECONDS, model_id, "rate_limit")
-                    apply_error_penalty(api_key, "rate_limit", model_id)
-            return
-
-        router.freeze_key(api_key, config.KEY_429_COOLDOWN_SECONDS, model_id, "rate_limit")
-        apply_error_penalty(api_key, "rate_limit", model_id)
-        if router.record_429():
-            logger.warning("[Cascade] 15 consecutive 429s detected")
-
-    async def _wait_global_cooldown(self, attempt: int) -> None:
-        now = time.time()
-        if now < router.global_cooldown_until:
-            wait = router.global_cooldown_until - now + 1.0
-            logger.info("Global cooldown, waiting %.1fs (attempt %d/%d)", wait, attempt, config.MAX_RETRIES)
-            await asyncio.sleep(wait)
-        if attempt > 1:
-            await asyncio.sleep(1.0 + random.uniform(0, 0.5))
-
-    async def _backoff(self, attempt: int, model_failures: Dict[str, int], model_alias: str) -> None:
-        backoff = 2.0 ** attempt
-        jitter = random.uniform(-backoff * 0.3, backoff * 0.3)
-        backoff = max(0.5, backoff + jitter)
-        logger.info("Backoff %.1fs (attempt %d/%d)", backoff, attempt, config.MAX_RETRIES)
-        await asyncio.sleep(backoff)
-
-    @staticmethod
-    def _accumulate_parts(chunk: Any, parts: List[str]) -> None:
-        if not chunk.candidates:
-            return
-        for candidate in chunk.candidates:
-            if candidate.content and candidate.content.parts:
-                for part in candidate.content.parts:
-                    if part.text:
-                        parts.append(part.text)
-                    elif part.function_call:
-                        parts.append(f"function_call:{part.function_call.name}")
-
-    @staticmethod
-    def _extract_stream_usage(last_chunk: Any, full_parts: List[str]) -> tuple:
-        usage = getattr(last_chunk, "usage_metadata", None)
-        input_tokens = getattr(usage, "prompt_token_count", 0) or 0
-        output_tokens = getattr(usage, "candidates_token_count", 0) or 0
-        if output_tokens == 0 and full_parts:
-            output_tokens = len("".join(full_parts)) // 4
-        return input_tokens, output_tokens
 
 
 api_manager = GeminiAPIManager()

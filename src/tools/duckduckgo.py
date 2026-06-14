@@ -113,11 +113,12 @@ class AdvancedSearchManager(SearchRankingMixin):
         if DDGS is None:
             self.logger.warning("DuckDuckGo search library is unavailable.")
             return []
+        ddgs_cls = DDGS
 
         start_ts = datetime.now().timestamp()
         try:
             def _do_search():
-                with DDGS() as ddgs:
+                with ddgs_cls() as ddgs:
                     if timelimit:
                         return list(ddgs.text(query, max_results=5, timelimit=timelimit))
                     return list(ddgs.text(query, max_results=5))
@@ -232,7 +233,7 @@ class AdvancedSearchManager(SearchRankingMixin):
 
         records: List[Dict[str, str]] = []
         for result in primary_results:
-            if isinstance(result, Exception):
+            if isinstance(result, BaseException):
                 continue
             records.extend(result)
 
@@ -391,7 +392,7 @@ class AdvancedSearchManager(SearchRankingMixin):
 
             records: List[Dict[str, str]] = []
             for result in primary_results:
-                if isinstance(result, Exception):
+                if isinstance(result, BaseException):
                     continue
                 records.extend(result)
 

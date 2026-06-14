@@ -2,7 +2,8 @@ import React, { useState } from 'react';
 import { useApp } from '../context/AppContext';
 import { t } from '../utils/i18n';
 import { api } from '../utils/api';
-import { Plus, Trash2, Network, RefreshCw, Power, Info } from 'lucide-react';
+import { Plus, Trash2, Network, RefreshCw, Power, Info, Terminal as TerminalIcon, Key } from 'lucide-react';
+import LogHistoryModal from '../components/LogHistoryModal';
 
 export default function EndpointsTab() {
   const { tabData, token, lang, refreshTab } = useApp();
@@ -18,6 +19,7 @@ export default function EndpointsTab() {
 
   const [epLoadingStates, setEpLoadingStates] = useState({});
   const [epMsgStates, setEpMsgStates] = useState({});
+  const [selectedEndpoint, setSelectedEndpoint] = useState(null);
 
   if (!tabData.ep) {
     return (
@@ -163,108 +165,135 @@ export default function EndpointsTab() {
         <span className="badge badge-primary font-bold text-xs">{endpoints.length} {t('endpoints_count', lang)}</span>
       </div>
 
-      {/* Endpoints Card List — full width, stacked */}
-      <div className="space-y-4 animate-fade-in-up cascade-2">
+      {/* Endpoints Card List — grouped by shared auth_key */}
+      <div className="space-y-6 animate-fade-in-up cascade-2">
         {endpoints.length > 0 ? (
-          endpoints.map((ep, idx) => {
-            const isEnabled = ep.enabled !== false;
-            const models = ep.models || [];
-            const enabledModels = ep.enabled_models || [];
-            const accountName = ep.account_name || '';
-            const assignedAccountId = ep.account_id || '';
-            const isLoading = !!epLoadingStates[ep.name];
-            const msg = epMsgStates[ep.name] || { text: '', type: '' };
+          (() => {
+            const groups = {};
+            endpoints.forEach(ep => {
+              const key = ep.auth_key ? ep.auth_key.slice(-8) : 'unassigned';
+              if (!groups[key]) groups[key] = [];
+              groups[key].push(ep);
+            });
 
-            return (
-              <div key={idx} className="card glass-card p-5 rounded-2xl text-left border border-base-content/5 space-y-4 shadow-md transition-all duration-300 hover:border-base-content/10">
-                {/* Endpoint Header */}
-                <div className="flex items-center justify-between flex-wrap gap-3">
-                  <div className="flex items-center gap-2.5 min-w-0">
-                    <span className={`w-2.5 h-2.5 rounded-full shrink-0 ${isEnabled ? 'bg-success' : 'bg-error'}`}></span>
-                    <strong className="text-sm text-base-content font-extrabold">{ep.name}</strong>
-                    <span className="text-xs font-mono text-base-content/50 truncate max-w-[150px] sm:max-w-xs" title={ep.base_url}>{ep.base_url}</span>
-                    {accountName && (
-                      <span className="badge badge-sm badge-success font-extrabold text-[10px] uppercase">{accountName}</span>
-                    )}
+            return Object.entries(groups).map(([keyHash, group]) => (
+              <div key={keyHash} className="space-y-3">
+                {/* Group header */}
+                {keyHash !== 'unassigned' && (
+                  <div className="flex items-center gap-2 px-3 py-2 text-[11px] font-bold text-base-content/40 bg-base-200/20 rounded-xl border border-base-content/5">
+                    <Key className="w-3.5 h-3.5" />
+                    <span>Shared Key: ...{keyHash}</span>
+                    <span className="badge badge-xs badge-ghost font-bold">{group.length}</span>
                   </div>
+                )}
 
-                  <div className="flex items-center gap-1.5">
-                    <button onClick={() => handleRefreshModels(ep.name)} disabled={isLoading}
-                      className="btn btn-ghost btn-xs text-primary hover:bg-primary/15 gap-1 normal-case font-bold" title="Fetch Models">
-                      <RefreshCw className={`w-3.5 h-3.5 ${isLoading ? 'animate-spin' : ''}`} />
-                      <span>Fetch Models</span>
-                    </button>
-                    <button onClick={() => handleToggleEp(ep.name, isEnabled)}
-                      className={`btn btn-ghost btn-xs gap-1 normal-case font-bold ${isEnabled ? 'text-error hover:bg-error/15' : 'text-success hover:bg-success/15'}`}>
-                      <Power className="w-3.5 h-3.5" />
-                      <span>{isEnabled ? 'Disable' : 'Enable'}</span>
-                    </button>
-                    <button onClick={() => handleDeleteEp(ep.name)} className="btn btn-ghost btn-xs btn-square text-error hover:bg-error/15">
-                      <Trash2 className="w-3.5 h-3.5" />
-                    </button>
-                  </div>
-                </div>
+                {group.map((ep, idx) => {
+                  const isEnabled = ep.enabled !== false;
+                  const models = ep.models || [];
+                  const enabledModels = ep.enabled_models || [];
+                  const accountName = ep.account_name || '';
+                  const assignedAccountId = ep.account_id || '';
+                  const isLoading = !!epLoadingStates[ep.name];
+                  const msg = epMsgStates[ep.name] || { text: '', type: '' };
 
-                {/* Assignment & Models */}
-                <div className="grid grid-cols-1 sm:grid-cols-3 gap-4 pt-3 border-t border-base-content/5">
-                  <div className="space-y-2 text-left sm:col-span-1">
-                    <label className="text-[10px] font-bold uppercase tracking-wider text-base-content/50 block">
-                      {t('lbl_assigned_account', lang) || 'Gán cho tài khoản con'}
-                    </label>
-                    <select
-                      value={accountName || assignedAccountId}
-                      onChange={(e) => handleAccountAssign(ep.name, e.target.value)}
-                      className="select select-bordered select-sm text-xs w-full bg-base-200/70"
-                    >
-                      <option value="">— Chưa gán (No assignment) —</option>
-                      {accounts.filter(a => a.enabled).map((a, i) => (
-                        <option key={i} value={a.name}>{a.name} ({a.tier})</option>
-                      ))}
-                    </select>
-                  </div>
+                  return (
+                    <div key={idx} className="card glass-card p-5 rounded-2xl text-left border border-base-content/5 space-y-4 shadow-md transition-all duration-300 hover:border-base-content/10">
+                      {/* Endpoint Header */}
+                      <div className="flex items-center justify-between flex-wrap gap-3">
+                        <div className="flex items-center gap-2.5 min-w-0">
+                          <span className={`w-2.5 h-2.5 rounded-full shrink-0 ${isEnabled ? 'bg-success' : 'bg-error'}`}></span>
+                          <strong className="text-sm text-base-content font-extrabold">{ep.name}</strong>
+                          <span className="text-xs font-mono text-base-content/50 truncate max-w-[150px] sm:max-w-xs" title={ep.base_url}>{ep.base_url}</span>
+                          {accountName && (
+                            <span className="badge badge-sm badge-success font-extrabold text-[10px] uppercase">{accountName}</span>
+                          )}
+                        </div>
 
-                  <div className="sm:col-span-2 space-y-2">
-                    <label className="text-[10px] font-bold uppercase tracking-wider text-base-content/50 block">
-                      Các Model được hỗ trợ ({models.length})
-                    </label>
-                    {models.length > 0 ? (
-                      <div className="collapse collapse-arrow bg-base-200/40 border border-base-content/5 rounded-xl transition-all duration-300">
-                        <input type="checkbox" className="min-h-0 py-2" defaultChecked />
-                        <div className="collapse-title text-[11px] font-bold min-h-0 py-2">Xem chi tiết các Model hỗ trợ</div>
-                        <div className="collapse-content px-4 pb-4">
-                          <div className="grid grid-cols-1 sm:grid-cols-2 gap-2 mt-2 max-h-60 overflow-y-auto pr-1">
-                            {models.map((mid, mIdx) => {
-                              const isModelEnabled = enabledModels.includes(mid);
-                              return (
-                                <div key={mIdx} className="flex items-center justify-between p-2 rounded-lg bg-base-300/30 border border-base-content/5 text-xs transition-all duration-200 hover:scale-[1.015]">
-                                  <span className={`font-mono truncate max-w-[130px] font-bold ${isModelEnabled ? 'text-success' : 'text-base-content/40'}`} title={mid}>{mid}</span>
-                                  <input type="checkbox" checked={isModelEnabled}
-                                    onChange={(e) => handleModelToggle(ep.name, mid, e.target.checked)}
-                                    className="toggle toggle-xs toggle-success" />
-                                </div>
-                              );
-                            })}
-                          </div>
+                        <div className="flex items-center gap-1.5">
+                          <button onClick={() => setSelectedEndpoint(ep.name)}
+                            className="btn btn-ghost btn-xs text-green-400 hover:bg-green-500/15 gap-1 normal-case font-bold" title="View Logs">
+                            <TerminalIcon className="w-3.5 h-3.5" />
+                            <span>Logs</span>
+                          </button>
+                          <button onClick={() => handleRefreshModels(ep.name)} disabled={isLoading}
+                            className="btn btn-ghost btn-xs text-primary hover:bg-primary/15 gap-1 normal-case font-bold" title="Fetch Models">
+                            <RefreshCw className={`w-3.5 h-3.5 ${isLoading ? 'animate-spin' : ''}`} />
+                            <span>Fetch Models</span>
+                          </button>
+                          <button onClick={() => handleToggleEp(ep.name, isEnabled)}
+                            className={`btn btn-ghost btn-xs gap-1 normal-case font-bold ${isEnabled ? 'text-error hover:bg-error/15' : 'text-success hover:bg-success/15'}`}>
+                            <Power className="w-3.5 h-3.5" />
+                            <span>{isEnabled ? 'Disable' : 'Enable'}</span>
+                          </button>
+                          <button onClick={() => handleDeleteEp(ep.name)} className="btn btn-ghost btn-xs btn-square text-error hover:bg-error/15">
+                            <Trash2 className="w-3.5 h-3.5" />
+                          </button>
                         </div>
                       </div>
-                    ) : (
-                      <div className="flex items-center gap-2 text-xs text-base-content/40 bg-base-200/20 p-3 rounded-xl border border-dashed border-base-content/10">
-                        <Info className="w-4 h-4 text-base-content/50" />
-                        <span>Chưa fetch danh sách Model — Hãy click 🔄 Fetch Models để lấy danh sách.</span>
-                      </div>
-                    )}
-                  </div>
-                </div>
 
-                {msg.text && (
-                  <div className={`text-xs font-semibold p-2.5 rounded-lg border ${
-                    msg.type === 'success' ? 'bg-success/10 text-success border-success/20' :
-                    msg.type === 'error' ? 'bg-error/10 text-error border-error/20' : 'bg-info/10 text-info border-info/20'
-                  }`}>{msg.text}</div>
-                )}
+                      {/* Assignment & Models */}
+                      <div className="grid grid-cols-1 sm:grid-cols-3 gap-4 pt-3 border-t border-base-content/5">
+                        <div className="space-y-2 text-left sm:col-span-1">
+                          <label className="text-[10px] font-bold uppercase tracking-wider text-base-content/50 block">
+                            {t('lbl_assigned_account', lang) || 'Gán cho tài khoản con'}
+                          </label>
+                          <select
+                            value={accountName || assignedAccountId}
+                            onChange={(e) => handleAccountAssign(ep.name, e.target.value)}
+                            className="select select-bordered select-sm text-xs w-full bg-base-200/70"
+                          >
+                            <option value="">— Chưa gán (No assignment) —</option>
+                            {accounts.filter(a => a.enabled).map((a, i) => (
+                              <option key={i} value={a.name}>{a.name} ({a.tier})</option>
+                            ))}
+                          </select>
+                        </div>
+
+                        <div className="sm:col-span-2 space-y-2">
+                          <label className="text-[10px] font-bold uppercase tracking-wider text-base-content/50 block">
+                            Các Model được hỗ trợ ({models.length})
+                          </label>
+                          {models.length > 0 ? (
+                            <div className="collapse collapse-arrow bg-base-200/40 border border-base-content/5 rounded-xl transition-all duration-300">
+                              <input type="checkbox" className="min-h-0 py-2" defaultChecked />
+                              <div className="collapse-title text-[11px] font-bold min-h-0 py-2">Xem chi tiết các Model hỗ trợ</div>
+                              <div className="collapse-content px-4 pb-4">
+                                <div className="grid grid-cols-1 sm:grid-cols-2 gap-2 mt-2 max-h-60 overflow-y-auto pr-1">
+                                  {models.map((mid, mIdx) => {
+                                    const isModelEnabled = enabledModels.includes(mid);
+                                    return (
+                                      <div key={mIdx} className="flex items-center justify-between p-2 rounded-lg bg-base-300/30 border border-base-content/5 text-xs transition-all duration-200 hover:scale-[1.015]">
+                                        <span className={`font-mono truncate max-w-[130px] font-bold ${isModelEnabled ? 'text-success' : 'text-base-content/40'}`} title={mid}>{mid}</span>
+                                        <input type="checkbox" checked={isModelEnabled}
+                                          onChange={(e) => handleModelToggle(ep.name, mid, e.target.checked)}
+                                          className="toggle toggle-xs toggle-success" />
+                                      </div>
+                                    );
+                                  })}
+                                </div>
+                              </div>
+                            </div>
+                          ) : (
+                            <div className="flex items-center gap-2 text-xs text-base-content/40 bg-base-200/20 p-3 rounded-xl border border-dashed border-base-content/10">
+                              <Info className="w-4 h-4 text-base-content/50" />
+                              <span>Chưa fetch danh sách Model — Hãy click 🔄 Fetch Models để lấy danh sách.</span>
+                            </div>
+                          )}
+                        </div>
+                      </div>
+
+                      {msg.text && (
+                        <div className={`text-xs font-semibold p-2.5 rounded-lg border ${
+                          msg.type === 'success' ? 'bg-success/10 text-success border-success/20' :
+                          msg.type === 'error' ? 'bg-error/10 text-error border-error/20' : 'bg-info/10 text-info border-info/20'
+                        }`}>{msg.text}</div>
+                      )}
+                    </div>
+                  );
+                })}
               </div>
-            );
-          })
+            ));
+          })()
         ) : (
           <div className="card glass-card p-12 text-center text-base-content/50 rounded-2xl">
             <Network className="w-10 h-10 mx-auto opacity-35 mb-2" />
@@ -272,6 +301,15 @@ export default function EndpointsTab() {
           </div>
         )}
       </div>
+
+      {/* Log Terminal Modal */}
+      {selectedEndpoint && (
+        <LogHistoryModal
+          endpoint={selectedEndpoint}
+          token={token}
+          onClose={() => setSelectedEndpoint(null)}
+        />
+      )}
     </div>
   );
 }
