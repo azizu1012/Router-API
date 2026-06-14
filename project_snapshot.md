@@ -26,8 +26,8 @@ d:\AI_Projects\router_api/
 │
 ├── logs/                         # Rotating file logs (daily auto-clean)
 │
-├── src/                          # 105 Python files, ~14,631 lines total
-│   ├── api/                      #   ~4,200 lines — proxy layers
+├── src/                          # 110 Python files, ~16,778 lines total
+│   ├── api/                      #   ~5,881 lines — proxy layers
 │   │   ├── claude_proxy/         #     Anthropic→Gemini proxy (stream + non-stream)
 │   │   │   ├── stream.py         #       Anthropic SSE converter: thinking_delta + signature_delta
 │   │   │   ├── handler/
@@ -59,7 +59,7 @@ d:\AI_Projects\router_api/
 │   │           ├── sse.py                # OpenAI SSE chunk formatter
 │   │           └── error.py              # Error classification & pool retry
 │   │
-│   ├── backend/                   #   ~1,000 lines — SQLite DB layer
+│   ├── backend/                   #   ~989 lines — SQLite DB layer
 │   │   ├── _db.py                #     Shared connection + WAL + RLock
 │   │   ├── schema.py             #     DDL + migration from JSON
 │   │   ├── accounts.py           #     Account CRUD
@@ -67,12 +67,12 @@ d:\AI_Projects\router_api/
 │   │   ├── key_status.py         #     Key status + usage atomic ops
 │   │   └── model_prices.py       #     Model price lookup
 │   │
-│   ├── console/                   #   ~637 lines — CLI admin
+│   ├── console/                   #   ~732 lines — CLI admin
 │   │   ├── admin_console.py      #     Main CLI shell (account/endpoint/key commands)
 │   │   ├── console_endpoint.py   #     Interactive endpoint wizard
 │   │   └── console_helpers.py    #     Formatting, prompts, selectors
 │   │
-│   ├── core/                      #   ~3,700 lines — routing, limits, providers
+│   ├── core/                      #   ~4,603 lines — routing, limits, providers
 │   │   ├── api_config.py         #     Model pools & sunset logic
 │   │   ├── preflight.py          #     Health check diagnostics
 │   │   ├── usage_logger.py       #     Async telemetry batch flusher
@@ -108,7 +108,7 @@ d:\AI_Projects\router_api/
 │   │           ├── router.py         # Singleton APIRouter: key registry, scoring
 │   │           └── key_resolver.py   # Circuit breaker, adaptive cooldown
 │   │
-│   ├── server/                     #   ~2,700 lines — HTTP server
+│   ├── server/                     #   ~3,386 lines — HTTP server
 │   │   ├── openai_server/
 │   │   │   ├── handler.py              # OpenAI chat completions executor (367 lines)
 │   │   │   ├── completion_helpers.py   # Response/stream builders (extracted from handler)
@@ -147,91 +147,87 @@ d:\AI_Projects\router_api/
 
 | File | Lines | Role |
 |------|-------|------|
-| `api/opencode_proxy/handler/stream_executor.py` | 662 | OpenCode streaming: search status, thinking, pool retry |
+| `api/opencode_proxy/handler/stream_executor.py` | 885 | OpenCode streaming: search status, thinking, pool retry |
+| `server/openai_server/handler.py` | 412 | OpenAI chat completions executor, grounding |
+| `api/claude_proxy/handler/nonstream_executor.py` | 392 | Non-stream: WebSearch, thinking extraction |
+| `server/openai_server/routes/dashboard_routes.py` | 391 | Dashboard login + stats HTML/JSON |
+| `core/providers/gemini/manager.py` | 383 | GeminiAPIManager: SDK pipeline, semaphore |
+| `core/providers/custom_endpoint_manager.py` | 381 | Custom endpoint CRUD + pool + health |
 | `tools/duckduckgo.py` | 380 | WebSearch engine: DuckDuckGo, crawling, cache |
-| `server/openai_server/handler.py` | 367 | OpenAI chat completions executor, grounding |
-| `server/openai_server/routes/dashboard_routes.py` | 352 | Dashboard login + stats HTML/JSON |
-| `core/router/core/key_resolver.py` | 349 | Circuit breaker, adaptive cooldown, key caching |
-| `console/admin_console.py` | 345 | Interactive CLI admin shell |
-| `api/claude_proxy/utils/format_normalizer.py` | 343 | StreamingTextNormalizer + XMLThinkingExtractor |
-| `api/claude_proxy/handler/nonstream_executor.py` | 343 | Non-stream: WebSearch, thinking extraction |
-| `server/openai_server/routes/completions_routes.py` | 336 | /v1/chat/completions + /v1/messages routes |
-| `core/providers/custom_endpoint_manager.py` | 336 | Custom endpoint CRUD + pool + health |
-| `core/providers/gemini/manager.py` | 325 | GeminiAPIManager: SDK pipeline, semaphore |
-| `api/claude_proxy/stream.py` | 311 | Anthropic SSE: thinking_delta + signature_delta |
-| `api/claude_proxy/handler/proxy_stream.py` | 311 | Streaming call mixer with keepalive pings |
-| `core/providers/search_manager.py` | 310 | Search intent + Google grounding + hybrid search |
-| `core/limits/gemini_rate_limiter.py` | 308 | Per-model RPM/TPM/RPD sliding window |
-| `api/claude_proxy/utils/sse_cache_agent.py` | 306 | Cache simulator, sub-agent detection, SSE helpers |
+| `api/claude_proxy/utils/format_normalizer.py` | 375 | StreamingTextNormalizer + XMLThinkingExtractor |
+| `core/limits/gemini_rate_limiter.py` | 375 | Per-model RPM/TPM/RPD sliding window |
+| `server/openai_server/routes/completions_routes.py` | 371 | /v1/chat/completions + /v1/messages routes |
+| `core/router/core/key_resolver.py` | 370 | Circuit breaker, adaptive cooldown, key caching |
+| `api/claude_proxy/stream.py` | 349 | Anthropic SSE: thinking_delta + signature_delta |
+| `core/providers/search_manager.py` | 349 | Search intent + Google grounding + hybrid search |
+| `api/claude_proxy/handler/proxy.py` | 338 | ClaudeProxy singleton: thinking, retry loop |
+| `api/claude_proxy/utils/sse_cache_agent.py` | 336 | Cache simulator, sub-agent detection, SSE helpers |
+| `core/router/core/router.py` | 333 | APIRouter: key registry, scoring, pool selection |
+| `tools/ddg_ranking.py` | 321 | Consensus ranking, topic classification |
+| `backend/key_status.py` | 310 | Key circuit breaker, freeze/cooldown DB ops |
 | `api/opencode_proxy/handler/proxy.py` | 308 | OpenCode proxy orchestrator |
-| `core/router/core/router.py` | 295 | APIRouter: key registry, scoring, pool selection |
-| `core/limits/account_limiter/capacity.py` | 295 | Pool capacity by tier calculations |
-| `api/claude_proxy/handler/proxy.py` | 297 | ClaudeProxy singleton: thinking, retry loop |
-| `server/pass_through_server/routes/gemini_handlers.py` | 288 | Main pass-through handler with grounding |
-| `backend/key_status.py` | 274 | Key circuit breaker, freeze/cooldown DB ops |
-| `backend/schema.py` | 264 | DDL definitions + JSON→SQLite migration |
-| `api/claude_proxy/handler/stream_executor.py` | 264 | Streaming: search status, WebSearch intercept, SSE |
-| `api/opencode_proxy/handler/nonstream_executor.py` | 264 | Non-stream OpenCode with tool recursion |
-| `tools/ddg_ranking.py` | 259 | Consensus ranking, topic classification |
-| `api/claude_proxy/handler/proxy_nonstream.py` | 241 | Non-streaming call mixer |
-| `core/limits/account_limiter/effective_limits.py` | 240 | Effective limits after pool sharing |
-| `api/claude_proxy/handler/pool_stream.py` | 208 | Pool retry wrapper for streaming |
-| `tools/ddg_utils.py` | 197 | URL normalization, dedup, page crawling |
-| `server/openai_server/auth.py` | 195 | Bearer token auth + account limiter + reaper |
-| `server/pass_through_server/routes/gemini_streaming.py` | 194 | Streaming + custom endpoint streaming |
-| `backend/endpoints.py` | 169 | Custom endpoint CRUD |
-| `core/usage_logger.py` | 167 | Async telemetry batch flusher |
-| `api/opencode_proxy/handler/search.py` | 165 | OpenCode web search via Gemini sub-agent |
-| `console/console_helpers.py` | 164 | CLI formatting, prompts, selectors |
-| `core/config_n_logg/config.py` | 163 | RouterApiConfig dataclass from .env |
-| `tools/ddg_data.py` | 159 | Search cache + topic classification data |
-| `core/limits/account_limiter/limiter.py` | 154 | Per-account sliding window limiter |
-| `core/providers/gemini/error.py` | 153 | Pure error classification functions |
-| `core/providers/gemini_api_helpers.py` | 149 | Error classification mixin + retry helpers |
-| `api/opencode_proxy/handler/detection.py` | 148 | Sub-agent keyword detection |
-| `server/openai_server/routes/admin/accounts.py` | 142 | Admin REST: account CRUD |
-| `core/providers/gemini/caller.py` | 136 | Gemini SDK caller with safety settings |
-| `api/claude_proxy/utils/model_resolver.py` | 133 | Model alias resolution + key concurrency |
-| `console/console_endpoint.py` | 128 | Interactive endpoint wizard |
-| `api/opencode_proxy/handler/websearch.py` | 128 | Search intent detection & injection |
-| `server/openai_server/routes/admin/endpoints.py` | 118 | Admin REST: endpoint CRUD |
-| `api/claude_proxy/utils/message_converter.py` | 119 | Claude→OpenAI schema converter |
-| `api/opencode_proxy/handler/error.py` | 114 | Error classification for OpenCode proxy |
-| `backend/accounts.py` | 114 | Account CRUD |
-| `core/providers/gemini/utils.py` | 112 | Extracted helpers: error handling, tools, backoff |
-| `server/openai_server/routes/app_init.py` | 109 | FastAPI app factory + lifespan |
-| `core/providers/gemini/pool.py` | 106 | ClientPool with health tracking |
-| `server/openai_server/routes/standard_routes.py` | 100 | Root, health, models, MCP endpoints |
-| `api/opencode_proxy/sse.py` | 97 | SSE event builder |
-| `server/pass_through_server/routes/gemini_parsers.py` | 92 | Auth + content/tool parsing |
-| `api/claude_proxy/handler/helpers.py` | 91 | Error messages & system status |
-| `server/openai_server/completion_helpers.py` | 89 | Response/stream builders (extracted from handler) |
-| `api/opencode_proxy/handler/response.py` | 88 | Response builders + cost estimation |
-| `core/accounts/account_manager.py` | 81 | Account CRUD facade with 10s cache |
-| `server/openai_server/routes/admin/keys.py` | 81 | Admin REST: Gemini key mgmt |
-| `core/api_config.py` | 84 | Model definitions, pools, sunset logic |
-| `core/router/pool.py` | 83 | ModelPool failure state machine |
-| `server/openai_server/routes/opencode_routes.py` | 78 | /opencode/v1/chat/completions route |
-| `server/openai_server/security.py` | 66 | Rate limit + brute force protection |
-| `backend/model_prices.py` | 52 | Model price lookup from DB |
-| `server/openai_server/routes/auth_session.py` | 50 | Dashboard JWT sessions |
-| `api/opencode_proxy/handler/sse.py` | 49 | OpenAI SSE chunk formatter |
-| `api/claude_proxy/utils/truncation.py` | 49 | Emergency message truncation |
-| `core/config_n_logg/logger.py` | 48 | 6 rotating file handlers + console |
-| `server/openai_server/routes/admin/helpers.py` | 45 | Shared .env helpers |
-| `core/providers/gemini/thinking_config.py` | 43 | Builds ThinkingConfig for Gemini |
-| `api/claude_proxy/utils/__init__.py` | 33 | Re-exports |
-| `core/providers/litellm_wrapper.py` | 19 | LiteLLM acompletion + token_counter |
-| `core/preflight.py` | 18 | Port listening diagnostics |
-| `server/openai_server/routes/__init__.py` | 13 | Route registration + frontend mount |
-| `core/limits/account_limiter/__init__.py` | 11 | Re-exports |
-| `backend/_db.py` | 11 | Shared SQLite connection (WAL + RLock) |
-| `api/claude_proxy/handler/compaction.py` | 10 | Context compaction gate |
+| `api/claude_proxy/handler/stream_executor.py` | 305 | Streaming: search status, WebSearch intercept, SSE |
+| `core/limits/account_limiter/capacity.py` | 304 | Pool capacity by tier calculations |
+| `server/pass_through_server/routes/gemini_handlers.py` | 291 | Main pass-through handler with grounding |
+| `backend/schema.py` | 286 | DDL definitions + JSON→SQLite migration |
+| `api/claude_proxy/handler/proxy_nonstream.py` | 267 | Non-streaming call mixer |
+| `core/limits/account_limiter/effective_limits.py` | 243 | Effective limits after pool sharing |
+| `tools/ddg_utils.py` | 235 | URL normalization, dedup, page crawling |
+| `api/claude_proxy/handler/pool_stream.py` | 224 | Pool retry wrapper for streaming |
+| `server/openai_server/auth.py` | 219 | Bearer token auth + account limiter + reaper |
+| `core/config_n_logg/config.py` | 203 | RouterApiConfig dataclass from .env |
+| `server/pass_through_server/routes/gemini_streaming.py` | 199 | Streaming + custom endpoint streaming |
+| `backend/endpoints.py` | 192 | Custom endpoint CRUD |
+| `core/usage_logger.py` | 191 | Async telemetry batch flusher |
+| `api/opencode_proxy/handler/search.py` | 186 | OpenCode web search via Gemini sub-agent |
+| `console/console_helpers.py` | 189 | CLI formatting, prompts, selectors |
+| `core/limits/account_limiter/limiter.py` | 172 | Per-account sliding window limiter |
+| `tools/ddg_data.py` | 165 | Search cache + topic classification data |
+| `core/providers/gemini/error.py` | 191 | Pure error classification functions |
+| `core/providers/gemini_api_helpers.py` | 181 | Error classification mixin + retry helpers |
+| `api/opencode_proxy/handler/detection.py` | 150 | Sub-agent keyword detection |
+| `server/openai_server/routes/admin/accounts.py` | 164 | Admin REST: account CRUD |
+| `core/providers/gemini/caller.py` | 156 | Gemini SDK caller with safety settings |
+| `api/claude_proxy/utils/model_resolver.py` | 146 | Model alias resolution + key concurrency |
+| `console/console_endpoint.py` | 145 | Interactive endpoint wizard |
+| `api/opencode_proxy/handler/websearch.py` | 157 | Search intent detection & injection |
+| `server/openai_server/routes/admin/endpoints.py` | 137 | Admin REST: endpoint CRUD |
+| `api/claude_proxy/utils/message_converter.py` | 130 | Claude→OpenAI schema converter |
+| `api/opencode_proxy/handler/error.py` | 138 | Error classification for OpenCode proxy |
+| `backend/accounts.py` | 127 | Account CRUD |
+| `core/providers/gemini/utils.py` | 131 | Extracted helpers: error handling, tools, backoff |
+| `server/openai_server/routes/app_init.py` | 127 | FastAPI app factory + lifespan |
+| `core/providers/gemini/pool.py` | 135 | ClientPool with health tracking |
+| `server/openai_server/routes/standard_routes.py` | 117 | Root, health, models, MCP endpoints |
+| `api/opencode_proxy/sse.py` | 113 | SSE event builder |
+| `server/pass_through_server/routes/gemini_parsers.py` | 98 | Auth + content/tool parsing |
+| `api/claude_proxy/handler/helpers.py` | 97 | Error messages & system status |
+| `server/openai_server/completion_helpers.py` | 102 | Response/stream builders (extracted from handler) |
+| `api/opencode_proxy/handler/response.py` | 108 | Response builders + cost estimation |
+| `core/accounts/account_manager.py` | 100 | Account CRUD facade with 10s cache |
+| `server/openai_server/routes/admin/keys.py` | 99 | Admin REST: Gemini key mgmt |
+| `core/api_config.py` | 100 | Model definitions, pools, sunset logic |
+| `core/router/pool.py` | 97 | ModelPool failure state machine |
+| `server/openai_server/security.py` | 86 | Rate limit + brute force protection |
+| `backend/model_prices.py` | 60 | Model price lookup from DB |
+| `server/openai_server/routes/auth_session.py` | 55 | Dashboard JWT sessions |
+| `api/opencode_proxy/handler/sse.py` | 60 | OpenAI SSE chunk formatter |
+| `api/claude_proxy/utils/truncation.py` | 64 | Emergency message truncation |
+| `core/config_n_logg/logger.py` | 65 | 6 rotating file handlers + console |
+| `server/openai_server/routes/admin/helpers.py` | 52 | Shared .env helpers |
+| `core/providers/gemini/thinking_config.py` | 52 | Builds ThinkingConfig for Gemini |
+| `api/claude_proxy/utils/__init__.py` | 40 | Re-exports |
+| `core/providers/litellm_wrapper.py` | 29 | LiteLLM acompletion + token_counter |
+| `core/preflight.py` | 21 | Port listening diagnostics |
+| `server/openai_server/routes/__init__.py` | 17 | Route registration + frontend mount |
+| `core/limits/account_limiter/__init__.py` | 12 | Re-exports |
+| `backend/_db.py` | 14 | Shared SQLite connection (WAL + RLock) |
+| `api/claude_proxy/handler/compaction.py` | 13 | Context compaction gate |
 | `core/limits/__init__.py` | 7 | Re-exports |
 | `core/config_n_logg/__init__.py` | 6 | Re-exports config + loggers |
-| `server/openai_server/routes/admin/__init__.py` | 4 | Package init |
+| `server/openai_server/routes/admin/__init__.py` | 5 | Package init |
 | `(20 stub files < 3 lines)` | 1-3 | Package markers/re-exports |
-| **Total (src/)** | **~14,609** | 105 files |
+| **Total (src/)** | **~16,778** | 110 files |
 
 ---
 
@@ -429,3 +425,5 @@ Client request → [WebSearch interceptor]
 14. **Thinking Auto-Enable & SSE Compliance (v2.3)**: Proxy auto-enables extended thinking for main agent requests on Gemini 2/2.5/3 models. Claude proxy SSE converter emits spec-compliant `signature_delta`. OpenCode proxy applies sentence-boundary + 80-char chunking for progressive thinking streaming.
 15. **Gemini SDK Refactoring (v2.3)**: `gemini_api_manager.py` refactored into `gemini/` sub-package with separate modules for manager, caller, pool, error classification, and thinking config.
 16. **Custom Endpoint Tool Strip (v2.3.1)**: When backend is a custom endpoint (LM Studio, 9Router, etc.), `WebSearch`/`WebFetch` tools are stripped from the forwarded request to prevent unexpected tool calls that trigger unnecessary sub-agent spawning. Applied in both proxies (`_prepare_litellm_kwargs`) with defense-in-depth in `_resolve_gemini_with_tools_stream`/`_resolve_gemini_with_tools`.
+17. **Streaming Keepalive Heartbeat (v2.4.1)**: Under stream mode, proxies wrap iterators in `asyncio.wait_for` (4.0s timeout) to yield keepalive events (ping tokens or SSE comments) when downstream Gemini endpoints take long to respond, preventing idle proxy terminations.
+18. **Robust Delta Extraction (v2.4.1)**: Delta objects returned from diverse SDK versions and frameworks are recursively parsed via both attribute dot-notation and dictionary getters (handling nested fallback areas like `model_extra`, `extra_fields`, and `additional_kwargs`) for resilient content and reasoning text emission.
