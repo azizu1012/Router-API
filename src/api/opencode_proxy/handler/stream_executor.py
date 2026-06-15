@@ -312,6 +312,26 @@ async def _execute_stream(
                             return extra["content"]
                 return None
 
+            def _get_tool_calls(delta_obj) -> Optional[List[dict]]:
+                if not delta_obj:
+                    return None
+                tcs = getattr(delta_obj, "tool_calls", None)
+                if tcs:
+                    res = []
+                    for tc in tcs:
+                        tc_id = getattr(tc, "id", None)
+                        tc_type = getattr(tc, "type", "function")
+                        fn_name = getattr(tc.function, "name", "") if getattr(tc, "function", None) else ""
+                        fn_args = getattr(tc.function, "arguments", "") if getattr(tc, "function", None) else ""
+                        res.append({
+                            "id": tc_id,
+                            "type": tc_type,
+                            "name": fn_name,
+                            "arguments": fn_args,
+                        })
+                    return res
+                return None
+
             normalizer = StreamingTextNormalizer()
             extractor = XMLThinkingExtractor()
             out_len = 0
@@ -391,7 +411,8 @@ async def _execute_stream(
             delta_1 = first_chunk.choices[0].delta if first_chunk.choices else None
             content_1 = _get_content(delta_1)
             reasoning_1 = _get_reasoning(delta_1)
-            
+            tool_calls_1 = _get_tool_calls(delta_1)
+
             if reasoning_1:
                 async for chunk_bytes in _yield_native_reasoning(reasoning_1):
                     yield chunk_bytes
@@ -399,6 +420,9 @@ async def _execute_stream(
             if content_1:
                 async for chunk_bytes in _process_content(content_1, bool(reasoning_1)):
                     yield chunk_bytes
+
+            if tool_calls_1:
+                yield _openai_sse(model_name, tool_calls=tool_calls_1, chunk_id=chunk_id)
 
             # Process subsequent chunks with a keepalive timeout
             async def _iter_chunks():
@@ -416,6 +440,7 @@ async def _execute_stream(
                         break
 
             stream_finish_reason = None
+            has_tool_calls = bool(tool_calls_1)
             async for item_type, val in _iter_chunks():
                 if item_type == "ping":
                     yield _openai_sse(model_name, chunk_id=chunk_id)
@@ -426,7 +451,22 @@ async def _execute_stream(
                 delta = chunk.choices[0].delta if chunk.choices else None
                 content = _get_content(delta)
                 reasoning = _get_reasoning(delta)
+                tool_calls = _get_tool_calls(delta)
                 fr = chunk.choices[0].finish_reason if chunk.choices else None
+                if fr:
+                    stream_finish_reason = fr
+
+                if reasoning:
+                    async for chunk_bytes in _yield_native_reasoning(reasoning):
+                        yield chunk_bytes
+
+                if content:
+                    async for chunk_bytes in _process_content(content, bool(reasoning)):
+                        yield chunk_bytes
+
+                if tool_calls:
+                    has_tool_calls = True
+                    yield _openai_sse(model_name, tool_calls=tool_calls, chunk_id=chunk_id)
                 if fr:
                     stream_finish_reason = fr
 
@@ -457,7 +497,10 @@ async def _execute_stream(
                     yield chunk_bytes
 
             # Final chunk with finish_reason
-            stop_reason = "length" if stream_finish_reason and "max" in str(stream_finish_reason).lower() else "stop"
+            if has_tool_calls:
+                stop_reason = "tool_calls"
+            else:
+                stop_reason = "length" if stream_finish_reason and "max" in str(stream_finish_reason).lower() else "stop"
             yield _openai_sse(model_name, finish_reason=stop_reason, chunk_id=chunk_id)
 
             out_tokens = max(1, out_len // 4)
