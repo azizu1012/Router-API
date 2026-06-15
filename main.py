@@ -1,3 +1,4 @@
+# ruff: noqa: E402
 """Router API entry point."""
 import os
 import subprocess

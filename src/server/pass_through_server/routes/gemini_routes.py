@@ -1,6 +1,4 @@
-from typing import Optional
 from fastapi import Header, Request
-from fastapi.responses import StreamingResponse
 
 from src.server.openai_server.routes.app_init import app
 from .gemini_handlers import _handle_gemini_native

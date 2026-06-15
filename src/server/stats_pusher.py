@@ -2,9 +2,8 @@ import asyncio
 import time
 from typing import Optional
 
-from src.core.api_config import AVAILABLE_MODELS
 from src.core.config_n_logg.logger import logger_system as logger
-from src.core.limits.gemini_rate_limiter import _rate_limiters, _key_model_requests, _key_model_tokens, _score_penalties
+from src.core.limits.gemini_rate_limiter import _rate_limiters, _key_model_requests, _score_penalties
 from src.server.websocket_manager import ws_manager
 
 

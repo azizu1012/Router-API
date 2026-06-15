@@ -1,1 +1,1 @@
-from .router import APIRouter, router
+from .router import APIRouter as APIRouter, router as router

@@ -33,9 +33,9 @@ def _wizard_add_endpoint() -> None:
         m = _re.match(r'https?://([^.]+)', url)
         name = m.group(1) if m else f"ep_{secrets.token_hex(3)}"
 
-    print(f"\n  ▶ Verifying endpoint...")
+    print("\n  ▶ Verifying endpoint...")
     try:
-        ep_obj = _custom_endpoint_manager.add(name, url, auth_key)
+        _custom_endpoint_manager.add(name, url, auth_key)
         models = asyncio.run(_custom_endpoint_manager.fetch_models(name))
         print(f"  ✅ Connected! Found {len(models)} models (endpoint: {name}).")
     except Exception as e:

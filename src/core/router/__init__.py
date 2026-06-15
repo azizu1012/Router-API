@@ -1,2 +1,2 @@
-from src.core.router.core import APIRouter, router
-from src.core.router.pool import ModelPool
+from src.core.router.core import APIRouter as APIRouter, router as router
+from src.core.router.pool import ModelPool as ModelPool
