@@ -19,7 +19,7 @@ class StatsPusher:
         model_stats = {}
         for alias, limiter in dict(_rate_limiters).items():
             rpm_remaining = max(0, limiter.rpm_limit - len(limiter._minute_req_ts))
-            tpm_used = sum(limiter._minute_tokens)
+            tpm_used = sum(t for ts, t in limiter._minute_tokens if now - ts < 60)
             tpm_remaining = max(0, limiter.tpm_limit - tpm_used)
             model_stats[alias] = {
                 "rpm_remaining": rpm_remaining,
