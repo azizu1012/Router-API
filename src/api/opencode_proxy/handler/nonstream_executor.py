@@ -8,7 +8,7 @@ from src.core.providers.litellm_wrapper import acompletion, token_counter
 from src.core.config_n_logg.logger import logger_proxy as logger
 from src.core.router import router
 from src.core.usage_logger import log_usage
-from src.api.claude_proxy.utils import _get_simulated_cache_usage, normalize_text
+from src.logical_HQ_translator import _get_simulated_cache_usage, normalize_text
 
 
 async def _resolve_gemini_with_tools_stream(

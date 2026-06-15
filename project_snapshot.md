@@ -26,7 +26,7 @@ d:\AI_Projects\router_api/
 │
 ├── logs/                         # Rotating file logs (daily auto-clean)
 │
-├── src/                          # 110 Python files, ~16,778 lines total
+├── src/                          # 105 Python files, ~16,778 lines total
 │   ├── api/                      #   ~5,881 lines — proxy layers
 │   │   ├── claude_proxy/         #     Anthropic→Gemini proxy (stream + non-stream)
 │   │   │   ├── stream.py         #       Anthropic SSE converter: thinking_delta + signature_delta
@@ -39,12 +39,6 @@ d:\AI_Projects\router_api/
 │   │   │   │   ├── nonstream_executor.py # WebSearch intercept & thinking extraction
 │   │   │   │   ├── compaction.py         # Context compaction gate
 │   │   │   │   └── helpers.py            # Error messages & system status
-│   │   │   └── utils/
-│   │   │       ├── format_normalizer.py  # StreamingTextNormalizer + XMLThinkingExtractor
-│   │   │       ├── sse_cache_agent.py    # Cache simulator, sub-agent detection, SSE helpers
-│   │   │       ├── message_converter.py  # Claude→OpenAI schema converter
-│   │   │       ├── model_resolver.py     # Model alias resolution & key concurrency
-│   │   │       └── truncation.py         # Emergency message truncation
 │   │   │
 │   │   └── opencode_proxy/       #     OpenCode→Gemini proxy (OpenAI-compatible)
 │   │       ├── sse.py            #       SSE event builder for OpenCode streaming
@@ -58,6 +52,14 @@ d:\AI_Projects\router_api/
 │   │           ├── response.py           # Response builders & cost estimation
 │   │           ├── sse.py                # OpenAI SSE chunk formatter
 │   │           └── error.py              # Error classification & pool retry
+│   │
+│   ├── logical_HQ_translator/    #     Centralized resources/converters shared between proxies
+│   │   ├── __init__.py           #       Package export initialization
+│   │   ├── format_normalizer.py  #       StreamingTextNormalizer + XMLThinkingExtractor
+│   │   ├── sse_cache_agent.py    #       Cache simulator, sub-agent detection, SSE helpers
+│   │   ├── message_converter.py  #       Claude→OpenAI schema converter
+│   │   ├── model_resolver.py     #       Model alias resolution & key concurrency
+│   │   └── truncation.py         #       Emergency message truncation
 │   │
 │   ├── backend/                   #   ~989 lines — SQLite DB layer
 │   │   ├── _db.py                #     Shared connection + WAL + RLock
@@ -154,14 +156,14 @@ d:\AI_Projects\router_api/
 | `core/providers/gemini/manager.py` | 383 | GeminiAPIManager: SDK pipeline, semaphore |
 | `core/providers/custom_endpoint_manager.py` | 381 | Custom endpoint CRUD + pool + health |
 | `tools/duckduckgo.py` | 380 | WebSearch engine: DuckDuckGo, crawling, cache |
-| `api/claude_proxy/utils/format_normalizer.py` | 375 | StreamingTextNormalizer + XMLThinkingExtractor |
+| `logical_HQ_translator/format_normalizer.py` | 375 | StreamingTextNormalizer + XMLThinkingExtractor |
 | `core/limits/gemini_rate_limiter.py` | 375 | Per-model RPM/TPM/RPD sliding window |
 | `server/openai_server/routes/completions_routes.py` | 371 | /v1/chat/completions + /v1/messages routes |
 | `core/router/core/key_resolver.py` | 370 | Circuit breaker, adaptive cooldown, key caching |
 | `api/claude_proxy/stream.py` | 349 | Anthropic SSE: thinking_delta + signature_delta |
 | `core/providers/search_manager.py` | 349 | Search intent + Google grounding + hybrid search |
 | `api/claude_proxy/handler/proxy.py` | 338 | ClaudeProxy singleton: thinking, retry loop |
-| `api/claude_proxy/utils/sse_cache_agent.py` | 336 | Cache simulator, sub-agent detection, SSE helpers |
+| `logical_HQ_translator/sse_cache_agent.py` | 336 | Cache simulator, sub-agent detection, SSE helpers |
 | `core/router/core/router.py` | 333 | APIRouter: key registry, scoring, pool selection |
 | `tools/ddg_ranking.py` | 321 | Consensus ranking, topic classification |
 | `backend/key_status.py` | 310 | Key circuit breaker, freeze/cooldown DB ops |
@@ -188,11 +190,11 @@ d:\AI_Projects\router_api/
 | `api/opencode_proxy/handler/detection.py` | 150 | Sub-agent keyword detection |
 | `server/openai_server/routes/admin/accounts.py` | 164 | Admin REST: account CRUD |
 | `core/providers/gemini/caller.py` | 156 | Gemini SDK caller with safety settings |
-| `api/claude_proxy/utils/model_resolver.py` | 146 | Model alias resolution + key concurrency |
+| `logical_HQ_translator/model_resolver.py` | 146 | Model alias resolution + key concurrency |
 | `console/console_endpoint.py` | 145 | Interactive endpoint wizard |
 | `api/opencode_proxy/handler/websearch.py` | 157 | Search intent detection & injection |
 | `server/openai_server/routes/admin/endpoints.py` | 137 | Admin REST: endpoint CRUD |
-| `api/claude_proxy/utils/message_converter.py` | 130 | Claude→OpenAI schema converter |
+| `logical_HQ_translator/message_converter.py` | 130 | Claude→OpenAI schema converter |
 | `api/opencode_proxy/handler/error.py` | 138 | Error classification for OpenCode proxy |
 | `backend/accounts.py` | 127 | Account CRUD |
 | `core/providers/gemini/utils.py` | 131 | Extracted helpers: error handling, tools, backoff |
@@ -212,11 +214,11 @@ d:\AI_Projects\router_api/
 | `backend/model_prices.py` | 60 | Model price lookup from DB |
 | `server/openai_server/routes/auth_session.py` | 55 | Dashboard JWT sessions |
 | `api/opencode_proxy/handler/sse.py` | 60 | OpenAI SSE chunk formatter |
-| `api/claude_proxy/utils/truncation.py` | 64 | Emergency message truncation |
+| `logical_HQ_translator/truncation.py` | 64 | Emergency message truncation |
 | `core/config_n_logg/logger.py` | 65 | 6 rotating file handlers + console |
 | `server/openai_server/routes/admin/helpers.py` | 52 | Shared .env helpers |
 | `core/providers/gemini/thinking_config.py` | 52 | Builds ThinkingConfig for Gemini |
-| `api/claude_proxy/utils/__init__.py` | 40 | Re-exports |
+| `logical_HQ_translator/__init__.py` | 40 | Re-exports |
 | `core/providers/litellm_wrapper.py` | 29 | LiteLLM acompletion + token_counter |
 | `core/preflight.py` | 21 | Port listening diagnostics |
 | `server/openai_server/routes/__init__.py` | 17 | Route registration + frontend mount |

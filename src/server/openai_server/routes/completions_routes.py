@@ -98,7 +98,7 @@ async def completions(
         return JSONResponse(status_code=503, content={"error": {"message": "Service temporarily unavailable", "type": "api_error"}})
 
     auth_key_prefix = _auth_key_prefix(account)
-    from src.api.claude_proxy.utils import _get_simulated_cache_usage
+    from src.logical_HQ_translator import _get_simulated_cache_usage
     input_tokens = result.get("input_tokens", 0) or 0
     cache_usage = _get_simulated_cache_usage(chat_body or {}, input_tokens)
     cc = cache_usage.get("cache_creation_input_tokens", 0) or 0
@@ -170,7 +170,7 @@ async def responses(
         return JSONResponse(status_code=503, content={"error": {"message": "Service temporarily unavailable", "type": "api_error"}})
 
     auth_key_prefix = _auth_key_prefix(account)
-    from src.api.claude_proxy.utils import _get_simulated_cache_usage
+    from src.logical_HQ_translator import _get_simulated_cache_usage
     input_tokens = result.get("input_tokens", 0) or 0
     cache_usage = _get_simulated_cache_usage(chat_body or {}, input_tokens)
     cc = cache_usage.get("cache_creation_input_tokens", 0) or 0

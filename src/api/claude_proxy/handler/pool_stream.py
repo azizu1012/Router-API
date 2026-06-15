@@ -8,7 +8,7 @@ from src.core.config_n_logg.logger import logger_proxy as logger
 from src.core.router import router
 from src.core.limits import apply_error_penalty
 from src.core.providers import _custom_endpoint_manager as endpoint_manager
-from src.api.claude_proxy.utils import (
+from src.logical_HQ_translator import (
     _resolve_model,
     _sse,
     _emergency_truncate_to_limit,
@@ -42,7 +42,7 @@ async def _stream_with_pool(
                 api_key_val[-8:] if api_key_val else "N/A", actual_alias, model_id_val, pool.total_attempts + 1, int(pool.remaining_time()), estimated_tokens
             )
             try:
-                from src.api.claude_proxy.utils import save_resolved_model_for_cwd
+                from src.logical_HQ_translator import save_resolved_model_for_cwd
                 save_resolved_model_for_cwd(body.get("system", ""), model_alias_val, model_id_val)
             except Exception as ex_sync:
                 logger.error("[Statusline Sync Error] Failed to call sync helper in stream: %s", ex_sync)

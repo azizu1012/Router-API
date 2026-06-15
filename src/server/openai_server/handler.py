@@ -37,7 +37,7 @@ def _extract_openai_text(content: Any) -> str:
 async def _openai_chat_completion(body: Dict[str, Any], account: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
     from src.core.providers.genai_types import types as gt
     import asyncio
-    from src.api.claude_proxy.utils import _emergency_truncate_to_limit
+    from src.logical_HQ_translator import _emergency_truncate_to_limit
 
     model_alias = router.resolve_model_alias(body.get("model"))
     messages = body.get("messages") or []

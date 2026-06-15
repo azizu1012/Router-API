@@ -12,7 +12,7 @@ from src.core.router import router
 from src.core.limits import apply_error_penalty
 from src.core.providers import _custom_endpoint_manager as endpoint_manager
 from src.core.usage_logger import log_usage
-from src.api.claude_proxy.utils import (
+from src.logical_HQ_translator import (
     _resolve_model,
     _get_simulated_cache_usage,
     _retry_delay,

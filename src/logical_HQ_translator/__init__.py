@@ -18,7 +18,7 @@ from .message_converter import (
 )
 
 from .truncation import (
-    emergency_truncate_to_limit as emergency_truncate_to_limit,
+    emergency_truncate_to_limit as _emergency_truncate_to_limit,
 )
 
 from .sse_cache_agent import (

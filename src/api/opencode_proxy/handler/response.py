@@ -11,7 +11,7 @@ from typing import Any, Dict
 from src.core.config_n_logg.logger import logger_proxy as logger
 from src.core.usage_logger import log_usage
 from src.api.claude_proxy.handler.helpers import get_system_status_summary
-from src.api.claude_proxy.utils import _get_simulated_cache_usage
+from src.logical_HQ_translator import _get_simulated_cache_usage
 
 
 def get_client_model_name(requested_model: str) -> str:

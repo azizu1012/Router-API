@@ -12,7 +12,7 @@ def completion_response(body: Dict[str, Any], result: Dict[str, Any]) -> Dict[st
     thought = result.get("thought")
 
     if not thought and text:
-        from src.api.claude_proxy.utils import XMLThinkingExtractor
+        from src.logical_HQ_translator import XMLThinkingExtractor
         _ex = XMLThinkingExtractor()
         _evs = _ex.feed(text) + _ex.flush()
         _extracted = []

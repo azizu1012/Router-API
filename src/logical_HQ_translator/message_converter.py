@@ -7,6 +7,25 @@ UNSUPPORTED_OR_HEAVY_TOOLS = {
 }
 
 
+def _deep_merge_schemas(dict1: dict, dict2: dict) -> dict:
+    res = dict1.copy()
+    for k, v in dict2.items():
+        if k in res:
+            if isinstance(res[k], dict) and isinstance(v, dict):
+                res[k] = _deep_merge_schemas(res[k], v)
+            elif isinstance(res[k], list) and isinstance(v, list):
+                merged_list = list(res[k])
+                for item in v:
+                    if item not in merged_list:
+                        merged_list.append(item)
+                res[k] = merged_list
+            else:
+                res[k] = v
+        else:
+            res[k] = v
+    return res
+
+
 def _sanitize_schema_for_gemini(schema: dict) -> dict:
     if not isinstance(schema, dict):
         return schema
@@ -16,7 +35,7 @@ def _sanitize_schema_for_gemini(schema: dict) -> dict:
             first = v[0] if v else {"type": "string"}
             if isinstance(first, dict):
                 merged = _sanitize_schema_for_gemini(first)
-                result.update(merged)
+                result = _deep_merge_schemas(result, merged)
         elif isinstance(v, dict):
             result[k] = _sanitize_schema_for_gemini(v)
         elif isinstance(v, list):

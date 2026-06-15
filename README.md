@@ -190,12 +190,6 @@ src/
 │   │   ├── pool_stream.py       #     Pool retry wrapper for streaming
 │   │   ├── nonstream_executor.py#     WebSearch, tool recursion, thinking
 │   │   └── helpers.py           #     Error classification, system status
-│   ├── utils/                   #   Utilities
-│   │   ├── format_normalizer.py #     StreamingTextNormalizer + XMLThinkingExtractor
-│   │   ├── sse_cache_agent.py   #     SSE builders, cache simulation
-│   │   ├── message_converter.py #     Claude→OpenAI schema converter
-│   │   ├── model_resolver.py    #     Model alias + key concurrency
-│   │   └── truncation.py        #     Emergency truncation
 │   └── stream.py                #     Anthropic SSE: thinking_delta + signature_delta
 │
 ├── api/opencode_proxy/          # OpenCode→Gemini proxy (OpenAI-compatible)
@@ -210,6 +204,13 @@ src/
 │   │   ├── sse.py               #     OpenAI SSE formatter
 │   │   └── error.py             #     Error classification
 │   └── sse.py                   #     SSE event builder
+│
+├── logical_HQ_translator/       # Centralized resources/converters shared between proxies
+│   ├── format_normalizer.py     #   StreamingTextNormalizer + XMLThinkingExtractor
+│   ├── sse_cache_agent.py       #   SSE builders, cache simulation
+│   ├── message_converter.py     #   Claude→OpenAI schema converter
+│   ├── model_resolver.py        #   Model alias + key concurrency
+│   └── truncation.py            #   Emergency truncation
 │
 ├── server/                      # HTTP server
 │   ├── websocket_manager.py     #   WebSocket connection manager

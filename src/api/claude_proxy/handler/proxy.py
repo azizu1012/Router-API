@@ -9,7 +9,7 @@ from src.core.config_n_logg.logger import logger_proxy as logger
 from src.core.router import router
 from src.core.providers import _custom_endpoint_manager as endpoint_manager
 from src.core.limits import apply_error_penalty
-from src.api.claude_proxy.utils import (
+from src.logical_HQ_translator import (
     _resolve_model,
     _retry_delay,
     _emergency_truncate_to_limit,
@@ -61,7 +61,7 @@ def _build_litellm_thinking(body: Dict[str, Any], model_id: str) -> Dict[str, An
     # Auto-enable thinking for main agent if not specified and model supports it
     if thinking is None:
         try:
-            from src.api.claude_proxy.utils import is_sub_agent_body
+            from src.logical_HQ_translator import is_sub_agent_body
             is_sub = is_sub_agent_body(body)
             supports = _model_supports_thinking(model_id)
             logger.info("[Thinking Sync] Checking auto-enable: is_sub_agent=%s, supports_thinking=%s", is_sub, supports)
@@ -188,7 +188,7 @@ class ClaudeProxy(ClaudeProxyNonstreamMixin, ClaudeProxyStreamMixin):
                     api_key_val[-8:] if api_key_val else "N/A", actual_alias, model_id_val, pool.total_attempts + 1, int(pool.remaining_time()), estimated_tokens
                 )
                 try:
-                    from src.api.claude_proxy.utils import save_resolved_model_for_cwd
+                    from src.logical_HQ_translator import save_resolved_model_for_cwd
                     save_resolved_model_for_cwd(body.get("system", ""), model_alias_val, model_id_val)
                 except Exception as ex_sync:
                     logger.error("[Statusline Sync Error] Failed to call sync helper: %s", ex_sync)

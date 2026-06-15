@@ -19,7 +19,7 @@ from src.core.config_n_logg import config
 from src.core.config_n_logg.logger import logger_proxy as logger
 from src.core.router import router
 from src.core.providers import _custom_endpoint_manager as endpoint_manager
-from src.api.claude_proxy.utils import (
+from src.logical_HQ_translator import (
     _resolve_model,
     _retry_delay,
     _emergency_truncate_to_limit,
@@ -59,7 +59,7 @@ def _model_supports_thinking(model_id: str) -> bool:
 
 def _is_sub_agent_request(body: Dict[str, Any]) -> bool:
     """Detect if request is from a sub-agent — reuses Claude proxy's detection + OpenCode patterns."""
-    from src.api.claude_proxy.utils.sse_cache_agent import is_sub_agent_body
+    from src.logical_HQ_translator.sse_cache_agent import is_sub_agent_body
     if is_sub_agent_body(body):
         return True
     # OpenCode-specific: "opencode" in prompt + explore/read/search keywords but NOT main agent indicators

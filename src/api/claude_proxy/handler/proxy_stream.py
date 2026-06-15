@@ -11,7 +11,7 @@ from src.core.config_n_logg import config
 from src.core.config_n_logg.logger import logger_proxy as logger
 from src.core.router import router
 from src.core.limits import apply_error_penalty
-from src.api.claude_proxy.utils import (
+from src.logical_HQ_translator import (
     _resolve_model,
     _retry_delay,
     _convert_messages,
@@ -119,7 +119,7 @@ class ClaudeProxyStreamMixin:
                     req_id, api_key_val[-8:] if api_key_val else "N/A", model_alias, model_id_val, attempt + 1, config.MAX_RETRIES, estimated_tokens
                 )
                 try:
-                    from src.api.claude_proxy.utils import save_resolved_model_for_cwd
+                    from src.logical_HQ_translator import save_resolved_model_for_cwd
                     save_resolved_model_for_cwd(body.get("system", ""), model_alias_val, model_id_val)
                 except Exception as ex_sync:
                     logger.error("[Statusline Sync Error] Failed to call sync helper in non-pool stream: %s", ex_sync)
