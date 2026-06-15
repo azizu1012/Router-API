@@ -157,6 +157,8 @@ class OpenCodeProxy:
     ) -> Dict[str, Any]:
         model_alias = await self._resolve_alias(body, account=account, is_opencode=is_opencode)
         messages, tools = body.get("messages", []), list(body.get("tools", []))
+        from .websearch import with_search_context
+        messages = await with_search_context(body, messages, model_alias, account)
         messages, tools = _inject_websearch_tool(body, messages, tools, account)
 
         pool = router.resolve_pool(model_alias)
@@ -170,6 +172,8 @@ class OpenCodeProxy:
     ) -> AsyncIterator[bytes]:
         model_alias = await self._resolve_alias(body, account=account, is_opencode=is_opencode)
         messages, tools = body.get("messages", []), list(body.get("tools", []))
+        from .websearch import with_search_context
+        messages = await with_search_context(body, messages, model_alias, account)
         messages, tools = _inject_websearch_tool(body, messages, tools, account)
 
         pool = router.resolve_pool(model_alias)

@@ -37,6 +37,10 @@ class ClaudeProxyStreamMixin:
         if not model_alias:
             model_alias = config.DEFAULT_MODEL_ALIAS
 
+        # Inject Web Search context
+        from src.api.opencode_proxy.handler.websearch import with_search_context
+        openai_messages = await with_search_context(body, openai_messages, model_alias, account)
+
         await _pre_compact_and_truncate(body, openai_messages, openai_tools, model_alias)
 
         req_id = uuid.uuid4().hex[:8]
