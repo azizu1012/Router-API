@@ -148,6 +148,16 @@ async def _resolve_gemini_with_tools(
         logger.error("[_resolve_gemini_with_tools] litellm.acompletion error: %s", e, exc_info=True)
         raise
 
+    logger.info("[_resolve_gemini_with_tools] raw resp type=%s choices=%s len=%s", type(resp).__name__, getattr(resp, 'choices', 'N/A'), len(resp.choices) if resp.choices else 0)
+    if resp.choices:
+        for i, c in enumerate(resp.choices):
+            m = getattr(c, 'message', None)
+            logger.info("[_resolve_gemini_with_tools] choice[%s] message=%s content=%r finish=%s tool_calls=%s",
+                i, type(m).__name__ if m else 'NONE',
+                getattr(m, 'content', None) if m else 'N/A',
+                getattr(c, 'finish_reason', None),
+                getattr(m, 'tool_calls', None) if m else 'N/A')
+
     choice = resp.choices[0] if resp.choices else None
     if not choice:
         return "", [], "stop", ""
@@ -239,9 +249,12 @@ async def _execute_nonstream(
     elapsed = asyncio.get_event_loop().time() - t0
 
     logger.info(
-        "[_execute_nonstream] model=%s elapsed=%.2fs text_len=%d tools=%d",
-        model_alias, elapsed, len(text), len(tool_calls)
+        "[_execute_nonstream] model=%s elapsed=%.2fs text_len=%d tools=%d thought_len=%d finish=%s",
+        model_alias, elapsed, len(text), len(tool_calls), len(thought_text), finish_reason
     )
+    if not text:
+        logger.warning("[_execute_nonstream] EMPTY text from _resolve_gemini_with_tools! thought=%r finish=%s kwargs_model=%s",
+            thought_text[:200] if thought_text else "", finish_reason, kwargs.get("model", "?"))
 
     try:
         out_tokens = await token_counter(model=kwargs.get("model", "gemini/gemini-1.5-flash"), messages=[{"role": "assistant", "content": text}])
@@ -263,14 +276,17 @@ async def _execute_nonstream(
     from .response import get_client_model_name
     requested_model = body.get("model") or model_alias
     model_name = get_client_model_name(requested_model)
+    include_thoughts = body.get("include_thoughts", False)
 
     content_val = normalize_text(text) if text else ""
-    if thought_text:
+    if thought_text and include_thoughts:
         thought_norm = normalize_text(thought_text)
         content_val = f"<think>\n{thought_norm}\n</think>\n\n{content_val}"
+    if not content_val and thought_text:
+        content_val = normalize_text(thought_text)
 
-    message_content: Dict[str, Any] = {"role": "assistant", "content": content_val if content_val else None}
-    if thought_text:
+    message_content: Dict[str, Any] = {"role": "assistant", "content": content_val}
+    if thought_text and include_thoughts:
         message_content["reasoning_content"] = normalize_text(thought_text)
     if tool_calls:
         message_content["tool_calls"] = [

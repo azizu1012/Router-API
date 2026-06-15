@@ -60,6 +60,7 @@ async def opencode_chat_completions(
 
         is_stream = body.get("stream", False)
         if is_stream:
+            logger_api.info("[OpenCode Route] streaming response model=%s account=%s", model_alias, account.get("name", "?") if account else "?")
             return StreamingResponse(
                 opencode_proxy.stream_chat_completion(body, account=account, is_opencode=True),
                 media_type="text/event-stream",
@@ -67,6 +68,15 @@ async def opencode_chat_completions(
             )
         else:
             resp_dict = await opencode_proxy.chat_completion(body, account=account, is_opencode=True)
+            resp_content = "?"
+            if isinstance(resp_dict, dict):
+                choices = resp_dict.get("choices", [])
+                if choices:
+                    msg = choices[0].get("message", {})
+                    resp_content = (msg.get("content") or "")[:300]
+            logger_api.info("[OpenCode Route] non-stream response model=%s account=%s content_len=%d choices=%d",
+                model_alias, account.get("name", "?") if account else "?",
+                len(resp_content), len(resp_dict.get("choices", [])) if isinstance(resp_dict, dict) else -1)
             return JSONResponse(
                 content=resp_dict,
                 headers=response_headers,

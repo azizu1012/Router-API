@@ -8,6 +8,7 @@ from src.core.config_n_logg import config
 from src.core.config_n_logg.logger import logger_proxy as logger
 from src.core.router import router
 from src.core.limits import apply_error_penalty
+from src.core.providers import _custom_endpoint_manager as endpoint_manager
 from src.api.claude_proxy.utils import (
     _resolve_model,
     _sse,
@@ -31,6 +32,7 @@ async def _stream_with_pool(
         api_key_val = None
         saved_key = None
         model_id_val = ""
+        reservation = {}
         try:
             est_input = len(str(openai_messages)) // 4
             max_output = min(int(body.get("max_tokens", 4096)), config.MAX_OUTPUT_TOKENS)
@@ -139,6 +141,24 @@ async def _stream_with_pool(
                 yield _sse("error", {"type": "error", "error": {"type": "api_error", "message": f"Stream error: {e}"}})
                 return
             error_text = str(e).lower()
+            is_custom = reservation.get("provider") == "custom" if "reservation" in locals() else False
+            if is_custom:
+                logger.warning("[CustomEndpoint Stream] Failed on custom endpoint %s: %s, falling back to Gemini pool", model_id_val, e)
+                ep_name = reservation.get("name", actual_alias)
+                endpoint_manager.mark_endpoint_failure(ep_name)
+                if pool.record_failure(actual_alias, "custom_endpoint_error"):
+                    if not pool.swap():
+                        if pool.exhausted:
+                            break
+                        wait = min(15.0, pool.remaining_time())
+                        for _ in range(int(wait)):
+                            yield _sse("ping", {"type": "ping", "retry": 0, "reason": "backoff"})
+                            await asyncio.sleep(1)
+                        pool.reset_cycle()
+                        continue
+                yield _sse("ping", {"type": "ping", "retry": pool.total_attempts, "reason": "custom_endpoint_error"})
+                await asyncio.sleep(_retry_delay(pool.total_attempts))
+                continue
 
             if "400" in error_text and "failed_precondition" not in error_text and ("invalid_argument" in error_text or "bad_request" in error_text):
                 logger.error("[Bad Request] Schema/Prompt Error: %s", error_text[:200])

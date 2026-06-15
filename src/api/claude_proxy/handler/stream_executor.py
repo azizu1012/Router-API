@@ -63,7 +63,8 @@ async def _execute_stream(proxy_instance: Any, kwargs: Dict[str, Any], api_key: 
                     },
                 })
 
-                block_idx = 1
+                include_thoughts = body.get("include_thoughts", True)
+                block_idx = 0
                 thinking_active = False
                 text_active = False
                 thinking_buf: List[str] = []
@@ -95,6 +96,8 @@ async def _execute_stream(proxy_instance: Any, kwargs: Dict[str, Any], api_key: 
                     if item_type == "ping":
                         yield _sse("ping", {"type": "ping", "retry": 0, "reason": "keepalive"})
                         continue
+                    if val is None:
+                        continue
                     
                     evt_type, *evt_vals = val
                     now = asyncio.get_event_loop().time()
@@ -103,7 +106,7 @@ async def _execute_stream(proxy_instance: Any, kwargs: Dict[str, Any], api_key: 
                         if not thinking_active:
                             yield _sse("content_block_start", {
                                 "type": "content_block_start", "index": block_idx,
-                                "content_block": {"type": "thinking", "thinking": ""}
+                                "content_block": {"type": "thinking", "thinking": "", "signature": ""}
                             })
                             thinking_active = True
                         yield _sse("content_block_delta", {

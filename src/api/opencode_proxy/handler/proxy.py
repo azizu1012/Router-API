@@ -9,13 +9,16 @@ Orchestrates the request lifecycle:
 """
 
 import asyncio
+import re
 from typing import Any, AsyncIterator, Dict, List, Optional
 
 from src.core.providers.litellm_wrapper import token_counter
 from fastapi import HTTPException
 
 from src.core.config_n_logg import config
+from src.core.config_n_logg.logger import logger_proxy as logger
 from src.core.router import router
+from src.core.providers import _custom_endpoint_manager as endpoint_manager
 from src.api.claude_proxy.utils import (
     _resolve_model,
     _retry_delay,
@@ -47,9 +50,17 @@ def _clean_kwargs_for_model(kwargs: Dict[str, Any], litellm_model: str) -> Dict[
     return kwargs
 
 
+def _model_supports_thinking(model_id: str) -> bool:
+    m = model_id.lower()
+    return bool(re.search(r"gemini-2(\.\d+)?-(flash|pro)", m)) and "lite" not in m
+
+
 def _build_litellm_thinking(body: Dict[str, Any], model_id: str) -> Dict[str, Any]:
     m = model_id.lower()
     is_v3 = _is_gemini_v3(m)
+    supports = _model_supports_thinking(model_id)
+    if not supports and not is_v3:
+        return {}
 
     thinking_level = body.get("thinking_level")
     thinking_budget = body.get("thinking_budget")
@@ -176,19 +187,44 @@ class OpenCodeProxy:
         while not pool.exhausted:
             api_key_val = None
             model_id_val = None
+            is_custom = False
+            reservation = {}
             try:
-                resp, api_key_val, model_id_val, input_tokens = await self._resolve_and_call(
+                resp, api_key_val, model_id_val, input_tokens, reservation = await self._resolve_and_call(
                     body, messages, tools, pool.current_model,
                     pool_mode=True, pool=pool, account=account, is_stream=False,
                 )
+                is_custom = reservation.get("provider") == "custom"
                 saved_key = api_key_val
                 api_key_val = None
                 router.record_success(saved_key, model_id_val)
                 pool.record_success()
+                if is_custom:
+                    endpoint_manager.mark_endpoint_success(reservation.get("name", pool.current_model))
+                # Debug: log resp before build_response
+                resp_content = "?"
+                if isinstance(resp, dict):
+                    resp_content = str(resp.get("choices", [{}])[0].get("message", {}).get("content", "N/A") if resp.get("choices") else "no_choices")[:200]
+                logger.info("[NonStreamPool] returning resp type=%s content=%r is_custom=%s model=%s",
+                    type(resp).__name__, resp_content, is_custom, pool.current_model)
                 return build_response(body, resp, pool.current_model, saved_key, input_tokens)
             except HTTPException:
                 raise
             except Exception as e:
+                if is_custom:
+                    logger.warning("[CustomEndpoint OpenCode NonStream] Failed on custom endpoint %s: %s, falling back to Gemini pool", model_id_val, e)
+                    endpoint_manager.mark_endpoint_failure(reservation.get("name", pool.current_model))
+                    if pool.record_failure(model_alias, "custom_endpoint_error"):
+                        if not pool.swap():
+                            if pool.exhausted:
+                                break
+                            import asyncio
+                            await asyncio.sleep(min(15.0, pool.remaining_time()))
+                            pool.reset_cycle()
+                            continue
+                    import asyncio
+                    await asyncio.sleep(_retry_delay(pool.total_attempts))
+                    continue
                 if not await ocerror.classify_pool_error(e, pool, pool.current_model, api_key_val, model_id_val):
                     raise
                 api_key_val = None
@@ -314,7 +350,7 @@ class OpenCodeProxy:
             self, kwargs, api_key_val, model_id_val, model_alias_val,
             input_tokens, pool, body, auth_key_prefix=get_auth_key_prefix(account), account=account,
         )
-        return resp, api_key_val, model_id_val, input_tokens
+        return resp, api_key_val, model_id_val, input_tokens, reservation
 
 
 # ── Module-level helpers ────────────────────────────────────────

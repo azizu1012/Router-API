@@ -24,6 +24,7 @@ async def _process_anthropic_stream(
 ) -> AsyncIterator[bytes]:
     msg_id = "msg_" + uuid.uuid4().hex
 
+    include_thoughts = body.get("include_thoughts", True) if body else True
     adjusted_input_tokens = input_tokens
     cache_usage = _get_simulated_cache_usage(body or {}, adjusted_input_tokens)
     yield _sse("message_start", {
@@ -106,6 +107,8 @@ async def _process_anthropic_stream(
         nonlocal next_block_idx, text_block_idx, text_started, text_stopped
         nonlocal thought_block_idx, thought_started, thought_stopped
         for ev_type, ev_val in events:
+            if ev_type in ("start_thinking", "end_thinking", "thinking") and not include_thoughts:
+                continue
             if ev_type == "start_thinking":
                 if thought_started and not thought_stopped:
                     async for sig_bytes in _yield_signature(thought_block_idx):
@@ -116,7 +119,7 @@ async def _process_anthropic_stream(
                 next_block_idx += 1
                 yield _sse("content_block_start", {
                     "type": "content_block_start", "index": thought_block_idx,
-                    "content_block": {"type": "thinking", "thinking": ""}
+                    "content_block": {"type": "thinking", "thinking": "", "signature": ""}
                 })
                 thought_started = True
                 thought_stopped = False
@@ -126,7 +129,7 @@ async def _process_anthropic_stream(
                     next_block_idx += 1
                     yield _sse("content_block_start", {
                         "type": "content_block_start", "index": thought_block_idx,
-                        "content_block": {"type": "thinking", "thinking": ""}
+                        "content_block": {"type": "thinking", "thinking": "", "signature": ""}
                     })
                     thought_started = True
                     thought_stopped = False
@@ -169,17 +172,19 @@ async def _process_anthropic_stream(
             yield _sse("ping", {"type": "ping", "retry": 0, "reason": "keepalive"})
             continue
         chunk = val
+        if chunk is None:
+            continue
         delta = chunk.choices[0].delta if chunk.choices else None
 
         if delta:
             reasoning = getattr(delta, "reasoning_content", None) or getattr(delta, "thought", None) or getattr(delta, "reasoning", None)
-            if reasoning:
+            if reasoning and include_thoughts:
                 if not thought_started or thought_stopped:
                     thought_block_idx = next_block_idx
                     next_block_idx += 1
                     yield _sse("content_block_start", {
                         "type": "content_block_start", "index": thought_block_idx,
-                        "content_block": {"type": "thinking", "thinking": ""}
+                        "content_block": {"type": "thinking", "thinking": "", "signature": ""}
                     })
                     thought_started = True
                     thought_stopped = False
@@ -262,7 +267,7 @@ async def _process_anthropic_stream(
                                 "delta": {"type": "input_json_delta", "partial_json": args_str}
                             })
 
-        finish = chunk.choices[0].finish_reason if chunk.choices else None
+        finish = chunk.choices[0].finish_reason if chunk and chunk.choices else None
         if finish:
             if thought_started and not thought_stopped:
                 async for sig_bytes in _yield_signature(thought_block_idx):
@@ -336,7 +341,7 @@ async def _process_anthropic_stream(
                 output_tokens = max(1, len(full_text) // 4) if full_text else 0
             output_tokens += len(tool_buffers) * 50
 
-            stop_reason = "tool_use" if isinstance(finish, str) and finish.lower() == "tool_calls" else "end_turn"
+            stop_reason = "tool_use" if (isinstance(finish, str) and finish.lower() == "tool_calls") or len(tool_buffers) > 0 else "end_turn"
             yield _sse("message_delta", {
                 "type": "message_delta",
                 "delta": {"stop_reason": stop_reason, "stop_sequence": None},

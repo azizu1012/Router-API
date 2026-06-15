@@ -135,7 +135,7 @@ async def _apply_account_limit(account: Dict[str, Any], body: Dict[str, Any], is
                         is_sub_agent = True
                     elif "[sub-agent]" in system_prompt_lower:
                         is_sub_agent = True
-                    elif is_claude_code and len(body.get("tools", [])) in (19, 20):
+                    elif is_claude_code and 16 <= len(body.get("tools", [])) <= 25:
                         is_sub_agent = True
 
         if not is_sub_agent:

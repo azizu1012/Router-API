@@ -89,6 +89,19 @@ def _intercept_sub_agent(body: Dict[str, Any]) -> Optional[str]:
         system_prompt_lower = system_prompt.lower()
         if "you are an interactive agent" in system_prompt_lower:
             return None
+
+        main_agent_indicators = [
+            "interactive agent",
+            "main agent",
+            "primary agent",
+            "you are the main",
+            "you are the primary",
+            "lead agent",
+        ]
+        is_main = any(indicator in system_prompt_lower for indicator in main_agent_indicators)
+        if is_main:
+            return None
+
         if "you are claude code" in system_prompt_lower:
             logger.info("[Sub-Agent Detect] Detected Claude Code sub-agent via non-interactive prompt, overriding to gemini-flash-lite")
             return "gemini-flash-lite"
@@ -126,9 +139,8 @@ def _intercept_sub_agent(body: Dict[str, Any]) -> Optional[str]:
         if "[sub-agent]" in system_prompt_lower:
             logger.info("[Sub-Agent Detect] Detected [SUB-AGENT] tag in system prompt, overriding to gemini-flash-lite")
             return "gemini-flash-lite"
-
         tool_count = len(body.get("tools", []))
-        if tool_count in (19, 20):
+        if 16 <= tool_count <= 25:
             logger.info("[Sub-Agent Detect] Detected Claude Code sub-agent via tool count (%d), overriding to gemini-flash-lite", tool_count)
             return "gemini-flash-lite"
 
@@ -151,6 +163,7 @@ def _intercept_sub_agent(body: Dict[str, Any]) -> Optional[str]:
                         block["text"] = block["text"].replace("[SUB-AGENT]", "", 1).strip()
                         logger.info("[Sub-Agent Detect] Detected sub-agent via [SUB-AGENT] prefix in user message list block, overriding to gemini-flash-lite")
                         return "gemini-flash-lite"
+
     return None
 
 def _estimate_msg_tokens(m: Dict[str, Any]) -> int:
@@ -202,7 +215,7 @@ def is_sub_agent_body(body: Dict[str, Any]) -> bool:
         if "you are an interactive agent" in system_prompt_lower:
             return False
         if "you are claude code" in system_prompt_lower:
-            return False
+            return True
 
         sub_agent_keywords = [
             "general-purpose agent",
@@ -236,7 +249,7 @@ def is_sub_agent_body(body: Dict[str, Any]) -> bool:
             return True
 
         tool_count = len(body.get("tools", []))
-        if tool_count in (19, 20):
+        if 16 <= tool_count <= 25:
             return True
 
     messages = body.get("messages", [])

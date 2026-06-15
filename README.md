@@ -279,9 +279,10 @@ src/
 
 ## Thinking / Reasoning
 
-Router API hỗ trợ `thinking` (reasoning) cho tất cả Gemini models. Mặc định **tự động bật thinking** với level phù hợp theo từng dòng model:
+Router API hỗ trợ `thinking` (reasoning) cho các dòng Gemini hỗ trợ. Mặc định **tự động bật thinking** với level phù hợp theo từng dòng model:
 - **V3 models** (`gemini-3.*`): `thinking_level = "medium"`
-- **V2.5 models** (`gemini-2.5.*`): `thinking_budget = -1` (dynamic)
+- **V2.5/V2 models** (`gemini-2.5.*`, `gemini-2.0-flash`, `gemini-2.0-pro`): `thinking_budget = -1` (dynamic)
+- **Lưu ý:** Các dòng lite (`gemini-flash-lite`, `gemini-2.0-flash-lite`) **không hỗ trợ thinking**. Nếu cố gắng bật trên lite, Gemini sẽ trả về response rỗng (empty content). Router API tự động tắt thinking cho lite models.
 
 ### Cách dùng với OpenAI-compatible clients
 

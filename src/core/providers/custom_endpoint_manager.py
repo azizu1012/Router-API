@@ -29,6 +29,9 @@ class CustomEndpointManager:
     _cache: Optional[Dict[str, Dict[str, Any]]] = None
     _account_map: Optional[Dict[str, str]] = None
     _cache_ts: float = 0.0
+    _ping_cache: Dict[str, tuple[float, bool]] = {}  # name -> (timestamp, alive)
+    _ping_ttl: float = 30.0  # Ping cache TTL in seconds
+    _circuit_breaker: Dict[str, tuple[float, int]] = {}  # name -> (frozen_until, consecutive_failures)
 
     def __init__(self, path: str = _DEFAULT_PATH) -> None:
         self.path = path
@@ -52,6 +55,64 @@ class CustomEndpointManager:
     def _invalidate_cache(self) -> None:
         self.__class__._cache_ts = 0.0
         self._load_cache()
+
+    # ── Ping Cache ────────────────────────────────────────────────
+
+    def is_endpoint_frozen(self, name: str) -> bool:
+        entry = self._circuit_breaker.get(name)
+        if entry:
+            frozen_until, _ = entry
+            if time.time() < frozen_until:
+                return True
+        return False
+
+    def mark_endpoint_success(self, name: str) -> None:
+        self._circuit_breaker.pop(name, None)
+
+    def mark_endpoint_failure(self, name: str) -> None:
+        now = time.time()
+        _, failures = self._circuit_breaker.get(name, (0.0, 0))
+        failures += 1
+        cooldown = min(15.0 * failures, 120.0)
+        self._circuit_breaker[name] = (now + cooldown, failures)
+        logger.warning("[CustomEndpoint CB] %s failed (%d consecutive), frozen for %.1fs", name, failures, cooldown)
+
+    _ping_ttl_alive: float = 30.0
+    _ping_ttl_dead: float = 5.0
+
+    def get_ping_cache(self, name: str) -> Optional[bool]:
+        entry = self._ping_cache.get(name)
+        if entry:
+            ts, alive = entry
+            ttl = self._ping_ttl_alive if alive else self._ping_ttl_dead
+            if time.time() - ts < ttl:
+                return alive
+        return None
+
+    def set_ping_cache(self, name: str, alive: bool) -> None:
+        self._ping_cache[name] = (time.time(), alive)
+
+    def clear_ping_cache(self, name: str) -> None:
+        self._ping_cache.pop(name, None)
+
+    async def ping_endpoint(self, ep: Dict[str, Any]) -> bool:
+        name = ep["name"]
+        cached = self.get_ping_cache(name)
+        if cached is not None:
+            return cached
+        url = f"{ep['base_url'].rstrip('/')}/models"
+        headers = {}
+        if ep.get("auth_key"):
+            headers["Authorization"] = f"Bearer {ep['auth_key']}"
+        try:
+            async with aiohttp.ClientSession(headers=headers) as session:
+                async with session.get(url, timeout=aiohttp.ClientTimeout(total=5)) as resp:
+                    alive = resp.status < 500
+                    self.set_ping_cache(name, alive)
+                    return alive
+        except Exception:
+            self.set_ping_cache(name, False)
+            return False
 
     # ── CRUD ─────────────────────────────────────────────────────
 

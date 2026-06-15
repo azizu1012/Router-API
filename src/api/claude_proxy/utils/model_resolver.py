@@ -8,13 +8,13 @@ from fastapi import HTTPException
 
 from src.core.config_n_logg import config
 from src.core.config_n_logg.logger import logger_proxy as logger
-from src.core.providers import _custom_endpoint_manager
+from src.core.providers import _custom_endpoint_manager as endpoint_manager
 from src.core.router import router
 
 def _has_account_endpoint(account: Optional[Dict[str, Any]]) -> bool:
     if not account:
         return False
-    ep = _custom_endpoint_manager.get_endpoint_for_account(account)
+    ep = endpoint_manager.get_endpoint_for_account(account)
     return ep is not None and ep.get("enabled", True)
 
 def _retry_delay(attempt: int) -> float:
@@ -36,50 +36,37 @@ async def _resolve_model(body: Dict[str, Any], pool_alias_override: Optional[str
 
     # If account has dedicated endpoint, route 100% there on first attempt
     # Nếu endpoint lỗi → fallback Gemini Lite (pool_mode xử lý retry)
-    ep = _custom_endpoint_manager.get_endpoint_for_account(account)
-    if ep and ep.get("enabled", True) and retry_attempt == 0:
-        model_to_use = body.get("model", model_id)
-        enabled_models = ep.get("enabled_models", [])
-        all_models = ep.get("models", [])
+    ep = endpoint_manager.get_endpoint_for_account(account)
+    if ep and ep.get("enabled", True) and (retry_attempt == 0 or pool_mode):
+        ep_name = ep.get("name", "")
+        if endpoint_manager.is_endpoint_frozen(ep_name):
+            logger.warning("[AccountEndpoint] %s is frozen (circuit breaker), skipping", ep_name)
+        else:
+            enabled_models = ep.get("enabled_models", [])
+            all_models = ep.get("models", [])
 
-        # Resolve target model for custom endpoint
-        target_model = model_id
-        if enabled_models:
-            if model_to_use in enabled_models:
-                target_model = model_to_use
-            elif model_id in enabled_models:
-                target_model = model_id
+            if not enabled_models and not all_models:
+                logger.warning("[AccountEndpoint] %s has no models configured, skipping", ep_name)
             else:
-                target_model = enabled_models[0]
-        elif all_models:
-            if model_to_use in all_models:
-                target_model = model_to_use
-            elif model_id in all_models:
-                target_model = model_id
-            else:
-                target_model = all_models[0]
+                # Lấy model đầu tiên từ enabled_models hoặc all_models
+                target_model = (enabled_models or all_models)[0]
 
-        try:
-            from src.core.providers.litellm_wrapper import acompletion
-            test = await acompletion(
-                model=f"openai/{target_model}",
-                messages=[{"role": "user", "content": "ping"}],
-                api_key=ep["auth_key"],
-                api_base=ep["base_url"],
-                max_tokens=1,
-                stream=False,
-                request_timeout=5,
-            )
-            litellm_model = f"openai/{target_model}"
-            return model_alias, target_model, ep["auth_key"], litellm_model, {
-                "key": ep["auth_key"],
-                "model_alias": model_alias,
-                "model_id": target_model,
-                "provider": "custom",
-                "api_base": ep["base_url"],
-            }
-        except Exception as e:
-            logger.warning("[AccountEndpoint] %s ping failed (%s), fallback to Gemini Lite pool", target_model, e)
+                try:
+                    alive = await endpoint_manager.ping_endpoint(ep)
+                    if not alive:
+                        logger.warning("[AccountEndpoint] %s ping failed (%s), fallback to Gemini", ep_name, ep.get("base_url", "?"))
+                    else:
+                        litellm_model = f"openai/{target_model}"
+                        return model_alias, target_model, ep["auth_key"], litellm_model, {
+                            "key": ep["auth_key"],
+                            "name": ep_name,
+                            "model_alias": model_alias,
+                            "model_id": target_model,
+                            "provider": "custom",
+                            "api_base": ep["base_url"],
+                        }
+                except Exception as e:
+                    logger.warning("[AccountEndpoint] %s ping error (%s), fallback to Gemini", ep_name, e)
 
     # In pool_mode, don't wait long — the pool loop handles retry timing.
     # In standalone mode, wait up to 15s for a key to become available.
@@ -118,7 +105,7 @@ async def _resolve_model(body: Dict[str, Any], pool_alias_override: Optional[str
         await asyncio.sleep(wait_time)
 
     # If standard keys are overloaded/frozen, try to use a fallback custom endpoint
-    fallback_info = _custom_endpoint_manager.get_first_fallback_model()
+    fallback_info = endpoint_manager.get_first_fallback_model()
     if fallback_info:
         fb_ep = fallback_info["endpoint"]
         fb_model = fallback_info["model_id"]
