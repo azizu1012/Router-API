@@ -6,7 +6,7 @@ from typing import Any, AsyncIterator, Dict, List, Optional
 
 from src.core.providers.litellm_wrapper import token_counter
 from src.core.usage_logger import log_usage
-from src.api.claude_proxy.utils import (
+from src.logical_HQ_translator import (
     _sse,
     _get_simulated_cache_usage,
     is_claude_code_body,

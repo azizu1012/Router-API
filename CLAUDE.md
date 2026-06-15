@@ -37,6 +37,7 @@ Mẫu prompt sub-agent:
 ```
 src/
   api/claude_proxy.py     # Claude→Gemini proxy (stream + non-stream)
+  logical_HQ_translator/   # Resources/converters shared between Claude proxy and OpenCode proxy
   server/pass_through_server/ # Pass-through server endpoints (OpenAI, Anthropic, Gemini)
   backend/                 # DB layer (accounts, endpoints, keys, schema)
   core/                    # Router, rate limiter, config, usage logger

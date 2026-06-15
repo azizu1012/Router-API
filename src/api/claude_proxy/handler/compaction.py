@@ -1,7 +1,7 @@
 from typing import Any, Dict, List
 
 from src.core.config_n_logg import config
-from src.api.claude_proxy.utils import _emergency_truncate_to_limit
+from src.logical_HQ_translator import _emergency_truncate_to_limit
 
 
 async def _pre_compact_and_truncate(
