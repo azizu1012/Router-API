@@ -1,11 +1,9 @@
 import asyncio
 import json
-import time
-from typing import Any, Callable, Dict, List, Optional, Set
+from typing import Any, Dict, List, Optional, Set
 
-from fastapi import WebSocket, WebSocketDisconnect
+from fastapi import WebSocket
 
-from src.core.config_n_logg.logger import logger_system as logger
 
 
 class ConnectionManager:

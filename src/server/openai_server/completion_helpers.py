@@ -3,8 +3,6 @@ import time
 import uuid
 from typing import Any, AsyncIterator, Dict
 
-from src.core.config_n_logg import config
-from src.core.config_n_logg.logger import logger_system as logger
 
 
 def completion_response(body: Dict[str, Any], result: Dict[str, Any]) -> Dict[str, Any]:

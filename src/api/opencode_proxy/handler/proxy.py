@@ -267,7 +267,6 @@ class OpenCodeProxy:
         self, body: Dict[str, Any], messages: List[Dict[str, Any]], tools: List[Dict[str, Any]],
         model_alias: str, account: Optional[Dict[str, Any]] = None,
     ) -> Dict[str, Any]:
-        last_error = None
         for attempt in range(config.MAX_RETRIES):
             api_key_val = None
             model_id_val = None
@@ -283,7 +282,6 @@ class OpenCodeProxy:
             except HTTPException:
                 raise
             except Exception as e:
-                last_error = e
                 if not ocerror.classify_standalone_error(e, attempt, api_key_val, model_id_val):
                     break
                 api_key_val = None

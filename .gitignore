@@ -41,3 +41,6 @@ stop_router_ssl.sh
 # ─── Local Claude Code config ───
 .claude/settings.local.json
 
+# ─── Local OpenCode config ───
+opencode.json
+

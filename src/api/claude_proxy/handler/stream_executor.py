@@ -2,30 +2,22 @@ import asyncio
 import hashlib
 import json
 import uuid
-from typing import Any, Dict, List, AsyncIterator, Optional
+from typing import Any, Dict, List, Optional
 
 from src.core.providers.litellm_wrapper import acompletion, token_counter
-from fastapi import HTTPException
-from src.core.config_n_logg import config
 from src.core.config_n_logg.logger import logger_proxy as logger
 from src.core.router import router
-from src.core.limits import apply_error_penalty
 from src.core.usage_logger import log_usage
 from src.api.claude_proxy.utils import (
-    _resolve_model,
     _get_simulated_cache_usage,
     is_sub_agent_body,
     is_claude_code_body,
     _sse,
     _tool_call_names,
-    _emergency_truncate_to_limit,
-    _dict_to_sse_events,
-    _retry_delay,
     normalize_text,
 )
 from src.api.claude_proxy.stream import _process_anthropic_stream
-from .helpers import get_system_status_summary, _classify_error_reason, _reinforce_messages_for_retry
-from .nonstream_executor import _resolve_gemini_with_tools, _resolve_gemini_with_tools_stream
+from .nonstream_executor import _resolve_gemini_with_tools_stream
 
 async def _execute_stream(proxy_instance: Any, kwargs: Dict[str, Any], api_key: str, model_id: str, model_alias: str, input_tokens: int, pool: Any, body: Dict[str, Any], auth_key_prefix: str = "", account: Optional[Dict[str, Any]] = None) -> Any:
     tools = kwargs.get("tools") or []
@@ -63,7 +55,7 @@ async def _execute_stream(proxy_instance: Any, kwargs: Dict[str, Any], api_key: 
                     },
                 })
 
-                include_thoughts = body.get("include_thoughts", True)
+                body.get("include_thoughts", True)
                 block_idx = 0
                 thinking_active = False
                 text_active = False
@@ -147,7 +139,7 @@ async def _execute_stream(proxy_instance: Any, kwargs: Dict[str, Any], api_key: 
                         stream_thought = str(evt_vals[3] or "") if len(evt_vals) > 3 else ""
 
                 text = stream_accumulated_text or "".join(text_buf)
-                thought_text = stream_thought or "".join(thinking_buf)
+                stream_thought or "".join(thinking_buf)
                 tool_calls = stream_tool_calls
                 finish_reason = stream_fr
 

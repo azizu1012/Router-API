@@ -1,6 +1,5 @@
 import asyncio
 import random
-import time
 from typing import Any, AsyncIterator, Dict, List, Optional
 
 from src.core.providers.genai_types import types
@@ -8,7 +7,7 @@ from src.core.providers.genai_types import types
 from src.core.config_n_logg import config
 from src.core.config_n_logg.logger import logger_keys as logger
 from src.core.router import router
-from src.core.limits import apply_error_penalty, get_rate_limiter
+from src.core.limits import get_rate_limiter
 
 from .pool import ClientPool
 from . import caller

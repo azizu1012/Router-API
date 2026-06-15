@@ -119,7 +119,8 @@ def _select_models_interactively(models: List[str], title: str = "Select models"
     while True:
         cols = _shutil.get_terminal_size().columns
         max_w = max(cols - 10, 30)
-        trunc = lambda s: s if len(s) <= max_w else s[:max_w - 3] + "..."
+        def trunc(s):
+            return s if len(s) <= max_w else s[:max_w - 3] + "..."
 
         filtered = [m for m in models if filter_text.lower() in m.lower()] if filter_text else models
         if not filtered:
@@ -136,8 +137,8 @@ def _select_models_interactively(models: List[str], title: str = "Select models"
 
         bar = "─" * min(cols - 2, 60)
         print(f"  ╔══ {title} ══╗")
-        print(f"  ║  ↑↓/WS: move | Space: toggle | Enter: done | Q: quit  ║")
-        print(f"  ║  Type to filter | BS: clear filter                    ║")
+        print("  ║  ↑↓/WS: move | Space: toggle | Enter: done | Q: quit  ║")
+        print("  ║  Type to filter | BS: clear filter                    ║")
         print(f"  ╚{'═' * (len(bar))}╝")
         print()
 

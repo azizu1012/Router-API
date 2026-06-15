@@ -17,11 +17,10 @@ from src.api.claude_proxy.utils import (
     _get_simulated_cache_usage,
     _retry_delay,
     StreamingTextNormalizer,
-    normalize_text,
     XMLThinkingExtractor,
 )
-from .sse import openai_chunks, error_sse
-from .nonstream_executor import _resolve_gemini_with_tools, _resolve_gemini_with_tools_stream
+from .sse import error_sse
+from .nonstream_executor import _resolve_gemini_with_tools_stream
 
 
 class LiteLLMTransientError(Exception):
@@ -118,7 +117,6 @@ async def _execute_stream(
                 stream_tool_calls: List[Dict[str, Any]] = []
                 stream_fr = "stop"
                 stream_thought: str = ""
-                reasoning_active = False
 
                 async def _iter_events():
                     it = _resolve_gemini_with_tools_stream(
@@ -638,7 +636,7 @@ async def _stream_with_pool(
                 api_key_val = None
                 async for chunk in gen:
                     has_real_content = False
-                    if b'"content":' in chunk and not b'"content": ""' in chunk and not b'"content": null' in chunk:
+                    if b'"content":' in chunk and b'"content": ""' not in chunk and b'"content": null' not in chunk:
                         has_real_content = True
                     if b'"reasoning_content"' in chunk:
                         has_real_content = True
@@ -832,7 +830,7 @@ async def _stream_standalone(
                 api_key_val = None
                 async for chunk in gen:
                     has_real_content = False
-                    if b'"content":' in chunk and not b'"content": ""' in chunk and not b'"content": null' in chunk:
+                    if b'"content":' in chunk and b'"content": ""' not in chunk and b'"content": null' not in chunk:
                         has_real_content = True
                     if b'"reasoning_content"' in chunk:
                         has_real_content = True

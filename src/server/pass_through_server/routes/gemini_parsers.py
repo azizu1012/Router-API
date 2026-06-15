@@ -1,5 +1,5 @@
 import base64
-from typing import List, Optional
+from typing import List
 from fastapi import Request
 from src.core.providers.genai_types import types as gt
 

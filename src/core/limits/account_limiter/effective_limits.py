@@ -38,7 +38,7 @@ async def get_effective_limits(account: Dict[str, Any]) -> tuple[int, int, int]:
     
     N_free = active_counts.get("free", 0)
     N_prem = active_counts.get("premium", 0)
-    N_admin = max(1, active_counts.get("admin", 0))
+    max(1, active_counts.get("admin", 0))
     
     # Compute RPM limits
     if N_free > 0 and N_prem > 0:
@@ -162,7 +162,7 @@ async def get_effective_limits_by_pool(account: Dict[str, Any], pool_type: str =
     
     N_free = active_counts.get("free", 0)
     N_prem = active_counts.get("premium", 0)
-    N_admin = max(1, active_counts.get("admin", 0))
+    max(1, active_counts.get("admin", 0))
     
     # Compute RPM limits
     if N_free > 0 and N_prem > 0:

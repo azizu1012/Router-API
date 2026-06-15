@@ -1,15 +1,12 @@
-import json
 import time
-import uuid
 from collections import defaultdict
-from typing import Any, AsyncIterator, Dict, List, Optional
+from typing import Any, Dict, List, Optional
 
 
 from src.core.config_n_logg import config
 from src.core.config_n_logg.logger import logger_system as logger
 from src.core.router import router
 from src.core.providers import _custom_endpoint_manager, api_manager
-from .completion_helpers import completion_response, stream_response
 
 _CUSTOM_POOL_RPM = 10
 _custom_pool_usage: Dict[str, List[float]] = defaultdict(list)

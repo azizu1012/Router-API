@@ -2,7 +2,7 @@ import asyncio
 from collections import deque
 from datetime import datetime
 from pathlib import Path
-from typing import Dict, List, Optional
+from typing import Dict, List
 
 from src.core.config_n_logg.logger import logger_system as logger
 from src.server.websocket_manager import ws_manager
