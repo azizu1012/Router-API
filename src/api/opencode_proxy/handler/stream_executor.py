@@ -468,14 +468,6 @@ async def _execute_stream(
                 if fr:
                     stream_finish_reason = fr
 
-                if reasoning:
-                    async for chunk_bytes in _yield_native_reasoning(reasoning):
-                        yield chunk_bytes
-
-                if content:
-                    async for chunk_bytes in _process_content(content, bool(reasoning)):
-                        yield chunk_bytes
-
             # Flush remaining reasoning buffer
             async for chunk_bytes in _flush_reasoning():
                 yield chunk_bytes
