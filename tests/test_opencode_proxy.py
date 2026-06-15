@@ -19,7 +19,7 @@ async def _consume_stream(client, url, json_body, auth_key):
             err_body = await response.aread()
             print('Error status:', response.status_code, 'body:', err_body.decode('utf-8', errors='ignore'))
             return response.status_code, chunks, full_content
-            
+
         async for line in response.aiter_lines():
             if not line.strip():
                 continue
@@ -37,6 +37,18 @@ async def _consume_stream(client, url, json_body, auth_key):
                             full_content += delta['content']
                 except Exception as e:
                     print(f'Error parsing chunk: {e} | Line: {line}')
+            else:
+                # Handle non-SSE formatted response if any (e.g. direct JSON if server returned it by mistake)
+                try:
+                    data = json.loads(line)
+                    chunks.append(data)
+                    choices = data.get('choices', [])
+                    if choices:
+                        msg = choices[0].get('message', {})
+                        if 'content' in msg and msg['content']:
+                            full_content += msg['content']
+                except Exception:
+                    pass
     return 200, chunks, full_content
 
 async def test_non_stream(client, auth_key):
