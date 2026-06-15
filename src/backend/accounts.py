@@ -35,7 +35,8 @@ def find_account_by_key(auth_key: str) -> Optional[Dict[str, Any]]:
     if not raw:
         return None
     for acc in list_accounts_db(include_disabled=False):
-        if secrets.compare_digest(acc.get("auth_key") or "", raw):
+        auth_key_db = acc.get("auth_key") or ""
+        if secrets.compare_digest(auth_key_db.encode("utf-8"), raw.encode("utf-8")):
             return acc
     return None
 

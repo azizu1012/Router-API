@@ -21,6 +21,7 @@ from src.api.claude_proxy.utils import (
 
 from .helpers import get_system_status_summary, _reinforce_messages_for_retry
 from src.core.providers.gemini.error import classify
+from src.core.providers import _custom_endpoint_manager as endpoint_manager
 from .compaction import _pre_compact_and_truncate
 from .nonstream_executor import _execute_nonstream
 
@@ -145,12 +146,20 @@ class ClaudeProxyNonstreamMixin:
                     }
                     if reservation.get("provider") == "custom":
                         kwargs["api_base"] = reservation["api_base"]
+                        extra: Dict[str, Any] = {}
+                        for k in ("thinking", "thinking_level", "thinking_budget", "include_thoughts", "enableThinking"):
+                            if k in body:
+                                extra[k] = body[k]
+                        if extra:
+                            kwargs["extra_body"] = extra
 
                     from .proxy import _clean_kwargs_for_model
                     kwargs = _clean_kwargs_for_model(kwargs, litellm_model_val)
 
                     result = await _execute_nonstream(self, kwargs, api_key_val, model_id_val, model_alias_val, input_tokens, None, body, auth_key_prefix, account=account)
                     router.record_success(api_key_val, model_id_val)
+                    if reservation.get("provider") == "custom":
+                        endpoint_manager.mark_endpoint_success(reservation.get("name", ""))
                     return result
                 finally:
                     if api_key_val:

@@ -46,8 +46,6 @@ def get_system_prompt(body: dict) -> str:
     return ""
 
 def detect_sub_agent_override(body: dict, account: Optional[dict] = None, is_opencode: bool = False) -> Optional[str]:
-    if is_opencode:
-        return None
     system_prompt = get_system_prompt(body)
     if not system_prompt:
         return None
@@ -114,11 +112,10 @@ def detect_sub_agent_override(body: dict, account: Optional[dict] = None, is_ope
     if re.search(r"you are (a|an|the)[\s\w\-]*sub.?agent", system_prompt_lower):
         return target_model
     
-    # 3. Tool count check (only applicable to Claude Code subagents - they get limited toolset)
-    if is_claude_code:
-        tool_count = len(body.get("tools", []))
-        if tool_count in (19, 20):  # Subagents typically have restricted toolset
-            return target_model
+    # 3. Tool count check (subagents get limited toolset)
+    tool_count = len(body.get("tools", []))
+    if 16 <= tool_count <= 25:
+        return target_model
     
     # 4. Keyword check: Only apply if we're confident it's a sub-agent task
     # Be more conservative - only match specific specialist roles, not generic terms
@@ -138,6 +135,9 @@ def detect_sub_agent_override(body: dict, account: Optional[dict] = None, is_ope
         "you are the statusline-setup",
         "claude-code-guide",
         "statusline-setup",
+        "explore agent",
+        "read-only exploration",
+        "exploration task",
     ]
     
     # Generic terms like "general-purpose agent", "explore agent", "specialized agent" 

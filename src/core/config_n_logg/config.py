@@ -76,7 +76,7 @@ class RouterApiConfig:
 
     # Model defaults
     DEFAULT_MODEL_ALIAS: str = field(default_factory=lambda: (os.getenv("ROUTER_API_DEFAULT_MODEL_ALIAS") or "gemini-flash").strip())
-    REQUEST_TIMEOUT_SECONDS: int = _get_int("ROUTER_API_REQUEST_TIMEOUT_SEC", 120, 5, 600)
+    REQUEST_TIMEOUT_SECONDS: int = _get_int("ROUTER_API_REQUEST_TIMEOUT_SEC", 300, 5, 600)
     MAX_OUTPUT_TOKENS: int = _get_int("ROUTER_API_MAX_OUTPUT_TOKENS", 65536, 128, 1000000)
     MAX_RETRIES: int = _get_int("ROUTER_API_MAX_RETRIES", 5, 1, 20)
 

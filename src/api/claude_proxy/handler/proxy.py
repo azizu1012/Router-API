@@ -7,6 +7,7 @@ from src.core.providers.litellm_wrapper import token_counter
 from src.core.config_n_logg import config
 from src.core.config_n_logg.logger import logger_proxy as logger
 from src.core.router import router
+from src.core.providers import _custom_endpoint_manager as endpoint_manager
 from src.core.limits import apply_error_penalty
 from src.api.claude_proxy.utils import (
     _resolve_model,
@@ -18,7 +19,6 @@ from .helpers import _reinforce_messages_for_retry
 from src.core.providers.gemini.error import classify
 from .nonstream_executor import _execute_nonstream
 from .stream_executor import _execute_stream
-
 from .proxy_nonstream import ClaudeProxyNonstreamMixin
 from .proxy_stream import ClaudeProxyStreamMixin
 
@@ -176,6 +176,7 @@ class ClaudeProxy(ClaudeProxyNonstreamMixin, ClaudeProxyStreamMixin):
             api_key_val = None
             litellm_model_val = None
             model_id_val = ""
+            reservation = {}
 
             try:
                 est_input = len(str(openai_messages)) // 4
@@ -261,7 +262,10 @@ class ClaudeProxy(ClaudeProxyNonstreamMixin, ClaudeProxyStreamMixin):
                         api_key_val = None
                         return gen
                     else:
-                        return await _execute_nonstream(self, kwargs, api_key_val, model_id_val, actual_alias, input_tokens, pool, body, auth_key_prefix, account=account)
+                        resp = await _execute_nonstream(self, kwargs, api_key_val, model_id_val, actual_alias, input_tokens, pool, body, auth_key_prefix, account=account)
+                        if reservation.get("provider") == "custom":
+                            endpoint_manager.mark_endpoint_success(reservation.get("name", actual_alias))
+                        return resp
                 finally:
                     if api_key_val:
                         router.release_key(api_key_val)
@@ -270,6 +274,21 @@ class ClaudeProxy(ClaudeProxyNonstreamMixin, ClaudeProxyStreamMixin):
                 raise
             except Exception as e:
                 error_text = str(e).lower()
+                is_custom = reservation.get("provider") == "custom" if "reservation" in locals() else False
+                if is_custom:
+                    logger.warning("[CustomEndpoint] Failed on custom endpoint %s: %s, falling back to Gemini pool", model_id_val, e)
+                    ep_name = reservation.get("name", actual_alias)
+                    endpoint_manager.mark_endpoint_failure(ep_name)
+                    if pool.record_failure(actual_alias, "custom_endpoint_error"):
+                        if not pool.swap():
+                            if pool.exhausted:
+                                break
+                            wait = min(15.0, pool.remaining_time())
+                            await asyncio.sleep(wait)
+                            pool.reset_cycle()
+                            continue
+                    await asyncio.sleep(_retry_delay(pool.total_attempts))
+                    continue
 
                 if "400" in error_text and "failed_precondition" not in error_text and ("invalid_argument" in error_text or "bad_request" in error_text):
                     logger.error("[Bad Request] Schema/Prompt Error: %s", error_text[:200])
