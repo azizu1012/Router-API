@@ -60,11 +60,12 @@ Khởi chạy bằng lệnh: `claude`. Kiểm tra trạng thái kết nối bên
 
 ## Cấu hình với OpenCode
 
-OpenCode sử dụng giao thức OpenAI-compatible API. Để cấu hình OpenCode chạy qua Router API:
+OpenCode sử dụng giao thức OpenAI-compatible API. Bạn có thể cấu hình theo một trong hai cách sau:
+
+### 1. Qua biến môi trường (Nhanh)
 * **Base URL:** `http://127.0.0.1:58100/opencode/v1` (Sử dụng đường dẫn `/opencode` để Router tự động nhận diện chính xác các request từ OpenCode).
 * **API Key:** `sk-<account-key>`
 
-Thiết lập các biến môi trường trước khi khởi chạy OpenCode:
 ```bash
 # Windows (PowerShell)
 $env:OPENAI_BASE_URL="http://127.0.0.1:58100/opencode/v1"
@@ -74,6 +75,38 @@ $env:OPENAI_API_KEY="sk-<account-key>"
 export OPENAI_BASE_URL="http://127.0.0.1:58100/opencode/v1"
 export OPENAI_API_KEY="sk-<account-key>"
 ```
+
+### 2. Qua file opencode.json (Khuyên dùng)
+Tạo file `opencode.json` trong project root với cấu hình provider custom — dùng syntax chính thức của OpenCode (`@ai-sdk/openai-compatible`):
+
+```json
+{
+  "$schema": "https://opencode.ai/config.json",
+  "provider": {
+    "router": {
+      "npm": "@ai-sdk/openai-compatible",
+      "name": "Router API (Gemini)",
+      "options": {
+        "baseURL": "http://127.0.0.1:58100/opencode/v1",
+        "apiKey": "sk-<account-key>",
+        "timeout": 600000,
+        "chunkTimeout": 60000
+      },
+      "models": {
+        "gemini-flash": { "name": "Gemini Flash Pool" },
+        "gemini-flash-lite": { "name": "Gemini Flash Lite" },
+        "gemini-flash-35": { "name": "Gemini Flash 3.5" }
+      }
+    }
+  },
+  "model": "router/gemini-flash"
+}
+```
+
+**Giải thích:**
+- `chunkTimeout` (60000ms): Thời gian chờ tối đa giữa các chunk stream. Nếu quá thấp, OpenCode sẽ abort request khi Gemini chưa kịp trả token đầu tiên.
+- `timeout` (600000ms): Timeout tổng thể cho request.
+- **Model ID phải khớp với danh sách model Router API trả về từ endpoint `/v1/models`** (không thêm tiền tố provider).
 
 ---
 
@@ -279,8 +312,13 @@ src/
 
 ## Thinking / Reasoning
 
-Router API hỗ trợ `thinking` (reasoning) cho các dòng Gemini hỗ trợ. Mặc định **tự động bật thinking** với level phù hợp theo từng dòng model:
-- **V3 models** (`gemini-3.*`): `thinking_level = "medium"`
+Router API hỗ trợ `thinking` (reasoning) cho các dòng Gemini hỗ trợ.
+
+**Mặc định:** Thinking **không tự động bật** cho OpenCode-compatible endpoints (`/opencode/v1/*`). Điều này giúp model trả lời nhanh hơn, hiển thị tool calls (read/glob/grep) ngay lập tức thay vì im lìm "suy nghĩ".
+
+Đối với Anthropic-style clients (`/v1/messages`), thinking **tự động bật** cho main agent (không bật cho sub-agent).
+
+- **V3 models** (`gemini-3.*`): `thinking_level = "medium"` (khi được yêu cầu)
 - **V2.5/V2 models** (`gemini-2.5.*`, `gemini-2.0-flash`, `gemini-2.0-pro`): `thinking_budget = -1` (dynamic)
 - **Lưu ý:** Các dòng lite (`gemini-flash-lite`, `gemini-2.0-flash-lite`) **không hỗ trợ thinking**. Nếu cố gắng bật trên lite, Gemini sẽ trả về response rỗng (empty content). Router API tự động tắt thinking cho lite models.
 

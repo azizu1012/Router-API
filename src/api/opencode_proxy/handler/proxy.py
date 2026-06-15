@@ -52,11 +52,43 @@ def _clean_kwargs_for_model(kwargs: Dict[str, Any], litellm_model: str) -> Dict[
 
 def _model_supports_thinking(model_id: str) -> bool:
     m = model_id.lower()
-    return bool(re.search(r"gemini-2(\.\d+)?-(flash|pro)", m)) and "lite" not in m
+    if "lite" in m:
+        return False
+    return bool(re.search(r"gemini-2(\.\d+)?-(flash|pro)", m))
+
+
+def _is_sub_agent_request(body: Dict[str, Any]) -> bool:
+    """Detect if request is from a sub-agent — reuses Claude proxy's detection + OpenCode patterns."""
+    from src.api.claude_proxy.utils.sse_cache_agent import is_sub_agent_body
+    if is_sub_agent_body(body):
+        return True
+    # OpenCode-specific: "opencode" in prompt + explore/read/search keywords but NOT main agent indicators
+    system_prompt = ""
+    sys_val = body.get("system", "")
+    if isinstance(sys_val, list):
+        system_prompt = "\n".join([str(item.get("text", "")) for item in sys_val if isinstance(item, dict)])
+    elif isinstance(sys_val, str):
+        system_prompt = sys_val
+    if not system_prompt:
+        return False
+    sp_lower = system_prompt.lower()
+    # Must be OpenCode context
+    if "opencode" not in sp_lower:
+        return False
+    # If has main agent indicators, NOT sub-agent
+    main_indicators = ["interactive agent", "main agent", "primary agent", "you are the main", "you are the primary", "lead agent"]
+    if any(ind in sp_lower for ind in main_indicators):
+        return False
+    # Sub-agent keywords for OpenCode (flexible matching)
+    sub_keywords = ["explore", "read file", "search", "find", "glob", "grep", "task agent", "subagent", "sub-agent", "read files", "browse"]
+    return any(kw in sp_lower for kw in sub_keywords)
 
 
 def _build_litellm_thinking(body: Dict[str, Any], model_id: str) -> Dict[str, Any]:
     m = model_id.lower()
+    if "lite" in m:
+        return {}
+
     is_v3 = _is_gemini_v3(m)
     supports = _model_supports_thinking(model_id)
     if not supports and not is_v3:
@@ -66,36 +98,37 @@ def _build_litellm_thinking(body: Dict[str, Any], model_id: str) -> Dict[str, An
     thinking_budget = body.get("thinking_budget")
     include_thoughts = body.get("include_thoughts", False)
 
-    if thinking_level is None and thinking_budget is None and not include_thoughts:
+    # Explicit thinking requested → honor it (sub-agent or main)
+    if thinking_level is not None or thinking_budget is not None or include_thoughts:
         if is_v3:
+            if thinking_level is not None:
+                return {"reasoning_effort": thinking_level}
             return {"reasoning_effort": "medium"}
-        budget = 32768 if "pro" in m else 24576
-        return {"thinking": {"type": "enabled", "budget_tokens": budget}}
-
-    # 1. If V3 model, translate all thinking requests to reasoning_effort
-    if is_v3:
         if thinking_level is not None:
-            return {"reasoning_effort": thinking_level}
+            budget_map = {"low": 1024, "medium": 2048, "high": 4096}
+            return {"thinking": {"type": "enabled", "budget_tokens": budget_map.get(thinking_level, 2048)}}
+        d: Dict[str, Any] = {}
+        budget = thinking_budget
+        if budget == -1 or (budget is None and include_thoughts):
+            budget = 32768 if "pro" in m else 24576
+        if budget is not None:
+            d["budget_tokens"] = budget
+        if include_thoughts:
+            d["include_thoughts"] = True
+        if d:
+            d["type"] = "enabled"
+            return {"thinking": d}
+        return {}
+
+    # No explicit thinking → auto-enable for main agent only
+    if _is_sub_agent_request(body):
+        return {}  # sub-agent: no thinking, execute tools fast
+
+    # Main agent: auto-enable thinking (shows reasoning stream in OpenCode)
+    if is_v3:
         return {"reasoning_effort": "medium"}
-
-    # 2. V2.5 thinking_level overrides
-    if thinking_level is not None:
-        budget_map = {"low": 1024, "medium": 2048, "high": 4096}
-        return {"thinking": {"type": "enabled", "budget_tokens": budget_map.get(thinking_level, 2048)}}
-
-    # 3. V2.5 thinking_budget / include_thoughts
-    d: Dict[str, Any] = {}
-    budget = thinking_budget
-    if budget == -1 or (budget is None and include_thoughts):
-        budget = 32768 if "pro" in m else 24576
-    if budget is not None:
-        d["budget_tokens"] = budget
-    if include_thoughts:
-        d["include_thoughts"] = True
-    if d:
-        d["type"] = "enabled"
-        return {"thinking": d}
-    return {}
+    budget = 32768 if "pro" in m else 24576
+    return {"thinking": {"type": "enabled", "budget_tokens": budget}}
 
 
 class OpenCodeProxy:
