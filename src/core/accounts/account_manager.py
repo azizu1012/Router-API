@@ -59,8 +59,9 @@ class AccountManager:
         tpm: Optional[int] = None,
         rpd: Optional[int] = None,
         tier: str = "free",
+        search_engine: str = "auto",
     ) -> Dict[str, Any]:
-        result = _create_account(name, rpm, tpm, rpd, tier=tier)
+        result = _create_account(name, rpm, tpm, rpd, tier=tier, search_engine=search_engine)
         self.invalidate_cache()
         return result
 

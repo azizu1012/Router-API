@@ -95,6 +95,12 @@ def init_config_tables() -> None:
             except Exception:
                 pass
 
+            # Migration: add search_engine to accounts
+            try:
+                c.execute("ALTER TABLE accounts ADD COLUMN search_engine TEXT DEFAULT 'auto'")
+            except Exception:
+                pass
+
             # Migration: add account_id to custom_endpoints
             try:
                 c.execute("ALTER TABLE custom_endpoints ADD COLUMN account_id TEXT DEFAULT ''")

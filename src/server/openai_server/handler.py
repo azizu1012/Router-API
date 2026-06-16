@@ -58,7 +58,7 @@ async def _openai_chat_completion(body: Dict[str, Any], account: Optional[Dict[s
             body.get("grounding") or 
             body.get("google_search") or
             config.GEMINI_AUTO_GROUNDING or
-            (account and account.get("web_search_enabled"))
+            (account and (account.get("web_search_enabled") or account.get("search_engine", "auto") != "disabled"))
         )
 
     # Failsafe emergency truncation for OpenAI completion

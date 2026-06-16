@@ -1,5 +1,6 @@
 import re
 import json
+from datetime import datetime
 from typing import Any, Dict, List, Tuple
 
 UNSUPPORTED_OR_HEAVY_TOOLS = {
@@ -59,6 +60,12 @@ def _clean_system_prompt(text: str) -> str:
     text = re.sub(r'Claude 4(?:\.[X\d])?', 'Gemini', text)
     text = re.sub(r'the most recent Claude model family', 'the available model', text)
     text = re.sub(r'(?i)claude (code|models?)', r'Gemini \1', text)
+    text = re.sub(r'(?i)(x-)?anthropic', 'google', text)
+    text = re.sub(r'(?i)Anthropic\'s', 'Google\'s', text)
+    text = re.sub(r'cc_version=[\w.]+;?\s*', '', text)
+    text = re.sub(r'cc_entrypoint=\w+;?\s*', '', text)
+    text = re.sub(r'cch=\w+;?\s*', '', text)
+    text = re.sub(r'(?i)antigravity', 'Gemini', text)
     return text
 
 def _convert_messages(body: Dict[str, Any]) -> Tuple[List[Dict[str, Any]], List[Dict[str, Any]]]:
@@ -83,7 +90,22 @@ def _convert_messages(body: Dict[str, Any]) -> Tuple[List[Dict[str, Any]], List[
     if isinstance(system_instruction, list):
         system_instruction = "\n".join([str(item.get("text", "")) for item in system_instruction if isinstance(item, dict)])
     if isinstance(system_instruction, str) and system_instruction.strip():
-        openai_messages.append({"role": "system", "content": _clean_system_prompt(system_instruction)})
+        import logging
+        _log = logging.getLogger("proxy")
+        _log.info("[SystemPrompt] raw system instruction (%d chars)", len(system_instruction))
+        with open("logs/system_prompt_dump.txt", "a", encoding="utf-8") as spf:
+            if any(x in system_instruction.lower() for x in ["anthro", "claude", "skill", "workflow", "agent"]):
+                spf.write(f"\n{'='*60}\n[{datetime.now()}]\n{'='*60}\n{system_instruction}\n")
+        cleaned = _clean_system_prompt(system_instruction)
+        has_wref = any(x in system_instruction.lower() for x in ["web_search", "webfetch", "websearch"])
+        if not has_wref:
+            cleaned += (
+                "\n\n[Search] You have a WebSearch tool that performs real web searches "
+                "via DuckDuckGo. When you need current or factual information not in "
+                "your training data, ALWAYS call WebSearch in preference to writing "
+                "scripts or using curl."
+            )
+        openai_messages.append({"role": "system", "content": cleaned})
 
     tool_name_map: Dict[str, str] = {}
 

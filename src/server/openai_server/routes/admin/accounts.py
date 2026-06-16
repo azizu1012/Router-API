@@ -15,6 +15,7 @@ async def admin_create_account(request: Request):
         tpm = body.get("tpm")
         rpd = body.get("rpd")
         tier = str(body.get("tier", "free")).strip().lower()
+        search_engine = str(body.get("search_engine", "auto")).strip().lower()
     except Exception:
         raise HTTPException(status_code=400, detail="Invalid JSON")
     if not name:
@@ -29,13 +30,15 @@ async def admin_create_account(request: Request):
 
     if tier not in ("free", "premium", "admin"):
         tier = "free"
+    if search_engine not in ("auto", "google_grounding", "duckduckgo", "disabled"):
+        search_engine = "auto"
 
     import asyncio
     from src.core.accounts import account_manager
     try:
         acct = await asyncio.to_thread(
             account_manager.create_account,
-            name=name, rpm=rpm_val, tpm=tpm_val, rpd=rpd_val, tier=tier,
+            name=name, rpm=rpm_val, tpm=tpm_val, rpd=rpd_val, tier=tier, search_engine=search_engine,
         )
         return {"status": "success", "account": acct}
     except Exception as e:
@@ -146,19 +149,45 @@ async def admin_update_account(request: Request):
         raise HTTPException(status_code=400, detail=str(e))
 
 
-@app.post("/dashboard/my/web-search-toggle")
-async def my_web_search_toggle(request: Request):
-    payload = _require_dashboard(request)
+@app.post("/dashboard/admin/accounts/search-engine")
+async def admin_set_search_engine(request: Request):
+    _require_admin(request)
     try:
         body = await request.json()
-        enabled = bool(body.get("enabled", True))
+        name = str(body.get("name", "")).strip()
+        search_engine = str(body.get("search_engine", "auto")).strip().lower()
     except Exception:
         raise HTTPException(status_code=400, detail="Invalid JSON")
+    if not name:
+        raise HTTPException(status_code=400, detail="name is required")
+    if search_engine not in ("auto", "google_grounding", "duckduckgo", "disabled"):
+        raise HTTPException(status_code=400, detail="search_engine must be auto/google_grounding/duckduckgo/disabled")
 
     import asyncio
     from src.core.accounts import account_manager
     try:
-        acct = await asyncio.to_thread(account_manager.update_account, payload.get("name", ""), web_search_enabled=enabled)
-        return {"status": "success", "web_search_enabled": bool(acct.get("web_search_enabled", 0))}
+        acct = await asyncio.to_thread(account_manager.update_account, name, search_engine=search_engine)
+        return {"status": "success", "search_engine": acct.get("search_engine", "auto")}
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+
+@app.post("/dashboard/my/search-engine")
+async def my_search_engine(request: Request):
+    payload = _require_dashboard(request)
+    try:
+        body = await request.json()
+        search_engine = str(body.get("search_engine", "auto")).strip().lower()
+    except Exception:
+        raise HTTPException(status_code=400, detail="Invalid JSON")
+
+    if search_engine not in ("auto", "google_grounding", "duckduckgo", "disabled"):
+        raise HTTPException(status_code=400, detail="search_engine must be auto/google_grounding/duckduckgo/disabled")
+
+    import asyncio
+    from src.core.accounts import account_manager
+    try:
+        acct = await asyncio.to_thread(account_manager.update_account, payload.get("name", ""), search_engine=search_engine)
+        return {"status": "success", "search_engine": acct.get("search_engine", "auto")}
     except Exception as e:
         raise HTTPException(status_code=400, detail=str(e))

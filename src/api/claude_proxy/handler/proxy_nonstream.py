@@ -30,14 +30,18 @@ class ClaudeProxyNonstreamMixin:
     async def create_message(self, body: Dict[str, Any], auth_key_prefix: str = "", account: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
         openai_messages, openai_tools = _convert_messages(body)
 
+        from src.api.opencode_proxy.handler.websearch import should_enable_web_search
+        from src.api.opencode_proxy.handler.proxy import _WEBSEARCH_TOOL_DEF
+        if should_enable_web_search(body, account) and not any(
+            t.get("function", {}).get("name") in ("WebSearch", "web_search") for t in openai_tools
+        ):
+            openai_tools.append(_WEBSEARCH_TOOL_DEF)
+            logger.info("[WebSearch] Injected WebSearch tool for Claude proxy non-stream")
+
         override_alias = _intercept_sub_agent(body)
         model_alias = override_alias or router.resolve_model_alias(body.get("model", ""))
         if not model_alias:
             model_alias = config.DEFAULT_MODEL_ALIAS
-
-        # Inject Web Search context
-        from src.api.opencode_proxy.handler.websearch import with_search_context
-        openai_messages = await with_search_context(body, openai_messages, model_alias, account)
 
         await _pre_compact_and_truncate(body, openai_messages, openai_tools, model_alias)
 
@@ -161,7 +165,7 @@ class ClaudeProxyNonstreamMixin:
                     kwargs = _clean_kwargs_for_model(kwargs, litellm_model_val)
 
                     result = await _execute_nonstream(self, kwargs, api_key_val, model_id_val, model_alias_val, input_tokens, None, body, auth_key_prefix, account=account)
-                    router.record_success(api_key_val, model_id_val)
+                    # record_success already handled inside _execute_nonstream
                     if reservation.get("provider") == "custom":
                         endpoint_manager.mark_endpoint_success(reservation.get("name", ""))
                     return result

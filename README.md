@@ -176,6 +176,53 @@ Dành cho các thư viện OpenAI SDK chuẩn. Router sẽ dịch payload OpenAI
     *   `max_tokens`/`max_completion_tokens`: Số token output tối đa.
     *   `temperature`, `top_p`.
 
+## Web Search Engine
+
+Router API có 2 backend search: Google Grounding (Gemini built-in) và DuckDuckGo (tự crawl + ranking). Bạn có thể chọn engine qua request body hoặc account config.
+
+### Chế độ
+
+| `search_engine` | Hành vi |
+|-----------------|---------|
+| `auto` | Google Grounding trước, fail → DuckDuckGo (mặc định) |
+| `google_grounding` | Chỉ Google Grounding |
+| `duckduckgo` | Chỉ DuckDuckGo |
+| `disabled` | Tắt web search hoàn toàn |
+
+### Dùng trong request
+
+Gửi field `search_engine` trong body của `/v1/chat/completions` hoặc `/v1/messages`:
+
+```json
+{
+  "model": "gemini-flash-35",
+  "messages": [{"role": "user", "content": "tin tức hôm nay"}],
+  "search_engine": "duckduckgo"
+}
+```
+
+### Cấu hình mặc định cho Account
+
+Dùng admin REST API để set engine mặc định cho cả account — tất cả request từ account đó sẽ dùng engine này trừ khi request ghi đè:
+
+```bash
+curl -X POST http://127.0.0.1:58100/dashboard/admin/accounts/search-engine \
+  -H "Authorization: Bearer <admin-token>" \
+  -H "Content-Type: application/json" \
+  -d '{"name": "my-account", "search_engine": "duckduckgo"}'
+```
+
+Hoặc tạo account mới với engine chỉ định:
+
+```bash
+curl -X POST http://127.0.0.1:58100/dashboard/admin/accounts/create \
+  -H "Authorization: Bearer <admin-token>" \
+  -H "Content-Type: application/json" \
+  -d '{"name": "my-account", "search_engine": "duckduckgo"}'
+```
+
+**Ưu tiên quyết định:** `request body` → `account config` → `auto`.
+
 ## Cấu trúc
 
 ```

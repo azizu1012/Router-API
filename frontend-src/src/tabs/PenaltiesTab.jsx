@@ -3,6 +3,7 @@ import { useApp } from '../context/AppContext';
 import { t } from '../utils/i18n';
 import { relt } from '../utils/format';
 import { ShieldAlert, AlertOctagon, HelpCircle, CheckCircle2 } from 'lucide-react';
+import Loading from '../components/Loading';
 
 export default function PenaltiesTab() {
   const { tabData, lang } = useApp();
@@ -18,12 +19,7 @@ export default function PenaltiesTab() {
   }, []);
 
   if (!tabData.pe) {
-    return (
-      <div className="flex flex-col items-center justify-center min-h-[400px] gap-3">
-        <span className="loading loading-spinner loading-md text-primary"></span>
-        <span className="text-sm font-semibold opacity-70">{t('loading', lang)}</span>
-      </div>
-    );
+    return <Loading message={t('loading', lang)} />;
   }
 
   return (

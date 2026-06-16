@@ -105,7 +105,8 @@ async def current_account(
 
 
 @app.get("/stats", response_class=HTMLResponse)
-async def stats_page():
+@app.get("/stats/{path:path}", response_class=HTMLResponse)
+async def stats_page(path: str | None = None):
     html_path = FRONTEND_DIR / "index.html"
     if not html_path.exists():
         raise HTTPException(status_code=404, detail="Dashboard index.html not found")

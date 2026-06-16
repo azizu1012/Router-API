@@ -8,6 +8,7 @@ import {
 } from 'chart.js';
 import { Line, Doughnut } from 'react-chartjs-2';
 import { Calendar, BarChart3, TrendingUp, Cpu } from 'lucide-react';
+import Loading from '../components/Loading';
 
 ChartJS.register(
   CategoryScale, LinearScale, PointElement, LineElement, 
@@ -42,12 +43,7 @@ export default function MyUsageTab() {
   }, [myUseData?.savings?.net_savings]);
 
   if (!myUseData) {
-    return (
-      <div className="flex flex-col items-center justify-center min-h-[400px] gap-3">
-        <span className="loading loading-spinner loading-md text-primary"></span>
-        <span className="text-sm font-semibold opacity-70">{t('loading', lang)}</span>
-      </div>
-    );
+    return <Loading message={t('loading', lang)} />;
   }
 
   const { summary = [], daily = [] } = myUseData;
