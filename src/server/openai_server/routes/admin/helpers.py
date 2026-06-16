@@ -50,3 +50,29 @@ def normalize_key_name(key: str) -> str:
         finally:
             c.close()
     return key
+
+
+def update_env_var(key_name: str, val: str) -> None:
+    """Update or append an environment variable in the ``.env`` file."""
+    if not ENV_PATH.exists():
+        ENV_PATH.touch()
+    content = ENV_PATH.read_text(encoding="utf-8")
+    lines = content.splitlines()
+    new_lines = []
+    found = False
+    for line in lines:
+        stripped = line.strip()
+        if "=" in line and not stripped.startswith("#"):
+            parts = line.split("=", 1)
+            k = parts[0].strip()
+            if k == key_name:
+                line = f"{key_name}={val}"
+                found = True
+        new_lines.append(line)
+    if not found:
+        # Check if the file ends with a newline
+        if new_lines and new_lines[-1].strip():
+            new_lines.append("")
+        new_lines.append(f"{key_name}={val}")
+    
+    ENV_PATH.write_text("\n".join(new_lines) + "\n", encoding="utf-8")

@@ -69,7 +69,8 @@ def _reinforce_messages_for_retry(messages: List[Dict[str, Any]], attempt: int) 
             "\n\n[SYSTEM REINFORCEMENT: URGENT / BẮT BUỘC ÉP CONCISE]\n"
             "The system is under extremely high load and rate limited. You MUST make your response extremely concise, direct, and fast.\n"
             "- DO NOT write verbose explanations, code boilerplates, or conversational pleasantries.\n"
-            "- Perform ONLY the core action requested. Break down tasks into smaller steps if needed.\n"
+            "- For small scope (1-3 files, isolated changes): handle directly — read files yourself, no sub-agents needed.\n"
+            "- For large scope (many files with cross-cutting dependencies): use Task tool to spawn parallel sub-agents for exploration, then synthesize results.\n"
             "- If you are searching or writing, return ONLY the direct output. Minimize token consumption!\n"
             "- Trả lời cực kỳ ngắn gọn, trực diện, không giải thích dông dài."
         )
@@ -78,7 +79,7 @@ def _reinforce_messages_for_retry(messages: List[Dict[str, Any]], attempt: int) 
             "\n\n[SYSTEM REINFORCEMENT LEVEL 2: EMERGENCY / KHẨN CẤP TỐI GIẢN]\n"
             "CRITICAL: The system is close to timeout limit. You MUST return a minimalist, bare-minimum response.\n"
             "- Limit your output to the absolute necessary answers. Use bullet points or code snippets directly.\n"
-            "- If using tools, make only the single most necessary tool call immediately. Do not make multiple parallel calls.\n"
+            "- Handle small scope directly (read files yourself). For large cross-cutting changes, use Task tool sparingly — max 1-2 sub-agents.\n"
             "- Do not output more than 100-200 tokens. Be as brief as a terminal command.\n"
             "- Bắt buộc trả về kết quả tối giản nhất có thể. Không dông dài."
         )

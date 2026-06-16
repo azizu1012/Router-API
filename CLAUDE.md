@@ -28,9 +28,8 @@ Mẫu prompt sub-agent:
 - `prompt`: nói rõ chỉ RESEARCH, không ghi file, liệt kê chính xác file cần đọc, yêu cầu trả về bảng/ASCII.
 
 ### 4. Không tự động cập nhật snapshot
-
-- Không tự động regenerate project_snapshot.md mỗi lần chạy.
 - Chỉ cập nhật snapshot khi người dùng yêu cầu rõ ràng.
+
 
 ## Cấu trúc dự án
 

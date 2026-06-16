@@ -4,6 +4,7 @@ import { t } from '../utils/i18n';
 import { fmt, fmtD } from '../utils/format';
 import { api } from '../utils/api';
 import EditAccountModal from '../components/EditAccountModal';
+import Loading from '../components/Loading';
 import { Search, Plus, Trash2, ShieldCheck, ShieldAlert, Key, Edit, RefreshCw, Eye, Copy } from 'lucide-react';
 
 export default function AccountsTab() {
@@ -57,12 +58,7 @@ export default function AccountsTab() {
   }, [search, isHackerSearch]);
 
   if (!tabData.ac) {
-    return (
-      <div className="flex flex-col items-center justify-center min-h-[400px] gap-3">
-        <span className="loading loading-spinner loading-md text-primary"></span>
-        <span className="text-sm font-semibold opacity-70">{t('loading', lang)}</span>
-      </div>
-    );
+    return <Loading message={t('loading', lang)} />;
   }
 
   // Calculate Account stats

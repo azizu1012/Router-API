@@ -32,14 +32,18 @@ class ClaudeProxyStreamMixin:
     async def stream_message(self, body: Dict[str, Any], auth_key_prefix: str = "", account: Optional[Dict[str, Any]] = None) -> AsyncIterator[bytes]:
         openai_messages, openai_tools = _convert_messages(body)
 
+        from src.api.opencode_proxy.handler.websearch import should_enable_web_search
+        from src.api.opencode_proxy.handler.proxy import _WEBSEARCH_TOOL_DEF
+        if should_enable_web_search(body, account) and not any(
+            t.get("function", {}).get("name") in ("WebSearch", "web_search") for t in openai_tools
+        ):
+            openai_tools.append(_WEBSEARCH_TOOL_DEF)
+            logger.info("[WebSearch] Injected WebSearch tool for Claude proxy")
+
         override_alias = _intercept_sub_agent(body)
         model_alias = override_alias or router.resolve_model_alias(body.get("model", ""))
         if not model_alias:
             model_alias = config.DEFAULT_MODEL_ALIAS
-
-        # Inject Web Search context
-        from src.api.opencode_proxy.handler.websearch import with_search_context
-        openai_messages = await with_search_context(body, openai_messages, model_alias, account)
 
         await _pre_compact_and_truncate(body, openai_messages, openai_tools, model_alias)
 
@@ -59,26 +63,39 @@ class ClaudeProxyStreamMixin:
 
         if override_alias:
             logger.info("[Sub-Agent] Using non-stream path for sub-agent (override=%s)", override_alias)
-            task = asyncio.create_task(self.create_message(body, auth_key_prefix))
-            try:
-                while not task.done():
-                    try:
-                        await asyncio.wait_for(asyncio.shield(task), timeout=3.0)
-                    except asyncio.TimeoutError:
-                        yield _sse("ping", {"type": "ping", "retry": 0, "reason": "keepalive"})
-                result = await task
-                for chunk in _dict_to_sse_events(result):
-                    yield chunk
-            except HTTPException as e:
-                detail = e.detail if isinstance(e.detail, dict) else {"error": {"message": str(e.detail)}}
-                yield _sse("error", {"type": "error", "error": {"type": detail.get("error", {}).get("type", "api_error"), "message": detail.get("error", {}).get("message", str(e.detail))}})
-            except Exception as e:
-                logger.error("[Sub-Agent] Non-stream error: %s", e)
-                yield _sse("error", {"type": "error", "error": {"type": "api_error", "message": f"Sub-agent error: {e}"}})
-            finally:
-                if not task.done():
-                    task.cancel()
-            return
+            SUB_AGENT_MAX_RETRIES = 2
+            last_err: Optional[str] = None
+            for sub_attempt in range(SUB_AGENT_MAX_RETRIES + 1):
+                try:
+                    task = asyncio.create_task(self.create_message(body, auth_key_prefix, account=account))
+                    while not task.done():
+                        try:
+                            await asyncio.wait_for(asyncio.shield(task), timeout=3.0)
+                        except asyncio.TimeoutError:
+                            yield _sse("ping", {"type": "ping", "retry": 0, "reason": "keepalive"})
+                    result = await task
+                    if isinstance(result, dict) and result.get("id", "").startswith("msg_err_"):
+                        last_err = "sub-agent returned error response"
+                        logger.warning("[Sub-Agent Retry %d/%d] %s", sub_attempt + 1, SUB_AGENT_MAX_RETRIES + 1, last_err)
+                        await asyncio.sleep(_retry_delay(sub_attempt))
+                        continue
+                    for chunk in _dict_to_sse_events(result):
+                        yield chunk
+                    return
+                except asyncio.CancelledError:
+                    raise
+                except Exception as e:
+                    last_err = str(e)[:200]
+                    logger.warning("[Sub-Agent Retry %d/%d] Error: %s", sub_attempt + 1, SUB_AGENT_MAX_RETRIES + 1, last_err)
+                    if sub_attempt < SUB_AGENT_MAX_RETRIES:
+                        await asyncio.sleep(_retry_delay(sub_attempt))
+
+            logger.warning("[Sub-Agent Fallback] All %d retries exhausted (%s), falling back to main model",
+                           SUB_AGENT_MAX_RETRIES + 1, last_err)
+            override_alias = None
+            model_alias = router.resolve_model_alias(body.get("model", "")) or config.DEFAULT_MODEL_ALIAS
+            openai_messages, openai_tools = _convert_messages(body)
+            await _pre_compact_and_truncate(body, openai_messages, openai_tools, model_alias)
 
         pool = router.resolve_pool(model_alias)
         if pool:

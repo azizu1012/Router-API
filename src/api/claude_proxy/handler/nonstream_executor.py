@@ -97,7 +97,9 @@ async def _resolve_gemini_with_tools_stream(
             logger.info("[WebSearch] executing query=%r model=%s", query[:160], kwargs.get("model", "-"))
 
             from src.core.providers.search_manager import execute_hybrid_search
-            search_context, combined_citations = await execute_hybrid_search([query], auth_key_prefix=auth_key_prefix, account=account)
+            from src.api.opencode_proxy.handler.websearch import resolve_search_engine
+            se = resolve_search_engine(body, account)
+            search_context, combined_citations = await execute_hybrid_search([query], search_engine=se, auth_key_prefix=auth_key_prefix, account=account)
 
             if search_context:
                 result_lines = [search_context]
@@ -227,8 +229,10 @@ async def _resolve_gemini_with_tools(kwargs: Dict[str, Any], body: Dict[str, Any
             logger.info("[WebSearch] executing query=%r model=%s", query[:160], kwargs.get("model", "-"))
             
             from src.core.providers.search_manager import execute_hybrid_search
-            search_context, combined_citations = await execute_hybrid_search([query], auth_key_prefix=auth_key_prefix, account=account)
-            
+            from src.api.opencode_proxy.handler.websearch import resolve_search_engine
+            se = resolve_search_engine(body, account)
+            search_context, combined_citations = await execute_hybrid_search([query], search_engine=se, auth_key_prefix=auth_key_prefix, account=account)
+
             if search_context:
                 result_lines = [search_context]
                 unique_links = []

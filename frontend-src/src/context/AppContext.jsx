@@ -3,10 +3,45 @@ import { api } from '../utils/api';
 
 const AppContext = createContext();
 
+const getTabFromPath = (path) => {
+  const normalized = path.replace(/\/$/, '').toLowerCase();
+  if (normalized === '/stats' || normalized === '/stats/') return 'ov';
+  if (normalized === '/stats/overview') return 'ov';
+  if (normalized === '/stats/keys') return 'ks';
+  if (normalized === '/stats/accounts') return 'ac';
+  if (normalized === '/stats/token-analysis') return 'us';
+  if (normalized === '/stats/endpoints') return 'ep';
+  if (normalized === '/stats/penalties') return 'pe';
+  if (normalized === '/stats/pool-structure') return 'mu';
+  if (normalized === '/stats/my-account') return 'myacc';
+  if (normalized === '/stats/my-usage') return 'myuse';
+  if (normalized === '/stats/settings') return 'st';
+  return null;
+};
+
+const getPathFromTab = (tab) => {
+  switch (tab) {
+    case 'ov': return '/stats/overview';
+    case 'ks': return '/stats/keys';
+    case 'ac': return '/stats/accounts';
+    case 'us': return '/stats/token-analysis';
+    case 'ep': return '/stats/endpoints';
+    case 'pe': return '/stats/penalties';
+    case 'mu': return '/stats/pool-structure';
+    case 'myacc': return '/stats/my-account';
+    case 'myuse': return '/stats/my-usage';
+    case 'st': return '/stats/settings';
+    default: return '/stats';
+  }
+};
+
 export function AppProvider({ children }) {
   const [token, setToken] = useState(() => sessionStorage.getItem('_rt') || null);
   const [user, setUser] = useState(null);
-  const [activeTab, setActiveTab] = useState('ov');
+  const [activeTab, setActiveTab] = useState(() => {
+    const tab = getTabFromPath(window.location.pathname);
+    return tab || 'ov';
+  });
   const [theme, setTheme] = useState(() => localStorage.getItem('_rtm') || 'auto');
   const [lang, setLang] = useState(() => localStorage.getItem('_rl') || 'vi');
   
@@ -31,6 +66,7 @@ export function AppProvider({ children }) {
     mu: null,     // Model pools detail
     myacc: null,  // Current user account and pools
     myuse: null,  // Current user usage stats
+    st: null,     // System Settings
   });
 
   const [loading, setLoading] = useState(false);
@@ -112,6 +148,36 @@ export function AppProvider({ children }) {
     localStorage.setItem('_rl', newLang);
   };
 
+  // Sync tab changes to browser URL history
+  useEffect(() => {
+    const newPath = getPathFromTab(activeTab);
+    if (window.location.pathname !== newPath) {
+      window.history.pushState(null, '', newPath);
+    }
+  }, [activeTab]);
+
+  // Listen to popstate event (back/forward browser buttons)
+  useEffect(() => {
+    const handlePopState = () => {
+      const tab = getTabFromPath(window.location.pathname);
+      if (tab) {
+        setActiveTab(tab);
+      }
+    };
+    window.addEventListener('popstate', handlePopState);
+    return () => window.removeEventListener('popstate', handlePopState);
+  }, []);
+
+  // Validate activeTab accessibility when user/tier loads or changes
+  useEffect(() => {
+    if (user) {
+      const isAdminTab = ['ov', 'ks', 'ac', 'us', 'ep', 'pe', 'mu', 'st'].includes(activeTab);
+      if (isAdminTab && user.tier !== 'admin') {
+        setActiveTab('myacc');
+      }
+    }
+  }, [user, activeTab]);
+
   // Helper to fetch data for the active tab
   const fetchTabData = async (tabName, isSilent = false) => {
     if (!token) return;
@@ -169,6 +235,10 @@ export function AppProvider({ children }) {
         case 'myuse':
           data = await api('/dashboard/my-stats?days=30', {}, token);
           setTabData(prev => ({ ...prev, myuse: data }));
+          break;
+        case 'st':
+          data = await api('/dashboard/admin/settings', {}, token);
+          setTabData(prev => ({ ...prev, st: data }));
           break;
         default:
           break;
@@ -233,8 +303,17 @@ export function AppProvider({ children }) {
     const data = await response.json();
     setToken(data.token);
     setUser({ name: data.name, tier: data.tier });
-    // Default routing
-    setActiveTab(data.tier === 'admin' ? 'ov' : 'myacc');
+    // Default routing: preserve requested tab if authorized, otherwise redirect
+    const isAdminTab = ['ov', 'ks', 'ac', 'us', 'ep', 'pe', 'mu', 'st'].includes(activeTab);
+    if (data.tier === 'admin') {
+      if (!activeTab || !['ov', 'ks', 'ac', 'us', 'ep', 'pe', 'mu', 'myacc', 'myuse', 'st'].includes(activeTab)) {
+        setActiveTab('ov');
+      }
+    } else {
+      if (isAdminTab || !['myacc', 'myuse'].includes(activeTab)) {
+        setActiveTab('myacc');
+      }
+    }
     return data;
   };
 
@@ -243,7 +322,7 @@ export function AppProvider({ children }) {
     setUser(null);
     sessionStorage.removeItem('_rt');
     setTabData({
-      ov: null, ks: null, ac: null, us: null, ep: null, pe: null, mu: null, myacc: null, myuse: null
+      ov: null, ks: null, ac: null, us: null, ep: null, pe: null, mu: null, myacc: null, myuse: null, st: null
     });
   };
 

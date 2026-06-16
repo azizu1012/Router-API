@@ -94,7 +94,7 @@ async def _handle_gemini_native(
         web_search = False
         tools = [t for t in tools if getattr(t, "google_search", None) is None]
     else:
-        if not web_search and account and account.get("web_search_enabled"):
+        if not web_search and account and (account.get("web_search_enabled") or account.get("search_engine", "auto") != "disabled"):
             web_search = True
     target_model_id = router.get_model_id(model_alias)
     is_lite = "lite" in model_alias.lower() or "lite" in target_model_id.lower()

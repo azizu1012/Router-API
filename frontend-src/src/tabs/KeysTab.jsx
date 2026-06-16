@@ -4,6 +4,7 @@ import { t } from '../utils/i18n';
 import { fmt, relt } from '../utils/format';
 import { api } from '../utils/api';
 import { Search, Trash2, Key, Plus, ShieldCheck } from 'lucide-react';
+import Loading from '../components/Loading';
 
 export default function KeysTab() {
   const { tabData, token, lang, refreshTab } = useApp();
@@ -56,12 +57,7 @@ export default function KeysTab() {
   }, [search, isHackerSearch]);
 
   if (!tabData.ks) {
-    return (
-      <div className="flex flex-col items-center justify-center min-h-[400px] gap-3">
-        <span className="loading loading-spinner loading-md text-primary"></span>
-        <span className="text-sm font-semibold opacity-70">{t('loading', lang)}</span>
-      </div>
-    );
+    return <Loading message={t('loading', lang)} />;
   }
 
   // Calculate Key Stats

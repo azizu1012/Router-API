@@ -49,7 +49,7 @@ async def extract_search_queries(prompt_text: str, messages: list, auth_key_pref
         last_msg = messages[-1:] if messages else []
         
         res_dict = None
-        for alias in ["gemini-flash", "gemini-flash-lite", "gemini-flash-25-lite"]:
+        for alias in ["gemini-flash-lite", "gemini-flash-25-lite", "gemini-flash"]:
             try:
                 res_dict = await api_manager.call_gemini_json(
                     model_alias=alias,
@@ -206,19 +206,24 @@ def _format_citations_footer(citations: List[Dict[str, Any]]) -> str:
 
 async def execute_hybrid_search(
     queries: List[str],
+    search_engine: str = "auto",
     auth_key_prefix: str = "",
     account: Optional[Dict[str, Any]] = None,
 ) -> Tuple[str, List[Dict[str, Any]]]:
-    """Execute Gemini grounding search in parallel and return (formatted_context, all_citations).
+    """Execute search and return (formatted_context, all_citations).
     
-    Each search result is a structured snippet with inline source attribution.
+    search_engine controls which backend to use:
+      - "auto": Google Grounding first, DuckDuckGo fallback
+      - "google_grounding": Google Grounding only
+      - "duckduckgo": DuckDuckGo only
+    Each result is a structured snippet with inline source attribution.
     The returned context string is ready to inject into the system instruction.
     The citations list contains all unique sources for footer rendering.
     """
     if not queries:
         return "", []
 
-    logger.info("Executing Google Grounding Search for queries: %s", queries)
+    logger.info("Executing WebSearch (Google Grounding first, DuckDuckGo fallback) for queries: %s", queries)
 
     async def run_single_query(query: str) -> Dict[str, Any]:
         """Run one grounded search query. Returns {"query", "snippet", "citations"}."""
@@ -238,84 +243,98 @@ async def execute_hybrid_search(
                     raise
                 logger.warning("Failed to check rate limit for hybrid search: %s", s_err)
 
-        for model in ["gemini-flash-lite", "gemini-flash-25-lite", "gemini-flash"]:
+        # ── DuckDuckGo Only ──
+        if search_engine == "duckduckgo":
             try:
-                logger.info("run_single_query starting with model %s for query: %s", model, query)
-                current_time_str = datetime.now().strftime("%A, %B %d, %Y, %I:%M %p")
-                contents = [gt.Content(role="user", parts=[gt.Part.from_text(
-                    text=(
-                        f"Today is {current_time_str}. Search Google for: {query}\n\n"
-                        "Return a concise factual summary in 2-4 sentences. "
-                        "Include specific facts, dates, numbers, or names relevant to the query."
+                logger.info("run_single_query searching DuckDuckGo for query: %s", query)
+                from src.tools.duckduckgo import search_with_citations
+                text, cits = await search_with_citations(query)
+                if text:
+                    logger.info("DuckDuckGo search successful for '%s' with %d citations.", query, len(cits))
+                    return {"query": query, "snippet": text, "citations": cits}
+            except Exception as ddg_err:
+                logger.warning("DuckDuckGo search failed for query '%s': %s", query, ddg_err)
+            return {"query": query, "snippet": "", "citations": []}
+
+        # ── Google Grounding (primary for auto/google_grounding) ──
+        if search_engine in ("auto", "google_grounding"):
+            for model in ["gemini-flash-lite", "gemini-flash-25-lite", "gemini-flash"]:
+                try:
+                    logger.info("run_single_query running Google Grounding with model %s for query: %s", model, query)
+                    current_time_str = datetime.now().strftime("%A, %B %d, %Y, %I:%M %p")
+                    contents = [gt.Content(role="user", parts=[gt.Part.from_text(
+                        text=(
+                            f"Today is {current_time_str}. Search Google for: {query}\n\n"
+                            "Return a concise factual summary in 2-4 sentences. "
+                            "Include specific facts, dates, numbers, or names relevant to the query."
+                        )
+                    )])]
+
+                    gresult = await api_manager.call_gemini(
+                        model_alias=model,
+                        system_instruction=(
+                            "You are a factual search assistant. Provide a concise, accurate summary "
+                            "of search results. Include specific facts and be direct. 2-4 sentences max."
+                        ),
+                        contents=contents,
+                        max_tokens=400,
+                        temperature=0.1,
+                        web_search=True,
+                        account=account
                     )
-                )])]
+                    logger.info("run_single_query Google Grounding returned with model %s: %s", model, query)
 
-                gresult = await api_manager.call_gemini(
-                    model_alias=model,
-                    system_instruction=(
-                        "You are a factual search assistant. Provide a concise, accurate summary "
-                        "of search results. Include specific facts and be direct. 2-4 sentences max."
-                    ),
-                    contents=contents,
-                    max_tokens=400,
-                    temperature=0.1,
-                    web_search=True,
-                    account=account
-                )
-                logger.info("run_single_query call_gemini returned with model %s: %s", model, query)
+                    response = gresult.get("response")
+                    snippet = (getattr(response, "text", "") or "").strip()
 
-                response = gresult.get("response")
-                snippet = (getattr(response, "text", "") or "").strip()
+                    used_key = gresult.get("api_key", "")
+                    kp = used_key[-8:] if used_key else "unknown"
+                    from src.core.usage_logger import log_usage
+                    await log_usage(
+                        model_alias=gresult.get("model_id", "gemini-3.1-flash-lite"),
+                        key_prefix=kp,
+                        prompt_tokens=gresult.get("input_tokens", 0),
+                        completion_tokens=gresult.get("output_tokens", 0),
+                        auth_key_prefix=auth_key_prefix,
+                    )
 
-                # Log usage
-                used_key = gresult.get("api_key", "")
-                kp = used_key[-8:] if used_key else "unknown"
-                from src.core.usage_logger import log_usage
-                await log_usage(
-                    model_alias=gresult.get("model_id", "gemini-3.1-flash-lite"),
-                    key_prefix=kp,
-                    prompt_tokens=gresult.get("input_tokens", 0),
-                    completion_tokens=gresult.get("output_tokens", 0),
-                    auth_key_prefix=auth_key_prefix,
-                )
+                    citations: List[Dict[str, Any]] = []
+                    candidates = getattr(response, "candidates", None) or []
+                    if candidates:
+                        grounding = getattr(candidates[0], "grounding_metadata", None)
+                        if grounding:
+                            chunks = getattr(grounding, "grounding_chunks", []) or []
+                            seen_links: set = set()
+                            for chunk in chunks:
+                                web = getattr(chunk, "web", None)
+                                if web:
+                                    title = getattr(web, "title", "") or "Source"
+                                    uri = getattr(web, "uri", "")
+                                    if uri and uri not in seen_links:
+                                        seen_links.add(uri)
+                                        citations.append({"title": title, "url": uri})
 
-                # Extract grounding citations
-                citations: List[Dict[str, Any]] = []
-                candidates = getattr(response, "candidates", None) or []
-                if candidates:
-                    grounding = getattr(candidates[0], "grounding_metadata", None)
-                    if grounding:
-                        chunks = getattr(grounding, "grounding_chunks", []) or []
-                        seen_links: set = set()
-                        for chunk in chunks:
-                            web = getattr(chunk, "web", None)
-                            if web:
-                                title = getattr(web, "title", "") or "Source"
-                                uri = getattr(web, "uri", "")
-                                if uri and uri not in seen_links:
-                                    seen_links.add(uri)
-                                    citations.append({"title": title, "url": uri})
+                    logger.info("run_single_query Google Grounding finished with model %s: %s with %d citations", model, query, len(citations))
+                    return {"query": query, "snippet": snippet, "citations": citations}
 
-                logger.info("run_single_query finished with model %s: %s with %d citations", model, query, len(citations))
-                return {"query": query, "snippet": snippet, "citations": citations}
+                except Exception as e:
+                    err_str = str(e)
+                    if "quota_exhausted" in err_str:
+                        logger.warning("Google Grounding quota_exhausted for model %s, query '%s'.", model, query)
+                        break
+                    logger.warning("Google Grounding search failed with model %s for query '%s': %s", model, query, e)
 
-            except Exception as e:
-                err_str = str(e)
-                if "quota_exhausted" in err_str:
-                    logger.warning("Gemini grounding quota_exhausted for model %s, query '%s'. Falling back to DuckDuckGo.", model, query)
-                    break
-                logger.warning("Google Grounding search failed with model %s for query '%s': %s", model, query, e)
-
-        # Fallback: DuckDuckGo
-        try:
-            logger.info("Gemini Lite grounding unavailable for query '%s'. Falling back to DuckDuckGo...", query)
-            from src.tools.duckduckgo import search_with_citations
-            text, cits = await search_with_citations(query)
-            if text:
-                logger.info("DuckDuckGo fallback successful with %d citations.", len(cits))
-                return {"query": query, "snippet": text, "citations": cits}
-        except Exception as ddg_err:
-            logger.warning("DuckDuckGo fallback search failed for query '%s': %s", query, ddg_err)
+        # ── DuckDuckGo fallback (only for "auto" mode) ──
+        if search_engine == "auto":
+            try:
+                logger.info("Google Grounding failed for query '%s'. Falling back to DuckDuckGo...", query)
+                from src.tools.duckduckgo import search_with_citations
+                text, cits = await search_with_citations(query)
+                if text:
+                    logger.info("DuckDuckGo fallback successful with %d citations.", len(cits))
+                    return {"query": query, "snippet": text, "citations": cits}
+            except Exception as ddg_err:
+                logger.warning("DuckDuckGo fallback search failed for query '%s': %s", query, ddg_err)
 
         return {"query": query, "snippet": "", "citations": []}
 

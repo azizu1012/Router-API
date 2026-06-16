@@ -157,8 +157,6 @@ class OpenCodeProxy:
     ) -> Dict[str, Any]:
         model_alias = await self._resolve_alias(body, account=account, is_opencode=is_opencode)
         messages, tools = body.get("messages", []), list(body.get("tools", []))
-        from .websearch import with_search_context
-        messages = await with_search_context(body, messages, model_alias, account)
         messages, tools = _inject_websearch_tool(body, messages, tools, account)
 
         pool = router.resolve_pool(model_alias)
@@ -172,8 +170,6 @@ class OpenCodeProxy:
     ) -> AsyncIterator[bytes]:
         model_alias = await self._resolve_alias(body, account=account, is_opencode=is_opencode)
         messages, tools = body.get("messages", []), list(body.get("tools", []))
-        from .websearch import with_search_context
-        messages = await with_search_context(body, messages, model_alias, account)
         messages, tools = _inject_websearch_tool(body, messages, tools, account)
 
         pool = router.resolve_pool(model_alias)
@@ -232,10 +228,7 @@ class OpenCodeProxy:
                     pool_mode=True, pool=pool, account=account, is_stream=False,
                 )
                 is_custom = reservation.get("provider") == "custom"
-                saved_key = api_key_val
-                api_key_val = None
-                router.record_success(saved_key, model_id_val)
-                pool.record_success()
+                # record_success + pool.record_success handled in _resolve_and_call → _execute_nonstream
                 if is_custom:
                     endpoint_manager.mark_endpoint_success(reservation.get("name", pool.current_model))
                 # Debug: log resp before build_response
@@ -244,7 +237,7 @@ class OpenCodeProxy:
                     resp_content = str(resp.get("choices", [{}])[0].get("message", {}).get("content", "N/A") if resp.get("choices") else "no_choices")[:200]
                 logger.info("[NonStreamPool] returning resp type=%s content=%r is_custom=%s model=%s",
                     type(resp).__name__, resp_content, is_custom, pool.current_model)
-                return build_response(body, resp, pool.current_model, saved_key, input_tokens)
+                return build_response(body, resp, pool.current_model, api_key_val, input_tokens)
             except HTTPException:
                 raise
             except Exception as e:
@@ -264,7 +257,6 @@ class OpenCodeProxy:
                     continue
                 if not await ocerror.classify_pool_error(e, pool, pool.current_model, api_key_val, model_id_val):
                     raise
-                api_key_val = None
         return error_response(body, pool.current_model if pool.current_model else model_alias)
 
     async def _nonstream_standalone(
@@ -275,20 +267,19 @@ class OpenCodeProxy:
             api_key_val = None
             model_id_val = None
             try:
-                resp, api_key_val, model_id_val, input_tokens = await self._resolve_and_call(
+                resp, api_key_val, model_id_val, input_tokens, _reservation = await self._resolve_and_call(
                     body, messages, tools, model_alias,
                     pool_mode=False, account=account, is_stream=False, attempt=attempt,
                 )
                 saved_key = api_key_val
-                api_key_val = None
-                router.record_success(saved_key, model_id_val)
+                api_key_val = None  # protect error handler from freezing a successful key
+                # record_success handled in _resolve_and_call → _execute_nonstream
                 return build_response(body, resp, model_id_val, saved_key, input_tokens)
             except HTTPException:
                 raise
             except Exception as e:
                 if not ocerror.classify_standalone_error(e, attempt, api_key_val, model_id_val):
                     break
-                api_key_val = None
                 await asyncio.sleep(_retry_delay(attempt))
         return error_response(body, model_alias)
 
@@ -350,42 +341,45 @@ class OpenCodeProxy:
             retry_attempt=retry, pool_mode=pool_mode,
         )
 
-        reinforced_messages = _reinforce_messages_for_retry(messages, retry)
-        is_lite = "lite" in str(litellm_model_val).lower()
-        limit = config.LITE_EMERGENCY_MAX_INPUT_TOKENS if is_lite else config.EMERGENCY_MAX_INPUT_TOKENS
-        if retry >= 10:
-            _div = max(3, retry - 7)
-            limit = max(20000, limit // _div)
-        truncated = _emergency_truncate_to_limit(reinforced_messages, limit)
-
         try:
-            input_tokens = await token_counter(model=litellm_model_val, messages=truncated)
-        except Exception:
-            input_tokens = max(1, len(str(truncated)) // 4)
+            reinforced_messages = _reinforce_messages_for_retry(messages, retry)
+            is_lite = "lite" in str(litellm_model_val).lower()
+            limit = config.LITE_EMERGENCY_MAX_INPUT_TOKENS if is_lite else config.EMERGENCY_MAX_INPUT_TOKENS
+            if retry >= 10:
+                _div = max(3, retry - 7)
+                limit = max(20000, limit // _div)
+            truncated = _emergency_truncate_to_limit(reinforced_messages, limit)
 
-        has_quota = await router.acquire_quota(input_tokens + max_output, resolve_alias)
-        if not has_quota:
-            from src.core.limits import apply_error_penalty
-            apply_error_penalty(api_key_val, "rate_limit_rpm_tpm", model_id_val)
-            router.freeze_key(api_key_val, 15, model_id_val, "rate_limit")
-            raise HTTPException(status_code=429, detail={"error": {"message": "Rate limit", "type": "rate_limit_error"}})
+            try:
+                input_tokens = await token_counter(model=litellm_model_val, messages=truncated)
+            except Exception:
+                input_tokens = max(1, len(str(truncated)) // 4)
 
-        kwargs = self._prepare_litellm_kwargs(
-            litellm_model_val=litellm_model_val,
-            reinforced_messages=truncated,
-            api_key_val=api_key_val,
-            max_output=max_output,
-            body=body,
-            openai_tools=tools,
-            reservation=reservation,
-            is_stream=False,
-        )
+            has_quota = await router.acquire_quota(input_tokens + max_output, resolve_alias)
+            if not has_quota:
+                from src.core.limits import apply_error_penalty
+                apply_error_penalty(api_key_val, "rate_limit_rpm_tpm", model_id_val)
+                router.freeze_key(api_key_val, 15, model_id_val, "rate_limit")
+                raise HTTPException(status_code=429, detail={"error": {"message": "Rate limit", "type": "rate_limit_error"}})
 
-        resp = await _execute_nonstream(
-            self, kwargs, api_key_val, model_id_val, model_alias_val,
-            input_tokens, pool, body, auth_key_prefix=get_auth_key_prefix(account), account=account,
-        )
-        return resp, api_key_val, model_id_val, input_tokens, reservation
+            kwargs = self._prepare_litellm_kwargs(
+                litellm_model_val=litellm_model_val,
+                reinforced_messages=truncated,
+                api_key_val=api_key_val,
+                max_output=max_output,
+                body=body,
+                openai_tools=tools,
+                reservation=reservation,
+                is_stream=False,
+            )
+
+            resp = await _execute_nonstream(
+                self, kwargs, api_key_val, model_id_val, model_alias_val,
+                input_tokens, pool, body, auth_key_prefix=get_auth_key_prefix(account), account=account,
+            )
+            return resp, api_key_val, model_id_val, input_tokens, reservation
+        finally:
+            router.release_key(api_key_val)
 
 
 # ── Module-level helpers ────────────────────────────────────────

@@ -174,6 +174,7 @@ async def dashboard_me(request: Request):
         **payload,
         "account_id": account.get("account_id"),
         "web_search_enabled": bool(account.get("web_search_enabled", 0)),
+        "search_engine": account.get("search_engine", "auto"),
         "flash": res_pools["flash"],
         "lite": res_pools["lite"],
         "flash_pool": pool_stats["flash"],

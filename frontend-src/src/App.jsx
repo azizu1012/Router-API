@@ -5,7 +5,7 @@ import CanvasParticles from './components/CanvasParticles';
 import ThemeLanguageSelector from './components/ThemeLanguageSelector';
 import { 
   LayoutDashboard, Key, Users, PieChart, Network, 
-  AlertTriangle, ShieldCheck, User, BarChart3, LogOut, Lock, Eye, EyeOff
+  AlertTriangle, ShieldCheck, User, BarChart3, LogOut, Lock, Eye, EyeOff, Settings
 } from 'lucide-react';
 
 // Lazy load tab components
@@ -18,6 +18,7 @@ import PenaltiesTab from './tabs/PenaltiesTab';
 import PoolStructureTab from './tabs/PoolStructureTab';
 import MyAccountTab from './tabs/MyAccountTab';
 import MyUsageTab from './tabs/MyUsageTab';
+import SettingsTab from './tabs/SettingsTab';
 
 export default function App() {
   const { 
@@ -364,6 +365,14 @@ export default function App() {
                 <ShieldCheck className="w-4 h-4" />
                 <span>{t('nav_mu', lang)}</span>
               </button>
+
+              <button 
+                onClick={() => setActiveTab('st')} 
+                className={`btn btn-sm btn-ghost justify-start gap-3 normal-case font-medium w-full text-left rounded-xl ${activeTab === 'st' ? 'bg-primary/15 text-primary font-bold border border-primary/20' : 'text-base-content/75'}`}
+              >
+                <Settings className="w-4 h-4" />
+                <span>{t('nav_st', lang) || 'Cấu hình Hệ thống'}</span>
+              </button>
               
               <div className="divider opacity-20 my-2"></div>
             </>
@@ -399,6 +408,7 @@ export default function App() {
             {activeTab === 'mu' && <PoolStructureTab />}
             {activeTab === 'myacc' && <MyAccountTab />}
             {activeTab === 'myuse' && <MyUsageTab />}
+            {activeTab === 'st' && <SettingsTab />}
           </div>
         </main>
       </div>

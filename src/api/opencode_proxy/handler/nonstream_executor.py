@@ -90,8 +90,11 @@ async def _resolve_gemini_with_tools_stream(
             logger.info("[OpenCode WebSearch] executing query=%r model=%s", query[:160], kwargs.get("model", "-"))
 
             from .search import execute_opencode_search
+            from .websearch import resolve_search_engine
+            se = resolve_search_engine(body, account)
             search_context, combined_citations = await execute_opencode_search(
                 [query], model_alias_or_name=kwargs.get("model", "-"),
+                search_engine=se,
                 auth_key_prefix=auth_key_prefix, account=account
             )
 
@@ -195,7 +198,9 @@ async def _resolve_gemini_with_tools(
             logger.info("[OpenCode WebSearch] executing query=%r model=%s", query[:160], kwargs.get("model", "-"))
 
             from .search import execute_opencode_search
-            search_context, combined_citations = await execute_opencode_search([query], model_alias_or_name=kwargs.get("model", "-"), auth_key_prefix=auth_key_prefix, account=account)
+            from .websearch import resolve_search_engine
+            se = resolve_search_engine(body, account)
+            search_context, combined_citations = await execute_opencode_search([query], model_alias_or_name=kwargs.get("model", "-"), search_engine=se, auth_key_prefix=auth_key_prefix, account=account)
 
             if search_context:
                 result_lines = [search_context]
