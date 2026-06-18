@@ -509,7 +509,7 @@ Cả `rate_limit` (429) và `unavailable` (503) đều là lỗi tạm thời:
 ## CRITICAL — Thinking Config
 
 1. **Sub-agent check TRƯỚC body thinking:** Claude Code gửi `thinking` trong **mọi** request. `is_sub_agent_body` phải ở đầu hàm, trước khi đọc `body.get("thinking")`.
-2. **`adaptive` không ép budget:** `if ttype == "adaptive": return {"thinking": {"type": "enabled"}}`
+2. **`adaptive` dùng budget vừa phải:** `budget=4096` cho flash, `8192` cho pro — đủ thinking nhưng không treo lâu
 3. **Strip `display`:** Luôn tạo dict mới, không copy body → giữ lại field `display` không hợp lệ.
 
 ### File chịu trách nhiệm

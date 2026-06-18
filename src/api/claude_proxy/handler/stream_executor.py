@@ -69,20 +69,39 @@ async def _execute_stream(proxy_instance: Any, kwargs: Dict[str, Any], api_key: 
                 t0_wait = t_last_chunk
 
                 async def _iter_events():
-                    it = _resolve_gemini_with_tools_stream(
+                    queue: asyncio.Queue = asyncio.Queue()
+                    stream_gen = _resolve_gemini_with_tools_stream(
                         kwargs_ns, body, proxy_instance, auth_key_prefix=auth_key_prefix, account=account
-                    ).__aiter__()
-                    while True:
+                    )
+
+                    async def _producer():
                         try:
-                            while True:
-                                try:
-                                    evt = await asyncio.wait_for(asyncio.shield(it.__anext__()), timeout=4.0)
-                                    yield ("event", evt)
-                                    break
-                                except asyncio.TimeoutError:
-                                    yield ("ping", None)
+                            async for evt in stream_gen:
+                                await queue.put(("event", evt))
                         except StopAsyncIteration:
-                            break
+                            pass
+                        except Exception:
+                            pass
+                        finally:
+                            await queue.put(("done", None))
+
+                    producer = asyncio.create_task(_producer())
+                    try:
+                        while True:
+                            try:
+                                item = await asyncio.wait_for(queue.get(), timeout=4.0)
+                                if item[0] == "done":
+                                    break
+                                yield item
+                            except asyncio.TimeoutError:
+                                yield ("ping", None)
+                    finally:
+                        if not producer.done():
+                            producer.cancel()
+                            try:
+                                await producer
+                            except Exception:
+                                pass
 
                 async for item_type, val in _iter_events():
                     if item_type == "ping":

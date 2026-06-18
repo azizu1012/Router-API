@@ -87,9 +87,10 @@ def _build_litellm_thinking(body: Dict[str, Any], model_id: str) -> Dict[str, An
         if ttype in ("enabled", "adaptive"):
             if is_v3:
                 return {"reasoning_effort": "medium"}
-            # "adaptive" → don't force budget, let Gemini decide
+            # "adaptive" → modest budget, let Gemini decide but cap thinking time
             if ttype == "adaptive":
-                return {"thinking": {"type": "enabled"}}
+                budget = 4096 if "flash" in m else 8192
+                return {"thinking": {"type": "enabled", "budget_tokens": budget}}
             budget = thinking.get("budget_tokens")
             if budget == -1 or budget is None:
                 budget = 32768 if "pro" in m else 24576
