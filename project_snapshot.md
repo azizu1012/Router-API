@@ -1,7 +1,7 @@
 # Router API v2 — Project Snapshot
 
 <!-- AI-READABLE — STRUCTURED FOR LLM PARSING -->
-<!-- Generated: 2026-06-14 | Python 3.13 | win32 -->
+<!-- Generated: 2026-06-18 | Python 3.13 | win32 -->
 
 ---
 
