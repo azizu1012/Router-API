@@ -26,7 +26,7 @@ d:\AI_Projects\router_api/
 │
 ├── logs/                         # Rotating file logs (daily auto-clean)
 │
-├── src/                          # 105 Python files, ~16,778 lines total
+├── src/                          # 111 Python files, ~18,560 lines total
 │   ├── api/                      #   ~5,881 lines — proxy layers
 │   │   ├── claude_proxy/         #     Anthropic→Gemini proxy (stream + non-stream)
 │   │   │   ├── stream.py         #       Anthropic SSE converter: thinking_delta + signature_delta
@@ -149,7 +149,7 @@ d:\AI_Projects\router_api/
 
 | File | Lines | Role |
 |------|-------|------|
-| `api/opencode_proxy/handler/stream_executor.py` | 885 | OpenCode streaming: search status, thinking, pool retry |
+| `api/opencode_proxy/handler/stream_executor.py` | 915 | OpenCode streaming: search status, thinking, pool retry |
 | `server/openai_server/handler.py` | 412 | OpenAI chat completions executor, grounding |
 | `api/claude_proxy/handler/nonstream_executor.py` | 392 | Non-stream: WebSearch, thinking extraction |
 | `server/openai_server/routes/dashboard_routes.py` | 391 | Dashboard login + stats HTML/JSON |
@@ -162,20 +162,20 @@ d:\AI_Projects\router_api/
 | `core/router/core/key_resolver.py` | 370 | Circuit breaker, adaptive cooldown, key caching |
 | `api/claude_proxy/stream.py` | 349 | Anthropic SSE: thinking_delta + signature_delta |
 | `core/providers/search_manager.py` | 349 | Search intent + Google grounding + hybrid search |
-| `api/claude_proxy/handler/proxy.py` | 338 | ClaudeProxy singleton: thinking, retry loop |
+| `api/claude_proxy/handler/proxy.py` | 387 | ClaudeProxy singleton: thinking, retry loop |
 | `logical_HQ_translator/sse_cache_agent.py` | 336 | Cache simulator, sub-agent detection, SSE helpers |
 | `core/router/core/router.py` | 333 | APIRouter: key registry, scoring, pool selection |
 | `tools/ddg_ranking.py` | 321 | Consensus ranking, topic classification |
 | `backend/key_status.py` | 310 | Key circuit breaker, freeze/cooldown DB ops |
 | `api/opencode_proxy/handler/proxy.py` | 308 | OpenCode proxy orchestrator |
-| `api/claude_proxy/handler/stream_executor.py` | 305 | Streaming: search status, WebSearch intercept, SSE |
+| `api/claude_proxy/handler/stream_executor.py` | 300 | Streaming: search status, WebSearch intercept, SSE |
 | `core/limits/account_limiter/capacity.py` | 304 | Pool capacity by tier calculations |
 | `server/pass_through_server/routes/gemini_handlers.py` | 291 | Main pass-through handler with grounding |
 | `backend/schema.py` | 286 | DDL definitions + JSON→SQLite migration |
 | `api/claude_proxy/handler/proxy_nonstream.py` | 267 | Non-streaming call mixer |
 | `core/limits/account_limiter/effective_limits.py` | 243 | Effective limits after pool sharing |
 | `tools/ddg_utils.py` | 235 | URL normalization, dedup, page crawling |
-| `api/claude_proxy/handler/pool_stream.py` | 224 | Pool retry wrapper for streaming |
+| `api/claude_proxy/handler/pool_stream.py` | 264 | Pool retry wrapper for streaming |
 | `server/openai_server/auth.py` | 219 | Bearer token auth + account limiter + reaper |
 | `core/config_n_logg/config.py` | 203 | RouterApiConfig dataclass from .env |
 | `server/pass_through_server/routes/gemini_streaming.py` | 199 | Streaming + custom endpoint streaming |
@@ -195,7 +195,7 @@ d:\AI_Projects\router_api/
 | `api/opencode_proxy/handler/websearch.py` | 157 | Search intent detection & injection |
 | `server/openai_server/routes/admin/endpoints.py` | 137 | Admin REST: endpoint CRUD |
 | `logical_HQ_translator/message_converter.py` | 130 | Claude→OpenAI schema converter |
-| `api/opencode_proxy/handler/error.py` | 138 | Error classification for OpenCode proxy |
+| `api/opencode_proxy/handler/error.py` | 146 | Error classification for OpenCode proxy |
 | `backend/accounts.py` | 127 | Account CRUD |
 | `core/providers/gemini/utils.py` | 131 | Extracted helpers: error handling, tools, backoff |
 | `server/openai_server/routes/app_init.py` | 127 | FastAPI app factory + lifespan |
@@ -229,7 +229,7 @@ d:\AI_Projects\router_api/
 | `core/config_n_logg/__init__.py` | 6 | Re-exports config + loggers |
 | `server/openai_server/routes/admin/__init__.py` | 5 | Package init |
 | `(20 stub files < 3 lines)` | 1-3 | Package markers/re-exports |
-| **Total (src/)** | **~16,778** | 110 files |
+| **Total (src/)** | **~18,560** | 111 files |
 
 ---
 
@@ -288,7 +288,7 @@ main()
 #### Key Functions
 | Line | Function | Description |
 |------|----------|-------------|
-| 48 | `_build_litellm_thinking` | Auto-enables thinking (budget 24576/32768), translates to Gemini config |
+| 48 | `_build_litellm_thinking` | Sub-agent early check → `adaptive` → `{"type":"enabled"}` without budget; strips `display` field |
 | 41 | `_model_supports_thinking` | Checks model support (Gemini 2, 2.5, 3 series) |
 | 127 | `_prepare_litellm_kwargs` | Builds LiteLLM kwargs with thinking params + tools |
 | 158 | `_call_lm_with_retry` | Retry loop with pool swap, thinking-aware error handling |
@@ -429,3 +429,7 @@ Client request → [WebSearch interceptor]
 16. **Custom Endpoint Tool Strip (v2.3.1)**: When backend is a custom endpoint (LM Studio, 9Router, etc.), `WebSearch`/`WebFetch` tools are stripped from the forwarded request to prevent unexpected tool calls that trigger unnecessary sub-agent spawning. Applied in both proxies (`_prepare_litellm_kwargs`) with defense-in-depth in `_resolve_gemini_with_tools_stream`/`_resolve_gemini_with_tools`.
 17. **Streaming Keepalive Heartbeat (v2.4.1)**: Under stream mode, proxies wrap iterators in `asyncio.wait_for` (4.0s timeout) to yield keepalive events (ping tokens or SSE comments) when downstream Gemini endpoints take long to respond, preventing idle proxy terminations.
 18. **Robust Delta Extraction (v2.4.1)**: Delta objects returned from diverse SDK versions and frameworks are recursively parsed via both attribute dot-notation and dictionary getters (handling nested fallback areas like `model_extra`, `extra_fields`, and `additional_kwargs`) for resilient content and reasoning text emission.
+19. **Generator Shield for Keepalive (v2.4.2)**: `asyncio.shield` is REQUIRED when wrapping `__anext__()` with `wait_for`. Without it, timeout cancels the async generator permanently → `StopAsyncIteration` → empty response. The `_nonstream_wrapper` path (WebSearch intercept) previously lacked shield, causing every request with thinking-enabled Gemini (>4s TTFB) to return empty.
+20. **429/503 Unified Soft Handling (v2.4.2)**: Both `rate_limit` (429) and `unavailable` (503) are temporary API errors. Neither freezes the key nor counts as pool member failure. All 4 pool paths apply a simple 5s backoff + retry instead. Key freeze and member failure are reserved for permanent errors: `bad_request`, `billing_error`, `invalid_key`.
+21. **Thinking Config Sub-agent Early Check (v2.4.2)**: `is_sub_agent_body` must be called BEFORE `body.get("thinking")` because Claude Code sends `thinking: {type: "adaptive", display: "summarized"}` in ALL requests (including sub-agents). Previously, the sub-agent check was only in the auto-enable branch (`if thinking is None`), causing sub-agents with body thinking to bypass detection and think on flash-lite → empty response.
+22. **Thinking Adaptive Normalization (v2.4.2)**: `type: "adaptive"` maps to `{"thinking": {"type": "enabled"}}` without forcing `budget_tokens`. The `display: "summarized"` field from Claude Code is stripped since it's invalid for Gemini/litellm. Dict copy is avoided — a new dict is constructed with only valid fields.
