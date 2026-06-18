@@ -487,6 +487,31 @@ pool.record_failure(member_used, reason)  # ghi đúng member thực tế
 
 Pool-level RPM được rate limiter tự động tính = `cfg.rpm × key_count` cho mỗi alias. Dashboard hiển thị `limiter.rpm_limit`, không dùng `cfg.rpm`.
 
+## CRITICAL — Keepalive & Generator Cancellation
+
+Khi wrap `__anext__()` của async generator với `asyncio.wait_for` (keepalive), **phải** dùng `asyncio.shield`:
+
+```python
+# ✅ ĐÚNG — shield bảo vệ generator
+evt = await asyncio.wait_for(asyncio.shield(it.__anext__()), timeout=4.0)
+
+# ❌ SAI — timeout cancel generator → response rỗng
+evt = await asyncio.wait_for(it.__anext__(), timeout=4.0)
+```
+
+## CRITICAL — 429/503 Soft Handling
+
+Cả `rate_limit` (429) và `unavailable` (503) đều là lỗi tạm thời:
+- **Không freeze key** — chỉ backoff 5s rồi retry
+- **Không `pool.record_failure`** — không đốt member
+- Key freeze và member failure chỉ cho lỗi vĩnh viễn: `bad_request`, `billing_error`, `invalid_key`
+
+## CRITICAL — Thinking Config
+
+1. **Sub-agent check TRƯỚC body thinking:** Claude Code gửi `thinking` trong **mọi** request. `is_sub_agent_body` phải ở đầu hàm, trước khi đọc `body.get("thinking")`.
+2. **`adaptive` không ép budget:** `if ttype == "adaptive": return {"thinking": {"type": "enabled"}}`
+3. **Strip `display`:** Luôn tạo dict mới, không copy body → giữ lại field `display` không hợp lệ.
+
 ### File chịu trách nhiệm
 
 - **Stream pool (OpenCode):** `opencode_proxy/handler/stream_executor.py:_stream_with_pool` — entry point, pool name → `_resolve_model`
@@ -494,6 +519,8 @@ Pool-level RPM được rate limiter tự động tính = `cfg.rpm × key_count`
 - **Key resolver:** `core/router/core/key_resolver.py:reserve_key` — pool path iteration + selection
 - **Pool state machine:** `core/router/pool.py:ModelPool` — failover, swap, exhaustion
 - **Rate limiter:** `core/limits/gemini_rate_limiter.py` — RPM/TPM/RPD sliding windows per alias
+- **Keepalive shield:** `claude_proxy/handler/stream_executor.py:79` — `asyncio.shield(it.__anext__())`
+- **Thinking config:** `claude_proxy/handler/proxy.py:48` — `_build_litellm_thinking` (sub-agent check, adaptive normalization)
 - **Stats dashboard:** `server/openai_server/routes/dashboard_routes.py:get_model_pools_api` — JSON + WebSocket stats
 - **Stats pusher:** `server/stats_pusher.py:StatsPusher._snapshot` — real-time RPM/TPM push
 

@@ -52,6 +52,15 @@ def _build_litellm_thinking(body: Dict[str, Any], model_id: str) -> Dict[str, An
     to Gemini's ``thinkingConfig`` — no ``extra_body`` needed.
     Returns ``{}`` when no thinking params given — each model uses API default.
     """
+    # Sub-agents never get thinking (even if body has it) — flash-lite can't handle it
+    try:
+        from src.logical_HQ_translator import is_sub_agent_body
+        if is_sub_agent_body(body):
+            logger.info("[Thinking Config] model_id=%s — sub-agent, thinking disabled", model_id)
+            return {}
+    except Exception:
+        pass
+
     m = model_id.lower()
     is_v3 = _is_gemini_v3(m)
 
@@ -61,32 +70,30 @@ def _build_litellm_thinking(body: Dict[str, Any], model_id: str) -> Dict[str, An
     # Auto-enable thinking for main agent if not specified and model supports it
     if thinking is None:
         try:
-            from src.logical_HQ_translator import is_sub_agent_body
-            is_sub = is_sub_agent_body(body)
             supports = _model_supports_thinking(model_id)
-            logger.info("[Thinking Sync] Checking auto-enable: is_sub_agent=%s, supports_thinking=%s", is_sub, supports)
-            if not is_sub and supports:
+            logger.info("[Thinking Sync] Checking auto-enable: is_sub_agent=no, supports_thinking=%s", supports)
+            if supports:
                 thinking = {
                     "type": "enabled",
                     "budget_tokens": 32768 if "pro" in m else 24576
                 }
         except Exception as ex:
-            logger.error("[Thinking Sync Error] Failed to detect sub-agent: %s", ex, exc_info=True)
-            pass
+            logger.error("[Thinking Sync Error] %s", ex, exc_info=True)
 
     logger.info("[Thinking Config] model_id=%s, auto_thinking=%s", model_id, thinking)
 
     if isinstance(thinking, dict):
-        if thinking.get("type") in ("enabled", "adaptive"):
+        ttype = thinking.get("type")
+        if ttype in ("enabled", "adaptive"):
             if is_v3:
                 return {"reasoning_effort": "medium"}
+            # "adaptive" → don't force budget, let Gemini decide
+            if ttype == "adaptive":
+                return {"thinking": {"type": "enabled"}}
             budget = thinking.get("budget_tokens")
             if budget == -1 or budget is None:
                 budget = 32768 if "pro" in m else 24576
-            t_copy = thinking.copy()
-            t_copy["budget_tokens"] = budget
-            t_copy["type"] = "enabled"  # normalize for litellm
-            return {"thinking": t_copy}
+            return {"thinking": {"type": "enabled", "budget_tokens": budget}}
         return {}  # disabled
 
     # 2. OpenAI-style explicit params
@@ -337,11 +344,20 @@ class ClaudeProxy(ClaudeProxyNonstreamMixin, ClaudeProxyStreamMixin):
 
                 duration = config.KEY_UNKNOWN_ERROR_COOLDOWN_SECONDS
                 reason = classify(e)
-                if reason == "rate_limit":
-                    router.record_429()
 
                 if reason == "unknown":
                     logger.error("[Pool Failure Detail] Unexpected error on key ...%s: %s", (api_key_val or "N/A")[-4:], e, exc_info=True)
+
+                # 429 (rate_limit) và 503 (unavailable): không freeze key, không count failure
+                # — chỉ backoff rồi retry
+                if reason in ("rate_limit", "unavailable"):
+                    logger.warning("[Pool Temp Unavailable] model=%s key=...%s reason=%s — waiting 5s then retry (attempt %d)",
+                                  member_used, (api_key_val or "N/A")[-4:] if api_key_val else "N/A", reason,
+                                  pool.total_attempts + 1)
+                    if reason == "rate_limit":
+                        router.record_429()
+                    await asyncio.sleep(5.0)
+                    continue
 
                 if api_key_val:
                     router.freeze_key(api_key_val, duration, model_id_val, reason)

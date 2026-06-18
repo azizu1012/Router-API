@@ -735,8 +735,17 @@ async def _stream_with_pool(
                 from src.api.claude_proxy.handler.helpers import _classify_error_reason as _classify_error_reason_static
                 reason = _classify_error_reason_static(error_text, api_key_val, model_id_val)
 
-            if reason == "rate_limit":
-                router.record_429()
+            # 429 (rate_limit) và 503 (unavailable): không freeze key, không count failure
+            # — chỉ backoff rồi retry
+            if reason in ("rate_limit", "unavailable"):
+                logger.warning("[OpenCode Pool Temp Unavailable] model=%s key=...%s reason=%s — waiting 5s then retry (attempt %d)",
+                              member_used, (api_key_val or "N/A")[-4:] if api_key_val else "N/A", reason,
+                              pool.total_attempts + 1)
+                if reason == "rate_limit":
+                    router.record_429()
+                yield _openai_sse(model_name, chunk_id=chunk_id)
+                await asyncio.sleep(5.0)
+                continue
 
             _err_key = api_key_val or saved_key
             if _err_key:
