@@ -121,14 +121,19 @@ def _build_litellm_thinking(body, model_id):
 
 Nếu check sau (chỉ khi `thinking is None`), sub-agent có thinking trong body sẽ bypass check → thinking enabled trên flash-lite → response rỗng.
 
-### 8. Thinking `"adaptive"` không ép budget_tokens
+### 8. Thinking `"adaptive"` dùng budget vừa phải
 
 ```python
-# ✅ ĐÚNG — adaptive để Gemini tự quyết định budget
+# ✅ ĐÚNG — budget 4096 cho flash, 8192 cho pro — đủ thinking nhưng không treo lâu
+if ttype == "adaptive":
+    budget = 4096 if "flash" in m else 8192
+    return {"thinking": {"type": "enabled", "budget_tokens": budget}}
+
+# ❌ SAI — không budget thì Gemini think vô hạn, TTFB 3ph+
 if ttype == "adaptive":
     return {"thinking": {"type": "enabled"}}
 
-# ❌ SAI — ép budget 24576 trên flash làm model think hết budget, không output
+# ❌ SAI — ép budget 24576+ trên flash làm model think hết budget, không output
 budget = 32768 if "pro" in m else 24576
 return {"thinking": {"type": "enabled", "budget_tokens": budget}}
 ```
