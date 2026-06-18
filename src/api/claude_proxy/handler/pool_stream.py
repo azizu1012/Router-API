@@ -24,8 +24,16 @@ async def _stream_with_pool(
     pool: Any, model_alias: str, auth_key_prefix: str = "", account: Optional[Dict[str, Any]] = None
 ) -> AsyncIterator[bytes]:
     committed = False
+    from src.core.router.core.router import is_sub_agent_context
+    is_sub = is_sub_agent_context.get()
     pool.start()
     while not pool.exhausted:
+        if is_sub:
+            # Sub-agents must fail fast if pool attempts >= 3 or time spent >= 15 seconds
+            if pool.total_attempts >= 3 or pool.elapsed >= 15.0:
+                logger.warning("[Sub-Agent Fast-Fail Stream] Pool attempts: %d, elapsed: %.1fs. Failing pool routing early.", pool.total_attempts, pool.elapsed)
+                break
+
         yield _sse("ping", {"type": "ping", "retry": pool.total_attempts, "reason": "initial"})
         actual_alias = pool.current_model
         api_key_val = None

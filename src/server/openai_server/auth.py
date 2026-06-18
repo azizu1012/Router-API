@@ -87,6 +87,17 @@ async def _apply_account_limit(account: Dict[str, Any], body: Dict[str, Any], is
         else:
             system_prompt = str(system_instruction or "")
 
+        # For OpenAI/OpenCode formats, system prompt can be in the messages list with role "system" or "developer"
+        if not system_prompt:
+            for msg in body.get("messages", []):
+                if msg.get("role") in ("system", "developer"):
+                    content = msg.get("content", "")
+                    if isinstance(content, str):
+                        system_prompt = content
+                    elif isinstance(content, list):
+                        system_prompt = "\n".join([str(item.get("text", "")) for item in content if isinstance(item, dict)])
+                    break
+
         if system_prompt:
             system_prompt_lower = system_prompt.lower()
             if "you are an interactive agent" in system_prompt_lower:
@@ -123,8 +134,8 @@ async def _apply_account_limit(account: Dict[str, Any], body: Dict[str, Any], is
                     "task agent", "task_agent", "task-agent",
                 ]
                 is_claude_code = (
-                    "you are claude code" in system_prompt_lower 
-                    or "cc_version=" in system_prompt_lower 
+                    "you are claude code" in system_prompt_lower
+                    or "cc_version=" in system_prompt_lower
                     or "claude-code" in system_prompt_lower
                 )
                 if any(kw in system_prompt_lower for kw in sub_agent_keywords):
@@ -156,6 +167,17 @@ async def _apply_account_limit(account: Dict[str, Any], body: Dict[str, Any], is
                     if is_sub_agent:
                         break
 
+    if "non-existent-model-to-trigger-error-directly" in model.lower():
+        raise HTTPException(
+            status_code=429,
+            detail={
+                "error": {
+                    "message": "Account rate limit exceeded: simulated error for testing",
+                    "type": "rate_limit_error",
+                }
+            },
+        )
+
     if is_sub_agent:
         target_model = None
         if account:
@@ -182,8 +204,17 @@ async def _apply_account_limit(account: Dict[str, Any], body: Dict[str, Any], is
             is_custom = True
     if not is_custom:
         pool_models = router.get_pool_custom_models(model_alias)
+        # Only treat as custom if there are actually enabled custom endpoints in the pool
+        # router.get_pool_custom_models internally filters: if not ep.get("enabled", True): continue
         if pool_models:
-            is_custom = True
+            # Additionally, check if at least one custom endpoint in the pool is not frozen
+            has_active_custom = False
+            for pm in pool_models:
+                if not _custom_endpoint_manager.is_endpoint_frozen(pm["endpoint"].get("name", "")):
+                    has_active_custom = True
+                    break
+            if has_active_custom:
+                is_custom = True
     if is_custom:
         pool_type = "custom"
 
@@ -216,4 +247,177 @@ async def _apply_account_limit(account: Dict[str, Any], body: Dict[str, Any], is
 def _auth_key_prefix(account: Dict[str, Any]) -> str:
     ak = account.get("auth_key") or ""
     return ak[-8:] if len(ak) >= 8 else ak
+
+
+def is_sub_agent_request(body: Dict[str, Any], is_opencode: bool = False) -> bool:
+    """Helper to detect sub-agent request using both prompt and structure indicators."""
+    if is_opencode:
+        from src.api.opencode_proxy.handler.proxy import _is_sub_agent_request
+        return _is_sub_agent_request(body)
+    else:
+        from src.logical_HQ_translator.sse_cache_agent import is_sub_agent_body
+        return is_sub_agent_body(body)
+
+
+def handle_sub_agent_error(body: Dict[str, Any], exc: Exception, format_type: str = "openai") -> Any:
+    """Intercept sub-agent error and return a simulated successful HTTP 200 response.
+
+    This prevents the client (Claude Code / OpenCode CLI) from crashing when sub-agents encounter errors.
+    """
+    from fastapi.responses import JSONResponse, StreamingResponse
+    import uuid
+    import time
+    import json
+
+    error_msg = str(exc)
+    # Determine reason classification
+    reason = "pool_exhausted"
+    if "rate" in error_msg.lower() or "limit" in error_msg.lower() or "quota" in error_msg.lower() or "429" in error_msg:
+        reason = "rate_limit"
+    elif "503" in error_msg or "unavailable" in error_msg or "overloaded" in error_msg or "frozen" in error_msg:
+        reason = "unavailable"
+    elif "401" in error_msg or "unauthorized" in error_msg or "api key" in error_msg.lower():
+        reason = "invalid_key"
+
+    # Let's generate a friendly simulated error message
+    from src.api.claude_proxy.handler.helpers import get_system_status_summary
+    model_name = body.get("model") or "gemini-flash-lite"
+    warning_text = get_system_status_summary(model_name, reason)
+
+    # Append English translation since we selected "Bi-lingual (Recommended)"
+    if "vietnamese" in warning_text.lower() or "tạm thời" in warning_text.lower():
+        warning_text += (
+            "\n\n---\n"
+            "⚠️ **[Sub-Agent Intercepted Failure]** ⚠️\n"
+            f"The proxy intercepted an API failure ({reason}) for this sub-agent request.\n"
+            "To prevent the client from crashing, this message is simulated as a successful model output.\n"
+            "Please wait a moment or try compressing your files/using `/compact` if context is too large."
+        )
+
+    is_stream = body.get("stream", False)
+
+    if format_type == "openai":
+        # OpenAI/OpenCode chat.completion format
+        mapped_model = model_name
+        if is_stream:
+            async def stream_generator():
+                cid = f"chatcmpl-{uuid.uuid4().hex}"
+                created = int(time.time())
+
+                # Yield role delta
+                role_chunk = {
+                    "id": cid, "object": "chat.completion.chunk", "created": created, "model": mapped_model,
+                    "choices": [{"index": 0, "delta": {"role": "assistant"}, "finish_reason": None}],
+                }
+                yield f"data: {json.dumps(role_chunk, ensure_ascii=False)}\n\n".encode("utf-8")
+
+                # Yield text delta
+                text_chunk = {
+                    "id": cid, "object": "chat.completion.chunk", "created": created, "model": mapped_model,
+                    "choices": [{"index": 0, "delta": {"content": warning_text}, "finish_reason": None}],
+                }
+                yield f"data: {json.dumps(text_chunk, ensure_ascii=False)}\n\n".encode("utf-8")
+
+                # Yield stop delta
+                stop_chunk = {
+                    "id": cid, "object": "chat.completion.chunk", "created": created, "model": mapped_model,
+                    "choices": [{"index": 0, "delta": {}, "finish_reason": "stop"}],
+                }
+                yield f"data: {json.dumps(stop_chunk, ensure_ascii=False)}\n\n".encode("utf-8")
+                yield b"data: [DONE]\n\n"
+
+            return StreamingResponse(stream_generator(), media_type="text/event-stream")
+        else:
+            return JSONResponse(
+                status_code=200,
+                content={
+                    "id": f"chatcmpl-{uuid.uuid4().hex}",
+                    "object": "chat.completion",
+                    "created": int(time.time()),
+                    "model": mapped_model,
+                    "choices": [
+                        {
+                            "index": 0,
+                            "message": {"role": "assistant", "content": warning_text},
+                            "finish_reason": "stop"
+                        }
+                    ],
+                    "usage": {
+                        "prompt_tokens": len(str(body.get("messages", []))) // 4,
+                        "completion_tokens": len(warning_text) // 4,
+                        "total_tokens": (len(str(body.get("messages", []))) // 4) + (len(warning_text) // 4)
+                    }
+                }
+            )
+    else:
+        # Anthropic format
+        if is_stream:
+            async def stream_generator():
+                msg_id = "msg_" + uuid.uuid4().hex
+                from src.logical_HQ_translator.sse_cache_agent import _sse
+
+                # 1. message_start
+                yield _sse("message_start", {
+                    "type": "message_start",
+                    "message": {
+                        "id": msg_id, "type": "message", "role": "assistant", "model": model_name,
+                        "content": [], "stop_reason": None, "stop_sequence": None,
+                        "usage": {"input_tokens": len(str(body.get("messages", []))) // 4, "output_tokens": 0},
+                    },
+                })
+
+                # 2. content_block_start
+                yield _sse("content_block_start", {
+                    "type": "content_block_start", "index": 0,
+                    "content_block": {"type": "text", "text": ""}
+                })
+
+                # 3. content_block_delta
+                yield _sse("content_block_delta", {
+                    "type": "content_block_delta", "index": 0,
+                    "delta": {"type": "text_delta", "text": warning_text}
+                })
+
+                # 4. content_block_stop
+                yield _sse("content_block_stop", {"type": "content_block_stop", "index": 0})
+
+                # 5. message_delta
+                yield _sse("message_delta", {
+                    "type": "message_delta",
+                    "delta": {"stop_reason": "end_turn", "stop_sequence": None},
+                    "usage": {"output_tokens": len(warning_text) // 4},
+                })
+
+                # 6. message_stop
+                yield _sse("message_stop", {"type": "message_stop"})
+
+            response_headers = {
+                "anthropic-version": "2023-06-01",
+                "Cache-Control": "no-cache",
+                "Connection": "keep-alive",
+                "X-Accel-Buffering": "no",
+            }
+            return StreamingResponse(stream_generator(), media_type="text/event-stream", headers=response_headers)
+        else:
+            response_headers = {
+                "anthropic-version": "2023-06-01",
+            }
+            return JSONResponse(
+                status_code=200,
+                headers=response_headers,
+                content={
+                    "id": "msg_" + uuid.uuid4().hex,
+                    "type": "message",
+                    "role": "assistant",
+                    "model": model_name,
+                    "content": [{"type": "text", "text": warning_text}],
+                    "stop_reason": "end_turn",
+                    "stop_sequence": None,
+                    "usage": {
+                        "input_tokens": len(str(body.get("messages", []))) // 4,
+                        "output_tokens": len(warning_text) // 4,
+                    },
+                }
+            )
+
 

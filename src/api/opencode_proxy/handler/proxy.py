@@ -224,27 +224,29 @@ class OpenCodeProxy:
             reservation = {}
             try:
                 resp, api_key_val, model_id_val, input_tokens, reservation = await self._resolve_and_call(
-                    body, messages, tools, pool.current_model,
+                    body, messages, tools, model_alias,
                     pool_mode=True, pool=pool, account=account, is_stream=False,
                 )
+                model_id_val = reservation.get("model_id", model_id_val)
                 is_custom = reservation.get("provider") == "custom"
+                member_used = reservation.get("model_alias", pool.current_model)
                 # record_success + pool.record_success handled in _resolve_and_call → _execute_nonstream
                 if is_custom:
-                    endpoint_manager.mark_endpoint_success(reservation.get("name", pool.current_model))
-                # Debug: log resp before build_response
+                    endpoint_manager.mark_endpoint_success(reservation.get("name", member_used))
                 resp_content = "?"
                 if isinstance(resp, dict):
                     resp_content = str(resp.get("choices", [{}])[0].get("message", {}).get("content", "N/A") if resp.get("choices") else "no_choices")[:200]
                 logger.info("[NonStreamPool] returning resp type=%s content=%r is_custom=%s model=%s",
-                    type(resp).__name__, resp_content, is_custom, pool.current_model)
-                return build_response(body, resp, pool.current_model, api_key_val, input_tokens)
+                    type(resp).__name__, resp_content, is_custom, member_used)
+                return build_response(body, resp, model_alias, api_key_val, input_tokens)
             except HTTPException:
                 raise
             except Exception as e:
+                member_used = reservation.get("model_alias", pool.current_model) if reservation else pool.current_model
                 if is_custom:
                     logger.warning("[CustomEndpoint OpenCode NonStream] Failed on custom endpoint %s: %s, falling back to Gemini pool", model_id_val, e)
-                    endpoint_manager.mark_endpoint_failure(reservation.get("name", pool.current_model))
-                    if pool.record_failure(model_alias, "custom_endpoint_error"):
+                    endpoint_manager.mark_endpoint_failure(reservation.get("name", member_used))
+                    if pool.record_failure(member_used, "custom_endpoint_error"):
                         if not pool.swap():
                             if pool.exhausted:
                                 break
@@ -255,9 +257,9 @@ class OpenCodeProxy:
                     import asyncio
                     await asyncio.sleep(_retry_delay(pool.total_attempts))
                     continue
-                if not await ocerror.classify_pool_error(e, pool, pool.current_model, api_key_val, model_id_val):
+                if not await ocerror.classify_pool_error(e, pool, member_used, api_key_val, model_id_val):
                     raise
-        return error_response(body, pool.current_model if pool.current_model else model_alias)
+        return error_response(body, model_alias)
 
     async def _nonstream_standalone(
         self, body: Dict[str, Any], messages: List[Dict[str, Any]], tools: List[Dict[str, Any]],

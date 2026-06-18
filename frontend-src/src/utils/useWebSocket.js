@@ -22,10 +22,12 @@ export function useWebSocket(token) {
 
     socket.onopen = () => {
       if (!mountedRef.current) { socket.close(); return; }
+      console.log('[WS Connected]');
       setConnected(true);
       // Re-subscribe all active channels
       const chs = subscribeQueue.current;
       if (chs.length > 0) {
+        console.log('[WS Re-subscribing]', chs);
         socket.send(JSON.stringify({ type: 'subscribe', channels: chs }));
       }
     };
@@ -33,6 +35,7 @@ export function useWebSocket(token) {
     socket.onmessage = (e) => {
       try {
         const msg = JSON.parse(e.data);
+        console.log('[WS Receive]', msg);
         const channel = msg.channel;
         if (channel) {
           const cbs = listeners.current[channel] || [];
@@ -42,7 +45,7 @@ export function useWebSocket(token) {
         const wildcard = listeners.current['*'] || [];
         wildcard.forEach(fn => fn(msg));
       } catch (err) {
-        // ignore parse errors
+        console.error('[WS Parse Error]', err);
       }
     };
 
@@ -79,6 +82,7 @@ export function useWebSocket(token) {
     listeners.current[channel] = [...(listeners.current[channel] || []), callback];
 
     if (ws.current && ws.current.readyState === WebSocket.OPEN) {
+      console.log('[WS Sending Subscribe]', channel);
       ws.current.send(JSON.stringify({ type: 'subscribe', channels: [channel] }));
     }
 

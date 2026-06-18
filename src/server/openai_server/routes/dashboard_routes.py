@@ -147,16 +147,32 @@ async def dashboard_me(request: Request):
         p_rpm_left = max(0, shown_rpm_limit - p_rpm_used)
         p_tpm_left = max(0, shown_tpm_limit - p_tpm_used)
         p_rpd_left = max(0, shown_rpd_limit - p_rpd_used)
-        
+
         pool_stats[pkey]["rpm_left"] = min(p_rpm_left, pool_stats[pkey]["rpm_left"])
+        pool_stats[pkey]["tpm_left"] = min(p_tpm_left, pool_stats[pkey]["tpm_left"])
         pool_stats[pkey]["rpd_left"] = min(p_rpd_left, pool_stats[pkey]["rpd_left"])
-        
+
+        from src.core.api_config import MODEL_CONTEXT_LENGTH
+
         for label, mins in [("1h", 60), ("12h", 720), ("24h", 1440)]:
+            # Max requests user can make in this period is bounded by their RPD left and RPM over the period
+            max_reqs_left = min(p_rpd_left, p_rpm_left + (mins - 1) * shown_rpm_limit)
+            # Max tokens user can consume based on their requests limits and model context length
+            user_tokens_by_rpd_left = max_reqs_left * MODEL_CONTEXT_LENGTH
+
+            # User's token-per-minute capability over the period
             user_tokens_in_period = p_tpm_left + (mins - 1) * shown_tpm_limit
-            pool_stats[pkey][f"tokens_{label}_left"] = min(int(user_tokens_in_period), pool_stats[pkey][f"tokens_{label}_left"])
-            
+
+            effective_user_left = min(user_tokens_in_period, user_tokens_by_rpd_left)
+            pool_stats[pkey][f"tokens_{label}_left"] = min(int(effective_user_left), pool_stats[pkey][f"tokens_{label}_left"])
+
+            # For limits (maximum potential capacity)
+            max_reqs_limit = min(shown_rpd_limit, mins * shown_rpm_limit)
+            user_tokens_by_rpd_limit = max_reqs_limit * MODEL_CONTEXT_LENGTH
             user_tokens_in_period_total = mins * shown_tpm_limit
-            pool_stats[pkey][f"tokens_{label}_limit"] = min(int(user_tokens_in_period_total), pool_stats[pkey][f"tokens_{label}_limit"])
+
+            effective_user_limit = min(user_tokens_in_period_total, user_tokens_by_rpd_limit)
+            pool_stats[pkey][f"tokens_{label}_limit"] = min(int(effective_user_limit), pool_stats[pkey][f"tokens_{label}_limit"])
             
         res_pools[pkey] = {
             "rpm": shown_rpm_limit,
@@ -315,6 +331,9 @@ async def dashboard_my_stats(request: Request, days: int = 30):
 async def get_model_pools_api(request: Request):
     _require_dashboard(request)
     from src.core.api_config import AVAILABLE_MODELS, MODEL_POOLS, is_sunset_25
+    from src.core.router.core.router import router as core_router
+
+    from src.core.limits.gemini_rate_limiter import get_rate_limiter
 
     pools_data = []
     for pool_name, pool_cfg in MODEL_POOLS.items():
@@ -323,17 +342,46 @@ async def get_model_pools_api(request: Request):
             if is_sunset_25() and member in ("gemini-flash-25", "gemini-flash-25-lite"):
                 continue
             cfg = AVAILABLE_MODELS.get(member, {})
+            limiter = get_rate_limiter(member)
+            backing_id = cfg.get("model_id", member)
             members.append({
-                "model_id": cfg.get("model_id", "unknown"),
-                "rpm": cfg.get("rpm", 0),
-                "tpm": cfg.get("tpm", 0),
+                "model_id": backing_id,
+                "alias": member,
+                "rpm": limiter.rpm_limit,
+                "tpm": limiter.tpm_limit,
             })
-        total_rpm = sum(m["rpm"] for m in members)
-        total_tpm = sum(m["tpm"] for m in members)
+
+        # Append assigned custom endpoints (avoiding double-counting custom endpoint models when pool stats are calculated)
+        try:
+            custom_endpoints = core_router.get_pool_custom_models(pool_name)
+            for item in custom_endpoints:
+                model_id = item["model_id"]
+                # Avoid duplicates
+                if not any(m["model_id"] == model_id for m in members):
+                    members.append({
+                        "model_id": model_id,
+                        "rpm": 10, # Custom endpoints are rate-limited via _CUSTOM_POOL_RPM = 10
+                        "tpm": 999999999, # Unlimited placeholder
+                    })
+        except Exception as e:
+            import logging
+            logging.getLogger("uvicorn").error("[dashboard_routes] Failed to get custom models for pool %s: %s", pool_name, e)
+
+        total_rpm = sum(m["rpm"] for m in members if m["tpm"] != 999999999)
+        total_tpm = sum(m["tpm"] for m in members if m["tpm"] != 999999999)
         pools_data.append({
             "name": pool_name,
             "display_name": f"{pool_name} (Pool)",
-            "models": ", ".join(m["model_id"] for m in members),
+            "members": [
+                {
+                    "alias": m.get("alias", m["model_id"]),
+                    "model_id": m["model_id"],
+                    "rpm": m["rpm"],
+                    "tpm": m["tpm"],
+                }
+                for m in members
+            ],
+            "models": ", ".join(m.get("alias", m["model_id"]) for m in members),
             "rpm": f"{total_rpm} RPM",
             "tpm": f"{total_tpm:,} TPM",
         })

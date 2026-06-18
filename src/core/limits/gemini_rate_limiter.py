@@ -182,6 +182,10 @@ def _penalty_key(key: str, actual_model_id: Optional[str] = None) -> str:
 
 
 def apply_error_penalty(key: str, reason: str, actual_model_id: Optional[str] = None) -> None:
+    from src.core.router.core.router import is_sub_agent_context
+    if is_sub_agent_context.get():
+        logger.info("[Sub-Agent] Bypassing apply_error_penalty for key ...%s (Reason: %s)", key[-8:], reason)
+        return
     cfg = PENALTY_MAP.get(reason)
     if not cfg:
         return

@@ -2,7 +2,7 @@ import { useEffect, useRef, useCallback } from 'react';
 import { Terminal } from '@xterm/xterm';
 import { FitAddon } from '@xterm/addon-fit';
 import '@xterm/xterm/css/xterm.css';
-import { useWebSocket } from '../utils/useWebSocket';
+import { useApp } from '../context/AppContext';
 
 function colorize(line) {
   let result = line;
@@ -23,7 +23,8 @@ export default function LogTerminal({
   const terminalRef = useRef(null);
   const termInstance = useRef(null);
   const fitAddonRef = useRef(null);
-  const { connected, subscribe } = useWebSocket(token);
+  const { wsHook } = useApp();
+  const { connected, subscribe } = wsHook || {};
 
   const writeLine = useCallback((line) => {
     const term = termInstance.current;

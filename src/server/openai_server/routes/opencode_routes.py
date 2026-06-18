@@ -4,7 +4,7 @@ from fastapi.responses import JSONResponse, StreamingResponse
 from src.core.config_n_logg.logger import logger_api
 from src.api.opencode_proxy import opencode_proxy
 
-from src.server.openai_server.auth import _resolve_auth, _check_auth, _apply_account_limit
+from src.server.openai_server.auth import _resolve_auth, _check_auth, _apply_account_limit, is_sub_agent_request, handle_sub_agent_error
 from src.core.limits.account_limiter import get_effective_limits_by_pool
 from .app_init import app
 
@@ -84,6 +84,10 @@ async def opencode_chat_completions(
 
     except Exception as e:
         logger_api.error("opencode_chat_completions failed: %s", e)
+        if is_sub_agent_request(body, is_opencode=True):
+            logger_api.info("Intercepted sub-agent opencode_chat_completions error: %s, returning simulated response", e)
+            return handle_sub_agent_error(body, e, format_type="openai")
+
         msg = str(e)
         if "quota_exhausted" in msg.lower() or "rate_limited" in msg.lower():
             return JSONResponse(

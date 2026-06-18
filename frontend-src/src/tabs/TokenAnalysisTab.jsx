@@ -131,7 +131,7 @@ export default function TokenAnalysisTab() {
                   </div>
                 </div>
 
-                <div className="relative w-full h-3 bg-base-200/50 rounded-full overflow-hidden border border-white/5">
+                <div className="relative w-full h-3 bg-base-content/15 rounded-full overflow-hidden border border-base-content/5">
                   <div 
                     className={`h-full ${barBg} rounded-full transition-all duration-500 ease-out`}
                     style={{ width: `${pct}%` }}

@@ -308,3 +308,13 @@ def atomic_disable_key(key: str) -> None:
                 c.close()
     _db_executor.submit(_write)
 
+
+def reset_active_requests_db() -> None:
+    with _LOCK:
+        c = _conn()
+        try:
+            c.execute("UPDATE key_status SET active_requests = 0")
+            c.commit()
+        finally:
+            c.close()
+

@@ -3,7 +3,6 @@ import { useApp } from '../context/AppContext';
 import { t } from '../utils/i18n';
 import { fmt } from '../utils/format';
 import { api } from '../utils/api';
-import { useWebSocket } from '../utils/useWebSocket';
 import { Wifi, WifiOff, User, Shield, Search, Zap, Calendar, Activity, Info, HelpCircle } from 'lucide-react';
 import Card from '../components/Card';
 import Badge from '../components/Badge';
@@ -11,18 +10,17 @@ import Select from '../components/Select';
 import Loading from '../components/Loading';
 
 export default function MyAccountTab() {
-  const { tabData, token, lang, refreshTab } = useApp();
+  const { tabData, token, lang, refreshTab, wsHook } = useApp();
   const data = tabData.myacc;
-  const wsHook = useWebSocket(token);
   const [liveActivity, setLiveActivity] = useState(null);
 
   useEffect(() => {
-    if (!wsHook.connected) return;
+    if (!wsHook || !wsHook.connected) return;
     const unsub = wsHook.subscribe('stats:overview', (msg) => {
       if (msg.type === 'stats_snapshot') setLiveActivity(msg);
     });
     return unsub;
-  }, [wsHook.connected]);
+  }, [wsHook, wsHook?.connected]);
 
   const [wsLoading, setWsLoading] = useState(false);
   const [resetCountdown, setResetCountdown] = useState('');
@@ -90,7 +88,7 @@ export default function MyAccountTab() {
     return (
       <Card variant="glass" padding="md" className="flex flex-col space-y-2">
         <Card.Row label={title} value={val} color={textColorClass} />
-        <div className="w-full h-1.5 bg-base-200/60 rounded-full overflow-hidden">
+        <div className="w-full h-1.5 bg-base-content/20 rounded-full overflow-hidden">
           <div className={`h-full ${colorClass} rounded-full`} style={{ width: `${percent}%` }} />
         </div>
         <div className="flex justify-between items-center text-[10px] text-base-content/50 font-bold pt-1">

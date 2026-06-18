@@ -122,7 +122,7 @@ export default function KeysTab() {
     setIsAdding(true);
     setAddMsg({ text: '⏳ Đang thêm...', type: 'info' });
     try {
-      await api('/dashboard/keys', {
+      await api('/dashboard/admin/keys/add', {
         method: 'POST',
         body: JSON.stringify({ api_key: newKey.trim() })
       }, token);

@@ -22,9 +22,10 @@ async def main():
         "stream": False,
     }
     try:
-        from src.server.openai_server.handler import _openai_chat_completion, _completion_response
+        from src.server.openai_server.handler import _openai_chat_completion
+        from src.server.openai_server.completion_helpers import completion_response
         result = await _openai_chat_completion(body)
-        resp = _completion_response(body, result)
+        resp = completion_response(body, result)
         msg = resp["choices"][0]["message"]
         has_reasoning = "reasoning_content" in msg and msg["reasoning_content"]
         print(f"[OpenAI] content={msg['content'][:80]}...")
@@ -73,8 +74,9 @@ async def main():
         print(f"[OpenCode] FAIL: {e}")
 
     # 4. Verify default thinking config builder
+    from src.core.providers.gemini.thinking_config import build_thinking_config
     for m in ["gemini-3-flash-preview", "gemini-2.5-flash", "gemini-3.5-flash", "gemini-2.5-flash-lite"]:
-        tc = caller.build_thinking_config(m)
+        tc = build_thinking_config(m)
         print(f"[Default] {m}: thinking_level={getattr(tc, 'thinking_level', '-')}, thinking_budget={getattr(tc, 'thinking_budget', '-')}")
 
 if __name__ == "__main__":
