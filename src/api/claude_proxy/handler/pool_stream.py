@@ -40,14 +40,17 @@ async def _stream_with_pool(
         saved_key = None
         model_id_val = ""
         reservation = {}
+        member_used = actual_alias
         try:
             est_input = len(str(openai_messages)) // 4
             max_output = min(int(body.get("max_tokens", 4096)), config.MAX_OUTPUT_TOKENS)
             estimated_tokens = est_input + max_output
-            model_alias_val, model_id_val, api_key_val, litellm_model_val, reservation = await _resolve_model(body, actual_alias, account=account, estimated_tokens=estimated_tokens, retry_attempt=pool.total_attempts, pool_mode=True)
+            model_alias_val, model_id_val, api_key_val, litellm_model_val, reservation = await _resolve_model(body, model_alias, account=account, estimated_tokens=estimated_tokens, retry_attempt=pool.total_attempts, pool_mode=True)
+            model_id_val = reservation.get("model_id", model_id_val)
+            member_used = reservation.get("model_alias", actual_alias)
             logger.info(
-                "[Pool Reserve Stream] Reserved key ...%s for model_alias=%s (resolved model_id=%s) | Attempt: %d (remaining=%ds) | Estimated tokens: %d",
-                api_key_val[-8:] if api_key_val else "N/A", actual_alias, model_id_val, pool.total_attempts + 1, int(pool.remaining_time()), estimated_tokens
+                "[Pool Reserve Stream] Reserved key ...%s for pool=%s model_alias=%s (model_id=%s) | Attempt: %d (remaining=%ds) | Estimated tokens: %d",
+                api_key_val[-8:] if api_key_val else "N/A", model_alias, reservation.get("model_alias", model_alias), model_id_val, pool.total_attempts + 1, int(pool.remaining_time()), estimated_tokens
             )
             try:
                 from src.logical_HQ_translator import save_resolved_model_for_cwd
@@ -71,11 +74,11 @@ async def _stream_with_pool(
                     input_tokens = max(1, len(str(openai_messages)) // 4)
 
                 max_output = min(int(body.get("max_tokens", 4096)), config.MAX_OUTPUT_TOKENS)
-                has_quota = await router.acquire_quota(input_tokens + max_output, actual_alias)
+                has_quota = await router.acquire_quota(input_tokens + max_output, model_alias)
                 if not has_quota:
                     apply_error_penalty(api_key_val, "rate_limit_rpm_tpm", model_id_val)
                     router.freeze_key(api_key_val, 15, model_id_val, "rate_limit")
-                    if pool.record_failure(actual_alias, "rate_limit"):
+                    if pool.record_failure(member_used, "rate_limit"):
                         if not pool.swap():
                             if pool.exhausted:
                                 break
@@ -127,7 +130,7 @@ async def _stream_with_pool(
                 router.freeze_key(_err_key, 15, model_id_val, "rate_limit")
                 apply_error_penalty(_err_key, "rate_limit", model_id_val)
             router.record_failure("rate_limit")
-            if pool.record_failure(actual_alias, "rate_limit"):
+            if pool.record_failure(member_used, "rate_limit"):
                 if not pool.swap():
                     if pool.exhausted:
                         break
@@ -151,9 +154,9 @@ async def _stream_with_pool(
             is_custom = reservation.get("provider") == "custom" if "reservation" in locals() else False
             if is_custom:
                 logger.warning("[CustomEndpoint Stream] Failed on custom endpoint %s: %s, falling back to Gemini pool", model_id_val, e)
-                ep_name = reservation.get("name", actual_alias)
+                ep_name = reservation.get("name", member_used)
                 endpoint_manager.mark_endpoint_failure(ep_name)
-                if pool.record_failure(actual_alias, "custom_endpoint_error"):
+                if pool.record_failure(member_used, "custom_endpoint_error"):
                     if not pool.swap():
                         if pool.exhausted:
                             break
@@ -180,7 +183,7 @@ async def _stream_with_pool(
                     router.freeze_key(api_key_val, 300, model_id_val, "billing_error")
                     apply_error_penalty(api_key_val, "billing_error", model_id_val)
                 router.record_failure("billing_error")
-                if pool.record_failure(actual_alias, "billing_error"):
+                if pool.record_failure(member_used, "billing_error"):
                     if not pool.swap():
                         if pool.exhausted:
                             break
@@ -213,12 +216,12 @@ async def _stream_with_pool(
                     apply_error_penalty(_err_key, reason, model_id_val)
             router.record_failure(reason)
             _err_key2 = api_key_val or saved_key or "N/A"
-            failure_state = pool.failure_state_after_next(actual_alias, reason)
+            failure_state = pool.failure_state_after_next(member_used, reason)
             logger.warning("[Pool Failure] Key ...%s failed on model %s | Reason: %s | Action: %s (model failures: %d/%d, pool total attempts: %d, remaining=%ds)",
-                          _err_key2[-4:] if len(_err_key2) >= 4 else _err_key2, actual_alias, reason, failure_state["action"],
+                          _err_key2[-4:] if len(_err_key2) >= 4 else _err_key2, member_used, reason, failure_state["action"],
                           failure_state["failures_after"], failure_state["threshold"],
                           pool.total_attempts + 1, int(pool.remaining_time()))
-            if pool.record_failure(actual_alias, reason):
+            if pool.record_failure(member_used, reason):
                 if not pool.swap():
                     if pool.exhausted:
                         break
