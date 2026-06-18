@@ -75,7 +75,7 @@ def _build_litellm_thinking(body: Dict[str, Any], model_id: str) -> Dict[str, An
             if supports:
                 thinking = {
                     "type": "enabled",
-                    "budget_tokens": 32768 if "pro" in m else 24576
+                    "budget_tokens": 4096
                 }
         except Exception as ex:
             logger.error("[Thinking Sync Error] %s", ex, exc_info=True)
@@ -87,13 +87,12 @@ def _build_litellm_thinking(body: Dict[str, Any], model_id: str) -> Dict[str, An
         if ttype in ("enabled", "adaptive"):
             if is_v3:
                 return {"reasoning_effort": "medium"}
-            # "adaptive" → modest budget, let Gemini decide but cap thinking time
+            # "adaptive" → budget 4096, đủ thinking nhưng ko treo lâu
             if ttype == "adaptive":
-                budget = 4096 if "flash" in m else 8192
-                return {"thinking": {"type": "enabled", "budget_tokens": budget}}
+                return {"thinking": {"type": "enabled", "budget_tokens": 4096}}
             budget = thinking.get("budget_tokens")
             if budget == -1 or budget is None:
-                budget = 32768 if "pro" in m else 24576
+                budget = 32768 if "pro" in m else 4096
             return {"thinking": {"type": "enabled", "budget_tokens": budget}}
         return {}  # disabled
 
