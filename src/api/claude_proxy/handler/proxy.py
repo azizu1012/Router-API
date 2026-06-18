@@ -77,7 +77,7 @@ def _build_litellm_thinking(body: Dict[str, Any], model_id: str) -> Dict[str, An
     logger.info("[Thinking Config] model_id=%s, auto_thinking=%s", model_id, thinking)
 
     if isinstance(thinking, dict):
-        if thinking.get("type") == "enabled":
+        if thinking.get("type") in ("enabled", "adaptive"):
             if is_v3:
                 return {"reasoning_effort": "medium"}
             budget = thinking.get("budget_tokens")
@@ -85,6 +85,7 @@ def _build_litellm_thinking(body: Dict[str, Any], model_id: str) -> Dict[str, An
                 budget = 32768 if "pro" in m else 24576
             t_copy = thinking.copy()
             t_copy["budget_tokens"] = budget
+            t_copy["type"] = "enabled"  # normalize for litellm
             return {"thinking": t_copy}
         return {}  # disabled
 
