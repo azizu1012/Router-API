@@ -68,10 +68,18 @@ async def classify_pool_error(
         is_region_quota = "apirequestsperminuteperprojectperregion" in text or "api_requests_per_minute_per_project_per_region" in text
         reason = classify(e)
 
-    if reason == "rate_limit":
-        router.record_429()
     if reason == "unknown":
         logger.error("[OpenCode Pool Error] key=...%s model=%s: %s", (api_key_val or "N/A")[-4:], actual_alias, e)
+
+    # 429 (rate_limit) và 503 (unavailable): không freeze key, không count failure
+    # — chỉ backoff rồi retry
+    if reason in ("rate_limit", "unavailable"):
+        logger.warning("[OpenCode Pool Temp Unavailable] model=%s reason=%s — waiting 5s then retry", actual_alias, reason)
+        if reason == "rate_limit":
+            router.record_429()
+        import asyncio
+        await asyncio.sleep(5.0)
+        return True
 
     if api_key_val:
         router.freeze_key(api_key_val, 0, model_id_val, reason)

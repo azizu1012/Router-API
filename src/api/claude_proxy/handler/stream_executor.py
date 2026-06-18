@@ -76,7 +76,7 @@ async def _execute_stream(proxy_instance: Any, kwargs: Dict[str, Any], api_key: 
                         try:
                             while True:
                                 try:
-                                    evt = await asyncio.wait_for(it.__anext__(), timeout=4.0)
+                                    evt = await asyncio.wait_for(asyncio.shield(it.__anext__()), timeout=4.0)
                                     yield ("event", evt)
                                     break
                                 except asyncio.TimeoutError:

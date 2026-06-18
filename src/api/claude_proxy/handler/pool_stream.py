@@ -202,8 +202,18 @@ async def _stream_with_pool(
                 return
 
             reason = _classify_error_reason(error_text, api_key_val, model_id_val)
-            if reason == "rate_limit":
-                router.record_429()
+
+            # 429 (rate_limit) và 503 (unavailable): không freeze key, không count failure
+            # — chỉ backoff rồi retry
+            if reason in ("rate_limit", "unavailable"):
+                logger.warning("[Pool Temp Unavailable] model=%s key=...%s reason=%s — waiting 5s then retry (attempt %d)",
+                              member_used, (api_key_val or "N/A")[-4:] if api_key_val else "N/A", reason,
+                              pool.total_attempts + 1)
+                if reason == "rate_limit":
+                    router.record_429()
+                yield _sse("ping", {"type": "ping", "retry": pool.total_attempts, "reason": reason})
+                await asyncio.sleep(5.0)
+                continue
 
             _err_key = api_key_val or saved_key or "N/A"
             if reason == "unknown_error":
