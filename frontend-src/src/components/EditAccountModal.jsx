@@ -1,4 +1,5 @@
 import React, { useState, useEffect } from 'react';
+import { createPortal } from 'react-dom';
 import { api } from '../utils/api';
 import { useApp } from '../context/AppContext';
 
@@ -52,10 +53,10 @@ export default function EditAccountModal({ account, isOpen, onClose, onSaveSucce
     }
   };
 
-  return (
-    <div className="modal modal-open z-50">
+  return createPortal(
+    <div className="modal modal-open z-[9999] fixed inset-0 flex items-center justify-center">
       <div className="modal-overlay fixed inset-0 bg-black/60 backdrop-blur-sm" onClick={onClose}></div>
-      <div className="modal-box max-w-md bg-base-100 border border-base-content/5 relative z-10 p-6 rounded-2xl">
+      <div className="modal-box max-w-md bg-base-100 border border-base-content/10 relative z-10 p-6 rounded-2xl shadow-2xl">
         <h3 className="font-extrabold text-lg mb-4 text-left">Chỉnh sửa tài khoản con</h3>
         
         <form onSubmit={handleSave} className="space-y-4 text-left">
@@ -121,6 +122,7 @@ export default function EditAccountModal({ account, isOpen, onClose, onSaveSucce
           </div>
         </form>
       </div>
-    </div>
+    </div>,
+    document.body
   );
 }

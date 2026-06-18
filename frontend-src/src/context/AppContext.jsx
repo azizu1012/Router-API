@@ -1,5 +1,6 @@
 import React, { createContext, useContext, useState, useEffect, useRef } from 'react';
 import { api } from '../utils/api';
+import { useWebSocket } from '../utils/useWebSocket';
 
 const AppContext = createContext();
 
@@ -287,6 +288,9 @@ export function AppProvider({ children }) {
     };
   }, [activeTab, token]);
 
+  // Global shared WebSocket
+  const wsHook = useWebSocket(token);
+
   // Auth operations
   const login = async (authKey) => {
     const response = await fetch('/dashboard/login', {
@@ -329,7 +333,7 @@ export function AppProvider({ children }) {
   return (
     <AppContext.Provider value={{
       token, user, activeTab, theme, lang, tabData, loading,
-      foundEggs, unlockEgg, toast,
+      foundEggs, unlockEgg, toast, wsHook,
       setActiveTab, setTheme, changeLanguage, login, logout, refreshTab: () => fetchTabData(activeTab, false)
     }}>
       {children}

@@ -63,32 +63,50 @@ class ClaudeProxyStreamMixin:
 
         if override_alias:
             logger.info("[Sub-Agent] Using non-stream path for sub-agent (override=%s)", override_alias)
-            SUB_AGENT_MAX_RETRIES = 2
+            SUB_AGENT_MAX_RETRIES = 1
             last_err: Optional[str] = None
-            for sub_attempt in range(SUB_AGENT_MAX_RETRIES + 1):
-                try:
+            from src.core.router.core.router import is_sub_agent_context
+            token = is_sub_agent_context.set(True)
+            try:
+                for sub_attempt in range(SUB_AGENT_MAX_RETRIES + 1):
                     task = asyncio.create_task(self.create_message(body, auth_key_prefix, account=account))
-                    while not task.done():
+                    try:
+                        while not task.done():
+                            try:
+                                await asyncio.wait_for(asyncio.shield(task), timeout=3.0)
+                            except asyncio.TimeoutError:
+                                yield _sse("ping", {"type": "ping", "retry": 0, "reason": "keepalive"})
+                        result = await task
+                        if isinstance(result, dict) and result.get("id", "").startswith("msg_err_"):
+                            last_err = "sub-agent returned error response"
+                            logger.warning("[Sub-Agent Retry %d/%d] %s", sub_attempt + 1, SUB_AGENT_MAX_RETRIES + 1, last_err)
+                            await asyncio.sleep(_retry_delay(sub_attempt))
+                            continue
+                        for chunk in _dict_to_sse_events(result):
+                            yield chunk
+                        return
+                    except asyncio.CancelledError:
+                        logger.warning("[Sub-Agent Stream] Client disconnected. Cancelling shielded sub-agent task.")
+                        task.cancel()
                         try:
-                            await asyncio.wait_for(asyncio.shield(task), timeout=3.0)
-                        except asyncio.TimeoutError:
-                            yield _sse("ping", {"type": "ping", "retry": 0, "reason": "keepalive"})
-                    result = await task
-                    if isinstance(result, dict) and result.get("id", "").startswith("msg_err_"):
-                        last_err = "sub-agent returned error response"
-                        logger.warning("[Sub-Agent Retry %d/%d] %s", sub_attempt + 1, SUB_AGENT_MAX_RETRIES + 1, last_err)
-                        await asyncio.sleep(_retry_delay(sub_attempt))
-                        continue
-                    for chunk in _dict_to_sse_events(result):
-                        yield chunk
-                    return
-                except asyncio.CancelledError:
-                    raise
-                except Exception as e:
-                    last_err = str(e)[:200]
-                    logger.warning("[Sub-Agent Retry %d/%d] Error: %s", sub_attempt + 1, SUB_AGENT_MAX_RETRIES + 1, last_err)
-                    if sub_attempt < SUB_AGENT_MAX_RETRIES:
-                        await asyncio.sleep(_retry_delay(sub_attempt))
+                            await task
+                        except Exception:
+                            pass
+                        raise
+                    except Exception as e:
+                        last_err = str(e)[:200]
+                        logger.warning("[Sub-Agent Retry %d/%d] Error: %s", sub_attempt + 1, SUB_AGENT_MAX_RETRIES + 1, last_err)
+                        if sub_attempt < SUB_AGENT_MAX_RETRIES:
+                            await asyncio.sleep(_retry_delay(sub_attempt))
+                    finally:
+                        if not task.done():
+                            task.cancel()
+                            try:
+                                await task
+                            except Exception:
+                                pass
+            finally:
+                is_sub_agent_context.reset(token)
 
             logger.warning("[Sub-Agent Fallback] All %d retries exhausted (%s), falling back to main model",
                            SUB_AGENT_MAX_RETRIES + 1, last_err)
@@ -126,7 +144,17 @@ class ClaudeProxyStreamMixin:
                     yield chunk
             return
 
+        import time
+        from src.core.router.core.router import is_sub_agent_context
+        is_sub = is_sub_agent_context.get()
+        start_time = time.time()
+
         for attempt in range(config.MAX_RETRIES):
+            if is_sub:
+                if attempt >= 3 or (time.time() - start_time) >= 15.0:
+                    logger.warning("[Sub-Agent Fast-Fail Stream] Non-pool attempts: %d, elapsed: %.1fs. Failing early.", attempt, time.time() - start_time)
+                    break
+
             model_alias_val = None
             api_key_val = None
             model_id_val = ""

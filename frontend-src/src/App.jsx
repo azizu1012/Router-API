@@ -302,9 +302,9 @@ export default function App() {
       </header>
 
       {/* Main Body */}
-      <div className="flex flex-1 pt-16 h-screen overflow-hidden">
+      <div className="flex flex-1 pt-16 h-[calc(100vh-4rem)] overflow-hidden">
         {/* Sidebar */}
-        <aside className="w-64 glass-nav flex flex-col p-4 gap-1 z-20 overflow-y-auto">
+        <aside className="w-64 glass-nav flex flex-col p-4 gap-1 z-20 overflow-y-auto h-full">
           {/* Admin Navigation */}
           {isAdmin && (
             <>

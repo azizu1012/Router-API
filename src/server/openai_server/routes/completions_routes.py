@@ -10,7 +10,7 @@ from src.core.providers import _custom_endpoint_manager
 from src.api.claude_proxy import claude_proxy
 from src.core.usage_logger import log_usage
 
-from src.server.openai_server.auth import _resolve_auth, _check_auth, _apply_account_limit, _auth_key_prefix
+from src.server.openai_server.auth import _resolve_auth, _check_auth, _apply_account_limit, _auth_key_prefix, is_sub_agent_request, handle_sub_agent_error
 from src.server.openai_server.handler import _openai_chat_completion
 from src.server.openai_server.completion_helpers import completion_response, stream_response
 from .app_init import app
@@ -44,6 +44,10 @@ async def chat_completions(
             return completion_response(body, result)
     except Exception as e:
         logger_api.error("chat_completion failed: %s", e)
+        if is_sub_agent_request(body, is_opencode=False):
+            logger_api.info("Intercepted sub-agent chat_completion error: %s, returning simulated response", e)
+            return handle_sub_agent_error(body, e, format_type="openai")
+
         msg = str(e)
         if msg.startswith("bad_request"):
             return JSONResponse(
@@ -257,6 +261,7 @@ async def anthropic_messages(
 
     try:
         chat_like = {
+            "model": body.get("model", ""),
             "messages": [
                 {"role": msg.get("role", "user"), "content": msg.get("content", "")}
                 for msg in body.get("messages", []) if isinstance(msg, dict)
@@ -299,10 +304,16 @@ async def anthropic_messages(
         else:
             result = await claude_proxy.create_message(body, akp, account=account)
             return JSONResponse(content=result, headers=response_headers)
-    except HTTPException:
+    except HTTPException as e:
+        if is_sub_agent_request(body, is_opencode=False):
+            logger_api.info("Intercepted sub-agent anthropic_messages HTTPException: %s, returning simulated response", e)
+            return handle_sub_agent_error(body, e, format_type="anthropic")
         raise
     except Exception as e:
         logger_api.error("anthropic_messages unexpected error: %s", e, exc_info=True)
+        if is_sub_agent_request(body, is_opencode=False):
+            logger_api.info("Intercepted sub-agent anthropic_messages error: %s, returning simulated response", e)
+            return handle_sub_agent_error(body, e, format_type="anthropic")
         return JSONResponse(
             status_code=503,
             content={"type": "error", "error": {"type": "api_error", "message": "Service temporarily unavailable"}},

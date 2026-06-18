@@ -169,8 +169,18 @@ class ClaudeProxy(ClaudeProxyNonstreamMixin, ClaudeProxyStreamMixin):
         auth_key_prefix: str = "",
         account: Optional[Dict[str, Any]] = None,
     ) -> Any:
+        # Check sub-agent context first
+        from src.core.router.core.router import is_sub_agent_context
+        is_sub = is_sub_agent_context.get()
+
         pool.start()
         while not pool.exhausted:
+            if is_sub:
+                # Sub-agents must fail fast if pool attempts >= 3 or time spent >= 15 seconds
+                if pool.total_attempts >= 3 or pool.elapsed >= 15.0:
+                    logger.warning("[Sub-Agent Fast-Fail] Pool attempts: %d, elapsed: %.1fs. Failing pool routing early.", pool.total_attempts, pool.elapsed)
+                    break
+
             actual_alias = pool.current_model
             model_alias_val = None
             api_key_val = None

@@ -92,6 +92,15 @@ def start_flush_loop(interval: float = 5.0) -> None:
         _flush_task = asyncio.create_task(_flush_loop(interval))
 
 
+def normalize_to_pool_alias(alias: str) -> str:
+    alias_lower = str(alias).strip().lower()
+    if "lite" in alias_lower:
+        return "gemini-flash-lite"
+    if "flash" in alias_lower:
+        return "gemini-flash"
+    return alias
+
+
 async def get_stats(days: int = 30) -> Dict[str, Any]:
     cutoff = (datetime.now() - timedelta(days=days)).isoformat()
     try:
@@ -104,14 +113,57 @@ async def get_stats(days: int = 30) -> Dict[str, Any]:
                 "FROM usage_logs WHERE timestamp >= ? GROUP BY model_alias ORDER BY t DESC",
                 (cutoff,),
             )
-            summary = [dict(r) for r in await c.fetchall()]
+            rows = await c.fetchall()
+            summary_dict = {}
+            for r in rows:
+                item = dict(r)
+                raw_alias = item.get("model_alias") or "unknown"
+                norm_alias = normalize_to_pool_alias(raw_alias)
+                if norm_alias not in summary_dict:
+                    summary_dict[norm_alias] = {
+                        "model_alias": norm_alias,
+                        "p": 0,
+                        "c": 0,
+                        "t": 0,
+                        "cc": 0,
+                        "cr": 0,
+                        "req": 0,
+                    }
+                entry = summary_dict[norm_alias]
+                entry["p"] += item.get("p", 0) or 0
+                entry["c"] += item.get("c", 0) or 0
+                entry["t"] += item.get("t", 0) or 0
+                entry["cc"] += item.get("cc", 0) or 0
+                entry["cr"] += item.get("cr", 0) or 0
+                entry["req"] += item.get("req", 0) or 0
+
+            summary = sorted(summary_dict.values(), key=lambda x: x["t"], reverse=True)
 
             c2 = await db.execute(
                 "SELECT DATE(timestamp) as d, model_alias, SUM(total_tokens) as t, COUNT(*) as req "
                 "FROM usage_logs WHERE timestamp >= ? GROUP BY d, model_alias ORDER BY d",
                 (cutoff,),
             )
-            daily = [dict(r) for r in await c2.fetchall()]
+            rows2 = await c2.fetchall()
+            daily_dict = {}
+            for r in rows2:
+                item = dict(r)
+                d = item.get("d")
+                raw_alias = item.get("model_alias") or "unknown"
+                norm_alias = normalize_to_pool_alias(raw_alias)
+                key = (d, norm_alias)
+                if key not in daily_dict:
+                    daily_dict[key] = {
+                        "d": d,
+                        "model_alias": norm_alias,
+                        "t": 0,
+                        "req": 0,
+                    }
+                entry = daily_dict[key]
+                entry["t"] += item.get("t", 0) or 0
+                entry["req"] += item.get("req", 0) or 0
+
+            daily = sorted(daily_dict.values(), key=lambda x: (x["d"], x["model_alias"]))
 
             c3 = await db.execute(
                 "SELECT COUNT(*) as total FROM usage_logs WHERE timestamp >= ?",
@@ -159,14 +211,59 @@ async def get_stats_for_prefix(auth_key_prefix: str, days: int = 30) -> Dict[str
                 "WHERE timestamp >= ? AND auth_key_prefix = ? GROUP BY model_alias ORDER BY t DESC",
                 (cutoff, auth_key_prefix),
             )
-            summary = [dict(r) for r in await c.fetchall()]
+            rows = await c.fetchall()
+            summary_dict = {}
+            for r in rows:
+                item = dict(r)
+                raw_alias = item.get("model_alias") or "unknown"
+                norm_alias = normalize_to_pool_alias(raw_alias)
+                if norm_alias not in summary_dict:
+                    summary_dict[norm_alias] = {
+                        "model_alias": norm_alias,
+                        "p": 0,
+                        "c": 0,
+                        "t": 0,
+                        "cc": 0,
+                        "cr": 0,
+                        "req": 0,
+                    }
+                entry = summary_dict[norm_alias]
+                entry["p"] += item.get("p", 0) or 0
+                entry["c"] += item.get("c", 0) or 0
+                entry["t"] += item.get("t", 0) or 0
+                entry["cc"] += item.get("cc", 0) or 0
+                entry["cr"] += item.get("cr", 0) or 0
+                entry["req"] += item.get("req", 0) or 0
+
+            summary = sorted(summary_dict.values(), key=lambda x: x["t"], reverse=True)
+
             c2 = await db.execute(
                 "SELECT DATE(timestamp) as d, model_alias, SUM(total_tokens) as t, COUNT(*) as req "
                 "FROM usage_logs WHERE timestamp >= ? AND auth_key_prefix = ? "
                 "GROUP BY d, model_alias ORDER BY d",
                 (cutoff, auth_key_prefix),
             )
-            daily = [dict(r) for r in await c2.fetchall()]
+            rows2 = await c2.fetchall()
+            daily_dict = {}
+            for r in rows2:
+                item = dict(r)
+                d = item.get("d")
+                raw_alias = item.get("model_alias") or "unknown"
+                norm_alias = normalize_to_pool_alias(raw_alias)
+                key = (d, norm_alias)
+                if key not in daily_dict:
+                    daily_dict[key] = {
+                        "d": d,
+                        "model_alias": norm_alias,
+                        "t": 0,
+                        "req": 0,
+                    }
+                entry = daily_dict[key]
+                entry["t"] += item.get("t", 0) or 0
+                entry["req"] += item.get("req", 0) or 0
+
+            daily = sorted(daily_dict.values(), key=lambda x: (x["d"], x["model_alias"]))
+
             c3 = await db.execute(
                 "SELECT COUNT(*) as total FROM usage_logs WHERE timestamp >= ? AND auth_key_prefix = ?",
                 (cutoff, auth_key_prefix),

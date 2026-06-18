@@ -68,6 +68,36 @@ async def _resolve_model(body: Dict[str, Any], pool_alias_override: Optional[str
                 except Exception as e:
                     logger.warning("[AccountEndpoint] %s ping error (%s), fallback to Gemini", ep_name, e)
 
+    # Prioritize pool-assigned custom endpoints if available and enabled (circuit breaker and ping check)
+    pool_models = router.get_pool_custom_models(model_alias)
+    if pool_models and (retry_attempt == 0 or pool_mode):
+        for pm in pool_models:
+            ep = pm["endpoint"]
+            ep_name = ep.get("name", "")
+            if endpoint_manager.is_endpoint_frozen(ep_name):
+                logger.warning("[CustomPoolEndpoint] %s is frozen, skipping", ep_name)
+                continue
+
+            target_model = pm["model_id"]
+            try:
+                alive = await endpoint_manager.ping_endpoint(ep)
+                if not alive:
+                    logger.warning("[CustomPoolEndpoint] %s ping failed, skipping", ep_name)
+                    continue
+
+                litellm_model = f"openai/{target_model}"
+                logger.info("[CustomPoolEndpoint] Routing model_alias=%s to custom endpoint %s with model %s", model_alias, ep_name, target_model)
+                return model_alias, target_model, ep["auth_key"], litellm_model, {
+                    "key": ep["auth_key"],
+                    "name": ep_name,
+                    "model_alias": model_alias,
+                    "model_id": target_model,
+                    "provider": "custom",
+                    "api_base": ep["base_url"],
+                }
+            except Exception as e:
+                logger.warning("[CustomPoolEndpoint] %s ping error: %s", ep_name, e)
+
     # In pool_mode, don't wait long — the pool loop handles retry timing.
     # In standalone mode, wait up to 15s for a key to become available.
     max_wait = 2.0 if pool_mode else 15.0
@@ -83,9 +113,9 @@ async def _resolve_model(body: Dict[str, Any], pool_alias_override: Optional[str
                 # Spacing and throttling (random jitter + global spacing) to be safe
                 try:
                     from src.core.providers.gemini_api_manager import api_manager
-                    last_used = api_manager._key_last_used.get(api_key, 0.0)
-                    await api_manager._throttle_api_request(api_key, last_used)
-                    api_manager._key_last_used[api_key] = time.time()
+                    last_used = api_manager.pool.get_key_last_used(api_key)
+                    await api_manager.pool.throttle(api_key, last_used)
+                    api_manager.pool.record_key_usage(api_key)
                 except Exception as e:
                     logger.warning("[Throttling] Failed to apply api_manager pacing delay: %s", e)
                 

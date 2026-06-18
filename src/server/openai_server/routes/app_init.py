@@ -112,10 +112,17 @@ async def _init_usage_db():
     init_config_tables()
     migrate_from_json()
     await init_db()
-    start_flush_loop()
-    
-    # Restore RPD counts from the database
+
+    # Reset active requests for all API keys on startup to clear any counts left hanging from a previous crash/restart
+    try:
+        from src.core.router import router
+        router.reset_active_requests()
+        logger.info("[Startup] Reset active request counts for all API keys.")
+    except Exception as startup_err:
+        logger.error("[Startup] Failed to reset active requests: %s", startup_err)
+
     await account_limiter.restore_rpd_counts()
+    start_flush_loop()
     
     task = asyncio.create_task(_watch_env_file())
     _background_tasks.add(task)

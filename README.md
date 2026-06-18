@@ -440,6 +440,63 @@ Hệ thống tự động phát hiện và trích xuất cả `content` lẫn `r
 - Hỗ trợ cả dạng đối tượng (Attribute dot-notation) lẫn dạng từ điển (Dictionary/JSON key-value).
 - Tương thích tốt với các thuộc tính bổ sung như `model_extra`, `extra_fields`, `additional_kwargs` từ các phiên bản OpenAI SDK hoặc thư viện Client khác nhau, đảm bảo việc hiển thị thinking ổn định.
 
+## Pool & Key Management — CRITICAL
+
+### Nguyên tắc Pool Name vs Member Alias
+
+Khi request đi vào pool mode, `_resolve_model` **PHẢI** nhận **pool name** (vd `"gemini-flash"`), **không phải** member alias (`"gemini-flash-35"`).
+
+**Tại sao:** `reserve_key` dùng `MODEL_POOLS.get(model_alias)` để xác định pool path. Nếu pass member alias:
+- `MODEL_POOLS.get("gemini-flash-35")` → `None` → rơi vào non-pool path
+- `rpm_limit = cfg.rpm` (chỉ 2 RPM cho 1 key) thay vì `rpm_limit = cfg.rpm × key_count` (pool aggregate)
+- `acquire_quota` vẫn dùng pool-level limiter → quota check pass sai → key freeze → pool swap loop → timeout
+
+**Hậu quả:** Pool không bao giờ produce output, Lite pool hoạt động ngẫu nhiên vì `"gemini-flash-lite"` trùng cả pool name và member name.
+
+### Luồng xử lý đúng (pool path)
+
+```
+_resolve_model(body, "gemini-flash", pool_mode=True)
+  └── router.reserve_key("gemini-flash")
+        ├── MODEL_POOLS.get("gemini-flash") → pool_cfg found
+        ├── iterate members: gemini-flash-35, -30, -25
+        │     └── rpm_limit = int(cfg.get("rpm", 5))  ← per-member cfg
+        │     └── key được chọn từ tất cả keys assigned cho member này
+        ├── return reservation {
+        │     "key": "sk-...",
+        │     "model_alias": "gemini-flash-35",      ← member thực tế
+        │     "model_id": "gemini-3.5-flash",
+        │     "provider": "gemini"
+        │   }
+        └── acquire_quota(tokens, "gemini-flash")    ← pool-level rate limiter
+              └── RPM = sum(limiter.rpm_limit) for all members
+```
+
+### member_used pattern
+
+Luôn dùng `reservation.get("model_alias", pool.current_model)` khi cần record failure:
+
+```python
+member_used = reservation.get("model_alias", actual_alias)
+pool.record_failure(member_used, reason)  # ghi đúng member thực tế
+```
+
+`reserve_key` (pool path) trả về `model_alias` = member thực tế được chọn. Member này có thể khác `pool.current_model` nếu member đầu không còn key.
+
+### Rate Limiter
+
+Pool-level RPM được rate limiter tự động tính = `cfg.rpm × key_count` cho mỗi alias. Dashboard hiển thị `limiter.rpm_limit`, không dùng `cfg.rpm`.
+
+### File chịu trách nhiệm
+
+- **Stream pool (OpenCode):** `opencode_proxy/handler/stream_executor.py:_stream_with_pool` — entry point, pool name → `_resolve_model`
+- **Non-stream pool (OpenCode):** `opencode_proxy/handler/proxy.py:_nonstream_pool` — pool name → `_resolve_and_call`
+- **Key resolver:** `core/router/core/key_resolver.py:reserve_key` — pool path iteration + selection
+- **Pool state machine:** `core/router/pool.py:ModelPool` — failover, swap, exhaustion
+- **Rate limiter:** `core/limits/gemini_rate_limiter.py` — RPM/TPM/RPD sliding windows per alias
+- **Stats dashboard:** `server/openai_server/routes/dashboard_routes.py:get_model_pools_api` — JSON + WebSocket stats
+- **Stats pusher:** `server/stats_pusher.py:StatsPusher._snapshot` — real-time RPM/TPM push
+
 ## Env chính
 
 | Variable | Default | Mô tả |

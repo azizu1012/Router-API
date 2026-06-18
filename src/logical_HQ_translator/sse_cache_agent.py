@@ -210,6 +210,17 @@ def is_sub_agent_body(body: Dict[str, Any]) -> bool:
     else:
         system_prompt = str(system_instruction or "")
 
+    # For OpenAI/OpenCode formats, system prompt can be in the messages list with role "system" or "developer"
+    if not system_prompt:
+        for msg in body.get("messages", []):
+            if msg.get("role") in ("system", "developer"):
+                content = msg.get("content", "")
+                if isinstance(content, str):
+                    system_prompt = content
+                elif isinstance(content, list):
+                    system_prompt = "\n".join([str(item.get("text", "")) for item in content if isinstance(item, dict)])
+                break
+
     if system_prompt:
         system_prompt_lower = system_prompt.lower()
         if "you are an interactive agent" in system_prompt_lower:

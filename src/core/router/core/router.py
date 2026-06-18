@@ -17,6 +17,9 @@ from src.backend.key_status import (
     atomic_record_success,
 )
 from .key_resolver import KeyResolverMixin
+from contextvars import ContextVar
+
+is_sub_agent_context: ContextVar[bool] = ContextVar("is_sub_agent_context", default=False)
 
 class APIRouter(KeyResolverMixin):
     _instance = None
@@ -213,15 +216,19 @@ class APIRouter(KeyResolverMixin):
         return None
 
     def is_global_cooldown_active(self) -> bool:
+        if is_sub_agent_context.get():
+            return False
         return time.time() < self.global_cooldown_until
 
     def record_429(self) -> bool:
+        if is_sub_agent_context.get():
+            return False
         with self._key_lock:
             if self.is_global_cooldown_active():
                 return False
             self._consecutive_429_count += 1
-            if self._consecutive_429_count >= 15:
-                self.global_cooldown_until = time.time() + random.uniform(10, 20)
+            if self._consecutive_429_count >= 150:
+                self.global_cooldown_until = time.time() + random.uniform(1, 3)
                 self._consecutive_429_count = 0
                 return True
             return False
@@ -229,6 +236,17 @@ class APIRouter(KeyResolverMixin):
     def reset_429_counter(self) -> None:
         with self._key_lock:
             self._consecutive_429_count = 0
+
+    def reset_active_requests(self) -> None:
+        try:
+            from src.backend.key_status import reset_active_requests_db
+            reset_active_requests_db()
+        except Exception as e:
+            logger.error("Failed to reset active requests in DB: %s", e)
+        with self._key_lock:
+            for key in self._key_status:
+                self._key_status[key]["active_requests"] = 0
+            logger.info("APIRouter active requests reset to 0 in-memory.")
 
     def record_success(self, key: Optional[str] = None, model_id: Optional[str] = None, input_tokens: int = 0, output_tokens: int = 0) -> None:
         try:
@@ -260,6 +278,10 @@ class APIRouter(KeyResolverMixin):
         return await get_rate_limiter(model_alias).acquire_quota(reserved_tokens)
 
     def freeze_key(self, key: str, duration: int, model_id: Optional[str] = None, reason: str = "rate_limit") -> None:
+        if is_sub_agent_context.get():
+            if reason not in ("invalid_key", "permission_denied", "billing_error"):
+                logger.info("[Sub-Agent] Bypassing freeze_key for key ...%s (Reason: %s)", key[-8:], reason)
+                return
         try:
             with self._key_lock:
                 if key not in self._key_status:

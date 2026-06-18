@@ -2,27 +2,26 @@ import React, { useEffect, useState, useRef } from 'react';
 import { useApp } from '../context/AppContext';
 import { t } from '../utils/i18n';
 import { fmt } from '../utils/format';
-import { useWebSocket } from '../utils/useWebSocket';
-import { 
-  Chart as ChartJS, CategoryScale, LinearScale, PointElement, 
-  LineElement, Title, Tooltip, Legend, ArcElement 
+import {
+  Chart as ChartJS, CategoryScale, LinearScale, PointElement,
+  LineElement, Title, Tooltip, Legend, ArcElement
 } from 'chart.js';
 import { Line, Doughnut } from 'react-chartjs-2';
 import { Calendar, BarChart3, TrendingUp, Cpu, Wifi, WifiOff } from 'lucide-react';
 import Loading from '../components/Loading';
 
 ChartJS.register(
-  CategoryScale, LinearScale, PointElement, LineElement, 
+  CategoryScale, LinearScale, PointElement, LineElement,
   Title, Tooltip, Legend, ArcElement
 );
 
 const CLR = [
-  '#6366f1', '#10b981', '#f59e0b', '#ec4899', '#3b82f6', 
+  '#6366f1', '#10b981', '#f59e0b', '#ec4899', '#3b82f6',
   '#8b5cf6', '#14b8a6', '#f43f5e', '#a855f7', '#06b6d4'
 ];
 
 export default function OverviewTab() {
-  const { tabData, lang, theme, refreshTab, token } = useApp();
+  const { tabData, lang, theme, refreshTab, token, wsHook } = useApp();
   const ovData = tabData.ov;
 
   const [tickingSavings, setTickingSavings] = useState(0);
@@ -30,15 +29,13 @@ export default function OverviewTab() {
   const [flipped, setFlipped] = useState(false);
   const [liveStats, setLiveStats] = useState(null);
 
-  const wsHook = useWebSocket(token);
-
   useEffect(() => {
-    if (!wsHook.connected) return;
+    if (!wsHook || !wsHook.connected) return;
     const unsub = wsHook.subscribe('stats:overview', (msg) => {
       if (msg.type === 'stats_snapshot') setLiveStats(msg);
     });
     return unsub;
-  }, [wsHook.connected]);
+  }, [wsHook, wsHook?.connected]);
 
   // Set up savings animated ticker
   useEffect(() => {
@@ -257,14 +254,14 @@ export default function OverviewTab() {
                       <span className="font-semibold text-base-content/50">RPM</span>
                       <span className="font-mono font-bold">{ms.rpm_remaining}/{ms.rpm_limit}</span>
                     </div>
-                    <div className="w-full h-1.5 bg-base-300/50 rounded-full overflow-hidden">
+                    <div className="w-full h-1.5 bg-base-content/20 rounded-full overflow-hidden">
                       <div className={`h-full rounded-full transition-all duration-500 ${rpmColor}`} style={{width: `${rpmPct}%`}}></div>
                     </div>
                     <div className="flex items-center justify-between text-[9px]">
                       <span className="font-semibold text-base-content/50">TPM</span>
                       <span className="font-mono font-bold">{fmt(ms.tpm_remaining)}/{fmt(ms.tpm_limit)}</span>
                     </div>
-                    <div className="w-full h-1.5 bg-base-300/50 rounded-full overflow-hidden">
+                    <div className="w-full h-1.5 bg-base-content/20 rounded-full overflow-hidden">
                       <div className={`h-full rounded-full transition-all duration-500 ${tpmColor}`} style={{width: `${tpmPct}%`}}></div>
                     </div>
                   </div>
