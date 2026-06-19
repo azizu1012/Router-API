@@ -24,6 +24,15 @@ from src.core.providers.gemini.error import classify as classify_gemini_error
 TRANSIENT_REASONS = {"rate_limit", "unavailable", "server_error", "timeout", "unknown_error"}
 
 
+class PoolCallError(Exception):
+    def __init__(self, original_error: Exception, api_key: Optional[str], model_id: Optional[str], reservation: Optional[dict]):
+        self.original_error = original_error
+        self.api_key = api_key
+        self.model_id = model_id
+        self.reservation = reservation
+        super().__init__(str(original_error))
+
+
 def _compute_thinking_for_model(
     thinking_params: Optional[Dict[str, Any]],
     model_id: str,
@@ -134,6 +143,11 @@ class PoolManager:
                         "reservation": reservation
                     }
                 except Exception as e:
+                    if isinstance(e, PoolCallError):
+                        api_key_val = e.api_key
+                        model_id_val = e.model_id
+                        reservation = e.reservation or {}
+                        e = e.original_error
                     member_used = reservation.get("model_alias", pool.current_model) if reservation else pool.current_model
                     is_custom = reservation.get("provider") == "custom"
                     if is_custom:
@@ -196,6 +210,11 @@ class PoolManager:
                         "reservation": reservation
                     }
                 except Exception as e:
+                    if isinstance(e, PoolCallError):
+                        api_key_val = e.api_key
+                        model_id_val = e.model_id
+                        reservation = e.reservation or {}
+                        e = e.original_error
                     reason = _classify_error(e)
                     logger.warning("[PoolManager] Standalone error (attempt %d): %s", attempt, e)
                     if reason in TRANSIENT_REASONS:
@@ -443,35 +462,38 @@ class PoolManager:
             member_tc = thinking_config
 
         # Central pool quota / rate checks
-        if is_custom:
-            if not await check_custom_pool_rate(model_id_val):
-                raise RuntimeError("custom_endpoint_rate_limited")
-        else:
-            has_quota = await router.acquire_quota(estimated_tokens, model_alias)
-            if not has_quota:
-                apply_error_penalty(api_key_val, "rate_limit_rpm_tpm", model_id_val)
-                router.freeze_key(api_key_val, config.KEY_429_COOLDOWN_SECONDS, model_id_val, "rate_limit")
-                raise RuntimeError("quota_exhausted")
-
         try:
-            # Build arguments for single acompletion call
-            kwargs = {
-                "model": model_full_val,
-                "messages": messages,
-                "api_key": api_key_val,
-                "max_tokens": max_output,
-                "temperature": temperature,
-                "stream": is_stream,
-                "tools": tools,
-                "thinking_config": member_tc if not is_custom else None,
-            }
-            if is_custom:
-                kwargs["api_base"] = reservation["api_base"]
-                if extra_body:
-                    kwargs["extra_body"] = extra_body
+            try:
+                if is_custom:
+                    if not await check_custom_pool_rate(model_id_val):
+                        raise RuntimeError("custom_endpoint_rate_limited")
+                else:
+                    has_quota = await router.acquire_quota(estimated_tokens, model_alias)
+                    if not has_quota:
+                        apply_error_penalty(api_key_val, "rate_limit_rpm_tpm", model_id_val)
+                        router.freeze_key(api_key_val, config.KEY_429_COOLDOWN_SECONDS, model_id_val, "rate_limit")
+                        raise RuntimeError("quota_exhausted")
 
-            resp = await acompletion(**kwargs)
-            return resp, api_key_val, model_id_val, estimated_tokens, reservation
+                # Build arguments for single acompletion call
+                kwargs = {
+                    "model": model_full_val,
+                    "messages": messages,
+                    "api_key": api_key_val,
+                    "max_tokens": max_output,
+                    "temperature": temperature,
+                    "stream": is_stream,
+                    "tools": tools,
+                    "thinking_config": member_tc if not is_custom else None,
+                }
+                if is_custom:
+                    kwargs["api_base"] = reservation["api_base"]
+                    if extra_body:
+                        kwargs["extra_body"] = extra_body
+
+                resp = await acompletion(**kwargs)
+                return resp, api_key_val, model_id_val, estimated_tokens, reservation
+            except Exception as e:
+                raise PoolCallError(e, api_key_val, model_id_val, reservation)
         finally:
             # Key resolution release handles concurrency
             if api_key_val:
