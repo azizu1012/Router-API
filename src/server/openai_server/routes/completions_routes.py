@@ -11,9 +11,23 @@ from src.api.claude_proxy import claude_proxy
 from src.core.usage_logger import log_usage
 
 from src.server.openai_server.auth import _resolve_auth, _check_auth, _apply_account_limit, _auth_key_prefix, is_sub_agent_request, handle_sub_agent_error
-from src.server.openai_server.handler import _openai_chat_completion
-from src.server.openai_server.completion_helpers import completion_response, stream_response
 from .app_init import app
+
+
+def _extract_response_text(result: dict) -> str:
+    """Extract text content from an OpenAI-format response dict."""
+    choices = result.get("choices", [])
+    if not choices:
+        return ""
+    msg = choices[0].get("message", {})
+    return msg.get("content", "") or ""
+
+
+def _extract_finish_reason(result: dict) -> str:
+    choices = result.get("choices", [])
+    if not choices:
+        return "stop"
+    return choices[0].get("finish_reason") or "stop"
 
 @app.post("/v1/chat/completions")
 async def chat_completions(
@@ -33,15 +47,14 @@ async def chat_completions(
     try:
         await _apply_account_limit(account, body)
         stream = body.get("stream", False)
+        from src.api.opencode_proxy import opencode_proxy
         if stream:
-            from src.api.opencode_proxy import opencode_proxy
             return StreamingResponse(
                 opencode_proxy.stream_chat_completion(body, account=account, is_opencode=False),
                 media_type="text/event-stream",
             )
-        else:
-            result = await _openai_chat_completion(body, account=account)
-            return completion_response(body, result)
+        result = await opencode_proxy.chat_completion(body, account=account, is_opencode=False)
+        return result
     except Exception as e:
         logger_api.error("chat_completion failed: %s", e)
         if is_sub_agent_request(body, is_opencode=False):
@@ -92,7 +105,13 @@ async def completions(
     }
     try:
         await _apply_account_limit(account, chat_body)
-        result = await _openai_chat_completion(chat_body)
+        from src.api.opencode_proxy import opencode_proxy
+        if chat_body.get("stream"):
+            return StreamingResponse(
+                opencode_proxy.stream_chat_completion(chat_body, account=account, is_opencode=False),
+                media_type="text/event-stream",
+            )
+        result = await opencode_proxy.chat_completion(chat_body, account=account, is_opencode=False)
     except HTTPException:
         raise
     except Exception as e:
@@ -103,35 +122,30 @@ async def completions(
 
     auth_key_prefix = _auth_key_prefix(account)
     from src.logical_HQ_translator import _get_simulated_cache_usage
-    input_tokens = result.get("input_tokens", 0) or 0
+    usage = result.get("usage", {}) or {}
+    input_tokens = usage.get("prompt_tokens", 0) or 0
+    output_tokens = usage.get("completion_tokens", 0) or 0
     cache_usage = _get_simulated_cache_usage(chat_body or {}, input_tokens)
     cc = cache_usage.get("cache_creation_input_tokens", 0) or 0
     cr = cache_usage.get("cache_read_input_tokens", 0) or 0
     await log_usage(
-        result.get("model_alias") or body.get("model", "unknown"),
-        result.get("key_prefix") or "",
+        result.get("model") or body.get("model", "unknown"),
+        auth_key_prefix,
         input_tokens,
-        result.get("output_tokens", 0) or 0,
+        output_tokens,
         auth_key_prefix,
         cc,
         cr,
     )
-
-    if chat_body.get("stream"):
-        return StreamingResponse(stream_response(chat_body, result), media_type="text/event-stream")
 
     now = int(time.time())
     return {
         "id": f"cmpl-{uuid.uuid4().hex}",
         "object": "text_completion",
         "created": now,
-        "model": body.get("model") or result["model_alias"],
-        "choices": [{"text": result["text"], "index": 0, "logprobs": None, "finish_reason": result.get("finish_reason") or "stop"}],
-        "usage": {
-            "prompt_tokens": result.get("input_tokens", 0),
-            "completion_tokens": result.get("output_tokens", 0),
-            "total_tokens": (result.get("input_tokens", 0) or 0) + (result.get("output_tokens", 0) or 0),
-        },
+        "model": result.get("model") or body.get("model", ""),
+        "choices": [{"text": _extract_response_text(result), "index": 0, "logprobs": None, "finish_reason": _extract_finish_reason(result)}],
+        "usage": usage,
     }
 
 
@@ -164,7 +178,8 @@ async def responses(
     }
     try:
         await _apply_account_limit(account, chat_body)
-        result = await _openai_chat_completion(chat_body)
+        from src.api.opencode_proxy import opencode_proxy
+        result = await opencode_proxy.chat_completion(chat_body, account=account, is_opencode=False)
     except HTTPException:
         raise
     except Exception as e:
@@ -175,34 +190,33 @@ async def responses(
 
     auth_key_prefix = _auth_key_prefix(account)
     from src.logical_HQ_translator import _get_simulated_cache_usage
-    input_tokens = result.get("input_tokens", 0) or 0
+    usage = result.get("usage", {}) or {}
+    input_tokens = usage.get("prompt_tokens", 0) or 0
+    output_tokens = usage.get("completion_tokens", 0) or 0
     cache_usage = _get_simulated_cache_usage(chat_body or {}, input_tokens)
     cc = cache_usage.get("cache_creation_input_tokens", 0) or 0
     cr = cache_usage.get("cache_read_input_tokens", 0) or 0
     await log_usage(
-        result.get("model_alias") or body.get("model", "unknown"),
-        result.get("key_prefix") or "",
+        result.get("model") or body.get("model", "unknown"),
+        auth_key_prefix,
         input_tokens,
-        result.get("output_tokens", 0) or 0,
+        output_tokens,
         auth_key_prefix,
         cc,
         cr,
     )
 
+    text = _extract_response_text(result)
     rid = f"resp_{uuid.uuid4().hex}"
     return {
         "id": rid,
         "object": "response",
         "created_at": int(time.time()),
-        "model": body.get("model") or result["model_alias"],
+        "model": result.get("model") or body.get("model", ""),
         "status": "completed",
-        "output_text": result["text"],
-        "output": [{"id": f"msg_{uuid.uuid4().hex}", "type": "message", "role": "assistant", "content": [{"type": "output_text", "text": result["text"]}]}],
-        "usage": {
-            "input_tokens": result.get("input_tokens", 0),
-            "output_tokens": result.get("output_tokens", 0),
-            "total_tokens": (result.get("input_tokens", 0) or 0) + (result.get("output_tokens", 0) or 0),
-        },
+        "output_text": text,
+        "output": [{"id": f"msg_{uuid.uuid4().hex}", "type": "message", "role": "assistant", "content": [{"type": "output_text", "text": text}]}],
+        "usage": usage,
     }
 
 
@@ -323,7 +337,7 @@ async def anthropic_messages(
 
 @app.post("/api/ping-model")
 async def ping_model(request: Request):
-    from src.core.providers.litellm_wrapper import acompletion
+    from src.core.providers.gemini_facade import acompletion
 
     body = await request.json()
     model = body.get("model", "")
@@ -342,7 +356,7 @@ async def ping_model(request: Request):
 
     try:
         resp = await acompletion(
-            model=f"openai/{model}",
+            model=model,
             messages=[{"role": "user", "content": "OK"}],
             api_key=target["auth_key"],
             api_base=target["base_url"],

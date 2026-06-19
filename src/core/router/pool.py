@@ -26,6 +26,7 @@ class ModelPool:
         self.total_attempts = 0
         self._exhausted_models: set = set()
         self._first_attempt_time = 0.0
+        self._consecutive_transient = 0
 
     @property
     def current_model(self) -> str:
@@ -95,3 +96,4 @@ class ModelPool:
         self.total_attempts = 0
         self._exhausted_models.clear()
         self._first_attempt_time = 0.0
+        self._consecutive_transient = 0

@@ -48,17 +48,17 @@ def prepare_tools(
 async def wait_global_cooldown(attempt: int) -> None:
     now = time.time()
     if now < router.global_cooldown_until:
-        wait = router.global_cooldown_until - now + 1.0
+        wait = router.global_cooldown_until - now + config.GEMINI_API_KEY_INTERVAL
         logger.info("Global cooldown, waiting %.1fs (attempt %d/%d)", wait, attempt, config.MAX_RETRIES)
         await asyncio.sleep(wait)
     if attempt > 1:
-        await asyncio.sleep(1.0 + random.uniform(0, 0.5))
+        await asyncio.sleep(config.GEMINI_API_KEY_INTERVAL + random.uniform(0, 0.5))
 
 
 async def backoff(attempt: int, model_failures: Dict[str, int], model_alias: str) -> None:
-    backoff_sec = 2.0 ** attempt
+    backoff_sec = config.GEMINI_API_KEY_INTERVAL * (2 ** attempt)
     jitter = random.uniform(-backoff_sec * 0.3, backoff_sec * 0.3)
-    backoff_sec = max(0.5, backoff_sec + jitter)
+    backoff_sec = max(config.GEMINI_API_KEY_INTERVAL, backoff_sec + jitter)
     logger.info("Backoff %.1fs (attempt %d/%d)", backoff_sec, attempt, config.MAX_RETRIES)
     await asyncio.sleep(backoff_sec)
 
@@ -104,7 +104,7 @@ async def handle_error(
         router.freeze_key(api_key, config.KEY_INVALID_COOLDOWN_SECONDS, model_id, "permission_denied")
         apply_error_penalty(api_key, "permission_denied", model_id)
         logger.warning("Key ...%s PERMISSION_DENIED, frozen + penalty", api_key[-4:])
-        await asyncio.sleep(0.5)
+        await asyncio.sleep(config.GEMINI_API_KEY_INTERVAL)
         return
     model_failures[model_id] = model_failures.get(model_id, 0) + 1
     logger.warning("Model %s failed on key ...%s (failures=%d): %s",

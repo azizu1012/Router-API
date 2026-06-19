@@ -124,10 +124,10 @@ def _ping_endpoint() -> None:
             return
 
     print(f"\n  🏓 Pinging {ep['name']}:{model_id} ...")
-    from src.core.providers.litellm_wrapper import acompletion
+    from src.core.providers.gemini_facade import acompletion
     try:
         resp = asyncio.run(acompletion(
-            model=f"openai/{model_id}",
+            model=model_id,
             messages=[{"role": "user", "content": "Hi, reply OK in 1 word."}],
             api_key=ep["auth_key"],
             api_base=ep["base_url"],

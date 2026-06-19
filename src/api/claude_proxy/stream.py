@@ -4,7 +4,7 @@ import json
 import uuid
 from typing import Any, AsyncIterator, Dict, List, Optional
 
-from src.core.providers.litellm_wrapper import token_counter
+from src.core.providers.gemini_facade import token_counter
 from src.core.usage_logger import log_usage
 from src.logical_HQ_translator import (
     _sse,
@@ -92,7 +92,7 @@ async def _process_anthropic_stream(
             try:
                 while True:
                     try:
-                        c = await asyncio.wait_for(gen_iterator.__anext__(), timeout=4.0)
+                        c = await asyncio.wait_for(asyncio.shield(gen_iterator.__anext__()), timeout=4.0)
                         yield ("chunk", c)
                         break
                     except asyncio.TimeoutError:
@@ -230,14 +230,27 @@ async def _process_anthropic_stream(
                     text_stopped = True
 
                 for tc in delta.tool_calls:
-                    tc_idx = tc.index
-                    if tc_idx not in tool_buffers:
-                        t_id = getattr(tc, "id", f"toolu_{uuid.uuid4().hex}")
-                        t_name = getattr(tc.function, "name", "") if getattr(tc, "function", None) else ""
-                        tool_buffers[tc_idx] = {"id": t_id, "name": t_name, "args": "", "started": False}
-
-                    if getattr(tc.function, "name", None):
-                        tool_buffers[tc_idx]["name"] = tc.function.name
+                    if isinstance(tc, dict):
+                        tc_idx = tc.get("index", 0)
+                        if tc_idx not in tool_buffers:
+                            t_id = tc.get("id") or f"toolu_{uuid.uuid4().hex}"
+                            fn = tc.get("function", {})
+                            t_name = fn.get("name", "") if isinstance(fn, dict) else ""
+                            tool_buffers[tc_idx] = {"id": t_id, "name": t_name, "args": "", "started": False}
+                        fn = tc.get("function", {})
+                        fn_name = fn.get("name", "") if isinstance(fn, dict) else ""
+                        if fn_name:
+                            tool_buffers[tc_idx]["name"] = fn_name
+                        args_value = fn.get("arguments") if isinstance(fn, dict) else None
+                    else:
+                        tc_idx = tc.index
+                        if tc_idx not in tool_buffers:
+                            t_id = getattr(tc, "id", f"toolu_{uuid.uuid4().hex}")
+                            t_name = getattr(tc.function, "name", "") if getattr(tc, "function", None) else ""
+                            tool_buffers[tc_idx] = {"id": t_id, "name": t_name, "args": "", "started": False}
+                        if getattr(tc.function, "name", None):
+                            tool_buffers[tc_idx]["name"] = tc.function.name
+                        args_value = getattr(tc.function, "arguments", None)
 
                     name = tool_buffers[tc_idx]["name"]
                     if name and not tool_buffers[tc_idx]["started"]:
@@ -250,8 +263,6 @@ async def _process_anthropic_stream(
                                 "content_block": {"type": "tool_use", "id": tool_buffers[tc_idx]["id"],
                                                   "name": name, "input": {}}
                             })
-
-                    args_value = getattr(tc.function, "arguments", None)
                     if args_value:
                         if isinstance(args_value, dict):
                             args_str = json.dumps(args_value)

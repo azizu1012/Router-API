@@ -163,17 +163,27 @@ def record_key_model_usage(api_key: str, model_id: str, tokens: int):
 
 _score_penalties: Dict[str, Dict[str, Any]] = {}
 _penalty_cleanup_ts: float = 0.0
+_transient_429_count: int = 0
+_transient_503_count: int = 0
+
+
+def count_transient_error(reason: str) -> None:
+    global _transient_429_count, _transient_503_count
+    if reason == "rate_limit":
+        _transient_429_count += 1
+    elif reason == "unavailable":
+        _transient_503_count += 1
 
 
 PENALTY_MAP: Dict[str, Dict[str, Any]] = {
-    "rate_limit_rpd":       {"duration": 43200, "score_reduction": -60},
-    "rate_limit":           {"duration": 90,    "score_reduction": -86},
-    "rate_limit_rpm_tpm":   {"duration": 90,    "score_reduction": -86},
-    "permission_denied":    {"duration": 3600,  "score_reduction": -30},
-    "unavailable":          {"duration": 120,   "score_reduction": -20},
-    "server_error":         {"duration": 90,    "score_reduction": -20},
-    "timeout":              {"duration": 90,    "score_reduction": -20},
-    "billing_error":        {"duration": 300,   "score_reduction": -40},
+    "rate_limit_rpd":       {"duration": config.KEY_429_COOLDOWN_SECONDS * 5400, "score_reduction": -60},
+    "rate_limit":           {"duration": config.KEY_429_COOLDOWN_SECONDS * 10,   "score_reduction": -86},
+    "rate_limit_rpm_tpm":   {"duration": config.KEY_429_COOLDOWN_SECONDS * 10,   "score_reduction": -86},
+    "permission_denied":    {"duration": config.KEY_INVALID_COOLDOWN_SECONDS,     "score_reduction": -30},
+    "unavailable":          {"duration": config.KEY_429_COOLDOWN_SECONDS * 15,   "score_reduction": -20},
+    "server_error":         {"duration": config.KEY_429_COOLDOWN_SECONDS * 10,   "score_reduction": -20},
+    "timeout":              {"duration": config.KEY_429_COOLDOWN_SECONDS * 10,   "score_reduction": -20},
+    "billing_error":        {"duration": config.KEY_UNKNOWN_ERROR_COOLDOWN_SECONDS * 10, "score_reduction": -40},
 }
 
 
@@ -202,6 +212,7 @@ def apply_error_penalty(key: str, reason: str, actual_model_id: Optional[str] = 
                 "model_id": actual_model_id,
                 "reason": reason,
             }
+            logger.info("[Penalty] key=...%s reason=%s model=%s duration=%ds score=%d", key[-8:], reason, actual_model_id or "*", cfg["duration"], score_red)
             try:
                 from src.backend.key_status import db_save_penalty
                 db_save_penalty(pkey, key, actual_model_id, reason, expires, score_red)

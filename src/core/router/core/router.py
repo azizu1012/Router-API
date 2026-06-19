@@ -80,6 +80,16 @@ class APIRouter(KeyResolverMixin):
         self._consecutive_429_count: int = 0
         self._circuit_open_until = 0.0
 
+        # Model health scoring — shared across all pool instances
+        # Each pool member alias has: score (0-100), last_updated timestamp
+        # score=100 perfect, score=0 dead, mean reversion toward 50
+        self._model_health: Dict[str, Dict[str, float]] = {}
+        for _alias, _cfg in AVAILABLE_MODELS.items():
+            _mid = str(_cfg.get("model_id", ""))
+            if not _mid or _mid == "gemini-flash-pool":
+                continue
+            self._model_health[_alias] = {"score": 100.0, "updated": time.time()}
+
         logger.info(
             "APIRouter initialized models=%s keys=%d (API: %d)",
             ", ".join(self.model_priority),
@@ -227,8 +237,8 @@ class APIRouter(KeyResolverMixin):
             if self.is_global_cooldown_active():
                 return False
             self._consecutive_429_count += 1
-            if self._consecutive_429_count >= 150:
-                self.global_cooldown_until = time.time() + random.uniform(1, 3)
+            if self._consecutive_429_count >= config.GEMINI_GLOBAL_COOLDOWN_SEC * 30:
+                self.global_cooldown_until = time.time() + random.uniform(1, config.GEMINI_GLOBAL_COOLDOWN_SEC)
                 self._consecutive_429_count = 0
                 return True
             return False
@@ -248,6 +258,61 @@ class APIRouter(KeyResolverMixin):
                 self._key_status[key]["active_requests"] = 0
             logger.info("APIRouter active requests reset to 0 in-memory.")
 
+    # ── Model health scoring ─────────────────────────────────────────
+
+    def _apply_mean_reversion(self, alias: str) -> None:
+        """Decay score toward 50 over time (mean reversion)."""
+        h = self._model_health.get(alias)
+        if not h:
+            return
+        now = time.time()
+        elapsed = now - h["updated"]
+        if elapsed < 10:
+            return
+        # Drift 1 point per 30s toward 50
+        delta = (50 - h["score"]) * min(1.0, elapsed / 30.0)
+        new_score = h["score"] + delta
+        self._model_health[alias] = {"score": max(0.0, min(100.0, new_score)), "updated": now}
+
+    def update_model_health(self, alias: str, success: bool, reason: str = "") -> None:
+        """Update health score for a pool member alias.
+        success=True: +5 (cap 100)
+        success=False, transient (503/429/unavailable): -15
+        success=False, hard (invalid_key/billing): -40
+        """
+        if alias not in self._model_health:
+            return
+        with self._key_lock:
+            self._apply_mean_reversion(alias)
+            h = self._model_health[alias]
+            if success:
+                h["score"] = min(100.0, h["score"] + 5)
+            elif reason in ("invalid_key", "billing_error", "permission_denied"):
+                h["score"] = max(0.0, h["score"] - 40)
+            else:
+                h["score"] = max(0.0, h["score"] - 15)
+            h["updated"] = time.time()
+
+    def get_healthy_pool_members(self, members: list) -> list:
+        """Sort pool members by health score descending (healthiest first).
+        Members with score < 20 are deprioritized to the end.
+        """
+        now = time.time()
+        def _key(m: str) -> tuple:
+            h = self._model_health.get(m)
+            if not h:
+                return (1, 0.0)
+            score = h["score"]
+            # time-decay: if not updated recently, drift toward 50
+            elapsed = now - h["updated"]
+            if elapsed > 30:
+                score += (50 - score) * min(1.0, elapsed / 30.0)
+            # Deprioritize low scores
+            if score < 20:
+                return (1, score)
+            return (0, -score)
+        return sorted(members, key=_key)
+
     def record_success(self, key: Optional[str] = None, model_id: Optional[str] = None, input_tokens: int = 0, output_tokens: int = 0) -> None:
         try:
             self.total_requests += 1
@@ -265,6 +330,12 @@ class APIRouter(KeyResolverMixin):
                     
                     if model_id and model_id in self._key_status[key]["per_model"]:
                         self._key_status[key]["per_model"][model_id]["failures"] = 0
+            # Update model health if model_id maps to a member alias
+            if model_id:
+                for _alias, _cfg in AVAILABLE_MODELS.items():
+                    if str(_cfg.get("model_id", "")) == model_id:
+                        self.update_model_health(_alias, success=True)
+                        break
         except Exception as exc:
             logger.error("record_success error: %s", exc)
 
@@ -313,6 +384,13 @@ class APIRouter(KeyResolverMixin):
                 else:
                     ks["frozen_until"] = until_ts
             atomic_freeze_key(key, until_ts, model_id, cf)
+
+            # Update model health on failure
+            if model_id:
+                for _alias, _cfg in AVAILABLE_MODELS.items():
+                    if str(_cfg.get("model_id", "")) == model_id:
+                        self.update_model_health(_alias, success=False, reason=reason)
+                        break
         except Exception as exc:
             logger.error("freeze_key error: %s", exc)
 

@@ -128,6 +128,55 @@ export default function MyAccountTab() {
     premium: <Badge variant="success" size="xs">{tier}</Badge>,
   }[tier] || <Badge variant="ghost" size="xs">{tier}</Badge>;
 
+  const poolGauge = (label, remain, limit, unit) => {
+    const pct = limit > 0 ? Math.round((1 - remain / limit) * 100) : 0;
+    const col = pct > 80 ? 'bg-error' : pct > 50 ? 'bg-warning' : 'bg-success';
+    const txtCol = pct > 80 ? 'text-error' : pct > 50 ? 'text-warning' : 'text-success';
+    return (
+      <div className="text-[10px]">
+        <div className="flex justify-between mb-1">
+          <span className="font-semibold text-base-content/50">{label}</span>
+          <span className={`font-mono font-bold ${txtCol}`}>{remain.toLocaleString()} / {limit.toLocaleString()} {unit}</span>
+        </div>
+        <div className="w-full h-1.5 bg-base-content/20 rounded-full overflow-hidden">
+          <div className={`h-full rounded-full transition-all duration-500 ${col}`} style={{width: `${pct}%`}}></div>
+        </div>
+      </div>
+    );
+  };
+
+  const livePools = (() => {
+    if (!liveActivity || !liveActivity.models) return null;
+    const models = liveActivity.models;
+    const flash = { rpm_rem: 0, rpm_lim: 0, tpm_rem: 0, tpm_lim: 0, cnt: 0 };
+    const lite = { rpm_rem: 0, rpm_lim: 0, tpm_rem: 0, tpm_lim: 0, cnt: 0 };
+    for (const [alias, ms] of Object.entries(models)) {
+      const p = alias.includes('lite') ? lite : flash;
+      p.rpm_rem += ms.rpm_remaining;
+      p.rpm_lim += ms.rpm_limit;
+      p.tpm_rem += ms.tpm_remaining;
+      p.tpm_lim += ms.tpm_limit;
+      p.cnt++;
+    }
+    const cards = [];
+    if (flash.cnt > 0) cards.push({ label: 'Flash Pool', color: 'text-cyan-400', ...flash });
+    if (lite.cnt > 0) cards.push({ label: 'Lite Pool', color: 'text-emerald-400', ...lite });
+    if (cards.length === 0) return null;
+    return (
+      <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+        {cards.map(({ label, color, rpm_rem, rpm_lim, tpm_rem, tpm_lim, cnt }) => (
+          <Card key={label} variant="glass" padding="md">
+            <Card.Header title={<span className={color}>{label}</span>} action={<span className="text-[9px] text-base-content/40">{cnt} models</span>} />
+            <div className="space-y-2 pt-1">
+              {poolGauge('RPM Live', rpm_rem, rpm_lim, '')}
+              {poolGauge('TPM Live', tpm_rem, tpm_lim, '')}
+            </div>
+          </Card>
+        ))}
+      </div>
+    );
+  })();
+
   return (
     <div className="space-y-6">
       <div className="text-left">
@@ -159,16 +208,22 @@ export default function MyAccountTab() {
               <Wifi className="w-3 h-3 text-success" />
               <span>Live</span>
             </div>
-            <div className="flex items-center gap-4 text-[10px] font-mono text-base-content/50">
+            <div className="flex items-center gap-4 text-[10px] font-mono text-base-content/50 flex-wrap">
               <span>Active Keys: <span className="text-base-content font-bold">{liveActivity.active_keys}</span></span>
               <span className="hidden sm:inline">|</span>
               <span className="hidden sm:inline">Connections: <span className="text-base-content font-bold">{liveActivity.connections}</span></span>
+              <span>|</span>
+              <span>429: <span className="text-warning font-bold">{liveActivity.rate_limits_429 || 0}</span></span>
+              <span>|</span>
+              <span>503: <span className="text-warning font-bold">{liveActivity.unavailable_503 || 0}</span></span>
               <span>|</span>
               <span>Penalties: <span className="text-error font-bold">{liveActivity.penalties}</span></span>
             </div>
           </div>
         </Card>
       )}
+
+      {livePools}
 
       <Card variant="glass" padding="md">
         <Card.Header

@@ -3,5 +3,7 @@ from src.core.limits.gemini_rate_limiter import (
     apply_error_penalty as apply_error_penalty, record_key_usage as record_key_usage, get_key_priority as get_key_priority,
     get_key_rpd_status as get_key_rpd_status, get_usage_summary as get_usage_summary,
     check_key_model_limits as check_key_model_limits, record_key_model_usage as record_key_model_usage,
+    _transient_429_count as _transient_429_count, _transient_503_count as _transient_503_count,
+    count_transient_error as count_transient_error,
 )
 from src.core.limits.account_limiter import AccountRateLimiter as AccountRateLimiter, account_limiter as account_limiter

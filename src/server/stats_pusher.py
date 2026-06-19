@@ -3,7 +3,7 @@ import time
 from typing import Optional
 
 from src.core.config_n_logg.logger import logger_system as logger
-from src.core.limits.gemini_rate_limiter import _rate_limiters, _key_model_requests, _score_penalties
+from src.core.limits.gemini_rate_limiter import _rate_limiters, _key_model_requests, _score_penalties, _transient_429_count, _transient_503_count
 from src.server.websocket_manager import ws_manager
 
 
@@ -44,7 +44,7 @@ class StatsPusher:
 
         # Include custom pool models stats dynamically
         try:
-            from src.server.openai_server.handler import _custom_pool_usage, _CUSTOM_POOL_RPM
+            from src.core.providers.custom_endpoint_client import _custom_pool_usage, _CUSTOM_POOL_RPM
             for model_id, ts_list in dict(_custom_pool_usage).items():
                 rpm_used = sum(1 for ts in ts_list if now - ts < 60)
                 stats_entry = {
@@ -71,6 +71,7 @@ class StatsPusher:
             if pdata.get("expires", 0) > now:
                 penalty_count += 1
 
+        global _transient_429_count, _transient_503_count
         return {
             "type": "stats_snapshot",
             "channel": "stats:overview",
@@ -80,6 +81,8 @@ class StatsPusher:
             "channels": ws_manager.get_channel_count(),
             "active_keys": active_keys,
             "penalties": penalty_count,
+            "rate_limits_429": _transient_429_count,
+            "unavailable_503": _transient_503_count,
         }
 
     async def _loop(self):

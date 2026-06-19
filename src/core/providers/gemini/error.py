@@ -20,7 +20,7 @@ def parse_project(text: str) -> Optional[str]:
 
 
 def get_error_info(exc: Exception) -> Dict[str, Any]:
-    """Extract structured info from any Exception (e.g., google-genai APIError or litellm errors)."""
+    """Extract structured info from any Exception (e.g., google-genai APIError or GeminiAPIError)."""
     info = {
         "code": None,
         "status": None,
@@ -38,7 +38,7 @@ def get_error_info(exc: Exception) -> Dict[str, Any]:
     except ImportError:
         pass
 
-    # 2. Check if it's a litellm exception (which might have status_code)
+    # 2. Check if it's a native exception (which might have status_code)
     status_code = getattr(exc, "status_code", None)
     if status_code is not None:
         try:

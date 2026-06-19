@@ -58,8 +58,12 @@ def build_response(
     out_tokens = 0
     usage = getattr(resp, "usage", None)
     if usage:
-        out_tokens = getattr(usage, "completion_tokens", 0) or 0
-        input_tokens = getattr(usage, "prompt_tokens", 0) or input_tokens
+        if isinstance(usage, dict):
+            out_tokens = usage.get("completion_tokens", 0) or 0
+            input_tokens = usage.get("prompt_tokens", 0) or input_tokens
+        else:
+            out_tokens = getattr(usage, "completion_tokens", 0) or 0
+            input_tokens = getattr(usage, "prompt_tokens", 0) or input_tokens
 
     cost = estimate_cost(input_tokens, out_tokens, model_alias)
     kp = api_key[-8:] if api_key else ""
@@ -81,7 +85,7 @@ def build_response(
         "created": int(time.time()),
         "model": model_name,
         "choices": [{"index": 0, "message": msg, "finish_reason": finish}],
-        "usage": {"prompt_tokens": input_tokens, "completion_tokens": out_tokens, "total_tokens": input_tokens + out_tokens, "cost": cost},
+        "usage": {"prompt_tokens": input_tokens, "completion_tokens": out_tokens, "total_tokens": input_tokens + out_tokens},
     }
 
 

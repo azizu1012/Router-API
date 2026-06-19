@@ -104,7 +104,8 @@ d:\AI_Projects\router_api/
 │   │   │       ├── error.py           # Pure error classification functions
 │   │   │       ├── thinking_config.py # Builds ThinkingConfig for Gemini API
 │   │   │       └── utils.py           # Extracted helpers: error handling, tools, backoff
-│   │   └── router/
+│   ├── pool_manager.py           # Central pool manager (key pool + custom pool)
+│   ├── router/
 │   │       ├── pool.py           #     ModelPool failure state machine
 │   │       └── core/
 │   │           ├── router.py         # Singleton APIRouter: key registry, scoring
