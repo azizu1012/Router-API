@@ -1,7 +1,34 @@
 import re
 import json
+import threading
 from datetime import datetime
 from typing import Any, Dict, List, Tuple
+
+class ToolNameCache:
+    def __init__(self, max_size=5000):
+        self.max_size = max_size
+        self.cache = {}
+        self.keys_list = []
+        self.lock = threading.Lock()
+
+    def set(self, key: str, value: str):
+        if not key:
+            return
+        with self.lock:
+            if key in self.cache:
+                self.cache[key] = value
+                return
+            if len(self.cache) >= self.max_size:
+                oldest = self.keys_list.pop(0)
+                self.cache.pop(oldest, None)
+            self.cache[key] = value
+            self.keys_list.append(key)
+
+    def get(self, key: str) -> str:
+        with self.lock:
+            return self.cache.get(key)
+
+_GLOBAL_TOOL_NAME_CACHE = ToolNameCache()
 
 UNSUPPORTED_OR_HEAVY_TOOLS = {
     "NotebookRead", "NotebookEdit",
@@ -140,6 +167,9 @@ def _clean_system_prompt(text: str) -> str:
     return text
 
 def _convert_messages(body: Dict[str, Any]) -> Tuple[List[Dict[str, Any]], List[Dict[str, Any]]]:
+    from src.logical_HQ_translator.rtk import compress_messages
+    compress_messages(body, enabled=True)
+
     openai_tools: List[Dict[str, Any]] = []
 
     for tool in body.get("tools") or []:
@@ -178,6 +208,7 @@ def _convert_messages(body: Dict[str, Any]) -> Tuple[List[Dict[str, Any]], List[
             )
         openai_messages.append({"role": "system", "content": cleaned})
 
+    seen_tool_calls = set()
     tool_name_map: Dict[str, str] = {}
 
     for msg in body.get("messages") or []:
@@ -200,6 +231,8 @@ def _convert_messages(body: Dict[str, Any]) -> Tuple[List[Dict[str, Any]], List[
                     if isinstance(t_input, dict):
                         t_input = {k: v for k, v in t_input.items() if v != "" and v is not None}
                     tool_name_map[t_id] = t_name
+                    _GLOBAL_TOOL_NAME_CACHE.set(t_id, t_name)
+                    seen_tool_calls.add(t_id)
                     tool_calls.append({
                         "id": t_id,
                         "type": "function",
@@ -215,12 +248,23 @@ def _convert_messages(body: Dict[str, Any]) -> Tuple[List[Dict[str, Any]], List[
                         t_content = str(t_content)
                     if not t_content or not t_content.strip():
                         t_content = "(empty)"
-                    openai_messages.append({
-                        "role": "tool",
-                        "tool_call_id": t_id,
-                        "name": tool_name_map.get(t_id, "Task"),
-                        "content": t_content,
-                    })
+                    
+                    tool_name = tool_name_map.get(t_id) or _GLOBAL_TOOL_NAME_CACHE.get(t_id) or "Task"
+                    
+                    if t_id not in seen_tool_calls:
+                        # Fallback: Convert orphaned tool result to a user message
+                        # to avoid schema mismatch and invalid dummy argument validation.
+                        openai_messages.append({
+                            "role": "user",
+                            "content": f"[Tool Result: {tool_name}]\n{t_content}"
+                        })
+                    else:
+                        openai_messages.append({
+                            "role": "tool",
+                            "tool_call_id": t_id,
+                            "name": tool_name,
+                            "content": t_content,
+                        })
                 elif b_type in ("thinking", "redacted_thinking"):
                     continue
             if role == "assistant":

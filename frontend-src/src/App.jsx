@@ -5,8 +5,9 @@ import CanvasParticles from './components/CanvasParticles';
 import ThemeLanguageSelector from './components/ThemeLanguageSelector';
 import { 
   LayoutDashboard, Key, Users, PieChart, Network, 
-  AlertTriangle, ShieldCheck, User, BarChart3, LogOut, Lock, Eye, EyeOff, Settings
+  AlertTriangle, ShieldCheck, User, BarChart3, LogOut, Lock, Eye, EyeOff, Settings, Terminal
 } from 'lucide-react';
+import LogHistoryModal from './components/LogHistoryModal';
 
 // Lazy load tab components
 import OverviewTab from './tabs/OverviewTab';
@@ -37,6 +38,7 @@ export default function App() {
   const [showClicker, setShowClicker] = useState(false);
   const [clickerScore, setClickerScore] = useState(0);
   const [sakuraClicks, setSakuraClicks] = useState(0);
+  const [showLogsModal, setShowLogsModal] = useState(false);
 
   // 1. Konami Code Listener & custom egg-unlocked listener
   useEffect(() => {
@@ -256,7 +258,7 @@ export default function App() {
 
   // 4. Render Main Dashboard Shell
   return (
-    <div className="relative min-h-screen w-screen flex flex-col">
+    <div className="relative h-screen w-screen flex flex-col overflow-hidden">
       <CanvasParticles />
       
       {/* Header */}
@@ -372,6 +374,14 @@ export default function App() {
               >
                 <Settings className="w-4 h-4" />
                 <span>{t('nav_st', lang) || 'Cấu hình Hệ thống'}</span>
+              </button>
+
+              <button 
+                onClick={() => setShowLogsModal(true)} 
+                className="btn btn-sm btn-ghost justify-start gap-3 normal-case font-medium w-full text-left rounded-xl text-base-content/75 hover:bg-primary/15 hover:text-primary transition-all duration-200"
+              >
+                <Terminal className="w-4 h-4 text-green-400" />
+                <span>Log Stream (Live)</span>
               </button>
               
               <div className="divider opacity-20 my-2"></div>
@@ -505,6 +515,11 @@ export default function App() {
             <div className="text-xs">{toast.message}</div>
           </div>
         </div>
+      )}
+
+      {/* 📟 Log Stream Modal */}
+      {showLogsModal && (
+        <LogHistoryModal onClose={() => setShowLogsModal(false)} />
       )}
     </div>
   );

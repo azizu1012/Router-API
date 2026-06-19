@@ -72,6 +72,9 @@ class StatsPusher:
                 penalty_count += 1
 
         global _transient_429_count, _transient_503_count
+        from src.core.usage_logger import get_recent_requests
+        recent_reqs = await get_recent_requests(20)
+
         return {
             "type": "stats_snapshot",
             "channel": "stats:overview",
@@ -83,6 +86,7 @@ class StatsPusher:
             "penalties": penalty_count,
             "rate_limits_429": _transient_429_count,
             "unavailable_503": _transient_503_count,
+            "recent_requests": recent_reqs,
         }
 
     async def _loop(self):

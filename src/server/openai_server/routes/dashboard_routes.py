@@ -441,4 +441,6 @@ async def usage_stats(days: int = 30):
         logging.getLogger("uvicorn").error("[Stats] Failed to enrich top_keys: %s", e)
 
     savings_data = _calculate_financial_savings(stats.get("summary", []))
-    return {**stats, "top_keys": top_keys, "savings": savings_data}
+    from src.core.usage_logger import get_recent_requests
+    recent_reqs = await get_recent_requests(20)
+    return {**stats, "top_keys": top_keys, "savings": savings_data, "recent_requests": recent_reqs}

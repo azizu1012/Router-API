@@ -7,7 +7,7 @@ import {
   LineElement, Title, Tooltip, Legend, ArcElement
 } from 'chart.js';
 import { Line, Doughnut } from 'react-chartjs-2';
-import { Calendar, BarChart3, TrendingUp, Cpu, Wifi, WifiOff } from 'lucide-react';
+import { Calendar, BarChart3, TrendingUp, Cpu, Wifi, WifiOff, Clock, Activity } from 'lucide-react';
 import Loading from '../components/Loading';
 
 ChartJS.register(
@@ -20,6 +20,25 @@ const CLR = [
   '#8b5cf6', '#14b8a6', '#f43f5e', '#a855f7', '#06b6d4'
 ];
 
+function timeAgo(timestamp) {
+  if (!timestamp) return '-';
+  const diff = Math.floor((Date.now() - new Date(timestamp)) / 1000);
+  if (diff < 5) return 'vừa xong';
+  if (diff < 60) return `${diff}s trước`;
+  if (diff < 3600) return `${Math.floor(diff / 60)}m trước`;
+  if (diff < 86400) return `${Math.floor(diff / 3600)}h trước`;
+  return `${Math.floor(diff / 86400)}d trước`;
+}
+
+function TimeAgo({ timestamp }) {
+  const [, setTick] = useState(0);
+  useEffect(() => {
+    const timer = setInterval(() => setTick(t => t + 1), 2000);
+    return () => clearInterval(timer);
+  }, []);
+  return <span>{timeAgo(timestamp)}</span>;
+}
+
 export default function OverviewTab() {
   const { tabData, lang, theme, refreshTab, token, wsHook } = useApp();
   const ovData = tabData.ov;
@@ -28,6 +47,8 @@ export default function OverviewTab() {
   const [clrOffset, setClrOffset] = useState(0);
   const [flipped, setFlipped] = useState(false);
   const [liveStats, setLiveStats] = useState(null);
+
+  const recentRequests = liveStats?.recent_requests || ovData?.recent_requests || [];
 
   useEffect(() => {
     if (!wsHook || !wsHook.connected) return;
@@ -331,6 +352,51 @@ export default function OverviewTab() {
               <span className="text-xs text-base-content/40">{t('no_data', lang)}</span>
             )}
           </div>
+        </div>
+      </div>
+
+      {/* Recent Requests Section */}
+      <div className="card glass-card rounded-3xl overflow-hidden text-left border border-base-content/5 animate-fade-in-up cascade-3">
+        <div className="p-5 border-b border-base-content/5 bg-base-200/15 flex items-center justify-between">
+          <h3 className="font-extrabold text-sm text-base-content/95 flex items-center gap-2">
+            <Clock className="w-4 h-4 text-emerald-400" />
+            Yêu cầu Gần đây (Real-time)
+          </h3>
+          <span className="badge badge-success badge-xs animate-pulse font-bold text-[9px] uppercase">Live</span>
+        </div>
+        <div className="overflow-x-auto w-full">
+          <table className="table table-zebra w-full text-xs">
+            <thead>
+              <tr className="border-b border-base-content/5 text-base-content/60 bg-base-200/30">
+                <th className="w-8"></th>
+                <th className="font-bold">Model</th>
+                <th className="font-bold text-right">Prompt Tokens</th>
+                <th className="font-bold text-right">Completion Tokens</th>
+                <th className="font-bold text-right">Thời gian</th>
+              </tr>
+            </thead>
+            <tbody>
+              {recentRequests.length > 0 ? (
+                recentRequests.map((r, i) => (
+                  <tr key={i} className="border-b border-base-content/5 hover:bg-base-200/50">
+                    <td>
+                      <span className="block w-1.5 h-1.5 rounded-full bg-emerald-500 animate-pulse" />
+                    </td>
+                    <td className="font-bold font-mono text-base-content/95">{r.model_alias}</td>
+                    <td className="text-right text-primary font-semibold">{fmt(r.prompt_tokens)}↑</td>
+                    <td className="text-right text-success font-semibold">{fmt(r.completion_tokens)}↓</td>
+                    <td className="text-right text-base-content/60"><TimeAgo timestamp={r.timestamp} /></td>
+                  </tr>
+                ))
+              ) : (
+                <tr>
+                  <td colSpan="5" className="text-center py-6 text-base-content/40 font-medium">
+                    Chưa có yêu cầu nào được ghi nhận.
+                  </td>
+                </tr>
+              )}
+            </tbody>
+          </table>
         </div>
       </div>
 
