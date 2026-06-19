@@ -96,7 +96,7 @@ def classify(exc: Any) -> str:
     elif code == 404:
         return "unavailable"
     elif code == 429:
-        if "rate_limit_exceeded" in lowered or ("quota exceeded" in lowered and ("day" in lowered or "daily" in lowered)) or status == "RESOURCE_EXHAUSTED" and ("day" in lowered or "daily" in lowered):
+        if ("quota exceeded" in lowered and ("day" in lowered or "daily" in lowered)) or status == "RESOURCE_EXHAUSTED" and ("day" in lowered or "daily" in lowered):
             return "project_quota_429"
         return "rate_limit"
     elif code in (500, 503, 504):
@@ -139,7 +139,7 @@ def classify(exc: Any) -> str:
         return "rate_limit"
 
     if "429" in lowered or "quota" in lowered or "resource exhausted" in lowered:
-        if "rate_limit_exceeded" in lowered or ("quota exceeded" in lowered and ("day" in lowered or "daily" in lowered)):
+        if ("quota exceeded" in lowered and ("day" in lowered or "daily" in lowered)):
             return "project_quota_429"
         return "rate_limit"
 
