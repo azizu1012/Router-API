@@ -199,6 +199,21 @@ async def get_top_keys(days: int = 30, limit: int = 5) -> List[Dict[str, Any]]:
         return []
 
 
+async def get_recent_requests(limit: int = 20) -> List[Dict[str, Any]]:
+    try:
+        async with aiosqlite.connect(_DB) as db:
+            db.row_factory = aiosqlite.Row
+            c = await db.execute(
+                "SELECT timestamp, model_alias, prompt_tokens, completion_tokens, auth_key_prefix "
+                "FROM usage_logs ORDER BY id DESC LIMIT ?",
+                (limit,),
+            )
+            return [dict(r) for r in await c.fetchall()]
+    except Exception as e:
+        logger.error("[UsageLogger] get_recent_requests error: %s", e)
+        return []
+
+
 async def get_stats_for_prefix(auth_key_prefix: str, days: int = 30) -> Dict[str, Any]:
     """Usage stats filtered by a single auth_key_prefix (for per-user dashboard)."""
     cutoff = (datetime.now() - timedelta(days=days)).isoformat()

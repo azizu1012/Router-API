@@ -128,12 +128,21 @@ class ClaudeProxyNonstreamMixin:
                             args = json.loads(args)
                         except (json.JSONDecodeError, TypeError):
                             pass
-                    content_blocks.append({
-                        "type": "tool_use",
-                        "id": tc_id,
-                        "name": name,
-                        "input": args if isinstance(args, dict) else {},
-                    })
+                    if name == "Task":
+                        prompt_str = args.get("prompt", "") if isinstance(args, dict) else str(args)
+                        content_blocks.append({
+                            "type": "agent_use",
+                            "id": tc_id,
+                            "agent_type": "general-purpose",
+                            "prompt": prompt_str,
+                        })
+                    else:
+                        content_blocks.append({
+                            "type": "tool_use",
+                            "id": tc_id,
+                            "name": name,
+                            "input": args if isinstance(args, dict) else {},
+                        })
 
         if has_tool_calls:
             stop_reason = "tool_use"
