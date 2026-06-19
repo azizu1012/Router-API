@@ -177,13 +177,17 @@ def count_transient_error(reason: str) -> None:
 
 PENALTY_MAP: Dict[str, Dict[str, Any]] = {
     "rate_limit_rpd":       {"duration": config.KEY_429_COOLDOWN_SECONDS * 5400, "score_reduction": -60},
+    "project_quota_429":    {"duration": config.KEY_429_COOLDOWN_SECONDS * 5400, "score_reduction": -60},
     "rate_limit":           {"duration": config.KEY_429_COOLDOWN_SECONDS * 10,   "score_reduction": -86},
     "rate_limit_rpm_tpm":   {"duration": config.KEY_429_COOLDOWN_SECONDS * 10,   "score_reduction": -86},
     "permission_denied":    {"duration": config.KEY_INVALID_COOLDOWN_SECONDS,     "score_reduction": -30},
+    "project_denied":       {"duration": config.KEY_INVALID_COOLDOWN_SECONDS,     "score_reduction": -30},
     "unavailable":          {"duration": config.KEY_429_COOLDOWN_SECONDS * 15,   "score_reduction": -20},
     "server_error":         {"duration": config.KEY_429_COOLDOWN_SECONDS * 10,   "score_reduction": -20},
     "timeout":              {"duration": config.KEY_429_COOLDOWN_SECONDS * 10,   "score_reduction": -20},
+    "grounding_fallback":   {"duration": config.KEY_429_COOLDOWN_SECONDS * 10,   "score_reduction": -20},
     "billing_error":        {"duration": config.KEY_UNKNOWN_ERROR_COOLDOWN_SECONDS * 10, "score_reduction": -40},
+    "unknown":              {"duration": config.KEY_429_COOLDOWN_SECONDS * 10,   "score_reduction": -20},
 }
 
 

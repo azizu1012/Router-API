@@ -13,7 +13,7 @@ from typing import Any, AsyncIterator, Dict, List, Optional, Tuple, Union
 from src.core.config_n_logg import config
 from src.core.config_n_logg.logger import logger_system as logger
 from src.core.router import router
-from src.core.limits import get_rate_limiter, apply_error_penalty
+from src.core.limits import get_rate_limiter, apply_error_penalty, count_transient_error
 from src.core.providers import _custom_endpoint_manager as endpoint_manager
 from src.core.providers.custom_endpoint_client import check_custom_pool_rate
 from src.core.providers.gemini_facade import acompletion, token_counter
@@ -146,8 +146,16 @@ class PoolManager:
                     # Classify error
                     reason = _classify_error(e)
                     if reason in TRANSIENT_REASONS:
-                        # Transient errors: không freeze key, không record_failure
-                        # chỉ backoff exponential + retry, swap member khi quá nhiều
+                        # Update transient metrics
+                        count_transient_error(reason)
+                        if reason == "rate_limit":
+                            router.record_429()
+
+                        # Apply temporary score penalty and freeze the key
+                        if api_key_val and model_id_val:
+                            router.freeze_key(api_key_val, config.KEY_429_COOLDOWN_SECONDS, model_id_val, reason)
+                            apply_error_penalty(api_key_val, reason, model_id_val)
+
                         pool._consecutive_transient += 1
                         if pool._consecutive_transient >= config.POOL_SWAP_FAILURES:
                             logger.warning("[PoolManager] Transient error %s on member %s, too many retries - swapping...", reason, member_used)
@@ -190,10 +198,16 @@ class PoolManager:
                 except Exception as e:
                     reason = _classify_error(e)
                     logger.warning("[PoolManager] Standalone error (attempt %d): %s", attempt, e)
+                    if reason in TRANSIENT_REASONS:
+                        count_transient_error(reason)
+                        if reason == "rate_limit":
+                            router.record_429()
                     if api_key_val and model_id_val:
                         cooldown = config.KEY_INVALID_COOLDOWN_SECONDS if reason in ("invalid_key", "permission_denied") else config.KEY_429_COOLDOWN_SECONDS
                         router.freeze_key(api_key_val, cooldown, model_id_val, reason)
+                        apply_error_penalty(api_key_val, reason, model_id_val)
                     await asyncio.sleep(_retry_delay(attempt))
+
             raise RuntimeError("Standalone calls failed after retries")
 
     async def call_stream(
@@ -299,8 +313,16 @@ class PoolManager:
 
                     reason = _classify_error(e)
                     if reason in TRANSIENT_REASONS:
-                        # Transient errors: không freeze key, không record_failure
-                        # chỉ backoff exponential + retry, swap member khi quá nhiều
+                        # Update transient metrics
+                        count_transient_error(reason)
+                        if reason == "rate_limit":
+                            router.record_429()
+
+                        # Apply temporary score penalty and freeze the key
+                        if api_key_val and model_id_val:
+                            router.freeze_key(api_key_val, config.KEY_429_COOLDOWN_SECONDS, model_id_val, reason)
+                            apply_error_penalty(api_key_val, reason, model_id_val)
+
                         if not reservation:
                             logger.warning("[PoolManager] Transient stream error %s on member %s, no key available - swapping...", reason, member_used)
                             pool._consecutive_transient = 0
@@ -374,9 +396,14 @@ class PoolManager:
                 except Exception as e:
                     reason = _classify_error(e)
                     logger.warning("[PoolManager] Standalone stream attempt %d failed: %s", attempt, e)
+                    if reason in TRANSIENT_REASONS:
+                        count_transient_error(reason)
+                        if reason == "rate_limit":
+                            router.record_429()
                     if api_key_val and model_id_val:
                         cooldown = config.KEY_INVALID_COOLDOWN_SECONDS if reason in ("invalid_key", "permission_denied") else config.KEY_429_COOLDOWN_SECONDS
                         router.freeze_key(api_key_val, cooldown, model_id_val, reason)
+                        apply_error_penalty(api_key_val, reason, model_id_val)
                     await asyncio.sleep(_retry_delay(attempt))
             raise RuntimeError("Standalone stream failed after retries")
 
