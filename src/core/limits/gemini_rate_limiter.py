@@ -175,20 +175,68 @@ def count_transient_error(reason: str) -> None:
         _transient_503_count += 1
 
 
-PENALTY_MAP: Dict[str, Dict[str, Any]] = {
-    "rate_limit_rpd":       {"duration": config.KEY_429_COOLDOWN_SECONDS * 5400, "score_reduction": -60},
-    "project_quota_429":    {"duration": config.KEY_429_COOLDOWN_SECONDS * 5400, "score_reduction": -60},
-    "rate_limit":           {"duration": config.KEY_429_COOLDOWN_SECONDS * 10,   "score_reduction": -86},
-    "rate_limit_rpm_tpm":   {"duration": config.KEY_429_COOLDOWN_SECONDS * 10,   "score_reduction": -86},
-    "permission_denied":    {"duration": config.KEY_INVALID_COOLDOWN_SECONDS,     "score_reduction": -30},
-    "project_denied":       {"duration": config.KEY_INVALID_COOLDOWN_SECONDS,     "score_reduction": -30},
-    "unavailable":          {"duration": config.KEY_429_COOLDOWN_SECONDS * 15,   "score_reduction": -20},
-    "server_error":         {"duration": config.KEY_429_COOLDOWN_SECONDS * 10,   "score_reduction": -20},
-    "timeout":              {"duration": config.KEY_429_COOLDOWN_SECONDS * 10,   "score_reduction": -20},
-    "grounding_fallback":   {"duration": config.KEY_429_COOLDOWN_SECONDS * 10,   "score_reduction": -20},
-    "billing_error":        {"duration": config.KEY_UNKNOWN_ERROR_COOLDOWN_SECONDS * 10, "score_reduction": -40},
-    "unknown":              {"duration": config.KEY_429_COOLDOWN_SECONDS * 10,   "score_reduction": -20},
-}
+def get_seconds_until_pacific_midnight() -> int:
+    now_utc = _dt.datetime.utcnow()
+    now_pacific = now_utc + _PACIFIC_OFFSET
+    tomorrow_pacific = now_pacific.date() + _dt.timedelta(days=1)
+    midnight_pacific = _dt.datetime.combine(tomorrow_pacific, _dt.time.min)
+    utc_midnight = midnight_pacific - _PACIFIC_OFFSET
+    seconds = int((utc_midnight - now_utc).total_seconds())
+    return max(300, seconds)
+
+
+def get_penalty_config(reason: str) -> Optional[Dict[str, Any]]:
+    """Get dynamic penalty configuration based on current config values."""
+    if reason in ("rate_limit_rpd", "project_quota_429"):
+        return {
+            "duration": get_seconds_until_pacific_midnight(),
+            "score_reduction": -60
+        }
+    elif reason in ("rate_limit", "rate_limit_rpm_tpm"):
+        return {
+            "duration": config.KEY_429_COOLDOWN_SECONDS * 10,
+            "score_reduction": -86
+        }
+    elif reason in ("permission_denied", "project_denied"):
+        return {
+            "duration": config.KEY_INVALID_COOLDOWN_SECONDS,
+            "score_reduction": -30
+        }
+    elif reason == "unavailable":
+        return {
+            "duration": config.KEY_UNKNOWN_ERROR_COOLDOWN_SECONDS * 4,
+            "score_reduction": -20
+        }
+    elif reason in ("server_error", "timeout", "grounding_fallback", "unknown"):
+        return {
+            "duration": config.KEY_UNKNOWN_ERROR_COOLDOWN_SECONDS * 3,
+            "score_reduction": -20
+        }
+    elif reason == "billing_error":
+        return {
+            "duration": config.KEY_UNKNOWN_ERROR_COOLDOWN_SECONDS * 10,
+            "score_reduction": -40
+        }
+    return None
+
+
+class DynamicPenaltyMap(dict):
+    def get(self, key, default=None):
+        cfg = get_penalty_config(key)
+        return cfg if cfg is not None else default
+
+    def __getitem__(self, key):
+        cfg = get_penalty_config(key)
+        if cfg is None:
+            raise KeyError(key)
+        return cfg
+
+    def __contains__(self, key):
+        return get_penalty_config(key) is not None
+
+
+PENALTY_MAP = DynamicPenaltyMap()
+
 
 
 def _penalty_key(key: str, actual_model_id: Optional[str] = None) -> str:
