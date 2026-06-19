@@ -1,289 +1,65 @@
-import asyncio
+"""Claude non-stream proxy — format converter only.
+
+Pool/key/custom management is centralized in PoolManager.
+"""
+
+import json
 import uuid
 from typing import Any, Dict, Optional
-
-# pyright: reportAttributeAccessIssue=false
-
-from fastapi import HTTPException
-from src.core.providers.litellm_wrapper import token_counter
 
 from src.core.config_n_logg import config
 from src.core.config_n_logg.logger import logger_proxy as logger
 from src.core.router import router
-from src.core.limits import apply_error_penalty
-from src.logical_HQ_translator import (
-    _resolve_model,
-    _retry_delay,
-    _convert_messages,
-    _intercept_sub_agent,
-    _emergency_truncate_to_limit,
-)
-
-from .helpers import get_system_status_summary, _reinforce_messages_for_retry
-from src.core.providers.gemini.error import classify
-from src.core.providers import _custom_endpoint_manager as endpoint_manager
+from src.core.pool_manager import pool_manager
+from src.logical_HQ_translator import _convert_messages, _intercept_sub_agent, XMLThinkingExtractor
 from .compaction import _pre_compact_and_truncate
-from .nonstream_executor import _execute_nonstream
+from .helpers import get_system_status_summary
+
 
 class ClaudeProxyNonstreamMixin:
 
-    async def create_message(self, body: Dict[str, Any], auth_key_prefix: str = "", account: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+    async def create_message(
+        self, body: Dict[str, Any], auth_key_prefix: str = "", account: Optional[Dict[str, Any]] = None
+    ) -> Dict[str, Any]:
         openai_messages, openai_tools = _convert_messages(body)
 
         from src.api.opencode_proxy.handler.websearch import should_enable_web_search
-        from src.api.opencode_proxy.handler.proxy import _WEBSEARCH_TOOL_DEF
-        if should_enable_web_search(body, account) and not any(
+        from src.api.opencode_proxy.handler.proxy import _WEBSEARCH_TOOL_DEF, _resolve_thinking_config
+        from src.logical_HQ_translator.sse_cache_agent import is_sub_agent_body
+        if not is_sub_agent_body(body) and should_enable_web_search(body, account) and not any(
             t.get("function", {}).get("name") in ("WebSearch", "web_search") for t in openai_tools
         ):
             openai_tools.append(_WEBSEARCH_TOOL_DEF)
-            logger.info("[WebSearch] Injected WebSearch tool for Claude proxy non-stream")
+            logger.info("[WebSearch] Injected WebSearch tool for Claude non-stream")
 
         override_alias = _intercept_sub_agent(body)
-        model_alias = override_alias or router.resolve_model_alias(body.get("model", ""))
-        if not model_alias:
-            model_alias = config.DEFAULT_MODEL_ALIAS
+        model_alias = override_alias or router.resolve_model_alias(body.get("model", "")) or config.DEFAULT_MODEL_ALIAS
 
-        token = None
-        if override_alias:
-            from src.core.router.core.router import is_sub_agent_context
-            token = is_sub_agent_context.set(True)
+        await _pre_compact_and_truncate(body, openai_messages, openai_tools, model_alias)
 
         try:
-            await _pre_compact_and_truncate(body, openai_messages, openai_tools, model_alias)
+            max_tokens = max(1, min(int(body.get("max_tokens", 4096)), config.MAX_OUTPUT_TOKENS))
+            temperature = float(body.get("temperature", 0.7))
+            thinking_config = _resolve_thinking_config(body, model_alias)
+            thinking_params = {
+                "thinking_level": body.get("thinking_level"),
+                "thinking_budget": body.get("thinking_budget"),
+                "include_thoughts": body.get("include_thoughts", True),
+            }
 
-            req_id = uuid.uuid4().hex[:8]
-            first_user = ""
-            for m in openai_messages:
-                if m.get("role") == "user":
-                    c = m.get("content", "")
-                    first_user = str(c)[:200].replace('\n', ' ') if isinstance(c, str) else str(c.get("text", ""))[:200].replace('\n', ' ')
-                    break
-            logger.info("[%s] [Request] create_message (Non-Stream) | model=%s, alias=%s, override=%s, messages=%d, tools=%d | first_user=%.200s",
-                        req_id, body.get("model"), model_alias,
-                        override_alias or "-", len(openai_messages), len(openai_tools),
-                        first_user)
-
-            pool = router.resolve_pool(model_alias)
-            if pool:
-                try:
-                    result = await self._call_lm_with_retry(body, openai_messages, openai_tools, pool, model_alias, auth_key_prefix=auth_key_prefix, account=account)
-                    if isinstance(result, dict):
-                        result["model"] = body.get("model") or model_alias
-                        return result
-                    return result
-                except HTTPException as exc:
-                    if exc.status_code == 503:
-                        summary_text = get_system_status_summary(model_alias)
-                        return {
-                            "id": "msg_err_" + uuid.uuid4().hex[:8],
-                            "type": "message",
-                            "role": "assistant",
-                            "model": body.get("model") or model_alias,
-                            "content": [{"type": "text", "text": summary_text}],
-                            "stop_reason": "end_turn",
-                            "stop_sequence": None,
-                            "usage": {
-                                "input_tokens": len(summary_text) // 4,
-                                "output_tokens": len(summary_text) // 4,
-                            },
-                        }
-                    raise
-
-            import time
-            from src.core.router.core.router import is_sub_agent_context
-            is_sub = is_sub_agent_context.get()
-            start_time = time.time()
-
-            for attempt in range(config.MAX_RETRIES):
-                if is_sub:
-                    if attempt >= 3 or (time.time() - start_time) >= 15.0:
-                        logger.warning("[Sub-Agent Fast-Fail Nonstream] Non-pool attempts: %d, elapsed: %.1fs. Failing early.", attempt, time.time() - start_time)
-                        break
-
-                model_alias_val = None
-                api_key_val = None
-                model_id_val = ""
-                litellm_model_val = None
-                try:
-                    est_input = len(str(openai_messages)) // 4
-                    max_output = min(int(body.get("max_tokens", 4096)), config.MAX_OUTPUT_TOKENS)
-                    estimated_tokens = est_input + max_output
-                    model_alias_val, model_id_val, api_key_val, litellm_model_val, reservation = await _resolve_model(body, model_alias, account=account, estimated_tokens=estimated_tokens, retry_attempt=attempt)
-                    logger.info(
-                        "[%s] [Reserve Non-Pool] Reserved key ...%s for model_alias=%s (resolved model_id=%s) | Attempt: %d/%d | Estimated tokens: %d",
-                        req_id, api_key_val[-8:] if api_key_val else "N/A", model_alias, model_id_val, attempt + 1, config.MAX_RETRIES, estimated_tokens
-                    )
-                    try:
-                        from src.logical_HQ_translator import save_resolved_model_for_cwd
-                        save_resolved_model_for_cwd(body.get("system", ""), model_alias_val, model_id_val)
-                    except Exception as ex_sync:
-                        logger.error("[Statusline Sync Error] Failed to call sync helper in non-pool nonstream: %s", ex_sync)
-                    try:
-                        try:
-                            input_tokens = await token_counter(model=litellm_model_val, messages=openai_messages)
-                        except Exception:
-                            input_tokens = max(1, len(str(openai_messages)) // 4)
-
-                        is_lite = "lite" in str(litellm_model_val).lower()
-                        limit = config.LITE_EMERGENCY_MAX_INPUT_TOKENS if is_lite else config.EMERGENCY_MAX_INPUT_TOKENS
-                        if attempt >= 10:
-                            _div = max(3, attempt - 7)
-                            limit = max(20000, limit // _div)
-                        openai_messages[:] = _emergency_truncate_to_limit(openai_messages, limit)
-                        try:
-                            input_tokens = await token_counter(model=litellm_model_val, messages=openai_messages)
-                        except Exception:
-                            input_tokens = max(1, len(str(openai_messages)) // 4)
-
-                        estimated_output = min(int(body.get("max_tokens", 4096)), config.MAX_OUTPUT_TOKENS)
-                        has_quota = await router.acquire_quota(input_tokens + estimated_output, model_alias_val)
-                        if not has_quota:
-                            apply_error_penalty(api_key_val, "rate_limit_rpm_tpm", model_id_val)
-                            router.freeze_key(api_key_val, 15, model_id_val, "rate_limit")
-                            if attempt == config.MAX_RETRIES - 1:
-                                summary_text = get_system_status_summary(model_alias)
-                                return {
-                                    "id": "msg_err_" + uuid.uuid4().hex[:8],
-                                    "type": "message",
-                                    "role": "assistant",
-                                    "model": body.get("model") or model_alias,
-                                    "content": [{"type": "text", "text": summary_text}],
-                                    "stop_reason": "end_turn",
-                                    "stop_sequence": None,
-                                    "usage": {
-                                        "input_tokens": len(summary_text) // 4,
-                                        "output_tokens": len(summary_text) // 4,
-                                    },
-                                }
-                            await asyncio.sleep(_retry_delay(attempt))
-                            continue
-
-                        reinforced_messages = _reinforce_messages_for_retry(openai_messages, attempt)
-                        kwargs: Dict[str, Any] = {
-                            "model": litellm_model_val,
-                            "messages": reinforced_messages,
-                            "api_key": api_key_val,
-                            "max_tokens": max(1, min(int(body.get("max_tokens", 4096)), config.MAX_OUTPUT_TOKENS)),
-                            "temperature": float(body.get("temperature", 0.7)),
-                            "stream": False,
-                            "request_timeout": config.REQUEST_TIMEOUT_SECONDS,
-                        }
-                        if reservation.get("provider") == "custom":
-                            kwargs["api_base"] = reservation["api_base"]
-                            extra: Dict[str, Any] = {}
-                            for k in ("thinking", "thinking_level", "thinking_budget", "include_thoughts", "enableThinking"):
-                                if k in body:
-                                    extra[k] = body[k]
-                            if extra:
-                                kwargs["extra_body"] = extra
-
-                        from .proxy import _clean_kwargs_for_model
-                        kwargs = _clean_kwargs_for_model(kwargs, litellm_model_val)
-
-                        result = await _execute_nonstream(self, kwargs, api_key_val, model_id_val, model_alias_val, input_tokens, None, body, auth_key_prefix, account=account)
-                        # record_success already handled inside _execute_nonstream
-                        if reservation.get("provider") == "custom":
-                            endpoint_manager.mark_endpoint_success(reservation.get("name", ""))
-                        return result
-                    finally:
-                        if api_key_val:
-                            router.release_key(api_key_val)
-
-                except HTTPException as e:
-                    if e.status_code == 503 and attempt < config.MAX_RETRIES - 1:
-                        logger.info("[Retry] 503 from resolve_model (attempt %d/%d), retrying", attempt + 1, config.MAX_RETRIES)
-                        if api_key_val:
-                            router.freeze_key(api_key_val, 15, model_id_val, "rate_limit")
-                        await asyncio.sleep(_retry_delay(attempt))
-                        continue
-                    summary_text = get_system_status_summary(model_alias)
-                    return {
-                        "id": "msg_err_" + uuid.uuid4().hex[:8],
-                        "type": "message",
-                        "role": "assistant",
-                        "model": body.get("model") or model_alias,
-                        "content": [{"type": "text", "text": summary_text}],
-                        "stop_reason": "end_turn",
-                        "stop_sequence": None,
-                        "usage": {
-                            "input_tokens": len(summary_text) // 4,
-                            "output_tokens": len(summary_text) // 4,
-                        },
-                    }
-                except Exception as e:
-                    error_text = str(e).lower()
-
-                    if "400" in error_text and "failed_precondition" not in error_text and ("invalid_argument" in error_text or "bad_request" in error_text):
-                        logger.error("[Bad Request] Schema/Prompt Error: %s", error_text[:200])
-                        if api_key_val:
-                            router.freeze_key(api_key_val, 2, model_id_val, "bad_request_spam_prevent")
-                        raise HTTPException(status_code=400, detail={
-                            "type": "error",
-                            "error": {"type": "invalid_request_error", "message": f"LLM rejected payload (HTTP 400): {error_text[:200]}"},
-                        })
-
-                    if "400" in error_text and "failed_precondition" in error_text:
-                        logger.error("[Failed Precondition] Billing issue with key ...%s: %s", (api_key_val or "N/A")[-4:], error_text[:200])
-                        if api_key_val:
-                            router.freeze_key(api_key_val, 300, model_id_val, "billing_error")
-                            apply_error_penalty(api_key_val, "billing_error", model_id_val)
-                        router.record_failure("billing_error")
-                        if attempt == config.MAX_RETRIES - 1:
-                            summary_text = get_system_status_summary(model_alias)
-                            return {
-                                "id": "msg_err_" + uuid.uuid4().hex[:8],
-                                "type": "message",
-                                "role": "assistant",
-                                "model": body.get("model") or model_alias,
-                                "content": [{"type": "text", "text": summary_text}],
-                                "stop_reason": "end_turn",
-                                "stop_sequence": None,
-                                "usage": {
-                                    "input_tokens": len(summary_text) // 4,
-                                    "output_tokens": len(summary_text) // 4,
-                                },
-                            }
-                        await asyncio.sleep(_retry_delay(attempt))
-                        continue
-
-                    if "499" in error_text or "cancelled" in error_text:
-                        raise HTTPException(status_code=503, detail={
-                            "type": "error", "error": {"type": "api_error", "message": "Request cancelled by client"}
-                        })
-
-                    reason = classify(e)
-                    if reason == "rate_limit":
-                        router.record_429()
-
-                    if reason == "unknown":
-                        logger.error("[Retry Failure Detail] Unexpected error on key ...%s: %s", (api_key_val or "N/A")[-4:], e, exc_info=True)
-
-                    if api_key_val:
-                        router.freeze_key(api_key_val, 0, model_id_val, reason)
-                        if reason not in ("bad_request_spam_prevent", "invalid_key"):
-                            apply_error_penalty(api_key_val, reason, model_id_val)
-                    router.record_failure(reason)
-                    logger.warning("[Retry] Key ...%s failed (attempt %d/%d). Reason: %s",
-                                  (api_key_val or "N/A")[-4:], attempt + 1, config.MAX_RETRIES, reason)
-
-                    if attempt == config.MAX_RETRIES - 1:
-                        summary_text = get_system_status_summary(model_alias)
-                        return {
-                            "id": "msg_err_" + uuid.uuid4().hex[:8],
-                            "type": "message",
-                            "role": "assistant",
-                            "model": body.get("model") or model_alias,
-                            "content": [{"type": "text", "text": summary_text}],
-                            "stop_reason": "end_turn",
-                            "stop_sequence": None,
-                            "usage": {
-                                "input_tokens": len(summary_text) // 4,
-                                "output_tokens": len(summary_text) // 4,
-                            },
-                        }
-
-                    await asyncio.sleep(_retry_delay(attempt))
-
+            result = await pool_manager.call_nonstream(
+                model_alias=model_alias,
+                messages=openai_messages,
+                tools=openai_tools or None,
+                temperature=temperature,
+                max_tokens=max_tokens,
+                thinking_config=thinking_config,
+                account=account,
+                extra_body=None,
+                thinking_params=thinking_params,
+            )
+        except Exception as e:
+            logger.error("[Claude NonStream] PoolManager failed: %s", e, exc_info=True)
             summary_text = get_system_status_summary(model_alias)
             return {
                 "id": "msg_err_" + uuid.uuid4().hex[:8],
@@ -293,11 +69,86 @@ class ClaudeProxyNonstreamMixin:
                 "content": [{"type": "text", "text": summary_text}],
                 "stop_reason": "end_turn",
                 "stop_sequence": None,
-                "usage": {
-                    "input_tokens": len(summary_text) // 4,
-                    "output_tokens": len(summary_text) // 4,
-                },
+                "usage": {"input_tokens": len(summary_text) // 4, "output_tokens": len(summary_text) // 4},
             }
-        finally:
-            if token is not None:
-                is_sub_agent_context.reset(token)
+
+        resp = result["response"]
+        input_tokens = result.get("input_tokens", 0) or 0
+        usage = getattr(resp, "usage", None) or {}
+        output_tokens = 0
+        if isinstance(usage, dict):
+            output_tokens = usage.get("completion_tokens", 0) or 0
+
+        choice = resp.choices[0] if getattr(resp, "choices", None) else None
+        msg = getattr(choice, "message", None) if choice else None
+        text = getattr(msg, "content", "") if msg else ""
+        thought = getattr(msg, "reasoning_content", None) if msg else None
+        finish_reason = getattr(choice, "finish_reason", "stop") if choice else "stop"
+
+        if not thought and text:
+            extractor = XMLThinkingExtractor()
+            events = extractor.feed(text) + extractor.flush()
+            clean_parts = []
+            thought_parts = []
+            for ev_type, ev_val in events:
+                if ev_type == "thinking":
+                    thought_parts.append(ev_val)
+                elif ev_type == "text":
+                    clean_parts.append(ev_val)
+            if thought_parts:
+                thought = "".join(thought_parts)
+                text = "".join(clean_parts)
+
+        content_blocks = []
+        if thought:
+            content_blocks.append({"type": "thinking", "thinking": thought, "signature": ""})
+        content_blocks.append({"type": "text", "text": text or ""})
+
+        if isinstance(msg, dict):
+            raw_tool_calls = msg.get("tool_calls")
+        else:
+            raw_tool_calls = getattr(msg, "tool_calls", None) if msg else None
+        has_tool_calls = False
+        if raw_tool_calls:
+            for tc in raw_tool_calls:
+                if isinstance(tc, dict):
+                    fn = tc.get("function", {})
+                    name = fn.get("name", "") if isinstance(fn, dict) else ""
+                    args = fn.get("arguments", "{}") if isinstance(fn, dict) else "{}"
+                    tc_id = tc.get("id", f"toolu_{uuid.uuid4().hex[:16]}")
+                else:
+                    fn = getattr(tc, "function", None)
+                    name = getattr(fn, "name", "") if fn else ""
+                    args = getattr(fn, "arguments", "{}") if fn else "{}"
+                    tc_id = getattr(tc, "id", f"toolu_{uuid.uuid4().hex[:16]}")
+                if name:
+                    has_tool_calls = True
+                    if isinstance(args, str):
+                        try:
+                            args = json.loads(args)
+                        except (json.JSONDecodeError, TypeError):
+                            pass
+                    content_blocks.append({
+                        "type": "tool_use",
+                        "id": tc_id,
+                        "name": name,
+                        "input": args if isinstance(args, dict) else {},
+                    })
+
+        if has_tool_calls:
+            stop_reason = "tool_use"
+        elif finish_reason and "max" in str(finish_reason).lower():
+            stop_reason = "max_tokens"
+        else:
+            stop_reason = "end_turn"
+
+        return {
+            "id": "msg_" + uuid.uuid4().hex[:24],
+            "type": "message",
+            "role": "assistant",
+            "model": body.get("model") or model_alias,
+            "content": content_blocks,
+            "stop_reason": stop_reason,
+            "stop_sequence": None,
+            "usage": {"input_tokens": input_tokens, "output_tokens": output_tokens},
+        }

@@ -41,13 +41,13 @@ class KeyResolverMixin:
             return max(300, int((reset_at - datetime.now()).total_seconds()))
         if reason == "rate_limit" or reason == "429":
             base = config.KEY_429_COOLDOWN_SECONDS
-            return min(base * (3 ** (consecutive_failures - 1)), 600)
+            return min(base * (3 ** (consecutive_failures - 1)), config.KEY_UNKNOWN_ERROR_COOLDOWN_SECONDS * 10)
         if reason in ("invalid", "invalid_key", "403", "401", "permission_denied"):
             return config.KEY_INVALID_COOLDOWN_SECONDS
         if reason == "timeout":
-            return 60 * (2 ** min(consecutive_failures - 1, 3))
+            return config.KEY_429_COOLDOWN_SECONDS * (2 ** min(consecutive_failures - 1, 3))
         if reason == "billing_error":
-            return 300
+            return config.KEY_UNKNOWN_ERROR_COOLDOWN_SECONDS * 10
         return config.KEY_UNKNOWN_ERROR_COOLDOWN_SECONDS
 
     def _load_key_tiers(self) -> Dict[str, str]:
@@ -87,6 +87,8 @@ class KeyResolverMixin:
                 members = [m for m in pool_cfg["members"] if not (is_sunset_25() and m in ("gemini-flash-25", "gemini-flash-25-lite"))]
                 if exclude_models:
                     members = [m for m in members if m not in exclude_models and self.get_model_id(m) not in exclude_models]
+                # Sort by health score — healthiest members tried first
+                members = self.get_healthy_pool_members(members)
                 search_phases = ["standard"]
 
                 for phase in search_phases:
@@ -132,11 +134,12 @@ class KeyResolverMixin:
                                     if self._key_is_circuit_open(k):
                                         continue
                                     # Auto-release stale active_requests: if key shows busy but last_success
-                                    # was > 120s ago (request likely died), treat as idle.
+                                    # was > KEY_429_COOLDOWN × 5 seconds ago (request likely died), treat as idle.
+                                    auto_release_after = config.KEY_429_COOLDOWN_SECONDS * 5
                                     active_reqs = s.get("active_requests", 0)
                                     if active_reqs > 0:
                                         last_ok = s.get("last_success", 0.0)
-                                        if now - last_ok > 120:
+                                        if now - last_ok > auto_release_after:
                                             s["active_requests"] = 0
                                         else:
                                             continue
@@ -272,10 +275,11 @@ class KeyResolverMixin:
                             if self._key_is_circuit_open(k):
                                 continue
                             # Auto-release stale active_requests
+                            auto_release_after = config.KEY_429_COOLDOWN_SECONDS * 5
                             active_reqs = s.get("active_requests", 0)
                             if active_reqs > 0:
                                 last_ok = s.get("last_success", 0.0)
-                                if now - last_ok > 120:
+                                if now - last_ok > auto_release_after:
                                     s["active_requests"] = 0
                                 else:
                                     continue

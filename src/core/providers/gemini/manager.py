@@ -163,7 +163,7 @@ class GeminiAPIManager:
         model_failures: Dict[str, int] = {}
         tier = self.pool.resolve_tier(account)
 
-        for attempt in range(1, 4):
+        for attempt in range(1, config.MAX_RETRIES + 1):
             exclude_models = get_excluded_models(model_failures, model_alias)
             if all_models_excluded(model_failures, model_alias):
                 break

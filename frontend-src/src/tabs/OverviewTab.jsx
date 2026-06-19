@@ -230,47 +230,62 @@ export default function OverviewTab() {
         <p className="text-xs text-base-content/60 mt-1">{t('ov_sub', lang)}</p>
       </div>
 
-      {/* Live Rate Limit Gauges */}
-      {liveStats && (
-        <div className="animate-fade-in-up cascade-0 space-y-2">
-          <div className="flex items-center gap-2 text-[10px] font-bold text-base-content/40 uppercase tracking-wider">
-            {wsHook.connected ? (
-              <><Wifi className="w-3 h-3 text-success" /> Live Rate Limits</>
-            ) : (
-              <><WifiOff className="w-3 h-3 text-error" /> Offline</>
-            )}
-          </div>
-          <div className="grid grid-cols-2 lg:grid-cols-4 gap-3">
-            {Object.entries(liveStats.models || {}).map(([alias, ms]) => {
-              const rpmPct = ms.rpm_limit > 0 ? Math.round((1 - ms.rpm_remaining / ms.rpm_limit) * 100) : 0;
-              const tpmPct = ms.tpm_limit > 0 ? Math.round((1 - ms.tpm_remaining / ms.tpm_limit) * 100) : 0;
-              const rpmColor = rpmPct > 80 ? 'bg-error' : rpmPct > 50 ? 'bg-warning' : 'bg-success';
-              const tpmColor = tpmPct > 80 ? 'bg-error' : tpmPct > 50 ? 'bg-warning' : 'bg-success';
-              return (
-                <div key={alias} className="card glass-card p-3 rounded-xl border border-base-content/5">
-                  <div className="text-[10px] font-bold text-base-content/60 truncate mb-2">{alias}</div>
-                  <div className="space-y-1.5">
-                    <div className="flex items-center justify-between text-[9px]">
-                      <span className="font-semibold text-base-content/50">RPM</span>
-                      <span className="font-mono font-bold">{ms.rpm_remaining}/{ms.rpm_limit}</span>
-                    </div>
-                    <div className="w-full h-1.5 bg-base-content/20 rounded-full overflow-hidden">
-                      <div className={`h-full rounded-full transition-all duration-500 ${rpmColor}`} style={{width: `${rpmPct}%`}}></div>
-                    </div>
-                    <div className="flex items-center justify-between text-[9px]">
-                      <span className="font-semibold text-base-content/50">TPM</span>
-                      <span className="font-mono font-bold">{fmt(ms.tpm_remaining)}/{fmt(ms.tpm_limit)}</span>
-                    </div>
-                    <div className="w-full h-1.5 bg-base-content/20 rounded-full overflow-hidden">
-                      <div className={`h-full rounded-full transition-all duration-500 ${tpmColor}`} style={{width: `${tpmPct}%`}}></div>
-                    </div>
+      {/* Live Rate Limit Gauges — aggregated per pool */}
+      {liveStats && (() => {
+        const models = liveStats.models || {};
+        const pools = { flash: { rpm_rem: 0, rpm_lim: 0, tpm_rem: 0, tpm_lim: 0, cnt: 0 }, lite: { rpm_rem: 0, rpm_lim: 0, tpm_rem: 0, tpm_lim: 0, cnt: 0 } };
+        for (const [alias, ms] of Object.entries(models)) {
+          const p = alias.includes('lite') ? pools.lite : pools.flash;
+          p.rpm_rem += ms.rpm_remaining;
+          p.rpm_lim += ms.rpm_limit;
+          p.tpm_rem += ms.tpm_remaining;
+          p.tpm_lim += ms.tpm_limit;
+          p.cnt++;
+        }
+        const gauge = (label, remain, limit, unit) => {
+          const pct = limit > 0 ? Math.round((1 - remain / limit) * 100) : 0;
+          const col = pct > 80 ? 'bg-error' : pct > 50 ? 'bg-warning' : 'bg-success';
+          return (
+            <div>
+              <div className="flex items-center justify-between text-[10px] mb-1">
+                <span className="font-semibold text-base-content/50">{label}</span>
+                <span className="font-mono font-bold text-base-content">{remain.toLocaleString()}/{limit.toLocaleString()} {unit}</span>
+              </div>
+              <div className="w-full h-2 bg-base-content/20 rounded-full overflow-hidden">
+                <div className={`h-full rounded-full transition-all duration-500 ${col}`} style={{width: `${pct}%`}}></div>
+              </div>
+            </div>
+          );
+        };
+        const poolCards = [];
+        if (pools.flash.cnt > 0) poolCards.push({ key: 'flash', label: 'Gemini Flash Pool', color: 'text-cyan-400', ...pools.flash });
+        if (pools.lite.cnt > 0) poolCards.push({ key: 'lite', label: 'Gemini Flash Lite Pool', color: 'text-emerald-400', ...pools.lite });
+        return (
+          <div className="animate-fade-in-up cascade-0 space-y-2">
+            <div className="flex items-center gap-2 text-[10px] font-bold text-base-content/40 uppercase tracking-wider">
+              {wsHook.connected ? (
+                <><Wifi className="w-3 h-3 text-success" /> Pool Live Capacity</>
+              ) : (
+                <><WifiOff className="w-3 h-3 text-error" /> Offline</>
+              )}
+            </div>
+            <div className="grid grid-cols-1 lg:grid-cols-2 gap-3">
+              {poolCards.map(({ key, label, color, rpm_rem, rpm_lim, tpm_rem, tpm_lim, cnt }) => (
+                <div key={key} className="card glass-card p-4 rounded-xl border border-base-content/5">
+                  <div className="flex items-center gap-2 mb-3">
+                    <div className={`text-[12px] font-extrabold ${color}`}>{label}</div>
+                    <div className="text-[9px] text-base-content/40 ml-auto">{cnt} model{cnt > 1 ? 's' : ''}</div>
+                  </div>
+                  <div className="space-y-2.5">
+                    {gauge('RPM', rpm_rem, rpm_lim, '')}
+                    {gauge('TPM', tpm_rem, tpm_lim, '')}
                   </div>
                 </div>
-              );
-            })}
+              ))}
+            </div>
           </div>
-        </div>
-      )}
+        );
+      })()}
 
       {/* KPI Cards: 2x2 grid */}
       <div className="grid grid-cols-2 lg:grid-cols-4 gap-4 animate-fade-in-up cascade-1">

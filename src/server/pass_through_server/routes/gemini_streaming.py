@@ -108,92 +108,16 @@ async def stream_custom_endpoint_native(
     top_p: float,
     auth_key_prefix: str,
 ) -> AsyncIterator[bytes]:
-    url = f"{base_url.rstrip('/')}/chat/completions"
-    headers = {
-        "Authorization": f"Bearer {auth_key}",
-        "Content-Type": "application/json",
-        "Accept": "text/event-stream",
-    }
-    payload = {
-        "model": model,
-        "messages": messages,
-        "max_tokens": max_tokens,
-        "temperature": temperature,
-        "top_p": top_p,
-        "stream": True,
-    }
-    input_tokens = 0
-    output_tokens = 0
-    full_text = ""
-    try:
-        async with aiohttp.ClientSession(headers=headers) as session:
-            async with session.post(url, json=payload, timeout=aiohttp.ClientTimeout(total=config.REQUEST_TIMEOUT_SECONDS)) as resp:
-                if resp.status != 200:
-                    err_text = await resp.text()
-                    error_payload = {"error": {"message": f"Custom endpoint returned HTTP {resp.status}: {err_text}", "type": "stream_error"}}
-                    yield f"data: {_json.dumps(error_payload, ensure_ascii=False)}\n\n".encode("utf-8")
-                    return
-                async for line in resp.content:
-                    line = line.decode("utf-8", errors="replace").strip()
-                    if not line.startswith("data: "):
-                        continue
-                    data_str = line[6:]
-                    if data_str.strip() == "[DONE]":
-                        break
-                    try:
-                        chunk = _json.loads(data_str)
-                    except _json.JSONDecodeError:
-                        continue
-                    choices = chunk.get("choices") or []
-                    for ch in choices:
-                        delta = ch.get("delta", {})
-                        content = delta.get("content")
-                        if content:
-                            full_text += content
-                            gemini_chunk = {
-                                "candidates": [
-                                    {
-                                        "content": {
-                                            "parts": [{"text": content}],
-                                            "role": "model"
-                                        },
-                                        "index": 0
-                                    }
-                                ]
-                            }
-                            yield f"data: {_json.dumps(gemini_chunk, ensure_ascii=False)}\n\n".encode("utf-8")
-                    usage = chunk.get("usage")
-                    if usage:
-                        input_tokens = usage.get("prompt_tokens", 0) or 0
-                        output_tokens = usage.get("completion_tokens", 0) or 0
-        if not output_tokens and full_text:
-            output_tokens = max(1, len(full_text) // 4)
-        if not input_tokens:
-            input_tokens = len(str(messages)) // 4
-        final_gemini_chunk = {
-            "candidates": [
-                {
-                    "finishReason": "STOP",
-                    "index": 0
-                }
-            ],
-            "usageMetadata": {
-                "promptTokenCount": input_tokens,
-                "candidatesTokenCount": output_tokens,
-                "totalTokenCount": input_tokens + output_tokens
-            }
-        }
-        yield f"data: {_json.dumps(final_gemini_chunk, ensure_ascii=False)}\n\n".encode("utf-8")
-        await log_usage(
-            model,
-            "custom",
-            input_tokens,
-            output_tokens,
-            auth_key_prefix,
-            0,
-            0,
-        )
-    except Exception as e:
-        logger_api.error("Stream custom endpoint failed: %s", e)
-        error_payload = {"error": {"message": str(e), "type": "stream_error"}}
-        yield f"data: {_json.dumps(error_payload, ensure_ascii=False)}\n\n".encode("utf-8")
+    from src.core.providers.custom_endpoint_genai_adapter import stream_custom_as_genai
+
+    async for chunk in stream_custom_as_genai(
+        api_base=base_url,
+        api_key=auth_key,
+        model=model,
+        messages=messages,
+        max_tokens=max_tokens,
+        temperature=temperature,
+        top_p=top_p,
+        auth_key_prefix=auth_key_prefix,
+    ):
+        yield chunk

@@ -1,3 +1,7 @@
+import json
+import uuid
+import time
+
 from fastapi import Header, Request
 from fastapi.responses import JSONResponse, StreamingResponse
 
@@ -61,8 +65,24 @@ async def opencode_chat_completions(
         is_stream = body.get("stream", False)
         if is_stream:
             logger_api.info("[OpenCode Route] streaming response model=%s account=%s", model_alias, account.get("name", "?") if account else "?")
+
+            async def _safe_stream():
+                try:
+                    async for chunk in opencode_proxy.stream_chat_completion(body, account=account, is_opencode=True):
+                        yield chunk
+                except Exception as e:
+                    logger_api.warning("[OpenCode Route] Stream error caught: %s", e)
+                    cid = f"chatcmpl-{uuid.uuid4().hex}"
+                    created = int(time.time())
+                    err_chunk = {
+                        "id": cid, "object": "chat.completion.chunk", "created": created, "model": model_alias,
+                        "choices": [{"index": 0, "delta": {"content": "⚠️ Hệ thống đang quá tải, vui lòng thử lại sau 15-30s."}, "finish_reason": "stop"}],
+                    }
+                    yield f"data: {json.dumps(err_chunk, ensure_ascii=False)}\n\n".encode("utf-8")
+                    yield "data: [DONE]\n\n".encode("utf-8")
+
             return StreamingResponse(
-                opencode_proxy.stream_chat_completion(body, account=account, is_opencode=True),
+                _safe_stream(),
                 media_type="text/event-stream",
                 headers=response_headers,
             )
@@ -88,18 +108,9 @@ async def opencode_chat_completions(
             logger_api.info("Intercepted sub-agent opencode_chat_completions error: %s, returning simulated response", e)
             return handle_sub_agent_error(body, e, format_type="openai")
 
-        msg = str(e)
-        if "quota_exhausted" in msg.lower() or "rate_limited" in msg.lower():
-            return JSONResponse(
-                status_code=429,
-                content={"error": {"message": "Rate limited, please retry later", "type": "rate_limit_error"}},
-            )
-        if "no_available_key" in msg:
-            return JSONResponse(
-                status_code=503,
-                content={"error": {"message": "All keys are temporarily frozen, retry later", "type": "overloaded_error"}},
-            )
+        # NEVER return HTTP error to client — always return simulated response
+        from src.api.opencode_proxy.handler.response import error_response
         return JSONResponse(
-            status_code=503,
-            content={"error": {"message": "Service temporarily unavailable", "type": "api_error"}},
+            content=error_response(body, model_alias, "pool_exhausted"),
+            headers=response_headers,
         )

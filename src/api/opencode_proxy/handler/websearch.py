@@ -46,10 +46,10 @@ def should_enable_web_search(body: Dict[str, Any], account: Optional[Dict[str, A
         if flag in body and body[flag] is False:
             return False
     return bool(
-        body.get("web_search") or body.get("search")
-        or body.get("google_search") or body.get("grounding")
-        or config.GEMINI_AUTO_GROUNDING
-        or (account and account.get("web_search_enabled"))
+        body.get("web_search") is True
+        or body.get("search") is True
+        or body.get("google_search") is True
+        or body.get("grounding") is True
     )
 
 

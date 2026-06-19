@@ -43,17 +43,28 @@ def openai_chunks(
 def _build_tool_calls(tool_calls) -> List[dict]:
     result = []
     for tc in tool_calls:
-        fn = getattr(tc, "function", None)
-        if fn:
+        if isinstance(tc, dict):
+            fn = tc.get("function", {})
+            fn_name = fn.get("name", "") if isinstance(fn, dict) else ""
+            fn_args = fn.get("arguments", "") or ""
             result.append({
-                "index": getattr(tc, "index", 0),
-                "id": getattr(tc, "id", f"call_{uuid.uuid4().hex}"),
+                "index": tc.get("index", 0),
+                "id": tc.get("id", f"call_{uuid.uuid4().hex}"),
                 "type": "function",
-                "function": {
-                    "name": getattr(fn, "name", ""),
-                    "arguments": getattr(fn, "arguments", "") or "",
-                }
+                "function": {"name": fn_name, "arguments": fn_args},
             })
+        else:
+            fn = getattr(tc, "function", None)
+            if fn:
+                result.append({
+                    "index": getattr(tc, "index", 0),
+                    "id": getattr(tc, "id", f"call_{uuid.uuid4().hex}"),
+                    "type": "function",
+                    "function": {
+                        "name": getattr(fn, "name", ""),
+                        "arguments": getattr(fn, "arguments", "") or "",
+                    }
+                })
     return result
 
 

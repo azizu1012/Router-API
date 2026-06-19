@@ -11,9 +11,10 @@ from fastapi import HTTPException
 from src.core.config_n_logg import config
 from src.core.config_n_logg.logger import logger_proxy as logger
 from src.core.router import router
-from src.core.limits import apply_error_penalty
+from src.core.limits import apply_error_penalty, count_transient_error
 from src.core.providers.gemini.error import classify
-from .stream_executor import LiteLLMTransientError
+from src.logical_HQ_translator.model_resolver import _retry_delay
+from .stream_executor import APIError
 
 
 async def classify_pool_error(
@@ -28,7 +29,7 @@ async def classify_pool_error(
     Returns True if the caller should retry (pool can still rotate).
     Raises ``HTTPException`` for non-recoverable errors.
     """
-    if isinstance(e, LiteLLMTransientError):
+    if isinstance(e, APIError):
         reason = "rate_limit"
         is_region_quota = e.is_region_quota
     else:
@@ -38,7 +39,7 @@ async def classify_pool_error(
         if "400" in text and "failed_precondition" not in text and ("invalid_argument" in text or "bad_request" in text):
             logger.error("[OpenCode Bad Request] %s", text[:200])
             if api_key_val:
-                router.freeze_key(api_key_val, 2, model_id_val, "bad_request_spam_prevent")
+                router.freeze_key(api_key_val, config.KEY_429_COOLDOWN_SECONDS, model_id_val, "bad_request_spam_prevent")
             raise HTTPException(status_code=400, detail={
                 "error": {"message": f"LLM rejected payload: {text[:200]}", "type": "invalid_request_error"}
             })
@@ -47,7 +48,7 @@ async def classify_pool_error(
         if "400" in text and "failed_precondition" in text:
             logger.error("[OpenCode Billing] %s", text[:200])
             if api_key_val:
-                router.freeze_key(api_key_val, 300, model_id_val, "billing_error")
+                router.freeze_key(api_key_val, config.KEY_INVALID_COOLDOWN_SECONDS, model_id_val, "billing_error")
                 apply_error_penalty(api_key_val, "billing_error", model_id_val)
             router.record_failure("billing_error")
             pool.record_failure(actual_alias, "billing_error")
@@ -55,7 +56,7 @@ async def classify_pool_error(
                 if pool.exhausted:
                     raise HTTPException(status_code=503, detail={"error": {"message": "Pool exhausted", "type": "api_error"}})
                 import asyncio
-                await asyncio.sleep(min(15.0, pool.remaining_time()))
+                await asyncio.sleep(min(config.KEY_429_COOLDOWN_SECONDS * 2, pool.remaining_time()))
                 pool.reset_cycle()
             return True
 
@@ -74,15 +75,16 @@ async def classify_pool_error(
     # 429 (rate_limit) và 503 (unavailable): không freeze key, không count failure
     # — chỉ backoff rồi retry
     if reason in ("rate_limit", "unavailable"):
-        logger.warning("[OpenCode Pool Temp Unavailable] model=%s reason=%s — waiting 5s then retry", actual_alias, reason)
+        count_transient_error(reason)
+        logger.warning("[OpenCode Pool Temp Unavailable] model=%s reason=%s — backing off then retry", actual_alias, reason)
         if reason == "rate_limit":
             router.record_429()
         import asyncio
-        await asyncio.sleep(5.0)
+        await asyncio.sleep(_retry_delay(0))
         return True
 
     if api_key_val:
-        router.freeze_key(api_key_val, 0, model_id_val, reason)
+        router.freeze_key(api_key_val, config.KEY_429_COOLDOWN_SECONDS if reason in ("server_error", "timeout") else config.KEY_UNKNOWN_ERROR_COOLDOWN_SECONDS, model_id_val, reason)
         if reason not in ("bad_request_spam_prevent", "invalid_key"):
             apply_error_penalty(api_key_val, reason, model_id_val)
     router.record_failure(reason)
@@ -94,17 +96,17 @@ async def classify_pool_error(
             raise HTTPException(status_code=503, detail={"error": {"message": "Pool exhausted", "type": "api_error"}})
         if is_region_quota:
             import asyncio
-            await asyncio.sleep(25)
+            await asyncio.sleep(config.KEY_429_COOLDOWN_SECONDS * 3)
         import asyncio
-        wait = min(15.0, pool.remaining_time())
+        wait = min(config.KEY_429_COOLDOWN_SECONDS * 2, pool.remaining_time())
         await asyncio.sleep(wait)
         pool.reset_cycle()
         return True
 
     if is_region_quota:
-        logger.warning("[Region Quota] Hit region limit, waiting 25s before retry...")
+        logger.warning("[Region Quota] Hit region limit, waiting %ds before retry...", config.KEY_429_COOLDOWN_SECONDS * 3)
         import asyncio
-        await asyncio.sleep(25)
+        await asyncio.sleep(config.KEY_429_COOLDOWN_SECONDS * 3)
 
     return True
 
@@ -124,7 +126,7 @@ def classify_standalone_error(
     if "400" in text and "failed_precondition" not in text and ("invalid_argument" in text or "bad_request" in text):
         logger.error("[OpenCode Bad Request] %s", text[:200])
         if api_key_val:
-            router.freeze_key(api_key_val, 2, model_id_val, "bad_request_spam_prevent")
+            router.freeze_key(api_key_val, config.KEY_429_COOLDOWN_SECONDS, model_id_val, "bad_request_spam_prevent")
         return False
 
     if "499" in text or "cancelled" in text:
@@ -137,7 +139,7 @@ def classify_standalone_error(
         logger.error("[OpenCode Error] key=...%s: %s", (api_key_val or "N/A")[-4:], e)
 
     if api_key_val:
-        router.freeze_key(api_key_val, 0, model_id_val, reason)
+        router.freeze_key(api_key_val, config.KEY_429_COOLDOWN_SECONDS if reason in ("server_error", "timeout") else config.KEY_UNKNOWN_ERROR_COOLDOWN_SECONDS, model_id_val, reason)
         if reason not in ("bad_request_spam_prevent", "invalid_key"):
             apply_error_penalty(api_key_val, reason, model_id_val)
     router.record_failure(reason)

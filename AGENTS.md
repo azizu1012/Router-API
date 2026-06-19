@@ -86,18 +86,16 @@ Nếu check sau (chỉ khi `thinking is None`), sub-agent có thinking trong bod
 ### 8. Thinking `"adaptive"` dùng budget vừa phải
 
 ```python
-# ✅ ĐÚNG — budget 4096 cho flash, 8192 cho pro — đủ thinking nhưng không treo lâu
+# ✅ ĐÚNG — budget 8192: đủ thinking để quyết định tool calls, ko treo lâu
 if ttype == "adaptive":
-    budget = 4096 if "flash" in m else 8192
-    return {"thinking": {"type": "enabled", "budget_tokens": budget}}
+    return {"thinking": {"type": "enabled", "budget_tokens": 8192}}
 
 # ❌ SAI — không budget thì Gemini think vô hạn, TTFB 3ph+
 if ttype == "adaptive":
     return {"thinking": {"type": "enabled"}}
 
-# ❌ SAI — ép budget 24576+ trên flash làm model think hết budget, không output
-budget = 32768 if "pro" in m else 24576
-return {"thinking": {"type": "enabled", "budget_tokens": budget}}
+# ❌ SAI — budget 4096 quá thấp, flash ko đủ thinking → empty response
+# ❌ SAI — ép budget 24576+ trên flash → think hết budget, không output
 ```
 
 ### 9. Luôn strip field `display` khỏi thinking config

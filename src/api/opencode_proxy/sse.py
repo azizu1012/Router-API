@@ -18,24 +18,44 @@ def make_sse(chunk: Any, choice: Any, delta_dict: Dict[str, Any], finish_reason:
 def _build_tool_calls(raw_tool_calls: Any) -> Optional[List[Dict[str, Any]]]:
     tc_list = []
     for tc in raw_tool_calls:
-        entry: Dict[str, Any] = {"index": tc.index}
-        tc_id = getattr(tc, "id", None)
-        if tc_id:
-            entry["id"] = tc_id
-        tc_type = getattr(tc, "type", None)
-        if tc_type:
-            entry["type"] = tc_type
-        fn = getattr(tc, "function", None)
-        if fn is not None:
-            fn_dict: Dict[str, Any] = {}
-            fn_name = getattr(fn, "name", None)
-            if fn_name:
-                fn_dict["name"] = fn_name
-            fn_args = getattr(fn, "arguments", None)
-            if fn_args:
-                fn_dict["arguments"] = fn_args
-            if fn_dict:
-                entry["function"] = fn_dict
+        if isinstance(tc, dict):
+            entry: Dict[str, Any] = {"index": tc.get("index", 0)}
+            tc_id = tc.get("id")
+            if tc_id:
+                entry["id"] = tc_id
+            tc_type = tc.get("type", "function")
+            if tc_type:
+                entry["type"] = tc_type
+            fn = tc.get("function")
+            if fn is not None and isinstance(fn, dict):
+                fn_dict: Dict[str, Any] = {}
+                fn_name = fn.get("name")
+                if fn_name:
+                    fn_dict["name"] = fn_name
+                fn_args = fn.get("arguments")
+                if fn_args:
+                    fn_dict["arguments"] = fn_args
+                if fn_dict:
+                    entry["function"] = fn_dict
+        else:
+            entry: Dict[str, Any] = {"index": tc.index}
+            tc_id = getattr(tc, "id", None)
+            if tc_id:
+                entry["id"] = tc_id
+            tc_type = getattr(tc, "type", None)
+            if tc_type:
+                entry["type"] = tc_type
+            fn = getattr(tc, "function", None)
+            if fn is not None:
+                fn_dict: Dict[str, Any] = {}
+                fn_name = getattr(fn, "name", None)
+                if fn_name:
+                    fn_dict["name"] = fn_name
+                fn_args = getattr(fn, "arguments", None)
+                if fn_args:
+                    fn_dict["arguments"] = fn_args
+                if fn_dict:
+                    entry["function"] = fn_dict
         tc_list.append(entry)
     return tc_list if tc_list else None
 

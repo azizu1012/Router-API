@@ -1,5 +1,10 @@
 # ruff: noqa: E402
-"""Router API entry point."""
+"""Router API entry point.
+Usage:
+    python main.py              # foreground (default)
+    python main.py --daemon     # background (detached process, win/linux)
+"""
+import argparse
 import os
 import subprocess
 import sys
@@ -9,7 +14,7 @@ from pathlib import Path
 # Ensure src/ is on the path
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
-# ── Block LiteLLM botocore pre-load (harmless AWS dependency, we don't use it) ──
+# ── Block botocore pre-load (unused AWS dependency) ──
 from unittest.mock import MagicMock as _Mock
 _boto = _Mock()
 _boto.exceptions = _Mock()
@@ -19,16 +24,13 @@ sys.modules["botocore"] = _boto
 sys.modules["botocore.exceptions"] = _boto.exceptions
 sys.modules["botocore.compat"] = _boto.compat
 sys.modules["botocore.awsrequest"] = _boto.awsrequest
-import logging as _ll
-_ll.getLogger("LiteLLM").setLevel(_ll.ERROR)
-_ll.getLogger("litellm").setLevel(_ll.ERROR)
-_ll.getLogger("LiteLLM").addFilter(lambda r: not any(x in r.getMessage() for x in ["botocore", "bedrock", "sagemaker"]))
+
 
 import uvicorn
 from src.core.config_n_logg import config, logger
 from src.core.config_n_logg.logger import CONSOLE_LOG_SYSTEM, CONSOLE_LOG_WEB, _ensure_log_dir
 from src.core.api_config import AVAILABLE_MODELS, is_sunset_25
-from src.core.providers.litellm_wrapper import register_models
+
 
 
 def _free_port(host: str, port: int) -> None:
@@ -60,7 +62,48 @@ def _free_port(host: str, port: int) -> None:
     time.sleep(1)
 
 
+def _start_daemon() -> None:
+    """Spawn server in a background process and exit."""
+    log_dir = Path(__file__).resolve().parent / "logs"
+    log_dir.mkdir(parents=True, exist_ok=True)
+    out = (log_dir / "stdout.log").open("a", encoding="utf-8")
+    err = (log_dir / "stderr.log").open("a", encoding="utf-8")
+    args = [sys.executable, __file__]
+    if sys.platform == "win32":
+        proc = subprocess.Popen(
+            args,
+            creationflags=subprocess.CREATE_NO_WINDOW,
+            stdout=out,
+            stderr=err,
+            stdin=subprocess.DEVNULL,
+        )
+    else:
+        proc = subprocess.Popen(
+            args,
+            start_new_session=True,
+            stdout=out,
+            stderr=err,
+            stdin=subprocess.DEVNULL,
+        )
+    out.close()
+    err.close()
+    print(f"Router API daemon started (PID {proc.pid})")
+    sys.exit(0)
+
+
 def main():
+    parser = argparse.ArgumentParser(description="Router API v2")
+    parser.add_argument("--daemon", action="store_true", help="Run as background daemon")
+    parser.add_argument("--pidfile", type=str, default="", help="Write PID to file")
+    parsed, _ = parser.parse_known_args()
+
+    if parsed.daemon:
+        _start_daemon()
+        return
+
+    if parsed.pidfile:
+        Path(parsed.pidfile).write_text(str(os.getpid()))
+
     _free_port(config.HOST, config.PORT)
 
     for _alias, _cfg in AVAILABLE_MODELS.items():
@@ -69,8 +112,6 @@ def main():
             continue
         if is_sunset_25() and _alias in ("gemini-flash-25", "gemini-flash-25-lite"):
             continue
-        _litellm_name = f"gemini/{_mid}"
-        register_models([_litellm_name])
 
     logger.info(
         "Starting Router API v2 on %s:%d with %d Gemini keys",

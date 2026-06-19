@@ -1,33 +1,29 @@
+"""OpenCode stream executor — SSE formatting only, no pool logic.
+
+Pool management is entirely delegated to PoolManager.
+This module handles:
+  - SSE chunk formatting
+  - Keepalive pings
+  - XML thinking extraction
+  - WebSearch tool execution and progress reporting
+  - Usage logging after stream completes
+"""
+
 import asyncio
 import json
 import uuid
 import time
 from typing import Any, Dict, List, AsyncIterator, Optional
 
-from src.core.providers.litellm_wrapper import acompletion, token_counter
-from fastapi import HTTPException
 from src.core.config_n_logg import config
 from src.core.config_n_logg.logger import logger_proxy as logger
-from src.core.router import router
-from src.core.limits import apply_error_penalty
-from src.core.providers import _custom_endpoint_manager as endpoint_manager
 from src.core.usage_logger import log_usage
 from src.logical_HQ_translator import (
-    _resolve_model,
     _get_simulated_cache_usage,
-    _retry_delay,
     StreamingTextNormalizer,
     XMLThinkingExtractor,
 )
-from .sse import error_sse
-from .nonstream_executor import _resolve_gemini_with_tools_stream
-
-
-class LiteLLMTransientError(Exception):
-    """Lỗi tạm thời từ litellm (rate limit, region quota, v.v.) cần retry pool."""
-    def __init__(self, message: str, is_region_quota: bool = False):
-        super().__init__(message)
-        self.is_region_quota = is_region_quota
+from src.core.pool_manager import pool_manager
 
 
 def _openai_sse(
@@ -40,18 +36,12 @@ def _openai_sse(
 ) -> bytes:
     if not chunk_id:
         chunk_id = f"chatcmpl-{uuid.uuid4().hex}"
-    data = {
+    data: Dict[str, Any] = {
         "id": chunk_id,
         "object": "chat.completion.chunk",
         "created": int(time.time()),
         "model": model_name,
-        "choices": [
-            {
-                "index": 0,
-                "delta": {},
-                "finish_reason": finish_reason,
-            }
-        ]
+        "choices": [{"index": 0, "delta": {}, "finish_reason": finish_reason}],
     }
     if content is not None:
         data["choices"][0]["delta"]["content"] = content
@@ -63,853 +53,443 @@ def _openai_sse(
                 "index": idx,
                 "id": tc.get("id") or f"call_{uuid.uuid4().hex}",
                 "type": tc.get("type", "function"),
-                "function": {
-                    "name": tc.get("name", ""),
-                    "arguments": tc.get("arguments", "")
-                }
+                "function": {"name": tc.get("name", ""), "arguments": tc.get("arguments", "")},
             }
             for idx, tc in enumerate(tool_calls)
         ]
-    result = f"data: {json.dumps(data, ensure_ascii=False)}\n\n".encode("utf-8")
-    if finish_reason or content or reasoning_content:
-        logger.debug("[OpenCode SSE] fin=%s content=%s reasoning=%s", finish_reason, (content or "")[:50], (reasoning_content or "")[:50])
-    return result
+    return f"data: {json.dumps(data, ensure_ascii=False)}\n\n".encode("utf-8")
 
 
-async def _execute_stream(
-    proxy_instance: Any,
-    kwargs: Dict[str, Any],
-    api_key: str,
-    model_id: str,
-    model_alias: str,
-    input_tokens: int,
-    pool: Any,
-    body: Dict[str, Any],
-    auth_key_prefix: str = "",
-    account: Optional[Dict[str, Any]] = None,
-    is_opencode: bool = False,
-    reservation: Optional[Dict[str, Any]] = None,
-) -> AsyncIterator[bytes]:
-    tools = kwargs.get("tools") or []
-    include_thoughts = body.get("include_thoughts", True)
-    has_websearch = any(
-        tool.get("function", {}).get("name") == "WebSearch"
-        for tool in tools
-    )
-    from .response import get_client_model_name
-    requested_model = body.get("model") or model_alias
-    model_name = get_client_model_name(requested_model)
-
-    if has_websearch:
-        kwargs_ns = {k: v for k, v in kwargs.items() if k != "stream"}
-
-        async def _nonstream_wrapper():
-            kp = api_key[-8:] if api_key else ""
-            fetch_task = None
+def _get_reasoning(delta_obj) -> Optional[str]:
+    if not delta_obj:
+        return None
+    for attr in ("reasoning_content", "thought", "reasoning"):
+        v = getattr(delta_obj, attr, None)
+        if v:
+            return v
+    if hasattr(delta_obj, "get"):
+        for key in ("reasoning_content", "thought", "reasoning"):
             try:
-                # Yield initial chunk
-                chunk_id = f"chatcmpl-{uuid.uuid4().hex}"
-                yield _openai_sse(model_name, content="", chunk_id=chunk_id)
-
-                t0_wait = asyncio.get_event_loop().time()
-                text_buf: List[str] = []
-                thinking_buf: List[str] = []
-                stream_tool_calls: List[Dict[str, Any]] = []
-                stream_fr = "stop"
-                stream_thought: str = ""
-
-                async def _iter_events():
-                    it = _resolve_gemini_with_tools_stream(
-                        kwargs_ns, body, proxy_instance, auth_key_prefix=auth_key_prefix, account=account
-                    ).__aiter__()
-                    while True:
-                        try:
-                            while True:
-                                try:
-                                    evt = await asyncio.wait_for(it.__anext__(), timeout=4.0)
-                                    yield ("event", evt)
-                                    break
-                                except asyncio.TimeoutError:
-                                    yield ("ping", None)
-                        except StopAsyncIteration:
-                            break
-
-                async for item_type, val in _iter_events():
-                    if item_type == "ping":
-                        yield _openai_sse(model_name, chunk_id=chunk_id)
-                        continue
-                    evt_type, *evt_vals = val or ("", [])
-                    if evt_type == "reasoning":
-                        val = str(evt_vals[0] or "")
-                        thinking_buf.append(val)
-                        if include_thoughts:
-                            yield _openai_sse(model_name, reasoning_content=val, chunk_id=chunk_id)
-                    elif evt_type == "text":
-                        val = str(evt_vals[0] or "")
-                        text_buf.append(val)
-                        yield _openai_sse(model_name, content=val, chunk_id=chunk_id)
-                    elif evt_type == "result":
-                        raw_text = evt_vals[0] if len(evt_vals) > 0 else ""
-                        stream_tool_calls = evt_vals[1] if len(evt_vals) > 1 and isinstance(evt_vals[1], list) else []
-                        stream_fr = str(evt_vals[2] or "stop") if len(evt_vals) > 2 else "stop"
-                        stream_thought = str(evt_vals[3] or "") if len(evt_vals) > 3 else ""
-                        text_buf = [str(raw_text)] if not isinstance(raw_text, list) else [str(x) for x in raw_text]
-                        break
-
-                text = "".join(text_buf) if text_buf else ""
-                thought_text = "".join(thinking_buf) if thinking_buf else stream_thought
-                tool_calls = stream_tool_calls
-                finish_reason = stream_fr
-
-                elapsed_total = asyncio.get_event_loop().time() - t0_wait
-                logger.info(
-                    "[OpenCode ToolResolve Stream] model=%s elapsed=%.2fs text_len=%d tools=%d thought_len=%d",
-                    model_alias, elapsed_total, len(text), len(tool_calls), len(thought_text)
-                )
-
-                if tool_calls:
-                    yield _openai_sse(model_name, tool_calls=tool_calls, chunk_id=chunk_id)
-
-                try:
-                    out_tokens = await token_counter(model=kwargs.get("model", "gemini/gemini-1.5-flash"), messages=[{"role": "assistant", "content": text}])
-                except Exception:
-                    out_tokens = max(1, len(text) // 4) if text else 1
-                out_tokens += len(tool_calls) * 50
-
-                stop_reason = "tool_calls" if tool_calls else ("length" if "max" in str(finish_reason).lower() else "stop")
-                yield _openai_sse(model_name, finish_reason=stop_reason, chunk_id=chunk_id)
-
-                cache_usage = _get_simulated_cache_usage(body, input_tokens)
-                cc = cache_usage.get("cache_creation_input_tokens", 0) or 0
-                cr = cache_usage.get("cache_read_input_tokens", 0) or 0
-                await log_usage(model_id, kp, input_tokens, out_tokens, auth_key_prefix, cc, cr)
-                router.record_success(api_key, model_id)
-                if pool:
-                    pool.record_success()
-                if reservation and reservation.get("provider") == "custom":
-                    endpoint_manager.mark_endpoint_success(reservation.get("name", model_alias))
-
-                cost = proxy_instance._estimate_cost(input_tokens, out_tokens, model_alias)
-                usage_dict = {
-                    "prompt_tokens": input_tokens,
-                    "completion_tokens": out_tokens,
-                    "total_tokens": input_tokens + out_tokens,
-                    "cost": cost,
-                }
-                if cr > 0:
-                    usage_dict["prompt_tokens_details"] = {
-                        "cached_tokens": cr
-                    }
-                usage_chunk = {
-                    "id": chunk_id,
-                    "object": "chat.completion.chunk",
-                    "created": int(time.time()),
-                    "model": model_name,
-                    "choices": [],
-                    "usage": usage_dict
-                }
-                yield f"data: {json.dumps(usage_chunk, ensure_ascii=False)}\n\n".encode("utf-8")
-                yield b"data: [DONE]\n\n"
-
-            except asyncio.CancelledError:
-                logger.warning(
-                    "[OpenCode Stream Cancelled] Client disconnected/cancelled request prematurely for model=%s, key=...%s",
-                    model_alias, kp
-                )
-                if fetch_task and not fetch_task.done():
-                    fetch_task.cancel()
-                raise
-            except Exception as e:
-                logger.error(
-                    "[OpenCode Stream Exception] Unexpected error for model=%s, key=...%s: %s",
-                    model_alias, kp, e, exc_info=True
-                )
-                if fetch_task and not fetch_task.done():
-                    fetch_task.cancel()
-                raise
-            finally:
-                router.release_key(api_key)
-
-        return _nonstream_wrapper()
-
-    kwargs["stream"] = True
-
-    async def _stream_wrapper():
-        kp = api_key[-8:] if api_key else ""
-        chunk_id = f"chatcmpl-{uuid.uuid4().hex}"
-        fetch_task = None
-        try:
-            async def _fetch_stream():
-                g = await acompletion(**kwargs)
-                if g is None:
-                    raise LiteLLMTransientError("litellm.acompletion returned None")
-                first = await g.__anext__()
-                return g, first
-
-            fetch_task = asyncio.create_task(_fetch_stream())
-            t0_wait = asyncio.get_event_loop().time()
-            ping_count = 0
-            while not fetch_task.done():
-                try:
-                    await asyncio.wait_for(asyncio.shield(fetch_task), timeout=3.0)
-                    break
-                except asyncio.TimeoutError:
-                    elapsed = asyncio.get_event_loop().time() - t0_wait
-                    ping_count += 1
-                    if ping_count % 5 == 1:
-                        logger.info(
-                            "[OpenCode Stream Keepalive] Still waiting for %s response (elapsed=%.1fs)",
-                            model_alias, elapsed
-                        )
-                    yield _openai_sse(model_name, chunk_id=chunk_id)
-
-            gen, first_chunk = await fetch_task
-            ttfb = asyncio.get_event_loop().time() - t0_wait
-            logger.info("[OpenCode Stream] model=%s ttfb=%.2fs", model_alias, ttfb)
-
-            def _get_reasoning(delta_obj) -> Optional[str]:
-                if not delta_obj:
-                    return None
-                for attr in ("reasoning_content", "thought", "reasoning"):
-                    v = getattr(delta_obj, attr, None)
-                    if v:
-                        return v
-                if hasattr(delta_obj, "get"):
-                    for key in ("reasoning_content", "thought", "reasoning"):
-                        try:
-                            v = delta_obj.get(key)
-                            if v:
-                                return v
-                        except Exception:
-                            pass
-                for attr in ("model_extra", "extra_fields", "additional_kwargs"):
-                    extra = getattr(delta_obj, attr, None)
-                    if extra and isinstance(extra, dict):
-                        for key in ("reasoning_content", "thought", "reasoning"):
-                            if extra.get(key):
-                                return extra[key]
-                return None
-
-            def _get_content(delta_obj) -> Optional[str]:
-                if not delta_obj:
-                    return None
-                v = getattr(delta_obj, "content", None)
+                v = delta_obj.get(key)
                 if v:
                     return v
-                if hasattr(delta_obj, "get"):
-                    try:
-                        v = delta_obj.get("content")
-                        if v:
-                            return v
-                    except Exception:
-                        pass
-                for attr in ("model_extra", "extra_fields", "additional_kwargs"):
-                    extra = getattr(delta_obj, attr, None)
-                    if extra and isinstance(extra, dict):
-                        if extra.get("content"):
-                            return extra["content"]
-                return None
+            except Exception:
+                pass
+    for attr in ("model_extra", "extra_fields", "additional_kwargs"):
+        extra = getattr(delta_obj, attr, None)
+        if extra and isinstance(extra, dict):
+            for key in ("reasoning_content", "thought", "reasoning"):
+                if extra.get(key):
+                    return extra[key]
+    return None
 
-            def _get_tool_calls(delta_obj) -> Optional[List[dict]]:
-                if not delta_obj:
-                    return None
-                tcs = getattr(delta_obj, "tool_calls", None)
-                if tcs:
-                    res = []
-                    for tc in tcs:
-                        tc_id = getattr(tc, "id", None)
-                        tc_type = getattr(tc, "type", "function")
-                        fn_name = getattr(tc.function, "name", "") if getattr(tc, "function", None) else ""
-                        fn_args = getattr(tc.function, "arguments", "") if getattr(tc, "function", None) else ""
-                        res.append({
-                            "id": tc_id,
-                            "type": tc_type,
-                            "name": fn_name,
-                            "arguments": fn_args,
-                        })
-                    return res
-                return None
 
-            normalizer = StreamingTextNormalizer()
-            extractor = XMLThinkingExtractor()
-            out_len = 0
-            _reasoning_buf: List[str] = []
-            _BUF_FLUSH_SIZE = 80
+def _get_content(delta_obj) -> Optional[str]:
+    if not delta_obj:
+        return None
+    v = getattr(delta_obj, "content", None)
+    if v:
+        return v
+    if hasattr(delta_obj, "get"):
+        try:
+            v = delta_obj.get("content")
+            if v:
+                return v
+        except Exception:
+            pass
+    for attr in ("model_extra", "extra_fields", "additional_kwargs"):
+        extra = getattr(delta_obj, attr, None)
+        if extra and isinstance(extra, dict):
+            if extra.get("content"):
+                return extra["content"]
+    return None
 
-            def _has_sentence_boundary(text: str) -> bool:
-                for i, ch in enumerate(text):
-                    if ch in '.!?\n' and (i + 1 >= len(text) or text[i + 1] in ' \n'):
-                        return True
-                return False
 
-            async def _flush_reasoning():
-                nonlocal _reasoning_buf
-                if not _reasoning_buf:
-                    return
-                text = "".join(_reasoning_buf)
-                _reasoning_buf = []
-                if include_thoughts:
-                    yield _openai_sse(model_name, reasoning_content=text)
-
-            async def _yield_reasoning(val: str):
-                nonlocal out_len, _reasoning_buf
-                if not val or not include_thoughts:
-                    return
-                _reasoning_buf.append(val)
-                out_len += len(val)
-                total = sum(len(s) for s in _reasoning_buf)
-                buf_text = "".join(_reasoning_buf)
-                if total >= _BUF_FLUSH_SIZE or _has_sentence_boundary(buf_text):
-                    async for chunk in _flush_reasoning():
-                        yield chunk
-
-            async def _yield_native_reasoning(val: str):
-                nonlocal out_len
-                if not val:
-                    return
-                out_len += len(val)
-                if include_thoughts:
-                    yield _openai_sse(model_name, reasoning_content=val)
-
-            async def _yield_text(val: str):
-                nonlocal out_len
-                if not val:
-                    return
-                async for chunk in _flush_reasoning():
-                    yield chunk
-                norm_text = normalizer.feed(val)
-                if norm_text:
-                    yield _openai_sse(model_name, content=norm_text)
-                    out_len += len(norm_text)
-
-            async def _process_extractor_events(events):
-                for ev_type, ev_val in events:
-                    if ev_type == "thinking" and ev_val:
-                        if include_thoughts:
-                            async for chunk in _yield_reasoning(ev_val):
-                                yield chunk
-                    elif ev_type == "text" and ev_val:
-                        async for chunk in _yield_text(ev_val):
-                            yield chunk
-
-            # Helper: process content through extractor, skip thinking if reasoning already from delta
-            async def _process_content(content_val: str, has_reasoning: bool):
-                if not content_val:
-                    return
-                if has_reasoning:
-                    for _et, _ev in extractor.feed(content_val):
-                        if _et == "text" and _ev:
-                            async for c in _yield_text(_ev):
-                                yield c
-                else:
-                    async for c in _process_extractor_events(extractor.feed(content_val)):
-                        yield c
-
-            # Process first_chunk
-            delta_1 = first_chunk.choices[0].delta if first_chunk.choices else None
-            content_1 = _get_content(delta_1)
-            reasoning_1 = _get_reasoning(delta_1)
-            tool_calls_1 = _get_tool_calls(delta_1)
-
-            if reasoning_1:
-                async for chunk_bytes in _yield_native_reasoning(reasoning_1):
-                    yield chunk_bytes
-
-            if content_1:
-                async for chunk_bytes in _process_content(content_1, bool(reasoning_1)):
-                    yield chunk_bytes
-
-            if tool_calls_1:
-                yield _openai_sse(model_name, tool_calls=tool_calls_1, chunk_id=chunk_id)
-
-            # Process subsequent chunks with a keepalive timeout
-            async def _iter_chunks():
-                it = gen.__aiter__()
-                while True:
-                    try:
-                        while True:
-                            try:
-                                chunk = await asyncio.wait_for(it.__anext__(), timeout=4.0)
-                                yield ("chunk", chunk)
-                                break
-                            except asyncio.TimeoutError:
-                                yield ("ping", None)
-                    except StopAsyncIteration:
-                        break
-
-            stream_finish_reason = None
-            has_tool_calls = bool(tool_calls_1)
-            async for item_type, val in _iter_chunks():
-                if item_type == "ping":
-                    yield _openai_sse(model_name, chunk_id=chunk_id)
-                    continue
-                chunk = val
-                if not chunk:
-                    continue
-                delta = chunk.choices[0].delta if chunk.choices else None
-                content = _get_content(delta)
-                reasoning = _get_reasoning(delta)
-                tool_calls = _get_tool_calls(delta)
-                fr = chunk.choices[0].finish_reason if chunk.choices else None
-                if fr:
-                    stream_finish_reason = fr
-
-                if reasoning:
-                    async for chunk_bytes in _yield_native_reasoning(reasoning):
-                        yield chunk_bytes
-
-                if content:
-                    async for chunk_bytes in _process_content(content, bool(reasoning)):
-                        yield chunk_bytes
-
-                if tool_calls:
-                    has_tool_calls = True
-                    yield _openai_sse(model_name, tool_calls=tool_calls, chunk_id=chunk_id)
-                if fr:
-                    stream_finish_reason = fr
-
-            # Flush remaining reasoning buffer
-            async for chunk_bytes in _flush_reasoning():
-                yield chunk_bytes
-
-            # Flush extractor at the end of the stream
-            async for chunk_bytes in _process_extractor_events(extractor.flush()):
-                yield chunk_bytes
-
-            # Flush any remaining reasoning from extractor flush
-            async for chunk_bytes in _flush_reasoning():
-                yield chunk_bytes
-
-            # Flush normalizer at the end of the stream
-            flushed_content = normalizer.flush()
-            if flushed_content:
-                async for chunk_bytes in _yield_text(flushed_content):
-                    yield chunk_bytes
-
-            # Final chunk with finish_reason
-            if has_tool_calls:
-                stop_reason = "tool_calls"
+def _get_tool_calls(delta_obj) -> Optional[List[dict]]:
+    if not delta_obj:
+        return None
+    tcs = getattr(delta_obj, "tool_calls", None)
+    if tcs:
+        res = []
+        for tc in tcs:
+            if isinstance(tc, dict):
+                fn = tc.get("function", {})
+                fn_name = fn.get("name", "") if isinstance(fn, dict) else ""
+                fn_args = fn.get("arguments", "") if isinstance(fn, dict) else ""
+                tc_id = tc.get("id")
+                tc_type = tc.get("type", "function")
             else:
-                stop_reason = "length" if stream_finish_reason and "max" in str(stream_finish_reason).lower() else "stop"
-            yield _openai_sse(model_name, finish_reason=stop_reason, chunk_id=chunk_id)
-
-            out_tokens = max(1, out_len // 4)
-            cache_usage = _get_simulated_cache_usage(body, input_tokens)
-            cc = cache_usage.get("cache_creation_input_tokens", 0) or 0
-            cr = cache_usage.get("cache_read_input_tokens", 0) or 0
-            await log_usage(model_id, kp, input_tokens, out_tokens, auth_key_prefix, cc, cr)
-            router.record_success(api_key, model_id, input_tokens, out_tokens)
-            if pool:
-                pool.record_success()
-
-            cost = proxy_instance._estimate_cost(input_tokens, out_tokens, model_alias)
-            usage_dict = {
-                "prompt_tokens": input_tokens,
-                "completion_tokens": out_tokens,
-                "total_tokens": input_tokens + out_tokens,
-                "cost": cost,
-            }
-            if cr > 0:
-                usage_dict["prompt_tokens_details"] = {
-                    "cached_tokens": cr
-                }
-            usage_chunk = {
-                "id": f"chatcmpl-{uuid.uuid4().hex}",
-                "object": "chat.completion.chunk",
-                "created": int(time.time()),
-                "model": model_name,
-                "choices": [],
-                "usage": usage_dict
-            }
-            yield f"data: {json.dumps(usage_chunk, ensure_ascii=False)}\n\n".encode("utf-8")
-            yield b"data: [DONE]\n\n"
-
-        except asyncio.CancelledError:
-            logger.warning(
-                "[OpenCode Stream Cancelled] Client disconnected/cancelled stream prematurely for model=%s, key=...%s",
-                model_alias, kp
-            )
-            if fetch_task and not fetch_task.done():
-                fetch_task.cancel()
-            raise
-        except Exception as e:
-            logger.error(
-                "[OpenCode Stream Exception] Unexpected stream-level error for model=%s, key=...%s: %s",
-                model_alias, kp, e, exc_info=True
-            )
-            if fetch_task and not fetch_task.done():
-                fetch_task.cancel()
-            raise
-        finally:
-            router.release_key(api_key)
-
-    return _stream_wrapper()
+                tc_id = getattr(tc, "id", None)
+                tc_type = getattr(tc, "type", "function")
+                fn_name = getattr(tc.function, "name", "") if getattr(tc, "function", None) else ""
+                fn_args = getattr(tc.function, "arguments", "") if getattr(tc, "function", None) else ""
+            res.append({"id": tc_id, "type": tc_type, "name": fn_name, "arguments": fn_args})
+        return res
+    return None
 
 
-async def _stream_with_pool(
-    proxy_instance: Any,
+async def _run_websearch_nonstream(
     body: Dict[str, Any],
     messages: List[Dict[str, Any]],
     tools: List[Dict[str, Any]],
-    pool: Any,
     model_alias: str,
-    auth_key_prefix: str = "",
+    account: Optional[Dict[str, Any]],
+    auth_key_prefix: str,
+) -> tuple:
+    """Run first-pass non-stream call to detect WebSearch tool call.
+    Returns (text, search_context, new_messages_with_result).
+    """
+    from .websearch import resolve_search_engine
+    from .search import execute_opencode_search
+
+    thinking_config: Dict[str, Any] = {}
+    max_tokens = min(int(body.get("max_tokens", config.MAX_OUTPUT_TOKENS)), config.MAX_OUTPUT_TOKENS)
+    temperature = float(body.get("temperature", 0.7))
+
+    result = await pool_manager.call_nonstream(
+        model_alias=model_alias,
+        messages=messages,
+        tools=tools or None,
+        temperature=temperature,
+        max_tokens=max_tokens,
+        thinking_config=thinking_config,
+        account=account,
+        extra_body=None,
+    )
+
+    resp = result["response"]
+    if not hasattr(resp, "choices") or not resp.choices:
+        return "", "", messages
+
+    choice = resp.choices[0]
+    msg = getattr(choice, "message", None)
+    if not msg:
+        return "", "", messages
+
+    text = getattr(msg, "content", "") or ""
+    raw_tool_calls = getattr(msg, "tool_calls", None) or []
+    tool_calls = []
+    for tc in raw_tool_calls:
+        args = getattr(tc.function, "arguments", None) or ""
+        if isinstance(args, dict):
+            args = json.dumps(args)
+        elif not isinstance(args, str):
+            args = str(args)
+        tool_calls.append({
+            "id": getattr(tc, "id", f"call_{uuid.uuid4().hex}"),
+            "name": getattr(tc.function, "name", "") or "",
+            "arguments": args,
+        })
+
+    web_call = next((tc for tc in tool_calls if tc.get("name") == "WebSearch"), None)
+    if not web_call:
+        return text, "", messages
+
+    try:
+        args = json.loads(web_call["arguments"]) if isinstance(web_call["arguments"], str) else web_call["arguments"]
+        query = args.get("query", "")
+        se = resolve_search_engine(body, account)
+        search_context, combined_citations = await execute_opencode_search(
+            [query], model_alias_or_name=model_alias, search_engine=se,
+            auth_key_prefix=auth_key_prefix, account=account,
+        )
+        if search_context:
+            result_lines = [search_context]
+            unique_links = []
+            for c in combined_citations:
+                url = c.get("url")
+                if url and url not in search_context:
+                    title = c.get("title") or "Source"
+                    unique_links.append(f"- [{title}]({url})")
+            if unique_links:
+                result_lines.append("\n**Sources / Citations:**\n" + "\n".join(unique_links))
+            search_context = "\n".join(result_lines)
+        else:
+            search_context = "No search results found."
+    except Exception as e:
+        search_context = f"Search error: {e}"
+        logger.warning("[OpenCode WebSearch] query failed: %s", e)
+
+    assistant_msg = {
+        "role": "assistant",
+        "content": text or None,
+        "tool_calls": [{"id": web_call["id"], "type": "function", "function": {"name": "WebSearch", "arguments": web_call["arguments"]}}],
+    }
+    tool_result_msg = {"role": "tool", "tool_call_id": web_call["id"], "content": search_context}
+    new_messages = list(messages) + [assistant_msg, tool_result_msg]
+    return text, search_context, new_messages
+
+
+async def execute_stream(
+    body: Dict[str, Any],
+    model_alias: str,
+    messages: List[Dict[str, Any]],
+    tools: List[Dict[str, Any]],
     account: Optional[Dict[str, Any]] = None,
     is_opencode: bool = False,
+    auth_key_prefix: str = "",
 ) -> AsyncIterator[bytes]:
+    """Main streaming entrypoint for OpenCode proxy.
+    
+    Delegates pool management to PoolManager.
+    Handles SSE formatting, keepalive, thinking extraction, WebSearch progress.
+    """
     from .response import get_client_model_name
+    from .proxy import _resolve_thinking_config
+
+    include_thoughts = body.get("include_thoughts", True)
+    thinking_params = {
+        "thinking_level": body.get("thinking_level"),
+        "thinking_budget": body.get("thinking_budget"),
+        "include_thoughts": include_thoughts,
+    }
+    has_websearch = any(t.get("function", {}).get("name") == "WebSearch" for t in tools)
     requested_model = body.get("model") or model_alias
     model_name = get_client_model_name(requested_model)
     chunk_id = f"chatcmpl-{uuid.uuid4().hex}"
+    thinking_config = _resolve_thinking_config(body, model_alias)
+    max_tokens = min(int(body.get("max_tokens", config.MAX_OUTPUT_TOKENS)), config.MAX_OUTPUT_TOKENS)
+    temperature = float(body.get("temperature", 0.7))
 
-    committed = False
-    pool.start()
-    while not pool.exhausted:
-        actual_alias = pool.current_model
-        api_key_val = None
-        saved_key = None
-        model_id_val = None
-        reservation = {}
-        member_used = actual_alias
+    # ── WebSearch path: non-stream first call to detect tool calls ─────────
+    if has_websearch:
+        _, _, new_messages = await _run_websearch_nonstream(
+            body, messages, tools, model_alias, account, auth_key_prefix
+        )
+
+        # Final stream answer without search tool
+        tools_no_search = [t for t in tools if t.get("function", {}).get("name") != "WebSearch"]
+        async for item in pool_manager.call_stream(
+            model_alias=model_alias,
+            messages=new_messages,
+            tools=tools_no_search or None,
+            temperature=temperature,
+            max_tokens=max_tokens,
+            thinking_config=thinking_config,
+            account=account,
+            thinking_params=thinking_params,
+        ):
+            chunk = item["chunk"]
+            delta = chunk.choices[0].delta if chunk.choices else None
+            content = _get_content(delta)
+            reasoning = _get_reasoning(delta)
+            fr = chunk.choices[0].finish_reason if chunk.choices else None
+
+            if reasoning and include_thoughts:
+                yield _openai_sse(model_name, reasoning_content=reasoning, chunk_id=chunk_id)
+            if content:
+                yield _openai_sse(model_name, content=content, chunk_id=chunk_id)
+            if fr:
+                yield _openai_sse(model_name, finish_reason=fr, chunk_id=chunk_id)
+
+        yield b"data: [DONE]\n\n"
+        return
+
+    # ── Normal stream path ──────────────────────────────────────────────────
+    normalizer = StreamingTextNormalizer()
+    extractor = XMLThinkingExtractor()
+    out_len = 0
+    _reasoning_buf: List[str] = []
+    _BUF_FLUSH_SIZE = 80
+    stream_finish_reason = None
+    has_tool_calls = False
+
+    last_api_key = ""
+    last_model_id = ""
+    last_input_tokens = 0
+
+    def _has_sentence_boundary(text: str) -> bool:
+        for i, ch in enumerate(text):
+            if ch in ".!?\n" and (i + 1 >= len(text) or text[i + 1] in " \n"):
+                return True
+        return False
+
+    async def _flush_reasoning():
+        nonlocal _reasoning_buf
+        if not _reasoning_buf:
+            return
+        text = "".join(_reasoning_buf)
+        _reasoning_buf = []
+        if include_thoughts:
+            yield _openai_sse(model_name, reasoning_content=text, chunk_id=chunk_id)
+
+    async def _yield_reasoning(val: str):
+        nonlocal out_len, _reasoning_buf
+        if not val or not include_thoughts:
+            return
+        _reasoning_buf.append(val)
+        out_len += len(val)
+        total = sum(len(s) for s in _reasoning_buf)
+        buf_text = "".join(_reasoning_buf)
+        if total >= _BUF_FLUSH_SIZE or _has_sentence_boundary(buf_text):
+            async for c in _flush_reasoning():
+                yield c
+
+    async def _yield_text(val: str):
+        nonlocal out_len
+        if not val:
+            return
+        async for c in _flush_reasoning():
+            yield c
+        norm_text = normalizer.feed(val)
+        if norm_text:
+            yield _openai_sse(model_name, content=norm_text, chunk_id=chunk_id)
+            out_len += len(norm_text)
+
+    async def _process_content(content_val: str, has_reasoning: bool):
+        if not content_val:
+            return
+        if has_reasoning:
+            for _et, _ev in extractor.feed(content_val):
+                if _et == "text" and _ev:
+                    async for c in _yield_text(_ev):
+                        yield c
+        else:
+            for _et, _ev in extractor.feed(content_val):
+                if _et == "thinking" and _ev:
+                    if include_thoughts:
+                        async for c in _yield_reasoning(_ev):
+                            yield c
+                elif _et == "text" and _ev:
+                    async for c in _yield_text(_ev):
+                        yield c
+
+    # Start pool-managed stream using a task for TTFB keepalive
+    async def _fetch_first():
+        gen = pool_manager.call_stream(
+            model_alias=model_alias,
+            messages=messages,
+            tools=tools or None,
+            temperature=temperature,
+            max_tokens=max_tokens,
+            thinking_config=thinking_config,
+            account=account,
+            thinking_params=thinking_params,
+        )
+        first_item = await gen.__anext__()
+        return gen, first_item
+
+    fetch_task = asyncio.create_task(_fetch_first())
+    t0_wait = asyncio.get_event_loop().time()
+    ping_count = 0
+    while not fetch_task.done():
         try:
-            est_input = len(str(messages)) // 4
-            max_output = min(int(body.get("max_tokens", config.MAX_OUTPUT_TOKENS)), config.MAX_OUTPUT_TOKENS)
-            estimated_tokens = est_input + max_output
-            model_alias_val, model_id_val, api_key_val, litellm_model_val, reservation = await _resolve_model(
-                body, model_alias, account=account, estimated_tokens=estimated_tokens,
-                retry_attempt=pool.total_attempts, pool_mode=True
-            )
-            model_id_val = reservation.get("model_id", model_id_val)
-            member_used = reservation.get("model_alias", actual_alias)
-            logger.info(
-                "[OpenCode Pool Reserve Stream] Reserved key ...%s for pool=%s model_alias=%s (model_id=%s) | Attempt: %d (remaining=%ds)",
-                api_key_val[-8:] if api_key_val else "N/A", model_alias, reservation.get("model_alias", model_alias), model_id_val, pool.total_attempts + 1, int(pool.remaining_time())
-            )
+            await asyncio.wait_for(asyncio.shield(fetch_task), timeout=3.0)
+            break
+        except asyncio.TimeoutError:
+            ping_count += 1
+            if ping_count % 5 == 1:
+                logger.info(
+                    "[OpenCode Stream Keepalive] Waiting for %s (elapsed=%.1fs)",
+                    model_alias, asyncio.get_event_loop().time() - t0_wait
+                )
+            yield _openai_sse(model_name, chunk_id=chunk_id)
 
+    try:
+        gen, first_item = await fetch_task
+    except Exception as e:
+        logger.error("[OpenCode Stream] Failed to get first chunk: %s", e)
+        yield _openai_sse(model_name, content="", chunk_id=chunk_id)
+        yield _openai_sse(model_name, finish_reason="stop", chunk_id=chunk_id)
+        yield b"data: [DONE]\n\n"
+        return
+
+    ttfb = asyncio.get_event_loop().time() - t0_wait
+    logger.info("[OpenCode Stream] model=%s ttfb=%.2fs", model_alias, ttfb)
+
+    async def _iter_with_keepalive():
+        yield first_item
+        it = gen.__aiter__()
+        while True:
             try:
-                try:
-                    input_tokens = await token_counter(model=litellm_model_val, messages=messages)
-                except Exception:
-                    input_tokens = max(1, len(str(messages)) // 4)
-
-                max_output = min(int(body.get("max_tokens", config.MAX_OUTPUT_TOKENS)), config.MAX_OUTPUT_TOKENS)
-                has_quota = await router.acquire_quota(input_tokens + max_output, model_alias)
-                if not has_quota:
-                    apply_error_penalty(api_key_val, "rate_limit_rpm_tpm", model_id_val)
-                    router.freeze_key(api_key_val, 15, model_id_val, "rate_limit")
-                    if pool.record_failure(member_used, "rate_limit"):
-                        if not pool.swap():
-                            if pool.exhausted:
-                                break
-                            wait = min(15.0, pool.remaining_time())
-                            for _ in range(int(wait)):
-                                yield _openai_sse(model_name, chunk_id=chunk_id)
-                                await asyncio.sleep(1)
-                            pool.reset_cycle()
-                            continue
-                    await asyncio.sleep(_retry_delay(pool.total_attempts))
-                    continue
-
-                attempt_val = pool.total_attempts
-                kwargs = proxy_instance._prepare_litellm_kwargs(
-                    litellm_model_val=litellm_model_val,
-                    reinforced_messages=messages,
-                    api_key_val=api_key_val,
-                    max_output=max_output,
-                    body=body,
-                    openai_tools=tools,
-                    reservation=reservation,
-                    is_stream=True,
-                )
-
-                gen = await _execute_stream(
-                    proxy_instance, kwargs, api_key_val, model_id_val, model_alias_val,
-                    input_tokens, pool, body, auth_key_prefix, account=account,
-                    is_opencode=is_opencode, reservation=reservation,
-                )
-                saved_key = api_key_val
-                api_key_val = None
-                async for chunk in gen:
-                    has_real_content = False
-                    if b'"content":' in chunk and b'"content": ""' not in chunk and b'"content": null' not in chunk:
-                        has_real_content = True
-                    if b'"reasoning_content"' in chunk:
-                        has_real_content = True
-                    if b'"tool_calls"' in chunk:
-                        has_real_content = True
-                    if has_real_content:
-                        committed = True
-                    yield chunk
-                return
-
-            finally:
-                if api_key_val:
-                    router.release_key(api_key_val)
-
-        except HTTPException as e:
-            if committed:
-                logger.error("[OpenCode Stream Pool Exception] HTTP exception after stream committed: %s", e)
-                yield error_sse({"error": {"type": "api_error", "message": f"Stream error: {e}"}})[0]
-                return
-            if e.status_code == 503:
-                raise
-            _err_key = api_key_val or saved_key
-            if _err_key:
-                router.freeze_key(_err_key, 15, model_id_val, "rate_limit")
-                apply_error_penalty(_err_key, "rate_limit", model_id_val)
-            router.record_failure("rate_limit")
-            if pool.record_failure(member_used, "rate_limit"):
-                if not pool.swap():
-                    if pool.exhausted:
+                while True:
+                    try:
+                        item = await asyncio.wait_for(asyncio.shield(it.__anext__()), timeout=4.0)
+                        yield item
                         break
-                    wait = min(15.0, pool.remaining_time())
-                    for _ in range(int(wait)):
-                        yield _openai_sse(model_name, chunk_id=chunk_id)
-                        await asyncio.sleep(1)
-                    pool.reset_cycle()
-                    continue
-            await asyncio.sleep(_retry_delay(pool.total_attempts))
+                    except asyncio.TimeoutError:
+                        yield None
+            except StopAsyncIteration:
+                break
 
-        except asyncio.CancelledError:
-            logger.warning(
-                "[OpenCode Pool Cancelled] Stream cancelled by client during pool retry loop for alias=%s", actual_alias
-            )
-            raise
-        except Exception as e:
-            if committed:
-                logger.error("[OpenCode Stream Pool Exception] Exception after stream committed: %s", e)
-                yield error_sse({"error": {"type": "api_error", "message": f"Stream error: {e}"}})[0]
-                return
-            error_text = str(e).lower()
-            is_custom = reservation.get("provider") == "custom" if "reservation" in locals() else False
-            if is_custom:
-                logger.warning("[CustomEndpoint OpenCode Stream] Failed on custom endpoint %s: %s, falling back to Gemini pool", model_id_val, e)
-                endpoint_manager.mark_endpoint_failure(reservation.get("name", member_used))
-                if pool.record_failure(member_used, "custom_endpoint_error"):
-                    if not pool.swap():
-                        if pool.exhausted:
-                            break
-                        wait = min(15.0, pool.remaining_time())
-                        for _ in range(int(wait)):
-                            yield _openai_sse(model_name or "model", chunk_id=chunk_id)
-                            await asyncio.sleep(1)
-                        pool.reset_cycle()
-                        continue
-                yield _openai_sse(model_name or "model", chunk_id=chunk_id)
-                await asyncio.sleep(_retry_delay(pool.total_attempts))
-                continue
-
-            if "400" in error_text and "failed_precondition" not in error_text and ("invalid_argument" in error_text or "bad_request" in error_text):
-                logger.error("[OpenCode Bad Request] Schema/Prompt Error: %s", error_text[:200])
-                if api_key_val:
-                    router.freeze_key(api_key_val, 2, model_id_val, "bad_request_spam_prevent")
-                yield error_sse({"error": {"type": "invalid_request_error", "message": f"LLM rejected payload (HTTP 400): {error_text[:200]}"}})[0]
-                return
-
-            if "400" in error_text and "failed_precondition" in error_text:
-                logger.error("[OpenCode Failed Precondition] Billing issue with key ...%s: %s", (api_key_val or "N/A")[-4:], error_text[:200])
-                if api_key_val:
-                    router.freeze_key(api_key_val, 300, model_id_val, "billing_error")
-                    apply_error_penalty(api_key_val, "billing_error", model_id_val)
-                router.record_failure("billing_error")
-                if pool.record_failure(member_used, "billing_error"):
-                    if not pool.swap():
-                        if pool.exhausted:
-                            break
-                        wait = min(15.0, pool.remaining_time())
-                        for _ in range(int(wait)):
-                            yield _openai_sse(model_name, chunk_id=chunk_id)
-                            await asyncio.sleep(1)
-                        pool.reset_cycle()
-                        continue
-                await asyncio.sleep(_retry_delay(pool.total_attempts))
-                continue
-
-            if "499" in error_text or "cancelled" in error_text:
-                return
-
-            is_region_quota = "apirequestsperminuteperprojectperregion" in error_text or "api_requests_per_minute_per_project_per_region" in error_text
-            if is_region_quota:
-                reason = "rate_limit"
-            else:
-                from src.api.claude_proxy.handler.helpers import _classify_error_reason as _classify_error_reason_static
-                reason = _classify_error_reason_static(error_text, api_key_val, model_id_val)
-
-            # 429 (rate_limit) và 503 (unavailable): không freeze key, không count failure
-            # — chỉ backoff rồi retry
-            if reason in ("rate_limit", "unavailable"):
-                logger.warning("[OpenCode Pool Temp Unavailable] model=%s key=...%s reason=%s — waiting 5s then retry (attempt %d)",
-                              member_used, (api_key_val or "N/A")[-4:] if api_key_val else "N/A", reason,
-                              pool.total_attempts + 1)
-                if reason == "rate_limit":
-                    router.record_429()
+    try:
+        async for item in _iter_with_keepalive():
+            if item is None:
                 yield _openai_sse(model_name, chunk_id=chunk_id)
-                await asyncio.sleep(5.0)
                 continue
 
-            _err_key = api_key_val or saved_key
-            if _err_key:
-                router.freeze_key(_err_key, 0, model_id_val, reason)
-                if reason not in ("bad_request_spam_prevent", "invalid_key"):
-                    apply_error_penalty(_err_key, reason, model_id_val)
-            router.record_failure(reason)
+            last_api_key = item.get("api_key", last_api_key)
+            last_model_id = item.get("model_id", last_model_id)
+            last_input_tokens = item.get("input_tokens", last_input_tokens)
 
-            if pool.record_failure(member_used, reason):
-                if not pool.swap():
-                    if pool.exhausted:
-                        break
-                    wait = min(15.0, pool.remaining_time())
-                    for _ in range(int(wait)):
-                        yield _openai_sse(model_name, chunk_id=chunk_id)
-                        await asyncio.sleep(1)
-                    pool.reset_cycle()
-                    continue
-
-            if is_region_quota:
-                logger.warning("[OpenCode Region Quota] Hit region limit, waiting 25s before retry...")
-                await asyncio.sleep(25)
-            else:
-                await asyncio.sleep(_retry_delay(pool.total_attempts))
-
-    logger.warning("[OpenCode Pool Exhausted] Request timed out after %.1fs.", pool.elapsed)
-    err_resp = proxy_instance._error_response(body, model_alias, "pool_exhausted")
-    for chunk in error_sse(err_resp):
-        yield chunk
-
-
-async def _stream_standalone(
-    proxy_instance: Any,
-    body: Dict[str, Any],
-    messages: List[Dict[str, Any]],
-    tools: List[Dict[str, Any]],
-    model_alias: str,
-    auth_key_prefix: str = "",
-    account: Optional[Dict[str, Any]] = None,
-    is_opencode: bool = False,
-) -> AsyncIterator[bytes]:
-    committed = False
-    for attempt in range(config.MAX_RETRIES):
-        api_key_val = None
-        saved_key = None
-        model_id_val = None
-        try:
-            est_input = len(str(messages)) // 4
-            max_output = min(int(body.get("max_tokens", config.MAX_OUTPUT_TOKENS)), config.MAX_OUTPUT_TOKENS)
-            estimated_tokens = est_input + max_output
-            model_alias_val, model_id_val, api_key_val, litellm_model_val, reservation = await _resolve_model(
-                body, model_alias, account=account, estimated_tokens=estimated_tokens,
-                retry_attempt=attempt, pool_mode=False
-            )
-
-            try:
-                try:
-                    input_tokens = await token_counter(model=litellm_model_val, messages=messages)
-                except Exception:
-                    input_tokens = max(1, len(str(messages)) // 4)
-
-                max_output = min(int(body.get("max_tokens", config.MAX_OUTPUT_TOKENS)), config.MAX_OUTPUT_TOKENS)
-                has_quota = await router.acquire_quota(input_tokens + max_output, model_alias)
-                if not has_quota:
-                    apply_error_penalty(api_key_val, "rate_limit_rpm_tpm", model_id_val)
-                    router.freeze_key(api_key_val, 15, model_id_val, "rate_limit")
-                    await asyncio.sleep(_retry_delay(attempt))
-                    continue
-
-                kwargs = proxy_instance._prepare_litellm_kwargs(
-                    litellm_model_val=litellm_model_val,
-                    reinforced_messages=messages,
-                    api_key_val=api_key_val,
-                    max_output=max_output,
-                    body=body,
-                    openai_tools=tools,
-                    reservation=reservation,
-                    is_stream=True,
-                )
-                gen = await _execute_stream(
-                    proxy_instance, kwargs, api_key_val, model_id_val, model_alias_val,
-                    input_tokens, None, body, auth_key_prefix, account=account,
-                    is_opencode=is_opencode, reservation=reservation,
-                )
-                saved_key = api_key_val
-                api_key_val = None
-                async for chunk in gen:
-                    has_real_content = False
-                    if b'"content":' in chunk and b'"content": ""' not in chunk and b'"content": null' not in chunk:
-                        has_real_content = True
-                    if b'"reasoning_content"' in chunk:
-                        has_real_content = True
-                    if b'"tool_calls"' in chunk:
-                        has_real_content = True
-                    if has_real_content:
-                        committed = True
-                    yield chunk
-                return
-
-            finally:
-                if api_key_val:
-                    router.release_key(api_key_val)
-
-        except HTTPException as e:
-            if committed:
-                yield error_sse({"error": {"type": "api_error", "message": f"Stream error: {e}"}})[0]
-                return
-            if e.status_code == 503:
-                raise
-            _err_key = api_key_val or saved_key
-            if _err_key:
-                router.freeze_key(_err_key, 15, model_id_val, "rate_limit")
-                apply_error_penalty(_err_key, "rate_limit", model_id_val)
-            router.record_failure("rate_limit")
-            await asyncio.sleep(_retry_delay(attempt))
-
-        except asyncio.CancelledError:
-            raise
-        except Exception as e:
-            if committed:
-                yield error_sse({"error": {"type": "api_error", "message": f"Stream error: {e}"}})[0]
-                return
-            error_text = str(e).lower()
-
-            if "400" in error_text and "failed_precondition" not in error_text and ("invalid_argument" in error_text or "bad_request" in error_text):
-                if api_key_val:
-                    router.freeze_key(api_key_val, 2, model_id_val, "bad_request_spam_prevent")
-                yield error_sse({"error": {"type": "invalid_request_error", "message": f"LLM rejected payload (HTTP 400): {error_text[:200]}"}})[0]
-                return
-
-            if "400" in error_text and "failed_precondition" in error_text:
-                if api_key_val:
-                    router.freeze_key(api_key_val, 300, model_id_val, "billing_error")
-                    apply_error_penalty(api_key_val, "billing_error", model_id_val)
-                router.record_failure("billing_error")
-                await asyncio.sleep(_retry_delay(attempt))
+            chunk = item["chunk"]
+            if not chunk.choices:
                 continue
 
-            if "499" in error_text or "cancelled" in error_text:
-                return
+            delta = chunk.choices[0].delta
+            content = _get_content(delta)
+            reasoning = _get_reasoning(delta)
+            tool_calls = _get_tool_calls(delta)
+            fr = chunk.choices[0].finish_reason if chunk.choices else None
+            if fr:
+                stream_finish_reason = fr
 
-            is_region_quota = "apirequestsperminuteperprojectperregion" in error_text or "api_requests_per_minute_per_project_per_region" in error_text
-            if is_region_quota:
-                reason = "rate_limit"
-            else:
-                from src.api.claude_proxy.handler.helpers import _classify_error_reason as _classify_error_reason_static
-                reason = _classify_error_reason_static(error_text, api_key_val, model_id_val)
+            if reasoning:
+                async for c in _yield_reasoning(reasoning):
+                    yield c
+            if content:
+                async for c in _process_content(content, bool(reasoning)):
+                    yield c
+            if tool_calls:
+                has_tool_calls = True
+                yield _openai_sse(model_name, tool_calls=tool_calls, chunk_id=chunk_id)
 
-            if reason == "rate_limit":
-                router.record_429()
+        async for c in _flush_reasoning():
+            yield c
+        for _et, _ev in extractor.flush():
+            if _et == "thinking" and _ev and include_thoughts:
+                async for c in _yield_reasoning(_ev):
+                    yield c
+            elif _et == "text" and _ev:
+                async for c in _yield_text(_ev):
+                    yield c
+        async for c in _flush_reasoning():
+            yield c
+        flushed = normalizer.flush()
+        if flushed:
+            async for c in _yield_text(flushed):
+                yield c
 
-            _err_key = api_key_val or saved_key
-            if _err_key:
-                router.freeze_key(_err_key, 0, model_id_val, reason)
-                if reason not in ("bad_request_spam_prevent", "invalid_key"):
-                    apply_error_penalty(_err_key, reason, model_id_val)
-            router.record_failure(reason)
+        stop_reason = "tool_calls" if has_tool_calls else (
+            "length" if stream_finish_reason and "max" in str(stream_finish_reason).lower() else "stop"
+        )
+        yield _openai_sse(model_name, finish_reason=stop_reason, chunk_id=chunk_id)
 
-            if is_region_quota:
-                logger.warning("[OpenCode Region Quota] Hit region limit, waiting 25s before retry...")
-                await asyncio.sleep(25)
-            else:
-                await asyncio.sleep(_retry_delay(attempt))
+        out_tokens = max(1, out_len // 4)
+        kp = last_api_key[-8:] if last_api_key else ""
+        cache_usage = _get_simulated_cache_usage(body, last_input_tokens)
+        cc = cache_usage.get("cache_creation_input_tokens", 0) or 0
+        cr = cache_usage.get("cache_read_input_tokens", 0) or 0
+        await log_usage(last_model_id, kp, last_input_tokens, out_tokens, auth_key_prefix, cc, cr)
 
-    err_resp = proxy_instance._error_response(body, model_alias, "exhausted")
-    for chunk in error_sse(err_resp):
-        yield chunk
+        usage_chunk = {
+            "id": chunk_id,
+            "object": "chat.completion.chunk",
+            "created": int(time.time()),
+            "model": model_name,
+            "choices": [],
+            "usage": {
+                "prompt_tokens": last_input_tokens,
+                "completion_tokens": out_tokens,
+                "total_tokens": last_input_tokens + out_tokens,
+            },
+        }
+        yield f"data: {json.dumps(usage_chunk, ensure_ascii=False)}\n\n".encode("utf-8")
+        yield b"data: [DONE]\n\n"
+
+    except asyncio.CancelledError:
+        logger.warning("[OpenCode Stream Cancelled] model=%s", model_alias)
+        raise
+    except Exception as e:
+        logger.error("[OpenCode Stream Error] model=%s: %s", model_alias, e, exc_info=True)
+        raise

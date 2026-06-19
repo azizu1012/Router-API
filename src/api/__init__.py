@@ -1,1 +1,1 @@
-"""API layer: LiteLLM-powered Anthropic-compatible proxy."""
+"""API layer: Anthropic/OpenCode proxy → Gemini native HTTP."""

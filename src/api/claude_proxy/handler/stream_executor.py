@@ -4,7 +4,7 @@ import json
 import uuid
 from typing import Any, Dict, List, Optional
 
-from src.core.providers.litellm_wrapper import acompletion, token_counter
+from src.core.providers.gemini_facade import acompletion, token_counter
 from src.core.config_n_logg.logger import logger_proxy as logger
 from src.core.router import router
 from src.core.usage_logger import log_usage

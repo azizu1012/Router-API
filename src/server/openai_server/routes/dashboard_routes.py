@@ -344,11 +344,13 @@ async def get_model_pools_api(request: Request):
             cfg = AVAILABLE_MODELS.get(member, {})
             limiter = get_rate_limiter(member)
             backing_id = cfg.get("model_id", member)
+            health = core_router._model_health.get(member, {})
             members.append({
                 "model_id": backing_id,
                 "alias": member,
                 "rpm": limiter.rpm_limit,
                 "tpm": limiter.tpm_limit,
+                "health_score": health.get("score", 100.0) if isinstance(health, dict) else 100.0,
             })
 
         # Append assigned custom endpoints (avoiding double-counting custom endpoint models when pool stats are calculated)
@@ -362,6 +364,7 @@ async def get_model_pools_api(request: Request):
                         "model_id": model_id,
                         "rpm": 10, # Custom endpoints are rate-limited via _CUSTOM_POOL_RPM = 10
                         "tpm": 999999999, # Unlimited placeholder
+                        "health_score": 100.0,
                     })
         except Exception as e:
             import logging
@@ -378,6 +381,7 @@ async def get_model_pools_api(request: Request):
                     "model_id": m["model_id"],
                     "rpm": m["rpm"],
                     "tpm": m["tpm"],
+                    "health_score": m.get("health_score", 100.0),
                 }
                 for m in members
             ],

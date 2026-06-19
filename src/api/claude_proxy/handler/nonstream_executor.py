@@ -4,7 +4,7 @@ import json
 import uuid
 from typing import Any, Dict, List, Tuple, Optional
 
-from src.core.providers.litellm_wrapper import acompletion, token_counter
+from src.core.providers.gemini_facade import acompletion, token_counter
 from src.core.config_n_logg.logger import logger_proxy as logger
 from src.core.router import router
 from src.core.usage_logger import log_usage
@@ -24,18 +24,18 @@ async def _resolve_gemini_with_tools_stream(
     account: Optional[Dict[str, Any]] = None,
     _recursion_depth: int = 0,
 ):
-    """Async generator — yields real-time (type, data) tuples from LiteLLM stream.
+    """Async generator — yields real-time (type, data) tuples from Gemini stream.
 
     Types:
-      ("reasoning", str)   — thinking/reasoning content, emit as thinking_delta
-      ("text", str)        — visible text content, emit as text_delta
+      ("reasoning", str)   — thinking/reasoning content
+      ("text", str)        — visible text content
       ("result", text, tool_calls, finish_reason, thought_text) — final accumulated data
     """
     try:
         kwargs["stream"] = True
         gen = await acompletion(**kwargs)
     except Exception as e:
-        logger.error("[_resolve_gemini_with_tools_stream] litellm.acompletion error: %s", e, exc_info=True)
+        logger.error("[_resolve_gemini_with_tools_stream] acompletion error: %s", e, exc_info=True)
         raise
 
     text_buf: List[str] = []
@@ -60,12 +60,22 @@ async def _resolve_gemini_with_tools_stream(
             yield ("reasoning", rc)
         if getattr(delta, "tool_calls", None):
             for tc in delta.tool_calls:
-                idx = tc.index
-                if idx not in tool_call_buf:
-                    tool_call_buf[idx] = {"id": getattr(tc, "id", f"call_{uuid.uuid4().hex}"), "name": "", "arguments": ""}
-                if getattr(tc.function, "name", None):
-                    tool_call_buf[idx]["name"] = tc.function.name
-                args_val = getattr(tc.function, "arguments", None)
+                if isinstance(tc, dict):
+                    idx = tc.get("index", 0)
+                    if idx not in tool_call_buf:
+                        tool_call_buf[idx] = {"id": tc.get("id", f"call_{uuid.uuid4().hex}"), "name": "", "arguments": ""}
+                    fn = tc.get("function", {})
+                    fn_name = fn.get("name", "") if isinstance(fn, dict) else ""
+                    args_val = fn.get("arguments") if isinstance(fn, dict) else None
+                else:
+                    idx = tc.index
+                    if idx not in tool_call_buf:
+                        tool_call_buf[idx] = {"id": getattr(tc, "id", f"call_{uuid.uuid4().hex}"), "name": "", "arguments": ""}
+                    fn = getattr(tc, "function", None)
+                    fn_name = getattr(fn, "name", "") if fn else ""
+                    args_val = getattr(fn, "arguments", None) if fn else None
+                if fn_name:
+                    tool_call_buf[idx]["name"] = fn_name
                 if args_val:
                     if isinstance(args_val, dict):
                         args_val = json.dumps(args_val)
@@ -174,7 +184,7 @@ async def _resolve_gemini_with_tools(kwargs: Dict[str, Any], body: Dict[str, Any
         kwargs["stream"] = True
         gen = await acompletion(**kwargs)
     except Exception as e:
-        logger.error("[_resolve_gemini_with_tools] litellm.acompletion error: %s", e, exc_info=True)
+        logger.error("[_resolve_gemini_with_tools] acompletion error: %s", e, exc_info=True)
         raise
 
     text_buf = []
@@ -195,12 +205,22 @@ async def _resolve_gemini_with_tools(kwargs: Dict[str, Any], body: Dict[str, Any
             thought_buf.append(rc)
         if getattr(delta, "tool_calls", None):
             for tc in delta.tool_calls:
-                idx = tc.index
-                if idx not in tool_call_buf:
-                    tool_call_buf[idx] = {"id": getattr(tc, "id", f"call_{uuid.uuid4().hex}"), "name": "", "arguments": ""}
-                if getattr(tc.function, "name", None):
-                    tool_call_buf[idx]["name"] = tc.function.name
-                args_val = getattr(tc.function, "arguments", None)
+                if isinstance(tc, dict):
+                    idx = tc.get("index", 0)
+                    if idx not in tool_call_buf:
+                        tool_call_buf[idx] = {"id": tc.get("id", f"call_{uuid.uuid4().hex}"), "name": "", "arguments": ""}
+                    fn = tc.get("function", {})
+                    fn_name = fn.get("name", "") if isinstance(fn, dict) else ""
+                    args_val = fn.get("arguments") if isinstance(fn, dict) else None
+                else:
+                    idx = tc.index
+                    if idx not in tool_call_buf:
+                        tool_call_buf[idx] = {"id": getattr(tc, "id", f"call_{uuid.uuid4().hex}"), "name": "", "arguments": ""}
+                    fn = getattr(tc, "function", None)
+                    fn_name = getattr(fn, "name", "") if fn else ""
+                    args_val = getattr(fn, "arguments", None) if fn else None
+                if fn_name:
+                    tool_call_buf[idx]["name"] = fn_name
                 if args_val:
                     if isinstance(args_val, dict):
                         args_val = json.dumps(args_val)

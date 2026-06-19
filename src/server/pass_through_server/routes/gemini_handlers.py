@@ -144,13 +144,11 @@ async def _handle_gemini_native(
             model_to_use = pool_assignments[model_alias]
         enabled_models = ep.get("enabled_models", [])
         if model_to_use in enabled_models:
-            openai_messages = []
-            if system_instruction:
-                openai_messages.append({"role": "system", "content": system_instruction})
-            for c in contents:
-                role = "assistant" if c.role == "model" else "user"
-                text = "".join([getattr(p, "text", "") or "" for p in getattr(c, "parts", []) or []])
-                openai_messages.append({"role": role, "content": text})
+            from src.core.providers.custom_endpoint_genai_adapter import (
+                genai_contents_to_openai_messages,
+                openai_result_to_genai_response,
+            )
+            openai_messages = genai_contents_to_openai_messages(contents, system_instruction)
             try:
                 if stream:
                     return StreamingResponse(
@@ -179,23 +177,11 @@ async def _handle_gemini_native(
                         timeout=config.REQUEST_TIMEOUT_SECONDS,
                         endpoint_name=ep.get("name", ""),
                     )
-                    resp_dict = {
-                        "candidates": [
-                            {
-                                "content": {
-                                    "parts": [{"text": result["text"]}],
-                                    "role": "model"
-                                },
-                                "finishReason": "STOP",
-                                "index": 0
-                            }
-                        ],
-                        "usageMetadata": {
-                            "promptTokenCount": result.get("input_tokens", 0),
-                            "candidatesTokenCount": result.get("output_tokens", 0),
-                            "totalTokenCount": result.get("input_tokens", 0) + result.get("output_tokens", 0)
-                        }
-                    }
+                    resp_dict = openai_result_to_genai_response(
+                        result["text"],
+                        result.get("input_tokens", 0),
+                        result.get("output_tokens", 0),
+                    )
                     await log_usage(
                         model_to_use,
                         "custom",
