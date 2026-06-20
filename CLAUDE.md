@@ -89,9 +89,18 @@ pool.record_failure(member_used, reason)  # ✅ ghi đúng member
 
 Pool level RPM được rate limiter tự tính = `cfg.rpm × key_count` cho mỗi alias. Đây là lý do dashboard dùng `limiter.rpm_limit`, không dùng `cfg.rpm`.
 
-### 5. 429 và 503 xử lý như nhau — không freeze key, không count failure
+### 5. Xử lý lỗi và đóng băng Key (Key Freezing)
 
-Cả rate_limit (429) và unavailable (503) đều là lỗi tạm thời từ API. Không freeze key, không `pool.record_failure` — chỉ backoff 5s rồi retry. Key freeze và member failure chỉ áp dụng cho lỗi vĩnh viễn (bad_request, billing_error, invalid_key).
+Các lỗi từ API được phân loại và xử lý khác nhau:
+
+- **Lỗi tạm thời không đóng băng Key (ví dụ: `unavailable` / 503, các lỗi `server_error`, `timeout`, `grounding_fallback`, `unknown`):** Với các lỗi này, hệ thống chỉ thực hiện backoff (chờ 5 giây) và thử lại. Key **không bị đóng băng**, và không có `pool.record_failure`. Thời gian cooldown cho các lỗi này được cấu hình bởi `KEY_UNKNOWN_ERROR_COOLDOWN_SECONDS` với các hệ số nhân cụ thể trong `get_penalty_config`.
+
+- **Lỗi tạm thời có đóng băng Key (ví dụ: `rate_limit` / 429, `rate_limit_rpm_tpm`, `rate_limit_rpd`, `project_quota_429`):** Khi gặp các lỗi này, key **bị đóng băng** với thời gian cooldown động.
+    - Đối với `rate_limit_rpd` và `project_quota_429`, thời gian đóng băng là đến nửa đêm giờ Thái Bình Dương (`get_seconds_until_pacific_midnight()`).
+    - Đối với `rate_limit` và `rate_limit_rpm_tpm`, thời gian đóng băng là `config.KEY_429_COOLDOWN_SECONDS * 10`, và có thể tăng theo số lần thất bại liên tiếp.
+    - Các lỗi này vẫn được coi là tạm thời nhưng yêu cầu đóng băng key để tránh lặp lại lỗi và bảo vệ quota.
+
+- **Lỗi vĩnh viễn có đóng băng Key và ghi nhận lỗi (ví dụ: `bad_request`, `billing_error`, `invalid_key`, `permission_denied`, `project_denied`):** Key **bị đóng băng** và `pool.record_failure` được gọi. Thời gian đóng băng cho các lỗi này thường dài hơn và cũng được xác định trong `get_penalty_config`.
 
 ### 6. `asyncio.shield` bắt buộc khi dùng `wait_for` cho keepalive
 
