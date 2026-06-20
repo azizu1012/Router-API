@@ -72,13 +72,6 @@ async def opencode_chat_completions(
                         yield chunk
                 except Exception as e:
                     logger_api.warning("[OpenCode Route] Stream error caught: %s", e)
-                    cid = f"chatcmpl-{uuid.uuid4().hex}"
-                    created = int(time.time())
-                    err_chunk = {
-                        "id": cid, "object": "chat.completion.chunk", "created": created, "model": model_alias,
-                        "choices": [{"index": 0, "delta": {"content": "⚠️ Hệ thống đang quá tải, vui lòng thử lại sau 15-30s."}, "finish_reason": "stop"}],
-                    }
-                    yield f"data: {json.dumps(err_chunk, ensure_ascii=False)}\n\n".encode("utf-8")
                     yield "data: [DONE]\n\n".encode("utf-8")
 
             return StreamingResponse(
