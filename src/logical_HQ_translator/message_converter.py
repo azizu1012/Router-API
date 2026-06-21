@@ -4,6 +4,8 @@ import threading
 from datetime import datetime
 from typing import Any, Dict, List, Optional, Tuple
 
+from src.core.config_n_logg import config
+
 class ToolNameCache:
     def __init__(self, max_size=5000):
         self.max_size = max_size
@@ -30,46 +32,7 @@ class ToolNameCache:
 
 _GLOBAL_TOOL_NAME_CACHE = ToolNameCache()
 
-SCIENCE_TOOLS_TO_STRIP = {
-    "alphafold-database-fetch-and-analyze",
-    "alphagenome-single-variant-analysis",
-    "chembl-database",
-    "clinical-trials-database",
-    "clinvar-database",
-    "dbsnp-database",
-    "embl-ebi-ols",
-    "encode-ccres-database",
-    "ensembl-database",
-    "foldseek-structural-search",
-    "gnomad-database",
-    "gtex-database",
-    "human-protein-atlas-database",
-    "interpro-database",
-    "jaspar-database",
-    "literature-search-arxiv",
-    "literature-search-biorxiv",
-    "literature-search-europepmc",
-    "literature-search-openalex",
-    "ncbi-sequence-fetch",
-    "openfda-database",
-    "opentargets-database",
-    "pdb-database",
-    "protein-sequence-msa",
-    "protein-sequence-similarity-search",
-    "pubchem-database",
-    "pubmed-database",
-    "pymol",
-    "quickgo-database",
-    "reactome-database",
-    "science-skills-common",
-    "scienceskillscommon",
-    "string-database",
-    "ucsc-conservation-and-tfbs",
-    "unibind-database",
-    "uniprot-database",
-    "uv",
-    "workflow-skill-creator"
-}
+SCIENCE_TOOLS_TO_STRIP = set(config.TOOLS_TO_STRIP)
 
 UNSUPPORTED_OR_HEAVY_TOOLS = {
     "NotebookRead", "NotebookEdit",
