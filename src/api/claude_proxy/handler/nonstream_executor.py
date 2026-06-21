@@ -24,12 +24,44 @@ async def _resolve_gemini_with_tools_stream(
     account: Optional[Dict[str, Any]] = None,
     _recursion_depth: int = 0,
 ):
-    """Async generator — yields real-time (type, data) tuples from Gemini stream.
+    """
+    Một async generator xử lý luồng phản hồi từ Gemini API, bao gồm cả việc thực thi công cụ.
+    Hàm này có khả năng đệ quy để xử lý các cuộc gọi công cụ bị chặn (intercepted tool calls)
+    như WebSearch hoặc WebFetch, gửi kết quả của công cụ trở lại mô hình.
 
-    Types:
-      ("reasoning", str)   — thinking/reasoning content
-      ("text", str)        — visible text content
-      ("result", text, tool_calls, finish_reason, thought_text) — final accumulated data
+    **Các giai đoạn chính của quá trình xử lý:**
+    1. **Khởi tạo luồng Gemini:** Gọi `acompletion` với `stream=True` để bắt đầu nhận các chunk từ Gemini.
+    2. **Đệm và phân tích chunk:** Lặp qua từng chunk nhận được từ Gemini, đệm nội dung văn bản,
+       nội dung suy nghĩ (`reasoning_content`) và các cuộc gọi công cụ (`tool_calls`).
+       - `("text", str)`: Nội dung văn bản hiển thị.
+       - `("reasoning", str)`: Nội dung suy nghĩ/lý luận.
+       - `("result", text, tool_calls, finish_reason, thought_text)`: Dữ liệu tích lũy cuối cùng.
+    3. **Xử lý đệ quy cuộc gọi công cụ:**
+       - Nếu mô hình trả về một cuộc gọi công cụ bị chặn (hiện tại là WebSearch hoặc WebFetch)
+         và chưa đạt đến độ sâu đệ quy tối đa (3 lần), hàm sẽ thực thi công cụ đó.
+       - Kết quả của công cụ sẽ được định dạng và gửi lại cho mô hình bằng cách gọi đệ quy
+         `_resolve_gemini_with_tools_stream` với `_recursion_depth` tăng lên.
+       - Điều này cho phép mô hình tiếp tục suy luận dựa trên kết quả của công cụ.
+    4. **Định dạng và trả về kết quả cuối cùng:**
+       - Tổng hợp nội dung văn bản và suy nghĩ đã đệm.
+       - Phân tích các cuộc gọi công cụ thành định dạng `tool_use` hoặc `agent_use`.
+       - Tính toán số lượng token đầu ra và ghi lại việc sử dụng.
+       - Trả về một dictionary phản hồi hoàn chỉnh ở định dạng OpenAI.
+
+    Args:
+        kwargs (Dict[str, Any]): Các đối số được truyền trực tiếp đến `acompletion` của Gemini.
+        body (Dict[str, Any]): Body của yêu cầu API gốc.
+        proxy_instance (Any): Instance của proxy gọi (ví dụ: `ClaudeProxyNonstreamMixin`).
+        auth_key_prefix (str, optional): Tiền tố khóa xác thực. Mặc định là "".
+        account (Optional[Dict[str, Any]], optional): Thông tin tài khoản người dùng. Mặc định là None.
+        _recursion_depth (int, optional): Độ sâu đệ quy hiện tại để theo dõi các cuộc gọi công cụ bị chặn. Mặc định là 0.
+
+    Yields:
+        Tuple[str, Any]: Một tuple chứa loại sự kiện và dữ liệu tương ứng trong quá trình streaming.
+
+    Returns:
+        Dict[str, Any]: Khi hoàn tất hoặc đạt đến độ sâu đệ quy tối đa, trả về một dictionary
+                       phản hồi hoàn chỉnh ở định dạng OpenAI.
     """
     try:
         kwargs["stream"] = True

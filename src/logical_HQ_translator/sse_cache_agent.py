@@ -1,3 +1,15 @@
+"""
+Module này chứa các hàm tiện ích liên quan đến việc xử lý các sự kiện SSE (Server-Sent Events),
+quản lý cache mô phỏng, phát hiện và chặn các yêu cầu từ sub-agent, và lưu trữ thông tin
+mô hình đã giải quyết cho thư mục làm việc hiện tại.
+
+Các chức năng chính bao gồm:
+- Tạo định dạng SSE cho các sự kiện dữ liệu.
+- Mô phỏng việc sử dụng cache token cho mục đích báo cáo.
+- Phát hiện các yêu cầu từ sub-agent dựa trên `system_prompt` và `tool_names` để ghi đè mô hình.
+- Ghi lại thông tin yêu cầu và phản hồi của sub-agent vào log.
+- Lưu trữ ánh xạ mô hình đã giải quyết cho thư mục làm việc hiện tại để đồng bộ hóa trạng thái.
+"""
 import datetime
 import hashlib
 import json
@@ -11,9 +23,32 @@ _PROJECT_ROOT = Path(__file__).resolve().parents[2]
 _log_path = _PROJECT_ROOT / "logs" / "claude_request.log"
 
 def _sse(event: str, data: Dict[str, Any]) -> bytes:
+    """
+    Tạo một chuỗi định dạng SSE (Server-Sent Events) từ tên sự kiện và dữ liệu.
+
+    Args:
+        event (str): Tên của sự kiện SSE.
+        data (Dict[str, Any]): Dữ liệu (dưới dạng dictionary) sẽ được chuyển đổi thành JSON và gửi đi.
+
+    Returns:
+        bytes: Chuỗi bytes đã được mã hóa UTF-8 ở định dạng SSE.
+    """
     return f"event: {event}\ndata: {json.dumps(data, ensure_ascii=False)}\n\n".encode("utf-8")
 
 def _get_simulated_cache_usage(body: Dict[str, Any], input_tokens: int) -> Dict[str, int]:
+    """
+    Mô phỏng việc sử dụng cache token dựa trên số lượng token đầu vào và nội dung tin nhắn.
+    Hàm này cố gắng phân biệt giữa các token đọc từ cache và các token tạo cache mới
+    để cung cấp một ước tính về hiệu quả của việc nén ngữ cảnh (context compaction).
+
+    Args:
+        body (Dict[str, Any]): Body của yêu cầu API gốc, chứa danh sách tin nhắn.
+        input_tokens (int): Tổng số token đầu vào của yêu cầu.
+
+    Returns:
+        Dict[str, int]: Một dictionary chứa `cache_creation_input_tokens` và `cache_read_input_tokens`,
+                        hoặc một dictionary rỗng nếu không có cache nào được mô phỏng.
+    """
     if input_tokens < 1024:
         return {}
     messages = body.get("messages", [])
@@ -45,6 +80,22 @@ def _get_simulated_cache_usage(body: Dict[str, Any], input_tokens: int) -> Dict[
     }
 
 def _get_sub_agent_override_model(account: Optional[Dict[str, Any]] = None) -> str:
+    """
+    Xác định mô hình ghi đè (override model) cho các sub-agent.
+    Thứ tự ưu tiên tìm kiếm mô hình:
+    1. `subagent_model` trong thông tin tài khoản.
+    2. `agent_model` trong thông tin tài khoản.
+    3. `sub_agent_model` trong thông tin tài khoản.
+    4. Biến môi trường `OPENCODE_SUB_AGENT_MODEL`.
+    5. Biến môi trường `SUB_AGENT_MODEL`.
+    Nếu không tìm thấy, mặc định là "gemini-flash-lite".
+
+    Args:
+        account (Optional[Dict[str, Any]], optional): Thông tin tài khoản người dùng. Mặc định là None.
+
+    Returns:
+        str: Tên mô hình được sử dụng để ghi đè cho sub-agent.
+    """
     target_model = None
     if account:
         target_model = account.get("subagent_model") or account.get("agent_model") or account.get("sub_agent_model")
@@ -54,6 +105,29 @@ def _get_sub_agent_override_model(account: Optional[Dict[str, Any]] = None) -> s
     return target_model or "gemini-flash-lite"
 
 def _intercept_sub_agent(body: Dict[str, Any], account: Optional[Dict[str, Any]] = None) -> Optional[str]:
+    """
+    Phát hiện và chặn các yêu cầu từ sub-agent dựa trên `system_prompt` và các từ khóa.
+    Nếu một yêu cầu được xác định là từ sub-agent, hàm sẽ trả về tên mô hình ghi đè
+    để định tuyến yêu cầu đó đến một mô hình cụ thể (thường là mô hình nhẹ hơn).
+    Hàm cũng ghi lại thông tin chi tiết về yêu cầu sub-agent vào file log `claude_request.log`.
+
+    **Quy trình phát hiện sub-agent:**
+    1. Trích xuất `system_prompt` từ body yêu cầu.
+    2. Kiểm tra các chỉ báo `main_agent_indicators` trong `system_prompt` để xác định
+       xem đây có phải là yêu cầu từ main agent hay không (nếu là main agent thì không chặn).
+    3. Kiểm tra cụm từ "you are claude code" trong `system_prompt` để xác định sub-agent của Claude Code.
+    4. Kiểm tra các `sub_agent_keywords` trong `system_prompt` để phát hiện các sub-agent thông thường.
+    5. Ghi lại các thông tin như công cụ được sử dụng, số lượng tin nhắn, mô hình yêu cầu
+       và `system_prompt` vào file log để theo dõi và debug.
+
+    Args:
+        body (Dict[str, Any]): Body của yêu cầu API gốc, chứa `system_prompt` và `messages`.
+        account (Optional[Dict[str, Any]], optional): Thông tin tài khoản người dùng. Mặc định là None.
+
+    Returns:
+        Optional[str]: Tên mô hình ghi đè nếu yêu cầu được xác định là từ sub-agent,
+                       ngược lại là None.
+    """
     system_instruction = body.get("system", "")
     if isinstance(system_instruction, list):
         system_prompt = "\n".join([str(item.get("text", "")) for item in system_instruction if isinstance(item, dict)])
@@ -313,9 +387,26 @@ def _dict_to_sse_events(result: Dict[str, Any]) -> Iterator[bytes]:
 
 
 def save_resolved_model_for_cwd(system_prompt: Any, model_alias: str, model_id: str) -> None:
+    """
+    Lưu trữ mô hình đã giải quyết (resolved model) cho thư mục làm việc hiện tại vào một file JSON.
+    Điều này giúp đồng bộ hóa trạng thái mô hình giữa các phiên làm việc hoặc giữa các phần khác nhau của ứng dụng.
+
+    **Quy trình lưu trữ:**
+    1. Trích xuất thư mục làm việc hiện tại (CWD) từ `system_prompt`.
+    2. Đảm bảo thư mục log tồn tại.
+    3. Đọc file `session_models.json` hiện có (nếu có).
+    4. Cập nhật ánh xạ cho CWD hiện tại với `model_alias`, `model_id` và `timestamp`.
+    5. Ghi lại ánh xạ đã cập nhật vào file `session_models.json`.
+    6. Ghi log thông tin về việc lưu trữ mô hình.
+
+    Args:
+        system_prompt (Any): System prompt từ yêu cầu, được sử dụng để trích xuất CWD.
+        model_alias (str): Bí danh của mô hình đã được giải quyết.
+        model_id (str): ID của mô hình đã được giải quyết.
+    """
     if not system_prompt:
         return
-        
+
     if isinstance(system_prompt, list):
         parts = []
         for item in system_prompt:
@@ -335,7 +426,7 @@ def save_resolved_model_for_cwd(system_prompt: Any, model_alias: str, model_id: 
         m = re.search(r"working directory:\s*([^\r\n]+)", system_prompt_str, re.IGNORECASE)
         if m:
             cwd = m.group(1).strip()
-            
+
     if not cwd:
         return
 
@@ -343,7 +434,7 @@ def save_resolved_model_for_cwd(system_prompt: Any, model_alias: str, model_id: 
         import time
         mapping_file = _PROJECT_ROOT / "logs" / "session_models.json"
         mapping_file.parent.mkdir(parents=True, exist_ok=True)
-        
+
         models_map = {}
         if mapping_file.exists():
             try:
@@ -351,16 +442,16 @@ def save_resolved_model_for_cwd(system_prompt: Any, model_alias: str, model_id: 
                     models_map = json.load(mf)
             except Exception:
                 pass
-        
+
         models_map[cwd] = {
             "model_alias": model_alias,
             "model_id": model_id,
             "timestamp": int(time.time())
         }
-        
+
         with open(mapping_file, "w", encoding="utf-8") as mf:
             json.dump(models_map, mf, ensure_ascii=False, indent=2)
-            
+
         logger.info("[Statusline Sync] Saved resolved model for cwd %s: %s (id: %s)", cwd, model_alias, model_id)
     except Exception as ex:
         logger.error("[Statusline Sync Error] Failed to save resolved model: %s", ex)

@@ -1,11 +1,17 @@
-"""Gemini native response → OpenAI format parser.
+"""
+Module này chịu trách nhiệm phân tích cú pháp và chuyển đổi phản hồi gốc từ API Gemini
+sang định dạng tương thích với OpenAI. Điều này cho phép Router API trình bày một giao diện
+phản hồi thống nhất cho các client, bất kể backend LLM được sử dụng.
 
-9router pattern (gemini-to-openai.js:5-243):
-  - content.parts[] → text, reasoning_content, functionCall
-  - usageMetadata → usage
-  - finishReason → finish_reason
+**Các chuyển đổi chính bao gồm:**
+- `content.parts[]` của Gemini được phân tích thành `text`, `reasoning_content` (suy nghĩ) và `functionCall` của OpenAI.
+- `usageMetadata` của Gemini được ánh xạ tới `usage` của OpenAI.
+- `finishReason` của Gemini được chuyển đổi thành `finish_reason` của OpenAI.
 
-Shared between streaming and non-streaming.
+Module này được chia sẻ giữa cả quá trình xử lý streaming và non-streaming,
+đảm bảo tính nhất quán trong việc chuyển đổi phản hồi.
+Nó bao gồm các hàm để phân tích từng chunk phản hồi streaming và xử lý toàn bộ phản hồi non-streaming,
+đồng thời bao gồm các hàm tiện ích để tạo chunk và trích xuất thông tin sử dụng.
 """
 
 import json
@@ -14,7 +20,27 @@ from typing import Any, Dict, List, Optional
 
 
 def parse_gemini_chunk(chunk: Dict[str, Any], state: Dict[str, Any]) -> List[Dict[str, Any]]:
-    """Parse one Gemini response chunk → list of OpenAI delta dicts."""
+    """
+    Phân tích một chunk phản hồi từ Gemini API và chuyển đổi nó thành một danh sách các dictionary
+    delta của OpenAI. Hàm này được sử dụng trong quá trình xử lý phản hồi streaming.
+
+    **Các bước xử lý chính:**
+    1. Khởi tạo trạng thái ban đầu nếu đây là chunk đầu tiên, bao gồm `message_id`, `model` và `function_index`.
+    2. Lặp qua từng `part` trong `content` của Gemini:
+       a. Trích xuất văn bản (`text`), nội dung suy nghĩ (`reasoning_content`) và chữ ký suy nghĩ (`thought_signature`).
+       b. Xử lý các `functionCall` của Gemini, tạo `tool_call` tương ứng với ID và đối số.
+       c. Tạo các chunk delta của OpenAI dựa trên văn bản, suy nghĩ và cuộc gọi công cụ.
+    3. Trích xuất thông tin sử dụng (`usageMetadata`) từ phản hồi.
+    4. Xử lý `finishReason` của Gemini, chuyển đổi nó thành `finish_reason` của OpenAI
+       (đặc biệt là chuyển `stop` thành `tool_calls` nếu có cuộc gọi công cụ).
+
+    Args:
+        chunk (Dict[str, Any]): Một dictionary đại diện cho một chunk phản hồi từ Gemini.
+        state (Dict[str, Any]): Một dictionary trạng thái để duy trì thông tin qua các chunk liên tiếp.
+
+    Returns:
+        List[Dict[str, Any]]: Một danh sách các dictionary delta ở định dạng OpenAI.
+    """
     response = chunk.get("response", chunk)
     if not response or not response.get("candidates"):
         return []
@@ -86,7 +112,27 @@ def parse_gemini_chunk(chunk: Dict[str, Any], state: Dict[str, Any]) -> List[Dic
 
 
 def parse_gemini_nonstream(response: Dict[str, Any], model_alias: str) -> Dict[str, Any]:
-    """Parse Gemini non-stream response → OpenAI response dict."""
+    """
+    Phân tích một phản hồi không streaming từ Gemini API và chuyển đổi nó thành một dictionary
+    phản hồi của OpenAI. Hàm này sử dụng `parse_gemini_chunk` để xử lý nội dung và sau đó
+    tổng hợp các phần delta thành một phản hồi hoàn chỉnh.
+
+    **Các bước xử lý chính:**
+    1. Sử dụng `parse_gemini_chunk` để phân tích phản hồi Gemini thành một danh sách các chunk delta của OpenAI.
+    2. Tập hợp các phần nội dung (`content_parts`), nội dung suy nghĩ (`reasoning_parts`),
+       chữ ký suy nghĩ (`thought_sig_parts`) và các cuộc gọi công cụ (`tool_calls`) từ các chunk delta.
+    3. Xây dựng đối tượng `message` cuối cùng với vai trò `assistant`, bao gồm nội dung,
+       cuộc gọi công cụ và nội dung suy nghĩ.
+    4. Xác định `finish_reason` và thông tin `usage` cho phản hồi cuối cùng.
+    5. Ước tính `completion_tokens` nếu chúng không được cung cấp trực tiếp trong `usage`.
+
+    Args:
+        response (Dict[str, Any]): Một dictionary đại diện cho phản hồi không streaming từ Gemini.
+        model_alias (str): Bí danh của mô hình đã được sử dụng.
+
+    Returns:
+        Dict[str, Any]: Một dictionary phản hồi hoàn chỉnh ở định dạng OpenAI.
+    """
     state: Dict[str, Any] = {}
     chunks = parse_gemini_chunk(response, state)
 
@@ -143,6 +189,17 @@ def parse_gemini_nonstream(response: Dict[str, Any], model_alias: str) -> Dict[s
 
 
 def _make_chunk(state: Dict[str, Any], delta: Dict[str, Any], finish_reason: Optional[str]) -> Dict[str, Any]:
+    """
+    Tạo một chunk phản hồi ở định dạng OpenAI (cho streaming).
+
+    Args:
+        state (Dict[str, Any]): Dictionary trạng thái chứa `message_id` và `model`.
+        delta (Dict[str, Any]): Dictionary chứa các thay đổi (`content`, `reasoning_content`, `tool_calls`).
+        finish_reason (Optional[str]): Lý do kết thúc của chunk (ví dụ: "stop", "tool_calls").
+
+    Returns:
+        Dict[str, Any]: Một dictionary đại diện cho một chunk phản hồi của OpenAI.
+    """
     return {
         "id": f"chatcmpl-{state.get('message_id', 'unknown')}",
         "object": "chat.completion.chunk",
@@ -153,6 +210,16 @@ def _make_chunk(state: Dict[str, Any], delta: Dict[str, Any], finish_reason: Opt
 
 
 def _extract_usage(response: Dict[str, Any], chunk: Dict[str, Any], state: Dict[str, Any]) -> None:
+    """
+    Trích xuất thông tin sử dụng token từ phản hồi Gemini và cập nhật trạng thái.
+    Hàm này cố gắng tính toán `prompt_tokens`, `completion_tokens` và `total_tokens`
+    dựa trên `usageMetadata` của Gemini.
+
+    Args:
+        response (Dict[str, Any]): Phản hồi Gemini hoàn chỉnh (cho non-streaming).
+        chunk (Dict[str, Any]): Một chunk phản hồi Gemini (cho streaming).
+        state (Dict[str, Any]): Dictionary trạng thái để lưu trữ thông tin sử dụng đã trích xuất.
+    """
     usage_meta = response.get("usageMetadata") or chunk.get("usageMetadata")
     if not usage_meta:
         return

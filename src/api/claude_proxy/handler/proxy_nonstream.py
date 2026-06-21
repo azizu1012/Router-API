@@ -17,10 +17,49 @@ from .helpers import get_system_status_summary
 
 
 class ClaudeProxyNonstreamMixin:
+    """
+    `ClaudeProxyNonstreamMixin` cung cấp logic để xử lý các yêu cầu hoàn thành chat không streaming
+    cho API Claude. Mixin này tập trung vào việc chuyển đổi định dạng, chèn công cụ WebSearch
+    và xử lý các cuộc gọi công cụ bị chặn (intercepted tool calls) như WebSearch hoặc WebFetch.
+
+    Nó ủy quyền việc gọi API thực tế đến `PoolManager` và sau đó định dạng lại phản hồi từ
+    `PoolManager` thành định dạng mong muốn của client Claude non-streaming.
+
+    **Các chức năng chính bao gồm:**
+    - Chuyển đổi định dạng tin nhắn từ OpenCode sang Claude và ngược lại.
+    - Chèn công cụ WebSearch nếu được yêu cầu và không phải là yêu cầu từ sub-agent.
+    - Xử lý các yêu cầu "thinking" và nén ngữ cảnh (context compaction).
+    - Thực thi các cuộc gọi công cụ bị chặn (ví dụ: WebSearch, WebFetch) trong một vòng lặp đệ quy.
+    - Định dạng phản hồi cuối cùng, bao gồm cả việc trích xuất suy nghĩ (thoughts) từ phản hồi XML.
+    """
 
     async def create_message(
         self, body: Dict[str, Any], auth_key_prefix: str = "", account: Optional[Dict[str, Any]] = None
     ) -> Dict[str, Any]:
+        """
+        Tạo và xử lý một yêu cầu hoàn thành chat không streaming cho API Claude.
+
+        Phương thức này thực hiện các bước sau:
+        1. Chuyển đổi định dạng tin nhắn từ OpenCode sang định dạng nội bộ của Claude.
+        2. Kiểm tra và chèn công cụ WebSearch nếu tìm kiếm web được kích hoạt và yêu cầu không phải từ sub-agent.
+        3. Giải quyết bí danh mô hình và thực hiện nén ngữ cảnh (context compaction) nếu cần.
+        4. Thiết lập cấu hình "thinking" và các tham số khác cho cuộc gọi API.
+        5. Gọi `pool_manager.call_nonstream` trong một vòng lặp đệ quy để xử lý các cuộc gọi công cụ bị chặn.
+           Nếu mô hình trả về một cuộc gọi công cụ bị chặn (WebSearch hoặc WebFetch),
+           phương thức sẽ thực thi công cụ đó và sau đó gửi lại kết quả vào mô hình.
+           Vòng lặp này sẽ tiếp tục cho đến khi không còn cuộc gọi công cụ bị chặn nào hoặc đạt đến độ sâu đệ quy tối đa (5 lần).
+        6. Trích xuất nội dung, suy nghĩ và các cuộc gọi công cụ từ phản hồi của mô hình.
+        7. Định dạng lại phản hồi cuối cùng thành một dictionary tương thích với API Claude,
+           bao gồm thông tin sử dụng token và lý do dừng.
+
+        Args:
+            body (Dict[str, Any]): Body của yêu cầu API gốc.
+            auth_key_prefix (str, optional): Tiền tố khóa xác thực. Mặc định là "".
+            account (Optional[Dict[str, Any]], optional): Thông tin tài khoản người dùng. Mặc định là None.
+
+        Returns:
+            Dict[str, Any]: Một dictionary biểu diễn phản hồi hoàn thành chat không streaming đã được định dạng.
+        """
         openai_messages, openai_tools = _convert_messages(body)
 
         from src.api.opencode_proxy.handler.websearch import should_enable_web_search

@@ -1,11 +1,18 @@
-"""OpenAI → Gemini native format converter.
+"""
+Module này chịu trách nhiệm chuyển đổi các định dạng tin nhắn và công cụ từ chuẩn OpenAI
+(hoặc tương thích) sang định dạng gốc của Google Gemini. Nó đảm bảo rằng các yêu cầu
+đến Router API có thể được dịch chính xác để tương tác với các mô hình Gemini.
 
-9router pattern (openai-to-gemini.js:39-221):
-  - messages → contents[] (user/model roles)
-  - system → systemInstruction
-  - tools → functionDeclarations
-  - generationConfig: temperature, maxOutputTokens, thinkingConfig
-  - safetySettings: OFF all categories
+**Các chuyển đổi chính bao gồm:**
+- `messages` của OpenAI được ánh xạ tới `contents[]` của Gemini, với các vai trò `user` và `model`.
+- `system` prompt của OpenAI được ánh xạ tới `systemInstruction` của Gemini.
+- `tools` của OpenAI được chuyển đổi thành `functionDeclarations` của Gemini.
+- Các tham số cấu hình tạo sinh như `temperature`, `maxOutputTokens`, và `thinkingConfig`
+  cũng được xử lý.
+- `safetySettings` được đặt mặc định thành `OFF` cho tất cả các danh mục để linh hoạt hơn trong việc kiểm soát nội dung.
+
+Module này cũng bao gồm các hàm tiện ích để làm sạch tên hàm, trích xuất nội dung văn bản,
+chuyển đổi nội dung sang các phần của Gemini và đảm bảo định dạng tin nhắn cuối cùng phù hợp.
 """
 
 import json
@@ -15,6 +22,11 @@ from typing import Any, Dict, List, Optional
 from src.logical_HQ_translator.message_converter import _sanitize_schema_for_gemini
 
 DEFAULT_SAFETY_SETTINGS = [
+    """
+    Cấu hình cài đặt an toàn mặc định cho các yêu cầu Gemini.
+    Tất cả các danh mục an toàn được đặt thành "OFF" để cung cấp sự kiểm soát linh hoạt hơn
+    cho người dùng cuối hoặc các lớp xử lý an toàn khác ở cấp độ cao hơn.
+    """
     {"category": "HARM_CATEGORY_HATE_SPEECH", "threshold": "OFF"},
     {"category": "HARM_CATEGORY_DANGEROUS_CONTENT", "threshold": "OFF"},
     {"category": "HARM_CATEGORY_SEXUALLY_EXPLICIT", "threshold": "OFF"},
@@ -23,7 +35,18 @@ DEFAULT_SAFETY_SETTINGS = [
 
 
 def sanitize_function_name(name: str) -> str:
-    """Sanitize function name for Gemini: [a-zA-Z_][a-zA-Z0-9_.:\\-], max 64 chars."""
+    """
+    Làm sạch tên hàm để tuân thủ các quy tắc đặt tên của Gemini API.
+    Tên hàm phải bắt đầu bằng chữ cái hoặc dấu gạch dưới, và chỉ có thể chứa
+    các ký tự chữ cái, số, dấu gạch dưới, dấu chấm, dấu hai chấm, dấu gạch ngang.
+    Chiều dài tối đa là 64 ký tự.
+
+    Args:
+        name (str): Tên hàm gốc.
+
+    Returns:
+        str: Tên hàm đã được làm sạch và tuân thủ định dạng của Gemini.
+    """
     if not name:
         return "_unknown"
     sanitized = re.sub(r'[^a-zA-Z0-9_.:\-]', '_', name)
@@ -33,10 +56,23 @@ def sanitize_function_name(name: str) -> str:
 
 
 def convert_messages_to_contents(messages: List[Dict[str, Any]]) -> Dict[str, Any]:
-    """Convert OpenAI-format messages → Gemini native contents.
+    """
+    Chuyển đổi danh sách tin nhắn từ định dạng OpenAI sang định dạng `contents` gốc của Gemini.
+    Hàm này xử lý các vai trò `system`, `user`, `assistant` và `tool`,
+    chuyển đổi chúng thành các `parts` tương ứng trong cấu trúc `contents` của Gemini.
+
+    **Các chuyển đổi bao gồm:**
+    - Tin nhắn `system` được chuyển thành `systemInstruction` riêng biệt.
+    - Tin nhắn `user` và `assistant` được ánh xạ tới các `role` tương ứng với các `parts` chứa văn bản, suy nghĩ hoặc cuộc gọi hàm.
+    - Tin nhắn `tool` được chuyển thành `functionResponse` với tên hàm và phản hồi.
+    - Xử lý các `tool_calls` và `reasoning_content` (suy nghĩ) từ phản hồi của assistant.
+    - Làm sạch tên hàm bằng `sanitize_function_name`.
+
+    Args:
+        messages (List[Dict[str, Any]]): Danh sách các tin nhắn ở định dạng OpenAI.
 
     Returns:
-      {"contents": [...], "systemInstruction": {...} | None}
+        Dict[str, Any]: Một dictionary chứa `contents` đã được chuyển đổi và `systemInstruction` (nếu có).
     """
     contents: List[Dict[str, Any]] = []
     system_instruction = None
@@ -200,7 +236,16 @@ def _lookup_global_tool_name(tool_call_id: str) -> str:
 
 
 def _extract_text_content(content: Any) -> str:
-    """Extract plain text from content string or array."""
+    """
+    Trích xuất nội dung văn bản thuần túy từ một đối tượng `content` có thể là chuỗi hoặc danh sách các phần.
+    Hàm này xử lý các định dạng nội dung khác nhau để đảm bảo chỉ có văn bản được trả về.
+
+    Args:
+        content (Any): Nội dung cần trích xuất, có thể là `str` hoặc `List[Dict[str, Any]]`.
+
+    Returns:
+        str: Nội dung văn bản thuần túy đã được trích xuất.
+    """
     if isinstance(content, str):
         return content
     if isinstance(content, list):
@@ -216,7 +261,16 @@ def _extract_text_content(content: Any) -> str:
 
 
 def _convert_content_to_parts(content: Any) -> List[Dict[str, Any]]:
-    """Convert OpenAI content → Gemini parts (text, image)."""
+    """
+    Chuyển đổi nội dung từ định dạng OpenAI sang danh sách các `parts` của Gemini.
+    Hàm này hỗ trợ chuyển đổi các loại nội dung văn bản và hình ảnh (dưới dạng `image_url` hoặc `inlineData`).
+
+    Args:
+        content (Any): Nội dung cần chuyển đổi, có thể là `str` hoặc `List[Dict[str, Any]]`.
+
+    Returns:
+        List[Dict[str, Any]]: Danh sách các phần nội dung đã được chuyển đổi theo định dạng Gemini.
+    """
     parts = []
     if isinstance(content, str):
         parts.append({"text": content})
@@ -238,6 +292,17 @@ def _convert_content_to_parts(content: Any) -> List[Dict[str, Any]]:
 
 
 def _try_parse_json(s: Any) -> Any:
+    """
+    Cố gắng phân tích một chuỗi thành đối tượng JSON. Nếu đầu vào không phải là chuỗi
+    hoặc không thể phân tích cú pháp JSON, nó sẽ trả về đầu vào gốc hoặc None.
+
+    Args:
+        s (Any): Chuỗi hoặc đối tượng cần phân tích cú pháp.
+
+    Returns:
+        Any: Đối tượng JSON đã phân tích cú pháp, đầu vào gốc nếu không phải chuỗi,
+             hoặc None nếu phân tích cú pháp thất bại.
+    """
     if not isinstance(s, str):
         return s
     try:
@@ -247,7 +312,19 @@ def _try_parse_json(s: Any) -> Any:
 
 
 def _ensure_user_part(contents: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
-    """Ensure last content is user role for functionResponse parts."""
+    """
+    Đảm bảo rằng phần nội dung cuối cùng trong danh sách `contents` có vai trò `user`.
+    Nếu phần cuối cùng đã là `user`, nó sẽ trả về các `parts` của phần đó.
+    Nếu không, nó sẽ tạo một phần `user` mới và thêm vào danh sách `contents`.
+    Điều này thường cần thiết khi thêm `functionResponse` vào cuối cuộc hội thoại,
+    vì `functionResponse` phải nằm trong một phần `user`.
+
+    Args:
+        contents (List[Dict[str, Any]]): Danh sách các phần nội dung của Gemini.
+
+    Returns:
+        List[Dict[str, Any]]: Danh sách các `parts` của phần `user` cuối cùng trong `contents`.
+    """
     if contents and contents[-1].get("role") == "user":
         return contents[-1]["parts"]
     new_parts: List[Dict[str, Any]] = []

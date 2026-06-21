@@ -1,3 +1,11 @@
+"""Module for managing API key status in a persistent SQLite database.
+
+This module provides atomic, asynchronous operations for tracking key usage,
+freezes, failures, and other status attributes. It utilizes a `ThreadPoolExecutor`
+for non-blocking database writes, ensuring that core routing logic is not
+delayed by I/O operations. All critical updates are designed to be atomic
+to maintain data consistency in a high-concurrency environment.
+"""
 import json
 import time
 from typing import Any, Dict, List, Optional
@@ -9,7 +17,16 @@ _db_executor = concurrent.futures.ThreadPoolExecutor(max_workers=1)
 
 
 def get_key_status_db() -> Dict[str, Dict[str, Any]]:
-    with _LOCK:
+    """
+    Retrieves the current status of all API keys from the persistent database.
+    This function reads key status, parses JSON fields (`per_model`, `data`), and
+    applies default values for any missing attributes, ensuring a consistent
+    structure for in-memory key management.
+
+    Returns:
+        A dictionary where keys are API key strings and values are dictionaries
+        containing the detailed status of each key.
+    """    with _LOCK:
         c = _conn()
         try:
             result = {}
@@ -50,7 +67,17 @@ def get_key_status_db() -> Dict[str, Dict[str, Any]]:
 
 
 def set_key_status_batch_db(status: Dict[str, Dict[str, Any]]) -> None:
-    def _write():
+    """
+    Asynchronously updates the status of multiple API keys in a batch operation.
+    This function is used to persist the current in-memory state of `_key_status`
+    to the database, ensuring that changes (e.g., from `APIRouter.refresh_keys`)
+    are saved. The write operation is submitted to a `ThreadPoolExecutor` to avoid
+    blocking the main application thread.
+
+    Args:
+        status: A dictionary containing the key statuses to update. Keys are API key strings,
+                and values are dictionaries of key attributes.
+    """    def _write():
         with _LOCK:
             c = _conn()
             try:
@@ -72,7 +99,15 @@ def set_key_status_batch_db(status: Dict[str, Dict[str, Any]]) -> None:
 
 
 def atomic_reserve_key(key: str) -> None:
-    def _write():
+    """
+    Atomically reserves an API key, incrementing its usage count and active requests count.
+    This operation is crucial for ensuring that key usage is accurately tracked and
+    concurrency limits are respected. It handles conflicts by updating existing entries.
+    The write operation is asynchronous via `_db_executor`.
+
+    Args:
+        key: The API key to reserve.
+    """    def _write():
         with _LOCK:
             c = _conn()
             try:
@@ -91,7 +126,14 @@ def atomic_reserve_key(key: str) -> None:
 
 
 def atomic_release_key(key: str) -> None:
-    def _write():
+    """
+    Atomically releases a previously reserved API key, decrementing its active requests count.
+    This ensures that keys are properly freed up after a request is completed or fails,
+    allowing them to be used by other concurrent requests. The write operation is asynchronous.
+
+    Args:
+        key: The API key to release.
+    """    def _write():
         with _LOCK:
             c = _conn()
             try:
@@ -106,7 +148,19 @@ def atomic_release_key(key: str) -> None:
 
 
 def atomic_freeze_key(key: str, until_ts: float, model_id: Optional[str] = None, cf: Optional[int] = None) -> None:
-    def _write():
+    """
+    Atomically freezes an API key until a specified timestamp.
+    This function updates the `frozen_until` and `consecutive_failures` attributes
+    for a key, either globally or for a specific model. It prevents the key from
+    being used during its frozen period. If the key does not exist, it will be inserted.
+    The write operation is asynchronous.
+
+    Args:
+        key: The API key to freeze.
+        until_ts: The timestamp (epoch seconds) until which the key should be frozen.
+        model_id: Optional concrete model ID if the freeze is specific to a model.
+        cf: Optional consecutive failures count to set. Defaults to 1 if not provided.
+    """    def _write():
         with _LOCK:
             c = _conn()
             try:
@@ -143,7 +197,15 @@ def atomic_freeze_key(key: str, until_ts: float, model_id: Optional[str] = None,
 
 
 def atomic_record_success(key: str, model_id: Optional[str] = None) -> None:
-    def _write():
+    """
+    Atomically records a successful API call for a specific key and model.
+    This resets the `consecutive_failures` count and updates the `last_success` timestamp
+    for the key (globally and per-model). The write operation is asynchronous via `_db_executor`.
+
+    Args:
+        key: The API key that was used successfully.
+        model_id: Optional concrete model ID that was used successfully. If None, global status is updated.
+    """    def _write():
         now_ts = time.time()
         with _LOCK:
             c = _conn()
@@ -204,7 +266,14 @@ def set_key_tier_batch_db(tiers: Dict[str, str]) -> None:
 
 
 def get_key_tiers_db() -> Dict[str, str]:
-    with _LOCK:
+    """
+    Retrieves the tier assignments for all API keys from the persistent database.
+    This function provides information about which access tier (e.g., "free", "premium", "admin")
+    each key belongs to, used for permission and quota enforcement.
+
+    Returns:
+        A dictionary where keys are API key strings and values are their assigned tier strings.
+    """    with _LOCK:
         c = _conn()
         try:
             return {r["key"]: str(r["tier"] or "free") for r in c.execute("SELECT key, tier FROM key_status").fetchall()}
@@ -262,7 +331,16 @@ def db_save_penalty(pkey: str, api_key: str, model_id: Optional[str], reason: st
 
 
 def db_load_active_penalties() -> Dict[str, Dict[str, Any]]:
-    now = time.time()
+    """
+    Loads all currently active penalties from the database.
+    Penalties are used to dynamically reduce the priority score of API keys
+    that have recently experienced failures or rate limits, guiding the router
+    to select healthier keys. Only penalties that have not yet expired are loaded.
+
+    Returns:
+        A dictionary where keys are penalty IDs (pkey) and values are dictionaries
+        containing penalty details (expires, score_reduction, api_key, model_id, reason).
+    """    now = time.time()
     with _LOCK:
         c = _conn()
         try:
@@ -282,7 +360,12 @@ def db_load_active_penalties() -> Dict[str, Dict[str, Any]]:
 
 
 def db_clean_expired_penalties() -> None:
-    def _write():
+    """
+    Asynchronously cleans up expired penalties from the database.
+    This maintenance task removes old penalty entries that are no longer relevant,
+    keeping the database lean and improving performance of penalty lookups.
+    The write operation is asynchronous via `_db_executor`.
+    """    def _write():
         now = time.time()
         with _LOCK:
             c = _conn()
@@ -295,7 +378,14 @@ def db_clean_expired_penalties() -> None:
 
 
 def atomic_disable_key(key: str) -> None:
-    def _write():
+    """
+    Atomically disables an API key by setting its `enabled` status to 0 in the database.
+    This is used for permanent key failures (e.g., invalid key, billing error) to prevent
+    the key from being used again. The write operation is asynchronous.
+
+    Args:
+        key: The API key to disable.
+    """    def _write():
         with _LOCK:
             c = _conn()
             try:
@@ -310,7 +400,11 @@ def atomic_disable_key(key: str) -> None:
 
 
 def reset_active_requests_db() -> None:
-    with _LOCK:
+    """
+    Resets the `active_requests` count to 0 for all API keys in the database.
+    This is a global reset operation, typically used for system-wide recovery or
+    maintenance to clear any stale active request counts.
+    """    with _LOCK:
         c = _conn()
         try:
             c.execute("UPDATE key_status SET active_requests = 0")

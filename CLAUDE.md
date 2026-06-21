@@ -15,4 +15,4 @@ Xem `AGENTS.md` cho workflow chung (TODO list, batch read, sub-agent usage).
 
 ## Pool & Key rules quan trọng
 
-Pool & Key rules đã có trong `project_snapshot.md` (CodeGraph) và `CLAUDE.md` (system instructions). Đọc trước khi sửa pool/key code.
+Các quy tắc và kiến trúc liên quan đến Pool & Key được mô tả chi tiết trong `docs/architecture_overview.md` và `docs/routing_and_resilience.md`. Vui lòng tham khảo các tài liệu này trước khi sửa đổi code liên quan đến pool/key.

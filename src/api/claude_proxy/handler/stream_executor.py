@@ -1,3 +1,16 @@
+"""
+Module này chịu trách nhiệm thực thi các yêu cầu hoàn thành chat streaming cho Claude API,
+đặc biệt là xử lý các luồng phản hồi từ Gemini và chuyển đổi chúng thành định dạng SSE (Server-Sent Events).
+Nó tích hợp logic thực thi công cụ (WebSearch, WebFetch) thông qua một cơ chế đệ quy
+và quản lý trạng thái của luồng, bao gồm cả việc gửi các tín hiệu keepalive.
+
+Các chức năng chính bao gồm:
+- Điều phối giữa các wrapper streaming và non-streaming tùy thuộc vào sự hiện diện của các công cụ WebSearch/WebFetch.
+- Xử lý các chunk phản hồi từ mô hình, phân tích nội dung văn bản, suy nghĩ và các cuộc gọi công cụ.
+- Tạo các sự kiện SSE phù hợp cho client, bao gồm cả việc định dạng các cuộc gọi công cụ và suy nghĩ.
+- Ghi lại việc sử dụng token và cập nhật trạng thái của API key và pool.
+- Xử lý lỗi và hủy bỏ luồng một cách duyên dáng.
+"""
 import asyncio
 import hashlib
 import json
@@ -20,6 +33,19 @@ from src.api.claude_proxy.stream import _process_anthropic_stream
 from .nonstream_executor import _resolve_gemini_with_tools_stream
 
 async def _execute_stream(proxy_instance: Any, kwargs: Dict[str, Any], api_key: str, model_id: str, model_alias: str, input_tokens: int, pool: Any, body: Dict[str, Any], auth_key_prefix: str = "", account: Optional[Dict[str, Any]] = None) -> Any:
+    """
+    Thực thi một yêu cầu hoàn thành chat streaming, có khả năng xử lý các cuộc gọi công cụ bị chặn.
+    Hàm này đóng vai trò là điểm vào chính cho việc xử lý các luồng phản hồi từ các mô hình LLM,
+    đặc biệt là khi có các công cụ như WebSearch hoặc WebFetch được kích hoạt.
+
+    **Các kịch bản xử lý:**
+    1. **Với WebSearch/WebFetch:** Nếu yêu cầu bao gồm các công cụ WebSearch hoặc WebFetch,
+       hàm sẽ sử dụng một wrapper không streaming (`_nonstream_wrapper`)
+       để tận dụng logic đệ quy của `_resolve_gemini_with_tools_stream`.\n       Điều này cho phép thực thi công cụ và gửi kết quả trở lại mô hình trong cùng một luồng.\n    2. **Streaming tiêu chuẩn:** Nếu không có các công cụ WebSearch/WebFetch,\n       hàm sẽ sử dụng một wrapper streaming tiêu chuẩn (`_stream_wrapper`)\n       để trực tiếp xử lý luồng phản hồi từ mô hình.\n
+    **Các chức năng chính:**
+    - Kiểm tra sự hiện diện của các công cụ WebSearch/WebFetch.\n    - Tạo các wrapper phù hợp (`_nonstream_wrapper` hoặc `_stream_wrapper`)\n      để xử lý các luồng phản hồi và các cuộc gọi công cụ.\n    - Xử lý việc tạo các sự kiện SSE (`message_start`, `ping`, `content_block_start`,\n      `content_block_delta`, `message_delta`, `message_stop`).\n    - Ghi lại các lỗi và hủy bỏ luồng khi cần thiết.\n    - Cập nhật trạng thái thành công của API key và pool sau khi hoàn thành luồng.\n
+    Args:\n        proxy_instance (Any): Instance của proxy gọi (ví dụ: `ClaudeProxyStreamMixin`).\n        kwargs (Dict[str, Any]): Các đối số được truyền đến hàm `acompletion` của Gemini.\n        api_key (str): API key được sử dụng cho yêu cầu.\n        model_id (str): ID của mô hình được sử dụng.\n        model_alias (str): Bí danh của mô hình được sử dụng.\n        input_tokens (int): Số lượng token đầu vào của yêu cầu.\n        pool (Any): Đối tượng pool mô hình đang được sử dụng.\n        body (Dict[str, Any]): Body của yêu cầu API gốc.\n        auth_key_prefix (str, optional): Tiền tố khóa xác thực. Mặc định là "".\n        account (Optional[Dict[str, Any]], optional): Thông tin tài khoản người dùng. Mặc định là None.\n
+    Returns:\n        Any: Một async generator tạo ra các khối phản hồi SSE.\n    """
     tools = kwargs.get("tools") or []
     has_websearch = any(
         tool.get("function", {}).get("name") == "WebSearch"

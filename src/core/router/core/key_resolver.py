@@ -21,9 +21,17 @@ from src.core.limits.gemini_rate_limiter import (
 # No global cache variables needed
 
 class KeyResolverMixin:
-
+    """
+    Mixin class providing key resolution logic, including circuit breaker patterns,
+    adaptive cooldown strategies, and priority-based key selection.
+    This mixin is intended to be used by classes like APIRouter to manage API keys effectively.
+    """
     def _key_is_circuit_open(self, key: str) -> bool:
-        if not config.CIRCUIT_ENABLED:
+        """
+        Determines if the circuit breaker is open for a given key.
+        A key's circuit is considered open if it has accumulated enough consecutive failures
+        and is currently within its frozen period.
+        """        if not config.CIRCUIT_ENABLED:
             return False
         ks = self._key_status.get(key)
         if not ks:
@@ -35,7 +43,11 @@ class KeyResolverMixin:
 
     @staticmethod
     def _adaptive_cooldown(reason: str, consecutive_failures: int) -> int:
-        if reason in ("rate_limit_rpd", "project_quota_429"):
+        """
+        Calculates an adaptive cooldown duration based on the failure reason and
+        the number of consecutive failures. This helps to prevent overwhelming
+        APIs with retries after repeated failures.
+        """        if reason in ("rate_limit_rpd", "project_quota_429"):
             from src.core.limits.gemini_rate_limiter import get_seconds_until_pacific_midnight
             return get_seconds_until_pacific_midnight()
         if reason == "rate_limit" or reason == "429":
@@ -95,12 +107,33 @@ class KeyResolverMixin:
         now: float,
         pool_member_alias: Optional[str] = None
     ) -> bool:
+        """
+        Checks if a given API key is eligible for use based on various criteria.
+        This includes checking key status, tier, pool assignments, cooldown, circuit breaker state,
+        active requests, and rate limits (RPM/TPM).
+
+        Args:
+            key: The API key string.
+            status: Current status dictionary of the key.
+            model_id: The concrete model ID being requested.
+            model_alias: The alias of the model being requested.
+            estimated_tokens: Estimated number of tokens for the current request.
+            rpm_limit: Requests per minute limit for the model.
+            tpm_limit: Tokens per minute limit for the model.
+            retry_attempt: Current retry attempt count.
+            allowed_tiers: Set of tiers allowed for the current account.
+            now: Current timestamp.
+            pool_member_alias: Alias of the specific pool member if in pool mode.
+
+        Returns:
+            True if the key is eligible, False otherwise.
+        """
         if status.get("enabled", 1) == 0:
             return False
         if status.get("tier", "free") not in allowed_tiers:
             return False
 
-        # Kiểm tra allowed_pools của key
+        # Checks the `allowed_pools` for the key
         allowed_pools = status.get("allowed_pools")
         if allowed_pools:
             p_set = set(str(p).strip().lower() for p in allowed_pools)
@@ -119,14 +152,14 @@ class KeyResolverMixin:
                 if not match_found:
                     return False
 
-        # Áp dụng logic kiểm tra cooldown và active requests
+        # Applies cooldown and active requests check logic
         if retry_attempt < 10:
             if status["frozen_until"] >= now:
                 return False
             if self._key_is_circuit_open(key):
                 return False
             
-            # Giải phóng khẩn cấp (Auto-release) stale active_requests
+            # Emergency auto-release of stale active_requests
             auto_release_after = config.KEY_429_COOLDOWN_SECONDS * 5
             active_reqs = status.get("active_requests", 0)
             if active_reqs > 0:
@@ -136,7 +169,7 @@ class KeyResolverMixin:
                 else:
                     return False
         else:
-            # Tải cực cao (attempt >= 10): Extreme Checking
+            # Extreme Checking (high load, attempt >= 10)
             if status["frozen_until"] >= now:
                 return False
             if self._key_is_circuit_open(key):
@@ -149,12 +182,12 @@ class KeyResolverMixin:
         if isinstance(pm_entry, dict) and pm_entry.get("frozen_until", 0) >= now:
             return False
 
-        # Kiểm tra hạn mức RPM/TPM của key
+        # Checks RPM/TPM limits for the key
         if retry_attempt < 10:
             if not check_key_model_limits(key, model_id, estimated_tokens, rpm_limit, tpm_limit):
                 return False
         else:
-            # Siết chặt hạn mức xuống 70% công suất thực tế chống 429 cascade
+            # Tightens limits to 70% of actual capacity to prevent 429 cascades
             from src.core.limits.gemini_rate_limiter import _key_model_requests, _key_model_tokens, _usage_lock
             k_m = f"{key}::{model_id}"
             with _usage_lock:
@@ -178,6 +211,23 @@ class KeyResolverMixin:
         return True
 
     def _select_key_double_random(self, candidates: list) -> Optional[tuple]:
+        """
+        Selects an API key from a list of eligible candidates using a "Double Random" strategy.
+        This strategy aims to distribute load more evenly across healthy keys and prevent
+        "Thundering Herd" issues where many requests target the single "best" key,
+        leading to cascading 429 errors.
+
+        The selection process involves:
+        1. Calculating a priority score for each candidate key.
+        2. Sorting candidates based on active requests, priority score, and consecutive failures.
+        3. Randomly selecting a key from the top 50% of the sorted, healthiest candidates.
+
+        Args:
+            candidates: A list of (key, status, model_id) tuples that are eligible.
+
+        Returns:
+            A tuple of (selected_key, selected_model_id) or None if no key can be selected.
+        """
         candidates_with_priority = []
         for k, s, key_mid in candidates:
             pri = get_key_priority(k, key_mid)
@@ -188,15 +238,48 @@ class KeyResolverMixin:
         if not candidates_with_priority:
             return None
 
-        # Sắp xếp ưu tiên: ít active_requests nhất -> độ ưu tiên cao nhất -> ít lỗi nhất
+        # Sorts by priority: fewest active_requests -> highest priority score -> fewest failures
         candidates_with_priority.sort(key=lambda x: (x[2].get("active_requests", 0), -x[0], x[2].get("consecutive_failures", 0)))
         
-        # Chọn ngẫu nhiên trong top 50% khỏe nhất (Double Random)
+        # Randomly selects from the top 50% healthiest keys (Double Random)
         top_50_percent = int(len(candidates_with_priority) * 0.5)
         chosen_cand = random.choice(candidates_with_priority[:max(1, top_50_percent)])
         return chosen_cand[1], chosen_cand[3]
 
-    def reserve_key(self, model_alias: str, model_id: Optional[str] = None, account: Optional[Dict[str, Any]] = None, estimated_tokens: int = 0, retry_attempt: int = 0, exclude_models: Optional[list] = None) -> Optional[Dict[str, Any]]:
+    def reserve_key(
+        self,
+        model_alias: str,
+        model_id: Optional[str] = None,
+        account: Optional[Dict[str, Any]] = None,
+        estimated_tokens: int = 0,
+        retry_attempt: int = 0,
+        exclude_models: Optional[list] = None
+    ) -> Optional[Dict[str, Any]]:
+        """
+        Reserves an API key for a given model and request, applying all eligibility checks.
+        This is the core method for key selection, incorporating model pools, key tiers,
+        rate limits, circuit breakers, and the Double Random selection algorithm.
+
+        Args:
+            model_alias: The alias of the model being requested.
+            model_id: The concrete model ID being requested (optional, if known).
+            account: The account making the request (optional).
+            estimated_tokens: Estimated number of tokens for the current request.
+            retry_attempt: Current retry attempt count, influences extreme checking logic.
+            exclude_models: List of model IDs to exclude from consideration (optional).
+
+        Returns:
+            A dictionary containing the selected key, model alias, model ID, and provider,
+            or None if no suitable key can be reserved after all attempts.
+
+        Design Decision (Coupling & Complexity):
+        This method exhibits a degree of coupling with `APIRouter` (which calls it)
+        and `src.logical_HQ_translator` (via `_resolve_model` implicitly or explicitly).
+        This design choice prioritizes practical, fast integration of complex model resolution
+        and key management logic into a central flow, reducing boilerplate and accelerating
+        feature development, even if it deviates from strict layered architecture principles.
+        The nested loops and explicit DB transactions are a trade-off for resilience and
+        fine-grained control in a high-concurrency, high-failure-rate environment.
         """
         Dự trữ và phân bổ API Key tối ưu dựa trên Model Pool, độ ưu tiên (Priority),
         hạn mức RPM/TPM, trạng thái Circuit Breaker, và thuật toán Double Random.
@@ -261,7 +344,7 @@ class KeyResolverMixin:
                         self._key_status[selected_key]["usage"] += 1
                         self._key_status[selected_key]["active_requests"] += 1
 
-                    # Commit ngoài lock tránh giữ khóa luồng lâu trong quá trình giao tiếp DB
+                    # Commits outside the lock to avoid holding the thread lock during DB communication
                     try:
                         atomic_reserve_key(selected_key)
                     except Exception:
