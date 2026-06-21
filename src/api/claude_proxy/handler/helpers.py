@@ -39,24 +39,31 @@ def get_system_status_summary(model_alias: str, reason: str = "pool_exhausted") 
 
 
 def _classify_error_reason(error_text: str, api_key: Optional[str] = None, model_id: Optional[str] = None) -> str:
-    if "403" in error_text and "permission_denied" in error_text:
-        return "permission_denied"
-    if "quota" in error_text and ("day" in error_text or "daily" in error_text):
+    from src.core.providers.gemini.error import classify as classify_gemini_error
+    reason = classify_gemini_error(error_text)
+    
+    if reason == "project_quota_429":
         return "rate_limit_rpd"
-    if "429" in error_text or "rate_limit" in error_text or "quota" in error_text:
+    if reason == "rate_limit":
         if api_key and model_id:
             from src.core.limits.gemini_rate_limiter import get_key_rpd_status
             _, _, is_exhausted = get_key_rpd_status(api_key, model_id)
             if is_exhausted:
                 return "rate_limit_rpd"
         return "rate_limit"
-    if ("401" in error_text and ("unauthorized" in error_text or "invalid" in error_text or "api_key" in error_text or "api key" in error_text)) or "api key not valid" in error_text or "api_key_invalid" in error_text:
+    if reason == "invalid_key":
         return "invalid_key"
-    if "503" in error_text or "unavailable" in error_text or "overloaded" in error_text:
+    if reason == "unavailable":
+        lowered = error_text.lower()
+        if "500" in lowered or "internal" in lowered:
+            return "server_error"
         return "unavailable"
-    if "500" in error_text or "internal" in error_text:
-        return "server_error"
-    if "504" in error_text or "deadline" in error_text or "timeout" in error_text:
+    if reason in ("permission_denied", "project_denied"):
+        return "permission_denied"
+        
+    # Fallbacks for specific strings that helpers.py used to classify
+    lowered = error_text.lower()
+    if "504" in lowered or "deadline" in lowered or "timeout" in lowered:
         return "timeout"
     return "unknown_error"
 

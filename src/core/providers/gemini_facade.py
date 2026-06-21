@@ -98,6 +98,14 @@ async def _sdk_nonstream(
                     part_d["text"] = part.text
                 if part.thought:
                     part_d["thought"] = True
+                
+                ts = getattr(part, "thought_signature", None) or getattr(part, "thoughtSignature", None)
+                if ts is not None:
+                    import base64
+                    if isinstance(ts, bytes):
+                        part_d["thought_signature"] = base64.b64encode(ts).decode("utf-8")
+                    else:
+                        part_d["thought_signature"] = str(ts)
                 fc = part.function_call
                 if fc:
                     part_d["functionCall"] = {"name": fc.name, "args": dict(fc.args or {})}
@@ -159,6 +167,14 @@ async def _sdk_stream(
                         part_d["text"] = part.text
                     if part.thought:
                         part_d["thought"] = True
+                    
+                    ts = getattr(part, "thought_signature", None) or getattr(part, "thoughtSignature", None)
+                    if ts is not None:
+                        import base64
+                        if isinstance(ts, bytes):
+                            part_d["thought_signature"] = base64.b64encode(ts).decode("utf-8")
+                        else:
+                            part_d["thought_signature"] = str(ts)
                     fc = part.function_call
                     if fc:
                         part_d["functionCall"] = {"name": fc.name, "args": dict(fc.args or {})}
@@ -288,6 +304,7 @@ def _parse_native_nonstream(response: dict, model_alias: str) -> Any:
         msg.content = msg_d.get("content", "")
         msg.role = "assistant"
         msg.reasoning_content = msg_d.get("reasoning_content")
+        msg.thought_signature = msg_d.get("thought_signature")
         raw_tcs = msg_d.get("tool_calls", [])
         msg.tool_calls = []
         for tc in raw_tcs:

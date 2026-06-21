@@ -389,10 +389,7 @@ async def execute_stream(
         gen, first_item = await fetch_task
     except Exception as e:
         logger.error("[OpenCode Stream] Failed to get first chunk: %s", e)
-        yield _openai_sse(model_name, content="", chunk_id=chunk_id)
-        yield _openai_sse(model_name, finish_reason="stop", chunk_id=chunk_id)
-        yield b"data: [DONE]\n\n"
-        return
+        raise e
 
     ttfb = asyncio.get_event_loop().time() - t0_wait
     logger.info("[OpenCode Stream] model=%s ttfb=%.2fs", model_alias, ttfb)

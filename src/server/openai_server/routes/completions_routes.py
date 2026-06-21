@@ -290,7 +290,8 @@ async def anthropic_messages(
         system_val = body.get("system", "")
         text_content = str(system_val) + str(messages_val)
         input_tokens_est = len(text_content) // 4
-        limit_tokens = 200000
+        from src.core.api_config import MODEL_CONTEXT_LENGTH
+        limit_tokens = MODEL_CONTEXT_LENGTH
         remaining_tokens = max(1000, limit_tokens - input_tokens_est)
         utilization_val = min(0.99, round(input_tokens_est / limit_tokens, 4))
         
@@ -328,8 +329,23 @@ async def anthropic_messages(
         if is_sub_agent_request(body, is_opencode=False):
             logger_api.info("Intercepted sub-agent anthropic_messages error: %s, returning simulated response", e)
             return handle_sub_agent_error(body, e, format_type="anthropic")
+        
+        msg = str(e)
+        if "quota_exhausted" in msg or "rate_limit" in msg or "rate_limited" in msg.lower():
+            return JSONResponse(
+                status_code=429,
+                headers=response_headers,
+                content={"type": "error", "error": {"type": "rate_limit_error", "message": "Rate limited, please retry later."}},
+            )
+        if "no_available_key" in msg or "frozen" in msg.lower() or "exhausted" in msg.lower():
+            return JSONResponse(
+                status_code=503,
+                headers=response_headers,
+                content={"type": "error", "error": {"type": "overloaded_error", "message": "All keys are temporarily frozen or exhausted, retry later."}},
+            )
         return JSONResponse(
             status_code=503,
+            headers=response_headers,
             content={"type": "error", "error": {"type": "api_error", "message": "Service temporarily unavailable"}},
         )
 

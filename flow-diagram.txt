@@ -56,18 +56,12 @@
   └── POST /v1/messages → anthropic_messages()
       └── Gọi claude_proxy/handler
 
-  routes/admin_routes.py
-  ├── GET /dashboard/admin/keys → admin_keys()
-  ├── POST /dashboard/admin/keys/add → add_key()
-  ├── DELETE /dashboard/admin/keys/{key} → remove_key()
-  ├── POST /dashboard/admin/keys/{key}/freeze → toggle_key_freeze()
-  ├── PUT /dashboard/admin/accounts/{account_id} → update_account()
-  ├── GET /dashboard/admin/models → admin_models()
-  ├── POST /dashboard/admin/endpoints/add → admin_add_endpoint()
-  ├── POST /dashboard/admin/endpoints/delete → admin_delete_endpoint()
-  ├── POST /dashboard/admin/endpoints/toggle → admin_toggle_endpoint()
-  ├── POST /dashboard/admin/endpoints/pool → admin_pool_endpoint()
-  └── POST /dashboard/admin/endpoints/refresh → admin_refresh_endpoint()
+  routes/admin/
+  ├── accounts.py — Account management
+  ├── endpoints.py — Endpoint management
+  ├── keys.py — Key management
+  ├── settings.py — Admin settings
+  └── helpers.py — Utility functions for admin routes
 
   routes/dashboard_routes.py
   ├── POST /dashboard/login → login()
@@ -81,11 +75,13 @@
     app_init.py ──> auth.py (middleware)
     app_init.py ──> backend/schema.py (DB init)
     app_init.py ──> core/usage_logger.py (telemetry)
-    completions_routes.py ──> handler.py
-    completions_routes.py ──> api/claude_proxy/
-    admin_routes.py ──> backend/accounts.py
-    admin_routes.py ──> backend/endpoints.py
-    admin_routes.py ──> console/admin_console.py
+    completions_routes.py ──> api/claude_proxy/handler/proxy_stream.py
+    completions_routes.py ──> api/claude_proxy/handler/proxy_nonstream.py
+    completions_routes.py ──> api/opencode_proxy/handler/proxy.py
+    routes/admin/accounts.py ──> backend/accounts.py
+    routes/admin/endpoints.py ──> backend/endpoints.py
+    routes/admin/keys.py ──> core/pool_manager.py
+    routes/admin/settings.py ──> core/config.py
     dashboard_routes.py ──> backend/accounts.py
     dashboard_routes.py ──> console/admin_console.py
     dashboard_routes.py ──> auth_session.py
@@ -98,7 +94,6 @@
   auth.py
   ├── _bearer_token() — Trích xuất token từ header
   ├── _resolve_auth() — Tra cứu account theo token prefix
-  ├── _check_auth() — Kiểm tra enabled/disabled (dùng in-memory cache 10s TTL)
   ├── _apply_account_limit() — Check RPM/TPM/RPD (per-pool: flash/lite)
   └── _auth_key_prefix() — Key prefix extraction
 
@@ -114,6 +109,13 @@
   ├── _verify_session_token() — Verify + check expiry (8h)
   ├── _require_dashboard() — Guard decorator
   └── _require_admin() — Admin-only decorator
+
+  DEPENDENCIES:
+    auth.py ──> core/accounts/account_manager.py (account cache + DB fallback)
+    auth.py ──> core/limits/account_limiter/ (rate limit check)
+    auth.py ──> core/providers/provider_manager.py (model/key pool)
+    security.py ──> core/rate_limiter.py (generic rate limiter)
+    auth_session.py ──> core/config.py (SECRET_KEY)
 
   DEPENDENCIES:
     auth.py ──> core/accounts/account_manager.py (account cache + DB fallback)

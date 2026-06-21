@@ -64,3 +64,31 @@ def get_default_thinking_for_model(model_id: str) -> Dict[str, Any]:
         return build_thinking_config(thinking_level="medium", is_v3=True)
 
     return {"thinking_budget": 8192, "include_thoughts": True}
+
+
+def resolve_thinking_config(
+    model_id: str,
+    thinking_level: Optional[str] = None,
+    thinking_budget: Optional[int] = None,
+    include_thoughts: Optional[bool] = None,
+    is_sub_agent: bool = False,
+) -> Dict[str, Any]:
+    """Unified helper to build thinking config dictionary for a model, handling defaults and lite/sub-agent logic."""
+    m = model_id.lower()
+    if "lite" in m or is_sub_agent:
+        return {}
+
+    is_v3 = "gemini-3" in m and "gemini-2" not in m
+
+    # If any specific thinking parameter is provided, use build_thinking_config
+    if thinking_level is not None or thinking_budget is not None or include_thoughts is not None:
+        inc = include_thoughts if include_thoughts is not None else True
+        return build_thinking_config(
+            thinking_level=thinking_level,
+            thinking_budget=thinking_budget,
+            include_thoughts=inc,
+            is_v3=is_v3,
+        )
+
+    # Otherwise, return default thinking for the model
+    return get_default_thinking_for_model(model_id)

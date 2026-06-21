@@ -118,5 +118,6 @@ Nếu không cấu hình, mặc định sub-agent của cả OpenCode và Claude
 
 ## Chi tiết Dự án & Kiến trúc
 
-Để biết thêm thông tin chi tiết về các endpoints, sơ đồ cơ sở dữ liệu, các giao thức (Google GenAI SDK, OpenAI-compatible translator), công cụ tìm kiếm web search, cơ chế keepalive, cấu hình thinking và cấu trúc dự án, vui lòng tham khảo file:
-👉 **[project_snapshot.md](./project_snapshot.md)**
+Để biết thêm thông tin chi tiết về các endpoints, sơ đồ cơ sở dữ liệu, các giao thức, công cụ tìm kiếm, cơ chế keepalive, cấu hình thinking và cấu trúc dự án, vui lòng tham khảo các tài liệu sau:
+👉 **[project_snapshot.md](./project_snapshot.md)** — Tổng quan toàn bộ kiến trúc & cấu trúc dự án.
+👉 **[routing_and_resilience.md](./docs/routing_and_resilience.md)** — Chi tiết cơ chế chống lỗi 429/503, thuật toán Double Random, Jitter và phòng chống nghẽn tải.
