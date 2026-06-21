@@ -358,7 +358,11 @@ class _SDKStreamGen:
             if gen is None:
                 raise RuntimeError("Stream generator not initialized")
             try:
-                native_chunk = await gen.__anext__()
+                native_chunk = await asyncio.wait_for(gen.__anext__(), timeout=30.0)
+            except asyncio.TimeoutError:
+                from src.core.config_n_logg.logger import logger_keys as logger
+                logger.warning("[Gemini SDK Stream] Chunk read timeout (30s) reached. Closing stream.")
+                raise StopAsyncIteration
             except StopAsyncIteration:
                 raise
 

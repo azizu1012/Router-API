@@ -26,7 +26,8 @@ def get_key_status_db() -> Dict[str, Dict[str, Any]]:
     Returns:
         A dictionary where keys are API key strings and values are dictionaries
         containing the detailed status of each key.
-    """    with _LOCK:
+    """
+    with _LOCK:
         c = _conn()
         try:
             result = {}
@@ -77,7 +78,8 @@ def set_key_status_batch_db(status: Dict[str, Dict[str, Any]]) -> None:
     Args:
         status: A dictionary containing the key statuses to update. Keys are API key strings,
                 and values are dictionaries of key attributes.
-    """    def _write():
+    """
+    def _write():
         with _LOCK:
             c = _conn()
             try:
@@ -107,7 +109,8 @@ def atomic_reserve_key(key: str) -> None:
 
     Args:
         key: The API key to reserve.
-    """    def _write():
+    """
+    def _write():
         with _LOCK:
             c = _conn()
             try:
@@ -133,7 +136,8 @@ def atomic_release_key(key: str) -> None:
 
     Args:
         key: The API key to release.
-    """    def _write():
+    """
+    def _write():
         with _LOCK:
             c = _conn()
             try:
@@ -160,7 +164,8 @@ def atomic_freeze_key(key: str, until_ts: float, model_id: Optional[str] = None,
         until_ts: The timestamp (epoch seconds) until which the key should be frozen.
         model_id: Optional concrete model ID if the freeze is specific to a model.
         cf: Optional consecutive failures count to set. Defaults to 1 if not provided.
-    """    def _write():
+    """
+    def _write():
         with _LOCK:
             c = _conn()
             try:
@@ -205,7 +210,8 @@ def atomic_record_success(key: str, model_id: Optional[str] = None) -> None:
     Args:
         key: The API key that was used successfully.
         model_id: Optional concrete model ID that was used successfully. If None, global status is updated.
-    """    def _write():
+    """
+    def _write():
         now_ts = time.time()
         with _LOCK:
             c = _conn()
@@ -273,7 +279,8 @@ def get_key_tiers_db() -> Dict[str, str]:
 
     Returns:
         A dictionary where keys are API key strings and values are their assigned tier strings.
-    """    with _LOCK:
+    """
+    with _LOCK:
         c = _conn()
         try:
             return {r["key"]: str(r["tier"] or "free") for r in c.execute("SELECT key, tier FROM key_status").fetchall()}
@@ -340,7 +347,8 @@ def db_load_active_penalties() -> Dict[str, Dict[str, Any]]:
     Returns:
         A dictionary where keys are penalty IDs (pkey) and values are dictionaries
         containing penalty details (expires, score_reduction, api_key, model_id, reason).
-    """    now = time.time()
+    """
+    now = time.time()
     with _LOCK:
         c = _conn()
         try:
@@ -365,7 +373,8 @@ def db_clean_expired_penalties() -> None:
     This maintenance task removes old penalty entries that are no longer relevant,
     keeping the database lean and improving performance of penalty lookups.
     The write operation is asynchronous via `_db_executor`.
-    """    def _write():
+    """
+    def _write():
         now = time.time()
         with _LOCK:
             c = _conn()
@@ -385,7 +394,8 @@ def atomic_disable_key(key: str) -> None:
 
     Args:
         key: The API key to disable.
-    """    def _write():
+    """
+    def _write():
         with _LOCK:
             c = _conn()
             try:
@@ -404,7 +414,8 @@ def reset_active_requests_db() -> None:
     Resets the `active_requests` count to 0 for all API keys in the database.
     This is a global reset operation, typically used for system-wide recovery or
     maintenance to clear any stale active request counts.
-    """    with _LOCK:
+    """
+    with _LOCK:
         c = _conn()
         try:
             c.execute("UPDATE key_status SET active_requests = 0")

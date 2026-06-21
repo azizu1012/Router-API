@@ -47,14 +47,15 @@ d:\AI_Projects\router_api/
 
 ### 3.1. APIRouter (`src/core/router/core/router.py`)
 *   **Vai trò**: Là trái tim của hệ thống định tuyến và quản lý tài nguyên. `APIRouter` là một Singleton, đảm bảo toàn bộ ứng dụng sử dụng cùng một thể hiện để quản lý trạng thái toàn cục của các API Key và Model.
-*   **Chức năng chính**:
-    *   **Quản lý Key**: `acquire_key`, `record_success`, `record_failure`, `freeze_key`, `release_key` tương tác chặt chẽ với tầng `backend/key_status.py` để lưu trữ và truy xuất trạng thái khóa.
-    *   **Chọn Model**: Chịu trách nhiệm chọn mô hình phù hợp nhất dựa trên ưu tiên, tình trạng sức khỏe và giới hạn.
-    *   **Giới hạn tốc độ**: Tương tác với `src/core/limits/gemini_rate_limiter.py` để thực thi các giới hạn RPM/TPM.
-    *   **Theo dõi sức khỏe Model**: `update_model_health` điều chỉnh điểm số của mô hình dựa trên thành công/thất bại.
+*   **Trạng thái Key In-memory (`_key_status`):** `APIRouter` duy trì một dictionary `_key_status` trong bộ nhớ, chứa trạng thái chi tiết của tất cả các API Key (enabled, usage, active requests, frozen_until, consecutive_failures, last_success, per_model failures/frozen_until). Đây là nguồn dữ liệu chính cho các quyết định định tuyến trong thời gian chạy.
+    *   **Khởi tạo:** Khi khởi động, `_key_status` được tải từ cơ sở dữ liệu SQLite (`src/backend/key_status.py`) và hợp nhất với trạng thái mặc định cho các key mới hoặc chưa đầy đủ thông tin.
+    *   **Đồng bộ hóa:** Mọi cập nhật trạng thái key (ví dụ: `acquire_key`, `record_success`, `record_failure`, `freeze_key`, `release_key`) sẽ thay đổi trạng thái in-memory và sau đó kích hoạt các thao tác ghi **bất đồng bộ** vào SQLite thông qua các hàm `atomic_reserve_key`, `atomic_release_key`, `atomic_freeze_key`, `atomic_record_success` trong `src/backend/key_status.py`. Điều này đảm bảo tính bền vững của dữ liệu mà không làm chặn luồng xử lý chính.
+*   **Chọn Model**: Chịu trách nhiệm chọn mô hình phù hợp nhất dựa trên ưu tiên, tình trạng sức khỏe và giới hạn.
+*   **Giới hạn tốc độ**: Tương tác với `src/core/limits/gemini_rate_limiter.py` để thực thi các giới hạn RPM/TPM.
+*   **Theo dõi sức khỏe Model**: `update_model_health` điều chỉnh điểm số của mô hình dựa trên thành công/thất bại.
 
 ### 3.2. PoolManager (`src/core/pool_manager.py`)
-*   **Vai trò**: Điều phối vòng lặp xoay vòng (rotation) qua các pool member và thực hiện retry khi gặp lỗi tạm thời. Đây là module trung tâm xử lý logic retry, failover và quản lý pool một cách "monolithic" (tập trung).
+*   **Vai trò**: Điều phối vòng lặp xoay vòng (rotation) qua các pool member và thực hiện retry khi gặp lỗi tạm thời. Đây là module trung tâm xử lý logic retry, failover và quản lý pool một cách "monolithic" (tập trung). Nó là thành phần điều phối chính trong việc lựa chọn key/model, quản lý quota và xử lý vòng lặp retry.
 *   **Chức năng chính**:
     *   **Vòng lặp Pool**: Chứa logic chính cho việc thử lại và xoay vòng qua các thành viên trong pool (ví dụ: các phiên bản khác nhau của Gemini Flash).
     *   **Phân loại lỗi**: Sử dụng `_classify_error` để phân loại các loại lỗi khác nhau từ các nhà cung cấp LLM.
@@ -93,6 +94,31 @@ d:\AI_Projects\router_api/
     *   **`gemini_facade.py`**: Facade chính để gọi Gemini SDK hoặc Custom Endpoint và chuyển đổi output sang định dạng tương thích OpenAI.
     *   **`gemini/`**: Chứa các module cụ thể cho Gemini API (Manager, Caller, Pool, Error classification).
     *   **`custom_endpoint_manager.py`**: Quản lý các custom endpoints (CRUD, pool, health).
+
+### 3.8. Giao Thức Từ Provider Tới Endpoint
+
+Hệ thống Router API được thiết kế như một lớp trừu tượng, chấp nhận các định dạng yêu cầu khác nhau (OpenAI-compatible, Anthropic-like) và định tuyến chúng đến các endpoint backend (Gemini native, Custom Endpoint) với các cơ chế chuyển đổi định dạng rõ ràng.
+
+*   **OpenCode Proxy (`src/api/opencode_proxy/handler/proxy.py`):**
+    *   **Vai trò:** Chuyển đổi định dạng yêu cầu tương thích OpenAI (từ OpenCode) sang định dạng tương thích Gemini.
+    *   **Chức năng:** Chuẩn bị tin nhắn, chèn công cụ tìm kiếm web (`WebSearch`) nếu được kích hoạt, định dạng phản hồi từ Gemini trở lại định dạng OpenCode.
+    *   **Ủy quyền:** Tất cả logic cốt lõi (quản lý key, pool, retry, quota) được ủy quyền cho `PoolManager`.
+
+*   **Claude Proxy (`src/api/claude_proxy/handler/proxy.py`):**
+    *   **Vai trò:** Chuyển đổi định dạng yêu cầu giống Anthropic (từ Claude Code) sang định dạng tương thích Gemini.
+    *   **Chức năng:** Chuẩn bị tin nhắn, định dạng phản hồi từ Gemini trở lại định dạng giống Claude.
+    *   **Ủy quyền:** Tất cả logic cốt lõi được ủy quyền cho `PoolManager`.
+
+*   **Gemini Native Endpoint:**
+    *   Các yêu cầu được định tuyến trực tiếp đến API Gemini thông qua `src/core/providers/gemini_facade.py`.
+    *   `gemini_facade` chịu trách nhiệm tương tác với Gemini SDK hoặc các endpoint HTTP của Gemini, và chuẩn hóa phản hồi.
+
+*   **Custom Endpoint:**
+    *   Các Custom Endpoint được quản lý bởi `src/core/providers/_custom_endpoint_manager.py`.
+    *   Người dùng có thể định nghĩa các endpoint LLM của riêng họ và gán chúng vào các pool.
+    *   Các yêu cầu sẽ được định tuyến đến các endpoint này và sau đó được `gemini_facade` chuyển đổi sang định dạng tương thích.
+
+**Luồng chung:** Tất cả các proxy đều ủy quyền cho `PoolManager`. `PoolManager` sau đó sử dụng `APIRouter` để giải quyết key và `gemini_facade` để thực hiện cuộc gọi API thực tế đến Gemini hoặc Custom Endpoint, và cuối cùng xử lý phản hồi trước khi trả về cho proxy để định dạng lại cho client.
 
 ## 4. Luồng Yêu Cầu API Tổng Quan
 
@@ -142,7 +168,29 @@ Trong quá trình phát triển, đặc biệt với việc tái sử dụng cod
 
 Những quyết định này phản ánh triết lý "practicality over purity" (thực tế hơn lý thuyết) trong một dự án có yêu cầu cao về hiệu suất và khả năng chống chịu lỗi, đặc biệt khi có yếu tố tái sử dụng code và phát triển nhanh với AI.
 
-## 7. Các Biến Môi Trường Chính
+## 7. Quản Lý Trạng Thái (Memory vs SQLite)
+
+Hệ thống sử dụng một chiến lược kết hợp để quản lý trạng thái, tận dụng cả bộ nhớ trong (in-memory) và cơ sở dữ liệu SQLite để đạt được hiệu suất và tính bền vững.
+
+*   **Trạng thái In-memory (thời gian thực, ngắn hạn):** Các giới hạn tốc độ dựa trên phút (RPM, TPM) được quản lý hoàn toàn trong bộ nhớ trong mỗi instance `GeminiRateLimiter` (`src/core/limits/gemini_rate_limiter.py`). Các cấu trúc dữ liệu `deque` được bảo vệ bằng `asyncio.Lock` để đảm bảo an toàn luồng (thread-safety) trong cùng một tiến trình (process).
+*   **Trạng thái In-memory với ghi vào DB không đồng bộ (dài hạn):** Các thông tin sử dụng key hàng ngày (`_rpd_count` và `today` trong `key_status`) và các hình phạt key (`_score_penalties`) được lưu giữ trong bộ nhớ sau khi tải ban đầu từ DB. Mọi thay đổi quan trọng được ghi không đồng bộ vào SQLite thông qua một `ThreadPoolExecutor(max_workers=1)` (`src/backend/key_status.py`). Cơ chế này đảm bảo các thao tác ghi vào DB không làm chặn luồng xử lý chính.
+
+**Lưu ý về hiệu suất:**
+*   `ThreadPoolExecutor(max_workers=1)` giúp giảm thiểu tắc nghẽn I/O trực tiếp trên luồng chính. Tuy nhiên, nếu có một lượng lớn các cập nhật key hoặc thay đổi hình phạt *khác nhau* xảy ra đồng thời, worker đơn lẻ này có thể trở thành nút thắt cổ chai, dẫn đến việc xếp hàng đợi các tác vụ ghi vào DB.
+*   Việc đọc dữ liệu chủ yếu từ bộ nhớ sau khi tải ban đầu giúp giảm đáng kể số lần truy cập DB, tránh các tắc nghẽn đọc.
+
+## 8. Giải Quyết Tranh Chấp Khóa SQLite trong Môi Trường Đa Tiến Trình
+
+**Vấn đề:**
+Cơ chế khóa hiện tại sử dụng `threading.Lock` (hoặc `threading.RLock`) trong `src/backend/_db.py` chỉ đảm bảo an toàn luồng *trong cùng một tiến trình*. Nếu hệ thống được triển khai với nhiều worker (ví dụ: Uvicorn với `workers > 1`), mỗi worker sẽ có một `ThreadPoolExecutor` và `_LOCK` riêng, không phối hợp với nhau giữa các tiến trình. Điều này có thể dẫn đến lỗi `sqlite3.OperationalError: database is locked` khi nhiều tiến trình cố gắng ghi vào cùng một file SQLite đồng thời.
+
+**Kết luận:**
+Cơ chế khóa hiện tại **chưa đủ** để ngăn chặn lỗi `database is locked` trong các triển khai Uvicorn đa worker. Để đảm bảo tính đúng đắn và khả năng mở rộng trong môi trường đa tiến trình, cần có một cơ chế khóa liên tiến trình (cross-process locking) hoặc xem xét sử dụng một hệ quản trị cơ sở dữ liệu mạnh mẽ hơn (như PostgreSQL).
+
+**Khuyến nghị:**
+Hiện tại, hệ thống được thiết kế để hoạt động ổn định nhất trong môi trường **đơn worker**. Nếu yêu cầu triển khai đa worker, cần bổ sung cơ chế khóa liên tiến trình (ví dụ: sử dụng thư viện `filelock` hoặc các khóa tư vấn cấp hệ điều hành) hoặc chuyển sang một hệ quản trị cơ sở dữ liệu hỗ trợ đồng thời cao hơn.
+
+""" + """## 9. Các Biến Môi Trường Chính
 
 | Variable | Default | Mô tả |
 |----------|---------|-------|
