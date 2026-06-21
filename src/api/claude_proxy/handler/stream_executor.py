@@ -40,6 +40,9 @@ async def _execute_stream(proxy_instance: Any, kwargs: Dict[str, Any], api_key: 
                 msg_id = "msg_" + uuid.uuid4().hex
                 adjusted_input_tokens = input_tokens
                 cache_usage = _get_simulated_cache_usage(body, adjusted_input_tokens)
+                cc = cache_usage.get("cache_creation_input_tokens", 0) or 0
+                cr = cache_usage.get("cache_read_input_tokens", 0) or 0
+                client_input_tokens = max(1, adjusted_input_tokens - cc - cr)
                 t0_wait = asyncio.get_event_loop().time()
 
                 yield _sse("message_start", {
@@ -48,7 +51,7 @@ async def _execute_stream(proxy_instance: Any, kwargs: Dict[str, Any], api_key: 
                         "id": msg_id, "type": "message", "role": "assistant", "model": body.get("model") or model_alias,
                         "content": [], "stop_reason": None, "stop_sequence": None,
                         "usage": {
-                            "input_tokens": adjusted_input_tokens,
+                            "input_tokens": client_input_tokens,
                             "output_tokens": 0,
                             **cache_usage
                         },

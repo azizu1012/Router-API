@@ -115,7 +115,11 @@ def convert_messages_to_contents(messages: List[Dict[str, Any]]) -> Dict[str, An
 
         elif role == "tool":
             tool_call_id = msg.get("tool_call_id", "")
-            name = tc_id_to_name.get(tool_call_id, tool_call_id.split("-")[0] if "-" in tool_call_id else tool_call_id)
+            name = (
+                tc_id_to_name.get(tool_call_id)
+                or _lookup_global_tool_name(tool_call_id)
+                or (tool_call_id.split("-")[0] if "-" in tool_call_id else tool_call_id)
+            )
             resp = content
             parsed_resp = _try_parse_json(resp)
             if parsed_resp is None:
@@ -123,14 +127,13 @@ def convert_messages_to_contents(messages: List[Dict[str, Any]]) -> Dict[str, An
             elif not isinstance(parsed_resp, dict):
                 parsed_resp = {"result": parsed_resp}
 
-            if tool_call_id in tc_id_to_name:
-                _ensure_user_part(contents).append({
-                    "functionResponse": {
-                        "id": tool_call_id,
-                        "name": sanitize_function_name(name),
-                        "response": {"result": parsed_resp},
-                    }
-                })
+            _ensure_user_part(contents).append({
+                "functionResponse": {
+                    "id": tool_call_id,
+                    "name": sanitize_function_name(name),
+                    "response": {"result": parsed_resp},
+                }
+            })
 
     result = {"contents": contents}
     if system_instruction:
@@ -185,6 +188,15 @@ def build_gemini_body(
             body["tools"] = [{"functionDeclarations": function_declarations}]
 
     return body
+
+
+def _lookup_global_tool_name(tool_call_id: str) -> str:
+    """Look up tool name from global cache (cross-request fallback)."""
+    try:
+        from src.logical_HQ_translator.message_converter import _GLOBAL_TOOL_NAME_CACHE
+        return _GLOBAL_TOOL_NAME_CACHE.get(tool_call_id)
+    except Exception:
+        return ""
 
 
 def _extract_text_content(content: Any) -> str:

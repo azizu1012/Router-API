@@ -258,6 +258,9 @@ class ClaudeProxyNonstreamMixin:
             stop_reason = "end_turn"
 
         cache_usage = _get_simulated_cache_usage(body or {}, input_tokens)
+        cc = cache_usage.get("cache_creation_input_tokens", 0) or 0
+        cr = cache_usage.get("cache_read_input_tokens", 0) or 0
+        client_input_tokens = max(1, input_tokens - cc - cr)
         return {
             "id": "msg_" + uuid.uuid4().hex[:24],
             "type": "message",
@@ -267,7 +270,7 @@ class ClaudeProxyNonstreamMixin:
             "stop_reason": stop_reason,
             "stop_sequence": None,
             "usage": {
-                "input_tokens": input_tokens,
+                "input_tokens": client_input_tokens,
                 "output_tokens": output_tokens,
                 **cache_usage
             },

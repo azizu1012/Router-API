@@ -7,7 +7,7 @@ from typing import Any, Dict, Iterator, Optional
 
 from src.core.config_n_logg.logger import logger_proxy as logger
 
-_PROJECT_ROOT = Path(__file__).resolve().parents[4]
+_PROJECT_ROOT = Path(__file__).resolve().parents[2]
 _log_path = _PROJECT_ROOT / "logs" / "claude_request.log"
 
 def _sse(event: str, data: Dict[str, Any]) -> bytes:
@@ -76,7 +76,7 @@ def _intercept_sub_agent(body: Dict[str, Any], account: Optional[Dict[str, Any]]
                     first_user_msg)
 
         try:
-            tool_names = [t.get("function", {}).get("name", "?") for t in (body.get("tools") or [])]
+            tool_names = [t.get("name") or t.get("function", {}).get("name", "?") for t in (body.get("tools") or [])]
             # Ensure log directory exists dynamically
             _log_path.parent.mkdir(parents=True, exist_ok=True)
             _sep = "=" * 60
