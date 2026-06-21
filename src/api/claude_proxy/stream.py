@@ -22,6 +22,39 @@ async def _process_anthropic_stream(
     auth_key_prefix: str = "",
     body: Optional[Dict[str, Any]] = None,
 ) -> AsyncIterator[bytes]:
+    """
+    Xử lý luồng phản hồi từ một API Anthropic (hoặc tương thích) và chuyển đổi nó thành
+    định dạng SSE (Server-Sent Events) cho client Claude Code.
+
+    Hàm này chịu trách nhiệm cho các tác vụ sau:
+    1. Khởi tạo thông báo `message_start` với thông tin ban đầu về tin nhắn.
+    2. Xử lý cảnh báo ngữ cảnh lớn: Nếu số lượng token đầu vào vượt quá ngưỡng cảnh báo,
+       một cảnh báo sẽ được chèn vào luồng phản hồi để nhắc nhở người dùng về giới hạn TPM.
+    3. Lặp qua các chunk được tạo ra từ `gen_iterator` (iterator chung từ `PoolManager`)
+       và xử lý từng chunk:
+       a. Phân tích các sự kiện từ `StreamingTextNormalizer` và `XMLThinkingExtractor`
+          để tách biệt văn bản, suy nghĩ và các cuộc gọi công cụ.
+       b. Tạo các sự kiện SSE (`content_block_start`, `content_block_delta`,
+          `content_block_stop`) cho nội dung văn bản và suy nghĩ.
+       c. Đệm và xử lý các cuộc gọi công cụ (tool calls) được mô hình tạo ra,
+          bao gồm các cuộc gọi `Task` và các cuộc gọi công cụ thông thường.
+    4. Xử lý logic `thought_signature` để tạo chữ ký cho các khối suy nghĩ.
+    5. Sau khi luồng hoàn tất, tạo các sự kiện `message_delta` và `message_stop` cuối cùng,
+       bao gồm thông tin sử dụng token và lý do dừng.
+    6. Ghi lại thông tin sử dụng vào hệ thống log.
+
+    Args:
+        gen_iterator (AsyncIterator[Any]): Iterator bất đồng bộ tạo ra các chunk phản hồi thô từ mô hình backend.
+        first_chunk (Any): Chunk đầu tiên của phản hồi (có thể đã được xử lý trước).
+        model (str): Tên của mô hình được sử dụng.
+        input_tokens (int): Số lượng token đầu vào của yêu cầu.
+        key_prefix (str, optional): Tiền tố khóa API. Mặc định là "".
+        auth_key_prefix (str, optional): Tiền tố khóa xác thực. Mặc định là "".
+        body (Optional[Dict[str, Any]], optional): Body của yêu cầu API gốc. Mặc định là None.
+
+    Yields:
+        AsyncIterator[bytes]: Một iterator bất đồng bộ của các khối phản hồi đã được định dạng SSE.
+    """
     msg_id = "msg_" + uuid.uuid4().hex
 
     include_thoughts = body.get("include_thoughts", True) if body else True

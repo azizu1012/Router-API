@@ -37,7 +37,18 @@ def _compute_thinking_for_model(
     thinking_params: Optional[Dict[str, Any]],
     model_id: str,
 ) -> Optional[Dict[str, Any]]:
-    """Recompute thinking config for a specific model (handles V3 vs V2 correctly)."""
+    """
+    Recomputes the thinking configuration for a specific model.
+    This is necessary to correctly handle differences in thinking config formats
+    or capabilities between different model versions (e.g., V3 vs V2).
+
+    Args:
+        thinking_params: Original thinking parameters from the request.
+        model_id: The concrete model ID for which to compute the thinking config.
+
+    Returns:
+        A dictionary representing the resolved thinking configuration, or None if not applicable.
+    """
     if not thinking_params:
         return None
     from src.core.providers.gemini_thinking import resolve_thinking_config
@@ -52,7 +63,19 @@ def _compute_thinking_for_model(
 
 
 def _classify_error(e: Exception) -> str:
-    """Helper to classify errors into unified reasons."""
+    """
+    Helper function to classify raw exceptions into unified, categorized reasons.
+    This classification is crucial for the PoolManager's adaptive retry and key freezing logic.
+    It first attempts to classify using specific Gemini error classifications, then falls back
+    to text-based matching of common error messages.
+
+    Design Decision (Text Matching):
+    The text-based fallback matching for error classification (`if "rate limit" in msg_lower...`)
+    is a pragmatic decision. While less robust than a dedicated error code registry,
+    it provides immediate resilience against varied error messages from external APIs
+    and allows for rapid adaptation without requiring a full refactor of error handling
+    across all providers. This is a trade-off for speed and operational robustness in a dynamic environment.
+    """
     err_str = str(e)
     # Check Gemini error classification
     reason = classify_gemini_error(e)
@@ -78,7 +101,24 @@ def _classify_error(e: Exception) -> str:
 
 
 class PoolManager:
-    """Manages monolithic pool loops and routes to Gemini or Custom endpoints."""
+    """
+    Centralized Pool Manager responsible for orchestrating model pool loops,
+    key rotation, quota checks, and intelligent retry mechanisms.
+    This class handles routing requests to either Gemini native APIs (via GenAI SDK or HTTP)
+    or Custom Endpoints, supporting both streaming and non-streaming completions.
+    Proxies (e.g., OpenCodeProxy, ClaudeProxy) delegate their core pool/retry logic to this class.
+
+    Design Decision (Monolithic Complexity):
+    The `PoolManager` is intentionally designed as a more monolithic component,
+    encapsulating extensive retry and failover logic. This choice prioritizes:
+    1. Streamlined Control Flow: Centralizing complex error handling and retry loops
+       makes the system more predictable and easier to manage in production,
+       especially given the unpredictable nature of external LLM API failures.
+    2. Performance Optimization: Minimizes overhead from inter-service calls,
+       crucial for low-latency API routing.
+    3. Rapid Reusability: Allows various proxies to delegate to a single, robust
+       mechanism without replicating intricate logic.
+    """
 
     async def call_nonstream(
         self,
@@ -92,11 +132,34 @@ class PoolManager:
         extra_body: Optional[Dict[str, Any]] = None,
         thinking_params: Optional[Dict[str, Any]] = None,
     ) -> Dict[str, Any]:
-        """Unified pool call for non-streaming completions."""
+        """
+        Handles unified pool calls for non-streaming completions.
+        This method orchestrates the selection of models and API keys, applies retry logic,
+        and manages error handling within a resilient pool loop. It supports both
+        pool-based rotation (failover between multiple model members) and standalone modes.
+
+        Args:
+            model_alias: The alias of the model to use.
+            messages: List of message dictionaries for the completion request.
+            tools: Optional list of tool definitions.
+            temperature: Optional sampling temperature.
+            max_tokens: Optional maximum number of tokens to generate.
+            thinking_config: Optional configuration for thinking process (e.g., XML thinking).
+            account: Optional account information for limits and overrides.
+            extra_body: Optional extra parameters to include in the request body.
+            thinking_params: Optional parameters related to thinking configuration.
+
+        Returns:
+            A dictionary containing the LLM response, used API key, model ID, input tokens,
+            and reservation details.
+
+        Raises:
+            RuntimeError: If the pool is exhausted or all retry attempts fail.
+        """
         pool = router.resolve_pool(model_alias)
         if pool:
-            # --- CHẾ ĐỘ POOL (POOL MODE) ---
-            # Sử dụng nhóm các model thành viên (ví dụ: gemini-flash xoay vòng giữa 35, 30, 25)
+            # --- POOL MODE ---
+            # Uses a group of model members (e.g., gemini-flash rotates between 35, 30, 25)
             pool.start()
             pool_try = -1
             while not pool.exhausted:
@@ -105,13 +168,13 @@ class PoolManager:
                 model_id_val = None
                 reservation = {}
                 try:
-                    # Quyết định chọn model và key thích hợp nhất (có cơ chế Double Random & Jitter)
+                    # Decides the most suitable model and key (using Double Random & Jitter mechanisms)
                     resp, api_key_val, model_id_val, input_tokens, reservation = await self._resolve_and_call(
                         model_alias, messages, tools, temperature, max_tokens, thinking_config,
                         account, extra_body, pool_mode=True, pool=pool, is_stream=False,
                         attempt=pool_try, thinking_params=thinking_params,
                     )
-                    # Giao dịch thành công -> đánh dấu sức khỏe của model / custom endpoint hoạt động tốt
+                    # Successful transaction -> marks model / custom endpoint as healthy
                     member_used = reservation.get("model_alias", pool.current_model)
                     is_custom = reservation.get("provider") == "custom"
                     if is_custom:
@@ -127,7 +190,7 @@ class PoolManager:
                         "reservation": reservation
                     }
                 except Exception as e:
-                    # Rút trích thông tin key và model từ lỗi PoolCallError đóng gói
+                    # Extracts key and model information from the wrapped PoolCallError
                     if isinstance(e, PoolCallError):
                         api_key_val = e.api_key
                         model_id_val = e.model_id
@@ -136,42 +199,42 @@ class PoolManager:
                     member_used = reservation.get("model_alias", pool.current_model) if reservation else pool.current_model
                     is_custom = reservation.get("provider") == "custom"
                     if is_custom:
-                        # Gặp lỗi với custom endpoint (OpenAI SDK backend) -> swap ngay lập tức
+                        # Encountered error with custom endpoint (OpenAI SDK backend) -> swap immediately
                         logger.warning("[PoolManager] Custom endpoint failed: %s, swapping...", e)
                         endpoint_manager.mark_endpoint_failure(reservation.get("name", member_used))
                         pool.record_failure(member_used, "custom_endpoint_error")
                         pool.swap()
                         continue
 
-                    # Phân loại lỗi trả về từ Gemini API
+                    # Classifies errors returned from Gemini API
                     reason = _classify_error(e)
                     if reason in TRANSIENT_REASONS:
-                        # --- XỬ LÝ LỖI TẠM THỜI (SOFT HANDLING) ---
-                        # 429, 503, timeout: KHÔNG đóng băng lâu (3600s), KHÔNG tính là lỗi thành viên hỏng.
+                        # --- TRANSIENT ERROR HANDLING (SOFT HANDLING) ---
+                        # 429, 503, timeout: NO long freeze (3600s), NOT counted as a permanent member failure.
                         count_transient_error(reason)
                         if reason == "rate_limit":
                             router.record_429()
 
-                        # Đóng băng key cực ngắn (KEY_429_COOLDOWN_SECONDS ~ 8-15s) và áp penalty để giảm điểm ưu tiên
+                        # Freezes key for a very short duration (KEY_429_COOLDOWN_SECONDS ~ 8-15s) and applies penalty to reduce priority score.
                         if api_key_val and model_id_val:
                             router.freeze_key(api_key_val, config.KEY_429_COOLDOWN_SECONDS, model_id_val, reason)
                             apply_error_penalty(api_key_val, reason, model_id_val)
 
-                        # Tăng bộ đếm lỗi tạm thời của pool. Nếu lỗi liên tiếp >= POOL_SWAP_FAILURES (5) -> swap sang model khác
+                        # Increments pool's transient error counter. If consecutive errors >= POOL_SWAP_FAILURES (5) -> swap to another model.
                         pool._consecutive_transient += 1
                         if pool._consecutive_transient >= config.POOL_SWAP_FAILURES:
                             logger.warning("[PoolManager] Transient error %s on member %s, too many retries - swapping...", reason, member_used)
                             pool._consecutive_transient = 0
                             pool.swap()
                         else:
-                            # Đợi một thời gian trễ ngẫu nhiên (Jitter) trước khi thử lại với key khác
+                            # Waits for a random delay (Jitter) before retrying with a different key.
                             delay = _retry_delay(pool._consecutive_transient)
                             logger.warning("[PoolManager] Transient error %s on member %s, retrying in %.1fs (attempt %d)", reason, member_used, delay, pool._consecutive_transient)
                             await asyncio.sleep(delay)
                         continue
                     else:
-                        # --- XỬ LÝ LỖI VĨNH VIỄN (HARD ERROR) ---
-                        # Lỗi invalid_key, billing, bad_request: Đóng băng lâu và swap model lập tức.
+                        # --- PERMANENT ERROR HANDLING (HARD ERROR) ---
+                        # invalid_key, billing, bad_request errors: Long freeze and immediate model swap.
                         pool._consecutive_transient = 0
                         logger.error("[PoolManager] Hard error %s on member %s: %s", reason, member_used, e)
                         if api_key_val and model_id_val:
@@ -182,8 +245,8 @@ class PoolManager:
                         pool.swap()
             raise RuntimeError("Pool exhausted or all attempts failed")
         else:
-            # --- CHẾ ĐỘ ĐƠN LẺ (STANDALONE MODE) ---
-            # Gọi trực tiếp model không qua pool xoay vòng
+            # --- STANDALONE MODE ---
+            # Directly calls the model without pool rotation.
             for attempt in range(config.MAX_RETRIES):
                 api_key_val = None
                 model_id_val = None
@@ -233,12 +296,42 @@ class PoolManager:
         extra_body: Optional[Dict[str, Any]] = None,
         thinking_params: Optional[Dict[str, Any]] = None,
     ) -> AsyncIterator[Dict[str, Any]]:
-        """Unified pool call for streaming completions. Yields dict chunks."""
+        """
+        Handles unified pool calls for streaming completions.
+        This method orchestrates the selection of models and API keys, applies retry logic,
+        and manages error handling within a resilient pool loop for streaming responses.
+        It supports both pool-based rotation (failover between multiple model members) and standalone modes.
+
+        Args:
+            model_alias: The alias of the model to use.
+            messages: List of message dictionaries for the completion request.
+            tools: Optional list of tool definitions.
+            temperature: Optional sampling temperature.
+            max_tokens: Optional maximum number of tokens to generate.
+            thinking_config: Optional configuration for thinking process (e.g., XML thinking).
+            account: Optional account information for limits and overrides.
+            extra_body: Optional extra parameters to include in the request body.
+            thinking_params: Optional parameters related to thinking configuration.
+
+        Yields:
+            A dictionary representing chunks of the streaming LLM response, along with
+            used API key, model ID, input tokens, and reservation details.
+
+        Raises:
+            RuntimeError: If the pool is exhausted or all retry attempts fail.
+            Exception: If the stream is interrupted after committing (sending headers/chunks to client),
+                       retry with a different key/model is not possible.
+        """
         pool = router.resolve_pool(model_alias)
         if pool:
-            # --- CHẾ ĐỘ POOL STREAM ---
+            # --- POOL STREAM MODE ---
+            # In pool stream mode, the system attempts to iterate through available pool members
+            # to find a healthy one for streaming. Once the first chunk is yielded (`committed = True`),
+            # no further retries or key/model swaps are possible for that specific request.
             pool.start()
-            committed = False  # Khi stream đã yield ra chunk đầu tiên, committed=True và KHÔNG được phép retry/swap nữa
+            committed = False  # Flag to indicate if the first stream chunk has been successfully yielded.
+                               # Once committed, no further retries or key/model swaps are allowed for this request.
+
             pool_try = -1
             while not pool.exhausted:
                 pool_try += 1
@@ -246,7 +339,8 @@ class PoolManager:
                 model_id_val = None
                 reservation = {}
                 try:
-                    # Đăng ký và giữ key từ resolver
+                    # Register and reserve a key from the resolver using `_resolve_model`.
+            # This step is critical for acquiring a valid, un-frozen key with sufficient quota.
                     max_output = min(int(max_tokens or config.MAX_OUTPUT_TOKENS), config.MAX_OUTPUT_TOKENS)
                     estimated_tokens = len(str(messages)) // 4 + max_output
                     model_alias_val, model_id_val, api_key_val, model_full_val, reservation = await _resolve_model(
@@ -257,21 +351,24 @@ class PoolManager:
                     is_custom = reservation.get("provider") == "custom"
                     member_used = reservation.get("model_alias", pool.current_model)
 
-                    # Tính toán thinking config động cho member được chọn
+                    # Dynamically compute thinking configuration for the selected pool member.
+            # This ensures compatibility with different model versions (e.g., V3 vs V2) and custom endpoints.
                     member_tc = _compute_thinking_for_model(thinking_params, model_full_val) if not is_custom else None
                     if member_tc is None:
                         member_tc = thinking_config
                     if member_tc and "lite" in model_full_val.lower():
                         member_tc = {}
 
-                    # Kiểm tra và trừ hạn ngạch tài khoản (Quota check)
+                    # Perform central pool quota and rate limit checks via `router.acquire_quota`.
+            # If quota is exhausted, the key is frozen, and a `RuntimeError` is raised to trigger pool swap.
                     has_quota = await router.acquire_quota(estimated_tokens, model_alias)
                     if not has_quota:
                         apply_error_penalty(api_key_val, "rate_limit_rpm_tpm", model_id_val)
                         router.freeze_key(api_key_val, config.KEY_429_COOLDOWN_SECONDS, model_id_val, "rate_limit")
                         raise RuntimeError("quota_exhausted")
 
-                    # Thực hiện gọi API Stream
+                    # Execute the streaming API call using the `acompletion` facade.
+            # This facade abstracts away the underlying LLM provider (Gemini SDK or Custom Endpoint).
                     try:
                         kwargs = {
                             "model": model_full_val,
@@ -290,7 +387,8 @@ class PoolManager:
 
                         gen = await acompletion(**kwargs)
                         async for chunk in gen:
-                            committed = True  # Đánh dấu stream đã ghi nhận thành công dữ liệu đầu tiên
+                            committed = True  # Mark that the stream has successfully yielded its first chunk.
+                                              # After this, no further retries or swaps are possible for this request.
                             yield {
                                 "chunk": chunk,
                                 "api_key": api_key_val,
@@ -299,7 +397,8 @@ class PoolManager:
                                 "reservation": reservation
                             }
                         
-                        # Thành công -> cập nhật trạng thái tốt
+                        # On successful stream completion, update the health status of the used model/custom endpoint.
+            # This ensures the `ModelPool` and `CustomEndpointManager` reflect the current health of providers.
                         if is_custom:
                             endpoint_manager.mark_endpoint_success(reservation.get("name", member_used))
                         else:
@@ -307,12 +406,15 @@ class PoolManager:
                         pool.record_success()
                         return
                     finally:
-                        # Bắt buộc phải giải phóng key sau khi tác vụ stream kết thúc/gặp lỗi
+                        # Crucially, release the API key after the stream task completes or encounters an error.
+            # This ensures the `active_requests` count for the key is decremented, allowing other requests to use it.
                         if api_key_val:
                             router.release_key(api_key_val)
 
                 except Exception as e:
-                    # Nếu stream đang chạy dở mà đứt giữa chừng -> không thể thực hiện retry với key/model khác (đã gửi headers/chunk cho client)
+                    # If the stream is interrupted mid-way (after `committed = True`),
+            # it's impossible to retry with a different key/model because headers/chunks have already been sent to the client.
+            # In this scenario, the error is logged and re-raised to the client.
                     if committed:
                         logger.error("[PoolManager] Stream interrupted after committing: %s", e)
                         raise
@@ -328,7 +430,8 @@ class PoolManager:
 
                     reason = _classify_error(e)
                     if reason in TRANSIENT_REASONS:
-                        # Lỗi tạm thời (Soft handling) trong luồng stream
+                        # Transient error (Soft handling) in the stream flow.
+            # Similar to non-stream, but with specific handling for stream contexts before committing.
                         count_transient_error(reason)
                         if reason == "rate_limit":
                             router.record_429()
@@ -338,7 +441,8 @@ class PoolManager:
                             apply_error_penalty(api_key_val, reason, model_id_val)
 
                         if not reservation:
-                            # Không có key nào để giữ -> swap model luôn
+                            # If no key was successfully reserved (e.g., all keys were frozen initially) and a transient error occurs,
+            # immediately swap the pool member as there's no key to hold onto for a retry.
                             logger.warning("[PoolManager] Transient stream error %s on member %s, no key available - swapping...", reason, member_used)
                             pool._consecutive_transient = 0
                             pool.swap()
@@ -349,7 +453,8 @@ class PoolManager:
                                 pool._consecutive_transient = 0
                                 pool.swap()
                             else:
-                                # Chờ Timing Jitter rồi retry
+                                # Wait for an adaptive, jittered delay before retrying with a potentially different key/model.
+            # This prevents "Thundering Herd" and allows keys/models to recover.
                                 delay = _retry_delay(pool._consecutive_transient)
                                 logger.warning("[PoolManager] Transient stream error %s on member %s, retrying in %.1fs (attempt %d)", reason, member_used, delay, pool._consecutive_transient)
                                 await asyncio.sleep(delay)
@@ -443,7 +548,35 @@ class PoolManager:
         attempt: int = 0,
         thinking_params: Optional[Dict[str, Any]] = None,
     ) -> Tuple[Any, str, str, int, dict]:
-        """Internal helper to resolve key, check quota, and perform a single call."""
+        """
+        Internal helper method to resolve the optimal API key and model, check quotas,
+        and perform a single API call to the LLM (either Gemini native or Custom Endpoint).
+        This method encapsulates the core logic of key reservation, rate limiting checks,
+        and preparing arguments for the `acompletion` facade.
+
+        Args:
+            model_alias: The alias of the model to use.
+            messages: List of message dictionaries for the completion request.
+            tools: Optional list of tool definitions.
+            temperature: Optional sampling temperature.
+            max_tokens: Optional maximum number of tokens to generate.
+            thinking_config: Optional configuration for thinking process.
+            account: Optional account information.
+            extra_body: Optional extra parameters for the request body.
+            pool_mode: True if operating within a pool loop, False for standalone.
+            pool: The ModelPool instance if in pool_mode.
+            is_stream: True if the call is for a streaming response.
+            attempt: Current retry attempt count.
+            thinking_params: Optional parameters related to thinking configuration.
+
+        Returns:
+            A tuple containing: (response from LLM, used API key, concrete model ID,
+            estimated input tokens, reservation details).
+
+        Raises:
+            PoolCallError: Wraps any exception encountered during the API call or quota check.
+            RuntimeError: If custom endpoint rate limit is exceeded or quota is exhausted.
+        """
         max_output = min(int(max_tokens or config.MAX_OUTPUT_TOKENS), config.MAX_OUTPUT_TOKENS)
         estimated_tokens = len(str(messages)) // 4 + max_output
 

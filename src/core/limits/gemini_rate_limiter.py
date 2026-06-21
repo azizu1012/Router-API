@@ -1,4 +1,10 @@
-# ruff: noqa: E402
+"""Module for managing various rate limiting and key usage tracking mechanisms for Gemini API keys.
+
+This module implements per-model rate limiters (RPM, TPM, RPD) using sliding windows,
+per-key/per-model usage tracking, and a dynamic penalty system to influence key selection priority.
+It integrates with the `APIRouter` to enforce quotas and provide resilience against rate limits and failures.
+Key usage data is persisted to an SQLite database for daily tracking and penalty management.
+"""
 import asyncio
 import copy
 import datetime
@@ -11,22 +17,39 @@ from src.core.config_n_logg import config
 from src.core.config_n_logg.logger import logger_keys as logger
 from src.backend.key_status import get_key_usage_db, update_key_usage_batch_db
 
-# Google Cloud RPD reset is at midnight Pacific Time.
+# Google Cloud RPD (Requests Per Day) reset is at midnight Pacific Time.
 # PDT (summer): UTC-7, PST (winter): UTC-8.
-# We use a fixed UTC-7 offset as a reasonable approximation; the
-# exact DST transition creates at most a 1-hour error.
+# We use a fixed UTC-7 offset as a reasonable approximation for daily reset logic;
+# the exact DST transition creates at most a 1-hour error in daily quota reset timing.
 import datetime as _dt
 _PACIFIC_OFFSET = _dt.timedelta(hours=-7)
 
 def _today_pacific() -> _dt.date:
+    """
+    Calculates the current date in Pacific Time (UTC-7).
+    This is used to determine daily quota resets, aligning with Google Cloud's RPD reset schedule.
+    """
     return (_dt.datetime.utcnow() + _PACIFIC_OFFSET).date()
 
 
 # ── Per-model rate limiter (RPM / TPM / RPD) ──────────────────
 
 class GeminiRateLimiter:
+    """
+    Implements a per-model rate limiter using a sliding window approach for Requests Per Minute (RPM),
+    Tokens Per Minute (TPM), and a daily counter for Requests Per Day (RPD).
+    Each instance of this class manages the rate limits for a specific model alias.
+    """
     def __init__(self, rpm: int = 15, tpm: int = 250000, rpd: int = 500, model_alias: str = ""):
-        self.model_alias = model_alias
+        """
+        Initializes the GeminiRateLimiter with specified limits.
+
+        Args:
+            rpm: Requests Per Minute limit.
+            tpm: Tokens Per Minute limit.
+            rpd: Requests Per Day limit (0 for unlimited).
+            model_alias: The alias of the model this limiter is for.
+        """        self.model_alias = model_alias
         self.rpm_limit = rpm
         self.tpm_limit = tpm
         self.rpd_limit = rpd
@@ -37,7 +60,17 @@ class GeminiRateLimiter:
         self._lock = None
 
     async def acquire_quota(self, reserved_tokens: int) -> bool:
-        if self._lock is None:
+        """
+        Attempts to acquire quota for a new request, checking against RPM, TPM, and RPD limits.
+        This method uses an asynchronous lock to ensure thread safety during quota checks and updates.
+        It manages sliding windows for minute-based limits and resets the daily counter at Pacific midnight.
+
+        Args:
+            reserved_tokens: The number of tokens estimated for the current request.
+
+        Returns:
+            True if quota is successfully acquired, False otherwise.
+        """        if self._lock is None:
             self._lock = asyncio.Lock()
         async with self._lock:
             now = time.time()
@@ -62,7 +95,13 @@ class GeminiRateLimiter:
             return True
 
     def get_counters_snapshot(self) -> dict:
-        now = time.time()
+        """
+        Provides a snapshot of the current rate limiter's usage and limits.
+        This includes current requests per minute, tokens per minute, and requests per day.
+
+        Returns:
+            A dictionary containing the model alias, current usage, and configured limits for RPM, TPM, and RPD.
+        """        now = time.time()
         rpm_used = sum(1 for ts in self._minute_req_ts if now - ts < 60)
         tpm_used = sum(t for ts, t in self._minute_tokens if now - ts < 60)
         rpd_used = self._rpd_count if _today_pacific() == self._rpd_date else 0
@@ -79,7 +118,17 @@ class GeminiRateLimiter:
 _rate_limiters: Dict[str, GeminiRateLimiter] = {}
 
 def get_rate_limiter(model_alias: str) -> GeminiRateLimiter:
-    if model_alias not in _rate_limiters:
+    """
+    Retrieves a `GeminiRateLimiter` instance for a given model alias from the singleton registry.
+    If a limiter for the alias does not exist, it is created and initialized based on the model's
+    configuration and the total number of API keys available.
+
+    Args:
+        model_alias: The alias of the model to get the rate limiter for.
+
+    Returns:
+        A `GeminiRateLimiter` instance for the specified model alias.
+    """    if model_alias not in _rate_limiters:
         cfg = AVAILABLE_MODELS.get(model_alias, {})
         key_count = max(1, len(config.GEMINI_API_KEYS))
         rpm = int(cfg.get("rpm", 15)) * key_count
@@ -94,7 +143,11 @@ def get_rate_limiter(model_alias: str) -> GeminiRateLimiter:
 
 
 def clear_rate_limiters():
-    _rate_limiters.clear()
+    """
+    Clears all registered `GeminiRateLimiter` instances from the singleton registry.
+    This is typically called when the API key configuration changes, forcing new limiters
+    to be created with updated key counts and limits.
+    """    _rate_limiters.clear()
     logger.info("Gemini rate limiters cleared (will be re-created with new key count)")
 
 
@@ -103,17 +156,33 @@ def clear_rate_limiters():
 import threading
 
 _key_usage: Dict[str, Dict[str, Any]] = {}
+"""Stores daily usage data for each API key, loaded from the database."""
 _usage_date: datetime.date = _today_pacific()
+"""The date for which `_key_usage` data is valid (Pacific Time)."""
 _usage_lock = threading.Lock()
+"""A lock to protect access to `_key_usage` and `_usage_date` for thread safety."""
 
 
 # ── Per-key/per-model sliding window rate limiter (RPM / TPM) ──
 
 _key_model_requests: Dict[str, deque] = {}
+"""Stores a deque of timestamps for each key-model pair to track RPM (Requests Per Minute)."""
 _key_model_tokens: Dict[str, deque] = {}
+"""Stores a deque of (timestamp, token_count) for each key-model pair to track TPM (Tokens Per Minute)."""
 
 def get_model_limits(model_id: str) -> Tuple[int, int, int]:
-    """Returns (rpm, tpm, rpd) for the model_id."""
+    """
+    Retrieves the configured RPM (Requests Per Minute), TPM (Tokens Per Minute),
+    and RPD (Requests Per Day) limits for a specific model ID.
+    This function looks up the limits from `AVAILABLE_MODELS` configuration.
+
+    Args:
+        model_id: The concrete ID of the model.
+
+    Returns:
+        A tuple containing (rpm_limit, tpm_limit, rpd_limit) for the specified model.
+        Defaults are applied if limits are not explicitly configured for the model.
+    """
     for alias, cfg in AVAILABLE_MODELS.items():
         if cfg.get("model_id") == model_id and cfg.get("model_id") != "gemini-flash-pool":
             return int(cfg.get("rpm", 5)), int(cfg.get("tpm", 250000)), int(cfg.get("rpd", 20))
@@ -124,7 +193,21 @@ def get_model_limits(model_id: str) -> Tuple[int, int, int]:
     return 5, 250000, 20
 
 def check_key_model_limits(api_key: str, model_id: str, estimated_tokens: int, rpm_limit: int, tpm_limit: int) -> bool:
-    """Checks if the api_key has enough RPM/TPM remaining for model_id."""
+    """
+    Checks if a specific API key for a given model has available quota based on RPM, TPM, and RPD limits.
+    This function considers both the sliding window limits (RPM/TPM) for the last 60 seconds
+    and the daily usage (RPD) to determine if a request can proceed.
+
+    Args:
+        api_key: The API key to check.
+        model_id: The concrete ID of the model.
+        estimated_tokens: Estimated number of tokens for the current request.
+        rpm_limit: The RPM limit for the model.
+        tpm_limit: The TPM limit for the model.
+
+    Returns:
+        True if the key has enough quota for the request, False otherwise.
+    """
     now = time.time()
     k_m = f"{api_key}::{model_id}"
     with _usage_lock:
@@ -244,7 +327,17 @@ def _penalty_key(key: str, actual_model_id: Optional[str] = None) -> str:
 
 
 def apply_error_penalty(key: str, reason: str, actual_model_id: Optional[str] = None) -> None:
-    from src.core.router.core.router import is_sub_agent_context
+    """
+    Applies a dynamic penalty to an API key based on the reason for an error.
+    This penalty reduces the key's priority score, making it less likely to be selected
+    for subsequent requests, allowing it to recover or be avoided if problematic.
+    Penalties are persisted to the database and expire after a configurable duration.
+
+    Args:
+        key: The API key to penalize.
+        reason: The reason for the error (e.g., "rate_limit", "invalid_key").
+        actual_model_id: Optional concrete model ID if the penalty is specific to a model.
+    """    from src.core.router.core.router import is_sub_agent_context
     if is_sub_agent_context.get():
         logger.info("[Sub-Agent] Bypassing apply_error_penalty for key ...%s (Reason: %s)", key[-8:], reason)
         return
@@ -303,8 +396,17 @@ def _save_key_usage() -> None:
     update_key_usage_batch_db(usage_copy)
 
 
-def record_key_usage(key: str, actual_model_id: Optional[str] = None) -> None:
-    global _usage_date
+def record_key_usage(key: str, actual_model_id: Optional[str] = None, tokens_used: int = 0) -> None:
+    """
+    Records the usage of an API key for a specific model.
+    This updates the sliding windows for RPM and TPM, and increments the daily usage (RPD).
+    The usage data is also asynchronously updated in the persistent database.
+
+    Args:
+        key: The API key that was used.
+        actual_model_id: The concrete ID of the model that was used. If None, global usage is updated.
+        tokens_used: The number of tokens consumed by the request.
+    """    global _usage_date
     today = _today_pacific()
     if today != _usage_date:
         _load_key_usage()
@@ -331,7 +433,20 @@ def record_key_usage(key: str, actual_model_id: Optional[str] = None) -> None:
 
 
 def get_key_priority(key: str, actual_model_id: Optional[str] = None) -> int:
-    global _usage_date
+    """
+    Calculates a priority score for a given API key.
+    This score is a critical factor in the `APIRouter`'s key selection process,
+    favoring keys that are healthier, have fewer active requests, and are not currently penalized.
+    Factors considered include key tier, active penalties, last success time, and consecutive failures.
+
+    Args:
+        key: The API key for which to calculate the priority score.
+        actual_model_id: Optional concrete model ID if the score is specific to a model.
+
+    Returns:
+        An integer representing the priority score. Higher values indicate higher priority.
+        A score of 0 or less typically means the key is not eligible.
+    """    global _usage_date
     today = _today_pacific()
     if today != _usage_date:
         return 50
@@ -389,7 +504,18 @@ def get_key_priority(key: str, actual_model_id: Optional[str] = None) -> int:
 
 
 def get_key_rpd_status(key: str, actual_model_id: Optional[str] = None) -> Tuple[int, int, bool]:
-    """Return (today_count, target_rpd, is_exhausted) for a key and model."""
+    """
+    Retrieves the Requests Per Day (RPD) status for a given API key and model.
+    This function provides the current daily request count, the target RPD limit,
+    and a boolean indicating if the RPD limit has been exhausted.
+
+    Args:
+        key: The API key to check.
+        actual_model_id: Optional concrete model ID if RPD is specific to a model.
+
+    Returns:
+        A tuple: (today_count, target_rpd_limit, is_exhausted).
+    """
     if not actual_model_id:
         return 0, 0, False
 
@@ -413,7 +539,14 @@ def get_key_rpd_status(key: str, actual_model_id: Optional[str] = None) -> Tuple
 
 
 def get_usage_summary() -> Dict[str, Any]:
-    today = _today_pacific()
+    """
+    Provides a summary of overall API key usage, including total calls today, total calls historically,
+    number of active keys today, and total number of keys managed.
+    The daily usage data is refreshed if the current date has changed.
+
+    Returns:
+        A dictionary containing usage statistics.
+    """    today = _today_pacific()
     if today != _usage_date:
         _load_key_usage()
     with _usage_lock:
@@ -427,7 +560,12 @@ def get_usage_summary() -> Dict[str, Any]:
 
 
 def load_penalties_from_db() -> None:
-    try:
+    """
+    Loads active key penalties from the persistent database into in-memory storage (`_score_penalties`).
+    This function is called at startup to restore any active penalties, ensuring that the router's
+    key selection logic immediately accounts for past key performance issues.
+    Expired penalties are ignored during loading.
+    """    try:
         from src.backend.key_status import db_load_active_penalties
         active = db_load_active_penalties()
         with _usage_lock:

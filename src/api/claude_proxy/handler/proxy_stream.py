@@ -24,10 +24,48 @@ from .helpers import get_system_status_summary
 
 
 class ClaudeProxyStreamMixin:
+    """
+    `ClaudeProxyStreamMixin` cung cấp logic để xử lý các yêu cầu hoàn thành chat streaming
+    cho API Claude. Mixin này tập trung vào việc chuyển đổi định dạng, chèn công cụ WebSearch
+    và xử lý các luồng phản hồi streaming từ `PoolManager`.
+
+    Nó ủy quyền việc gọi API streaming thực tế đến `PoolManager` và sau đó định dạng lại
+    các chunk phản hồi từ `PoolManager` thành định dạng SSE (Server-Sent Events) mong muốn
+    của client Claude streaming.
+
+    **Các chức năng chính bao gồm:**
+    - Chuyển đổi định dạng tin nhắn từ OpenCode sang Claude và ngược lại.
+    - Chèn công cụ WebSearch nếu được yêu cầu và không phải là yêu cầu từ sub-agent.
+    - Xử lý các yêu cầu "thinking" và nén ngữ cảnh (context compaction).
+    - Streaming phản hồi từ mô hình, bao gồm cả việc trích xuất suy nghĩ (thoughts) từ phản hồi XML.
+    - Xử lý các cuộc gọi công cụ bị chặn (intercepted tool calls) như WebSearch hoặc WebFetch trong một vòng lặp đệ quy.
+    - Tạo các sự kiện SSE cho `message_start`, `content_block_start`, `content_block_delta`,
+      `content_block_stop`, `message_delta` và `message_stop`.
+    """
 
     async def stream_message(
         self, body: Dict[str, Any], auth_key_prefix: str = "", account: Optional[Dict[str, Any]] = None
     ) -> AsyncIterator[bytes]:
+        """
+        Xử lý yêu cầu hoàn thành chat streaming cho API Claude.
+
+        Phương thức này thực hiện các bước sau:
+        1. Chuyển đổi định dạng tin nhắn từ OpenCode sang định dạng nội bộ của Claude.
+        2. Kiểm tra và chèn công cụ WebSearch nếu tìm kiếm web được kích hoạt và yêu cầu không phải từ sub-agent.
+        3. Giải quyết bí danh mô hình và thực hiện nén ngữ cảnh (context compaction) nếu cần.
+        4. Thiết lập cấu hình "thinking" và các tham số khác cho cuộc gọi API.
+        5. Gọi phương thức nội bộ `_stream_message_impl` để xử lý logic streaming chính,
+           bao gồm vòng lặp đệ quy cho các cuộc gọi công cụ bị chặn.
+        6. Bắt và ghi lại bất kỳ ngoại lệ nào xảy ra trong quá trình streaming.
+
+        Args:
+            body (Dict[str, Any]): Body của yêu cầu API gốc.
+            auth_key_prefix (str, optional): Tiền tố khóa xác thực. Mặc định là "".
+            account (Optional[Dict[str, Any]], optional): Thông tin tài khoản người dùng. Mặc định là None.
+
+        Yields:
+            AsyncIterator[bytes]: Một iterator bất đồng bộ của các khối phản hồi streaming theo định dạng SSE.
+        """
         openai_messages, openai_tools = _convert_messages(body)
 
         from src.api.opencode_proxy.handler.websearch import should_enable_web_search
@@ -91,6 +129,50 @@ class ClaudeProxyStreamMixin:
         recursion_depth: int,
         start_block_index: int,
     ) -> AsyncIterator[bytes]:
+        """
+        Triển khai logic streaming chính cho các yêu cầu hoàn thành chat Claude.
+        Phương thức này tương tác trực tiếp với `PoolManager` để nhận các chunk streaming
+        và xử lý chúng để tạo ra các sự kiện SSE phù hợp cho client.
+
+        **Các bước xử lý chính:**
+        1. Khởi tạo trạng thái cho việc streaming, bao gồm các cờ (flags) cho `text_started`,
+           `thinking_started`, `thinking_stopped`, các bộ đệm công cụ (`tool_buffers`),
+           và các biến để tích lũy nội dung văn bản và suy nghĩ.
+        2. Gọi `pool_manager.call_stream` để nhận một iterator bất đồng bộ của các chunk phản hồi từ mô hình.
+        3. Lặp qua từng `item` được trả về từ `pool_manager.call_stream`:
+           a. Xử lý các sự kiện `message_start` và `delta`.
+           b. Trích xuất suy nghĩ (thoughts) và văn bản từ các chunk phản hồi, đặc biệt là
+              khi mô hình trả về nội dung XML chứa các thẻ `<thinking>`.
+           c. Xử lý các cuộc gọi công cụ (tool calls) được mô hình tạo ra, đệm các đối số của chúng.
+           d. Kiểm tra xem có cuộc gọi công cụ bị chặn (WebSearch/WebFetch) nào không.
+              Nếu có, nó sẽ tạm dừng luồng hiện tại, thực thi công cụ bị chặn,
+              và sau đó gọi lại `_stream_message_impl` một cách đệ quy với kết quả của công cụ
+              được thêm vào `openai_messages`. Điều này cho phép mô hình tiếp tục suy luận
+              dựa trên kết quả của công cụ.
+        4. Tạo và gửi các sự kiện SSE (`content_block_start`, `content_block_delta`,
+           `content_block_stop`, `message_delta`, `message_stop`) cho client dựa trên
+           nội dung, suy nghĩ và các cuộc gọi công cụ được xử lý.
+        5. Xử lý các trường hợp lỗi, bao gồm việc trả về một thông báo tóm tắt trạng thái
+           hệ thống nếu yêu cầu đến từ sub-agent và có lỗi xảy ra ở độ sâu đệ quy bằng 0.
+
+        Args:
+            body (Dict[str, Any]): Body của yêu cầu API gốc.
+            openai_messages (List[Dict[str, Any]]): Danh sách các tin nhắn đã được chuyển đổi.
+            openai_tools (Optional[List[Dict[str, Any]]]): Danh sách các công cụ đã được chuyển đổi.
+            model_alias (str): Bí danh của mô hình được sử dụng.
+            temperature (float): Tham số nhiệt độ cho yêu cầu mô hình.
+            max_tokens (int): Số lượng token đầu ra tối đa.
+            thinking_config (Optional[Dict[str, Any]]): Cấu hình "thinking" của mô hình.
+            thinking_params (Dict[str, Any]): Các tham số "thinking" bổ sung.
+            account (Optional[Dict[str, Any]]): Thông tin tài khoản người dùng.
+            auth_key_prefix (str): Tiền tố khóa xác thực.
+            msg_id (str): ID của tin nhắn hiện tại.
+            recursion_depth (int): Độ sâu đệ quy hiện tại (để xử lý các cuộc gọi công cụ bị chặn).
+            start_block_index (int): Chỉ số khối nội dung bắt đầu.
+
+        Yields:
+            AsyncIterator[bytes]: Một iterator bất đồng bộ của các khối phản hồi streaming theo định dạng SSE.
+        """
         try:
             text_started = False
             thinking_started = False
