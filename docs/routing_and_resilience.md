@@ -30,8 +30,24 @@ graph TD
 Để duy trì hiệu suất cao, hệ thống phân loại lỗi thành hai nhóm chính: **Lỗi tạm thời (Transient Errors)** và **Lỗi vĩnh viễn (Permanent Errors)**.
 
 ### Phân Loại Chi Tiết
-- **Transient Errors:** Gồm có lỗi Rate Limit (429), Service Unavailable/Overloaded (503), Gateway Timeout (504), lỗi mạng tạm thời hoặc các lỗi không xác định từ máy chủ Google API.
-- **Permanent Errors:** Gồm các lỗi như API Key không hợp lệ (`invalid_key`), tài khoản bị khóa/hết hạn thanh toán (`billing_error`), hoặc yêu cầu sai cấu trúc (`bad_request`).
+
+Hệ thống sử dụng một cách tiếp cận hai tầng để phân loại lỗi: đầu tiên là phân loại lỗi cụ thể của nhà cung cấp (hiện tại là Gemini), sau đó là so khớp dựa trên văn bản cho các lỗi chung.
+
+**Bảng Ánh Xạ Phân Loại Lỗi (`_classify_error` trong `src/core/pool_manager.py`):**
+
+| Loại Lỗi (Text/Code Signature) | Lý Do Phân Loại | Mô Tả | Xử Lý |
+| :------------------------------ | :-------------- | :---- | :---- |
+| Gemini specific errors          | `classify_gemini_error(e)` | Các lỗi cụ thể từ Gemini API. | Xác định Soft Handling / Hard Freeze dựa trên phân loại của Gemini. |
+| "rate limit", "too many requests", "429", "quota_exhausted" | `rate_limit` | Vượt quá giới hạn yêu cầu hoặc token mỗi phút. | Soft Handling |
+| "quota exceeded"                | `rate_limit_rpd` | Vượt quá giới hạn yêu cầu mỗi ngày. | Soft Handling |
+| "billing", "precondition"       | `billing_error` | Lỗi liên quan đến thanh toán hoặc điều kiện tiên quyết. | Hard Freeze |
+| "api key", "invalid key", "401" | `invalid_key` | API Key không hợp lệ hoặc thiếu. | Hard Freeze |
+| "permission denied", "403"      | `permission_denied` | Không có quyền truy cập. | Hard Freeze |
+| "bad request", "400"            | `bad_request` | Yêu cầu không đúng định dạng. | Hard Freeze |
+| "unavailable", "overloaded", "503" | `unavailable` | Dịch vụ không khả dụng hoặc quá tải tạm thời. | Soft Handling |
+| Mọi lỗi khác                    | `unknown`       | Lỗi không xác định. | Soft Handling (mặc định) |
+
+### Sự khác biệt trong cách xử lý:
 
 ### Sự khác biệt trong cách xử lý:
 
@@ -90,9 +106,18 @@ Khi một request bị lỗi liên tục và số lần thử lại đạt tới
 
 Cơ chế này hoạt động như một van an toàn (Safety Valve) giúp hạ nhiệt hệ thống khi đang xảy ra tình trạng bão request 429 trên diện rộng.
 
+
 ---
 
-## 5. Cơ chế Lan Truyền Lỗi HTTP Chuẩn (Proper HTTP Error Propagation)
+## 5. Cơ Chế Giới Hạn Tải Trượt (Sliding Window Deque) trong Concurrency
+
+Trong `GeminiRateLimiter` (`src/core/limits/gemini_rate_limiter.py`), các hàng đợi hai đầu (deque) được sử dụng để theo dõi số lượng yêu cầu (RPM) và token (TPM) trong cửa sổ trượt 60 giây. Để đảm bảo an toàn luồng và tính nguyên tử (atomicity) của các thao tác kiểm tra và cập nhật giới hạn, phương thức `acquire_quota` sử dụng một `asyncio.Lock()`.
+
+**Tác dụng:** `asyncio.Lock` bảo vệ toàn bộ khối mã kiểm tra giới hạn (chiều dài deque, tổng token) và cập nhật (thêm yêu cầu/token mới vào deque). Điều này ngăn chặn tình trạng race condition, đảm bảo rằng các thao tác này diễn ra một cách tuần tự và nhất quán, ngay cả khi có nhiều yêu cầu đồng thời trong cùng một tiến trình.
+
+---
+
+## 6. Cơ chế Lan Truyền Lỗi HTTP Chuẩn (Proper HTTP Error Propagation)
 
 ### Vấn đề trước refactor:
 Trước đó, khi gặp lỗi Rate Limit (429) hoặc Overloaded (503), Claude Proxy luôn bắt ngoại lệ (exception) ở tầng handler bên trong và trả lời client bằng một chuỗi SSE text thông báo lỗi ở mã trạng thái **HTTP 200 OK**:

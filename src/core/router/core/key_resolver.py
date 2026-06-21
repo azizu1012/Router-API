@@ -31,7 +31,8 @@ class KeyResolverMixin:
         Determines if the circuit breaker is open for a given key.
         A key's circuit is considered open if it has accumulated enough consecutive failures
         and is currently within its frozen period.
-        """        if not config.CIRCUIT_ENABLED:
+        """
+        if not config.CIRCUIT_ENABLED:
             return False
         ks = self._key_status.get(key)
         if not ks:
@@ -47,7 +48,8 @@ class KeyResolverMixin:
         Calculates an adaptive cooldown duration based on the failure reason and
         the number of consecutive failures. This helps to prevent overwhelming
         APIs with retries after repeated failures.
-        """        if reason in ("rate_limit_rpd", "project_quota_429"):
+        """
+        if reason in ("rate_limit_rpd", "project_quota_429"):
             from src.core.limits.gemini_rate_limiter import get_seconds_until_pacific_midnight
             return get_seconds_until_pacific_midnight()
         if reason == "rate_limit" or reason == "429":
@@ -280,7 +282,7 @@ class KeyResolverMixin:
         feature development, even if it deviates from strict layered architecture principles.
         The nested loops and explicit DB transactions are a trade-off for resilience and
         fine-grained control in a high-concurrency, high-failure-rate environment.
-        """
+
         Dự trữ và phân bổ API Key tối ưu dựa trên Model Pool, độ ưu tiên (Priority),
         hạn mức RPM/TPM, trạng thái Circuit Breaker, và thuật toán Double Random.
         """

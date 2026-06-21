@@ -49,7 +49,8 @@ class GeminiRateLimiter:
             tpm: Tokens Per Minute limit.
             rpd: Requests Per Day limit (0 for unlimited).
             model_alias: The alias of the model this limiter is for.
-        """        self.model_alias = model_alias
+        """
+        self.model_alias = model_alias
         self.rpm_limit = rpm
         self.tpm_limit = tpm
         self.rpd_limit = rpd
@@ -70,7 +71,8 @@ class GeminiRateLimiter:
 
         Returns:
             True if quota is successfully acquired, False otherwise.
-        """        if self._lock is None:
+        """
+        if self._lock is None:
             self._lock = asyncio.Lock()
         async with self._lock:
             now = time.time()
@@ -101,7 +103,8 @@ class GeminiRateLimiter:
 
         Returns:
             A dictionary containing the model alias, current usage, and configured limits for RPM, TPM, and RPD.
-        """        now = time.time()
+        """
+        now = time.time()
         rpm_used = sum(1 for ts in self._minute_req_ts if now - ts < 60)
         tpm_used = sum(t for ts, t in self._minute_tokens if now - ts < 60)
         rpd_used = self._rpd_count if _today_pacific() == self._rpd_date else 0
@@ -128,7 +131,8 @@ def get_rate_limiter(model_alias: str) -> GeminiRateLimiter:
 
     Returns:
         A `GeminiRateLimiter` instance for the specified model alias.
-    """    if model_alias not in _rate_limiters:
+    """
+    if model_alias not in _rate_limiters:
         cfg = AVAILABLE_MODELS.get(model_alias, {})
         key_count = max(1, len(config.GEMINI_API_KEYS))
         rpm = int(cfg.get("rpm", 15)) * key_count
@@ -147,7 +151,8 @@ def clear_rate_limiters():
     Clears all registered `GeminiRateLimiter` instances from the singleton registry.
     This is typically called when the API key configuration changes, forcing new limiters
     to be created with updated key counts and limits.
-    """    _rate_limiters.clear()
+    """
+    _rate_limiters.clear()
     logger.info("Gemini rate limiters cleared (will be re-created with new key count)")
 
 
@@ -337,7 +342,8 @@ def apply_error_penalty(key: str, reason: str, actual_model_id: Optional[str] = 
         key: The API key to penalize.
         reason: The reason for the error (e.g., "rate_limit", "invalid_key").
         actual_model_id: Optional concrete model ID if the penalty is specific to a model.
-    """    from src.core.router.core.router import is_sub_agent_context
+    """
+    from src.core.router.core.router import is_sub_agent_context
     if is_sub_agent_context.get():
         logger.info("[Sub-Agent] Bypassing apply_error_penalty for key ...%s (Reason: %s)", key[-8:], reason)
         return
@@ -406,7 +412,8 @@ def record_key_usage(key: str, actual_model_id: Optional[str] = None, tokens_use
         key: The API key that was used.
         actual_model_id: The concrete ID of the model that was used. If None, global usage is updated.
         tokens_used: The number of tokens consumed by the request.
-    """    global _usage_date
+    """
+    global _usage_date
     today = _today_pacific()
     if today != _usage_date:
         _load_key_usage()
@@ -446,7 +453,8 @@ def get_key_priority(key: str, actual_model_id: Optional[str] = None) -> int:
     Returns:
         An integer representing the priority score. Higher values indicate higher priority.
         A score of 0 or less typically means the key is not eligible.
-    """    global _usage_date
+    """
+    global _usage_date
     today = _today_pacific()
     if today != _usage_date:
         return 50
@@ -546,7 +554,8 @@ def get_usage_summary() -> Dict[str, Any]:
 
     Returns:
         A dictionary containing usage statistics.
-    """    today = _today_pacific()
+    """
+    today = _today_pacific()
     if today != _usage_date:
         _load_key_usage()
     with _usage_lock:
@@ -565,7 +574,8 @@ def load_penalties_from_db() -> None:
     This function is called at startup to restore any active penalties, ensuring that the router's
     key selection logic immediately accounts for past key performance issues.
     Expired penalties are ignored during loading.
-    """    try:
+    """
+    try:
         from src.backend.key_status import db_load_active_penalties
         active = db_load_active_penalties()
         with _usage_lock:

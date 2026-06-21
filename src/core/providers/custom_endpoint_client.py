@@ -276,7 +276,13 @@ class CustomEndpointStreamGen:
             if gen is None:
                 raise RuntimeError("Custom endpoint stream not initialized")
             try:
-                raw_chunk = await gen.__anext__()
+                import asyncio
+                raw_chunk = await asyncio.wait_for(gen.__anext__(), timeout=30.0)
+            except asyncio.TimeoutError:
+                from src.core.config_n_logg.logger import logger_proxy as logger
+                logger.warning("[Custom Endpoint Stream] Chunk read timeout (30s) reached. Closing stream.")
+                await self._cleanup()
+                raise StopAsyncIteration
             except StopAsyncIteration:
                 await self._cleanup()
                 raise

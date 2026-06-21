@@ -39,7 +39,8 @@ class APIRouter(KeyResolverMixin):
     routing system that needs to make real-time decisions about key and model usage.
     While it increases coupling to this central component, it reduces the complexity
     of managing distributed state across different parts of the application.
-    """    _instance = None
+    """
+    _instance = None
     _initialized = False
 
     def __new__(cls):
@@ -67,7 +68,8 @@ class APIRouter(KeyResolverMixin):
         ensures that all necessary components are properly set up and synchronized at startup.
         While it contributes to the method's length, it consolidates critical setup logic,
         making the router immediately operational and consistent.
-        """        if APIRouter._initialized:
+        """
+        if APIRouter._initialized:
             return
 
         self.model_priority = [alias for alias in MODEL_PRIORITY if alias in AVAILABLE_MODELS]
@@ -148,7 +150,8 @@ class APIRouter(KeyResolverMixin):
            and other transient states while updating persistent attributes like `enabled`, `frozen_until`,
            `consecutive_failures`, and `tier`.
         5. Ensuring that `per_model` entries are correctly initialized for all known model IDs.
-        """        with self._key_lock:
+        """
+        with self._key_lock:
             all_model_ids = list(dict.fromkeys(
                 str(cfg["model_id"]) for alias, cfg in AVAILABLE_MODELS.items()
                 if cfg["model_id"] != "gemini-flash-pool"
@@ -216,7 +219,8 @@ class APIRouter(KeyResolverMixin):
         Returns:
             A list of dictionaries, each representing an available model with its ID, object type,
             owner, root model ID, display name, and context length.
-        """        models = []
+        """
+        models = []
         for alias, cfg in AVAILABLE_MODELS.items():
             if cfg.get("hidden"):
                 continue
@@ -253,7 +257,8 @@ class APIRouter(KeyResolverMixin):
         to handle common model name variations or implicit requests, ensuring that even ambiguous
         inputs are routed to a reasonable default. This reduces friction for users but adds
         a layer of implicit mapping within the router.
-        """        raw = (model or "").strip().lower()
+        """
+        raw = (model or "").strip().lower()
         if raw in AVAILABLE_MODELS:
             return raw
         for alias, cfg in AVAILABLE_MODELS.items():
@@ -292,7 +297,8 @@ class APIRouter(KeyResolverMixin):
 
         Returns:
             A `ModelPool` instance if a pool is configured for the alias, otherwise None.
-        """        pool_cfg = MODEL_POOLS.get(alias)
+        """
+        pool_cfg = MODEL_POOLS.get(alias)
         if pool_cfg:
             members = [m for m in pool_cfg["members"] if not (is_sunset_25() and m in ("gemini-flash-25", "gemini-flash-25-lite"))]
             # Account-dedicated endpoints are resolved per-account, not per-pool
@@ -330,7 +336,8 @@ class APIRouter(KeyResolverMixin):
         Resets the internal counter for consecutive 429 (Too Many Requests) errors.
         This is typically called after a successful request or when a key has recovered,
         to indicate that the system is no longer experiencing a sustained period of rate limits.
-        """        with self._key_lock:
+        """
+        with self._key_lock:
             self._consecutive_429_count = 0
 
     def reset_active_requests(self) -> None:
@@ -339,7 +346,8 @@ class APIRouter(KeyResolverMixin):
         This function is crucial for recovering from potential inconsistencies where keys might
         appear to have active requests that are no longer valid (e.g., due to client disconnects).
         It ensures that keys are correctly freed up for new requests.
-        """        try:
+        """
+        try:
             from src.backend.key_status import reset_active_requests_db
             reset_active_requests_db()
         except Exception as e:
@@ -383,16 +391,8 @@ class APIRouter(KeyResolverMixin):
             alias: The alias of the model to update.
             success: True if the API call was successful, False otherwise.
             reason: Optional reason for failure, used for specific score adjustments.
-        """        """
-        Updates the health score for a specific model alias based on the outcome of an API call.
-        A successful call increases the score, while a failure decreases it.
-        This score is used by the router to prioritize healthier models.
 
-        Args:
-            alias: The alias of the model to update.
-            success: True if the API call was successful, False otherwise.
-            reason: Optional reason for failure, used for specific score adjustments.
-        """        success=True: +5 (cap 100)
+        success=True: +5 (cap 100)
         success=False, transient (503/429/unavailable): -15
         success=False, hard (invalid_key/billing): -40
         """
@@ -474,7 +474,8 @@ class APIRouter(KeyResolverMixin):
 
         Returns:
             True if quota is successfully acquired, False otherwise.
-        """        return await get_rate_limiter(model_alias).acquire_quota(reserved_tokens)
+        """
+        return await get_rate_limiter(model_alias).acquire_quota(reserved_tokens)
 
     def freeze_key(self, key: str, duration: int, model_id: Optional[str] = None, reason: str = "rate_limit") -> None:
         """
@@ -494,7 +495,8 @@ class APIRouter(KeyResolverMixin):
         For severe reasons like `invalid_key`, `permission_denied`, or `billing_error`, the key is permanently
         disabled (`enabled = 0`) and removed from environment variables, reflecting a hard failure.
         The adaptive cooldown logic (`_adaptive_cooldown`) and jitter are applied to prevent synchronized retries.
-        """        if is_sub_agent_context.get():
+        """
+        if is_sub_agent_context.get():
             if reason not in ("invalid_key", "permission_denied", "billing_error"):
                 logger.info("[Sub-Agent] Bypassing freeze_key for key ...%s (Reason: %s)", key[-8:], reason)
                 return
@@ -548,7 +550,8 @@ class APIRouter(KeyResolverMixin):
 
         Args:
             key: The API key to release.
-        """        try:
+        """
+        try:
             with self._key_lock:
                 if key in self._key_status:
                     self._key_status[key]["active_requests"] = max(0, self._key_status[key].get("active_requests", 1) - 1)
@@ -566,16 +569,8 @@ class APIRouter(KeyResolverMixin):
 
         Returns:
             A list of dictionaries, each containing endpoint details and the assigned model ID.
-        """        """
-        Retrieves a list of custom endpoint models assigned to a specific pool.
-        This allows dynamic integration of custom LLM providers into the routing logic.
-
-        Args:
-            pool_name: The name of the pool to check for custom model assignments.
-
-        Returns:
-            A list of dictionaries, each containing endpoint details and the assigned model ID.
-        """        from src.core.providers import _custom_endpoint_manager
+        """
+        from src.core.providers import _custom_endpoint_manager
         results = []
         for ep in _custom_endpoint_manager.list_endpoints():
             if not ep.get("enabled", True):
@@ -598,16 +593,8 @@ class APIRouter(KeyResolverMixin):
 
         Args:
             duration: The base duration in seconds for which to freeze all keys.
-        """        """
-        Freezes all active API keys globally for a specified duration.
-        This is typically used as a circuit breaker mechanism in extreme overload scenarios
-        to temporarily halt all outgoing API traffic and allow the system to recover.
-        Jitter is applied to the freeze duration to prevent a "thundering herd" of keys
-        all unfreezing at the exact same moment.
-
-        Args:
-            duration: The base duration in seconds for which to freeze all keys.
-        """        try:
+        """
+        try:
             now = time.time()
             with self._key_lock:
                 for key in self._key_status:

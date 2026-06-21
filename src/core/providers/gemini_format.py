@@ -21,12 +21,10 @@ from typing import Any, Dict, List, Optional
 
 from src.logical_HQ_translator.message_converter import _sanitize_schema_for_gemini
 
+# Cấu hình cài đặt an toàn mặc định cho các yêu cầu Gemini.
+# Tất cả các danh mục an toàn được đặt thành "OFF" để cung cấp sự kiểm soát linh hoạt hơn
+# cho người dùng cuối hoặc các lớp xử lý an toàn khác ở cấp độ cao hơn.
 DEFAULT_SAFETY_SETTINGS = [
-    """
-    Cấu hình cài đặt an toàn mặc định cho các yêu cầu Gemini.
-    Tất cả các danh mục an toàn được đặt thành "OFF" để cung cấp sự kiểm soát linh hoạt hơn
-    cho người dùng cuối hoặc các lớp xử lý an toàn khác ở cấp độ cao hơn.
-    """
     {"category": "HARM_CATEGORY_HATE_SPEECH", "threshold": "OFF"},
     {"category": "HARM_CATEGORY_DANGEROUS_CONTENT", "threshold": "OFF"},
     {"category": "HARM_CATEGORY_SEXUALLY_EXPLICIT", "threshold": "OFF"},
