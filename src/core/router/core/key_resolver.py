@@ -70,14 +70,149 @@ class KeyResolverMixin:
             return {"free", "premium"}
         return {"free"}
 
+    def _get_model_limits(self, model_alias: str, concrete_model_id: str) -> tuple:
+        cfg = AVAILABLE_MODELS.get(model_alias, {})
+        if not cfg:
+            for alias, val in AVAILABLE_MODELS.items():
+                if val.get("model_id") == concrete_model_id:
+                    cfg = val
+                    break
+        rpm_limit = int(cfg.get("rpm", 5)) if cfg else 5
+        tpm_limit = int(cfg.get("tpm", 250000)) if cfg else 250000
+        return rpm_limit, tpm_limit
+
+    def _is_key_eligible(
+        self,
+        key: str,
+        status: Dict[str, Any],
+        model_id: str,
+        model_alias: str,
+        estimated_tokens: int,
+        rpm_limit: int,
+        tpm_limit: int,
+        retry_attempt: int,
+        allowed_tiers: set,
+        now: float,
+        pool_member_alias: Optional[str] = None
+    ) -> bool:
+        if status.get("enabled", 1) == 0:
+            return False
+        if status.get("tier", "free") not in allowed_tiers:
+            return False
+
+        # Kiểm tra allowed_pools của key
+        allowed_pools = status.get("allowed_pools")
+        if allowed_pools:
+            p_set = set(str(p).strip().lower() for p in allowed_pools)
+            ma = model_alias.strip().lower()
+            cm = model_id.strip().lower()
+            mb = pool_member_alias.strip().lower() if pool_member_alias else None
+            
+            is_in_set = (ma in p_set) or (cm in p_set) or (mb and mb in p_set)
+            if not is_in_set:
+                match_found = False
+                for allowed in p_set:
+                    if (allowed in ma) or (allowed in cm) or (mb and allowed in mb) or \
+                       (ma in allowed) or (cm in allowed) or (mb and mb in allowed):
+                        match_found = True
+                        break
+                if not match_found:
+                    return False
+
+        # Áp dụng logic kiểm tra cooldown và active requests
+        if retry_attempt < 10:
+            if status["frozen_until"] >= now:
+                return False
+            if self._key_is_circuit_open(key):
+                return False
+            
+            # Giải phóng khẩn cấp (Auto-release) stale active_requests
+            auto_release_after = config.KEY_429_COOLDOWN_SECONDS * 5
+            active_reqs = status.get("active_requests", 0)
+            if active_reqs > 0:
+                last_ok = status.get("last_success", 0.0)
+                if now - last_ok > auto_release_after:
+                    status["active_requests"] = 0
+                else:
+                    return False
+        else:
+            # Tải cực cao (attempt >= 10): Extreme Checking
+            if status["frozen_until"] >= now:
+                return False
+            if self._key_is_circuit_open(key):
+                return False
+            if status.get("active_requests", 0) > 0:
+                return False
+
+        pm = status.get("per_model", {})
+        pm_entry = pm.get(model_id, {})
+        if isinstance(pm_entry, dict) and pm_entry.get("frozen_until", 0) >= now:
+            return False
+
+        # Kiểm tra hạn mức RPM/TPM của key
+        if retry_attempt < 10:
+            if not check_key_model_limits(key, model_id, estimated_tokens, rpm_limit, tpm_limit):
+                return False
+        else:
+            # Siết chặt hạn mức xuống 70% công suất thực tế chống 429 cascade
+            from src.core.limits.gemini_rate_limiter import _key_model_requests, _key_model_tokens, _usage_lock
+            k_m = f"{key}::{model_id}"
+            with _usage_lock:
+                reqs = _key_model_requests.get(k_m)
+                toks = _key_model_tokens.get(k_m)
+                req_count = sum(1 for ts in reqs if now - ts < 60) if reqs else 0
+                used_tokens = sum(t for ts, t in toks if now - ts < 60) if toks else 0
+
+            max_rpm = max(1, int(rpm_limit * 0.7))
+            if req_count >= max_rpm:
+                return False
+
+            max_tpm = int(tpm_limit * 0.7)
+            if estimated_tokens <= tpm_limit:
+                if used_tokens + estimated_tokens > max_tpm:
+                    return False
+            else:
+                if req_count > 0 or used_tokens > 0:
+                    return False
+
+        return True
+
+    def _select_key_double_random(self, candidates: list) -> Optional[tuple]:
+        candidates_with_priority = []
+        for k, s, key_mid in candidates:
+            pri = get_key_priority(k, key_mid)
+            if pri < 0:
+                continue
+            candidates_with_priority.append((pri, k, s, key_mid))
+        
+        if not candidates_with_priority:
+            return None
+
+        # Sắp xếp ưu tiên: ít active_requests nhất -> độ ưu tiên cao nhất -> ít lỗi nhất
+        candidates_with_priority.sort(key=lambda x: (x[2].get("active_requests", 0), -x[0], x[2].get("consecutive_failures", 0)))
+        
+        # Chọn ngẫu nhiên trong top 50% khỏe nhất (Double Random)
+        top_50_percent = int(len(candidates_with_priority) * 0.5)
+        chosen_cand = random.choice(candidates_with_priority[:max(1, top_50_percent)])
+        return chosen_cand[1], chosen_cand[3]
+
     def reserve_key(self, model_alias: str, model_id: Optional[str] = None, account: Optional[Dict[str, Any]] = None, estimated_tokens: int = 0, retry_attempt: int = 0, exclude_models: Optional[list] = None) -> Optional[Dict[str, Any]]:
+        """
+        Dự trữ và phân bổ API Key tối ưu dựa trên Model Pool, độ ưu tiên (Priority),
+        hạn mức RPM/TPM, trạng thái Circuit Breaker, và thuật toán Double Random.
+        """
+        # --- BƯỚC 1: KIỂM TRA COOLDOWN TOÀN CỤC ---
         if self.is_global_cooldown_active():
             logger.warning("[Circuit] Global IP cooldown active. Blocking key reservation.")
             return None
+
+        # Bảo vệ chống các model đã bị Google khai tử (Sunsetted)
         if is_sunset_25() and model_alias in ("gemini-flash-25", "gemini-flash-25-lite"):
             logger.warning("Model %s has been sunsetted. Blocking reservation.", model_alias)
             return None
+
         try:
+            # --- BƯỚC 2: PHÂN QUYỀN TRUY CẬP TIER ---
             allowed_tiers = self._get_allowed_tiers(account)
             concrete_model_id = model_id or self.get_model_id(model_alias)
 
@@ -86,270 +221,47 @@ class KeyResolverMixin:
                 members = [m for m in pool_cfg["members"] if not (is_sunset_25() and m in ("gemini-flash-25", "gemini-flash-25-lite"))]
                 if exclude_models:
                     members = [m for m in members if m not in exclude_models and self.get_model_id(m) not in exclude_models]
-                # Sort by health score — healthiest members tried first
                 members = self.get_healthy_pool_members(members)
-                search_phases = ["standard"]
-
-                for phase in search_phases:
-                    for member in members:
-                        mid = self.get_model_id(member)
-                        with self._key_lock:
-                            now = time.time()
-                            candidates = []
-                            cfg = AVAILABLE_MODELS.get(member, {})
-                            
-                            rpm_limit = int(cfg.get("rpm", 5))
-                            tpm_limit = int(cfg.get("tpm", 250000))
- 
-                            selected_key = None
-                            selected_mid = None
-                            for k, s in self._key_status.items():
-                                if s.get("enabled", 1) == 0:
-                                    continue
-                                if s.get("tier", "free") not in allowed_tiers:
-                                    continue
- 
-                                # Enforce Key pool mappings
-                                current_mid = mid
-                                allowed_pools = s.get("allowed_pools")
-                                if allowed_pools:
-                                    p_set = set(str(p).strip().lower() for p in allowed_pools)
-                                    ma = model_alias.strip().lower()
-                                    cm = concrete_model_id.strip().lower()
-                                    mb = member.strip().lower()
-                                    if ma not in p_set and cm not in p_set and mb not in p_set:
-                                        match_found = False
-                                        for allowed in p_set:
-                                            if allowed in ma or allowed in cm or allowed in mb or ma in allowed or cm in allowed or mb in allowed:
-                                                match_found = True
-                                                break
-                                        if not match_found:
-                                            continue
-                                
-                                # Apply extreme checking logic if retry_attempt is 10 or greater to avoid 429 cascades
-                                if retry_attempt < 10:
-                                    if s["frozen_until"] >= now:
-                                        continue
-                                    if self._key_is_circuit_open(k):
-                                        continue
-                                    # Auto-release stale active_requests: if key shows busy but last_success
-                                    # was > KEY_429_COOLDOWN × 5 seconds ago (request likely died), treat as idle.
-                                    auto_release_after = config.KEY_429_COOLDOWN_SECONDS * 5
-                                    active_reqs = s.get("active_requests", 0)
-                                    if active_reqs > 0:
-                                        last_ok = s.get("last_success", 0.0)
-                                        if now - last_ok > auto_release_after:
-                                            s["active_requests"] = 0
-                                        else:
-                                            continue
-                                else:
-                                    # Extreme: do NOT bypass. Check strictly to prevent picking frozen/busy keys.
-                                    if s["frozen_until"] >= now:
-                                        continue
-                                    if self._key_is_circuit_open(k):
-                                        continue
-                                    if s.get("active_requests", 0) > 0:
-                                        continue
- 
-                                pm = s.get("per_model", {})
-                                pm_entry = pm.get(current_mid, {})
-                                
-                                if retry_attempt < 10:
-                                    if isinstance(pm_entry, dict) and pm_entry.get("frozen_until", 0) >= now:
-                                        continue
-                                    if not check_key_model_limits(k, current_mid, estimated_tokens, rpm_limit, tpm_limit):
-                                        continue
-                                else:
-                                    if isinstance(pm_entry, dict) and pm_entry.get("frozen_until", 0) >= now:
-                                        continue
-                                    
-                                    # Extra strict RPM and TPM checking for attempt >= 10
-                                    from src.core.limits.gemini_rate_limiter import _key_model_requests, _key_model_tokens, _usage_lock
-                                    k_m = f"{k}::{current_mid}"
-                                    with _usage_lock:
-                                        reqs = _key_model_requests.get(k_m)
-                                        toks = _key_model_tokens.get(k_m)
-                                        req_count = sum(1 for ts in reqs if now - ts < 60) if reqs else 0
-                                        used_tokens = sum(t for ts, t in toks if now - ts < 60) if toks else 0
-                                    
-                                    # Check RPM with scaled limit (70% capacity)
-                                    max_rpm = max(1, int(rpm_limit * 0.7))
-                                    if req_count >= max_rpm:
-                                        continue
-                                    
-                                    # Check TPM: if massive prompt exceeds normal tpm_limit, only allow if 100% idle
-                                    max_tpm = int(tpm_limit * 0.7)
-                                    if estimated_tokens <= tpm_limit:
-                                        if used_tokens + estimated_tokens > max_tpm:
-                                            continue
-                                    else:
-                                        if req_count > 0 or used_tokens > 0:
-                                            continue
- 
-                                candidates.append((k, s, current_mid))
-                            if candidates:
-                                candidates_with_priority = []
-                                for k, s, key_mid in candidates:
-                                    pri = get_key_priority(k, key_mid)
-                                    if pri < 0:
-                                        continue
-                                    candidates_with_priority.append((pri, k, s, key_mid))
-                                
-                                if not candidates_with_priority:
-                                    continue
- 
-                                candidates_with_priority.sort(key=lambda x: (x[2].get("active_requests", 0), -x[0], x[2].get("consecutive_failures", 0)))
-                                if not candidates_with_priority:
-                                    continue
-                                # Lấy 50% key ngon nhất
-                                top_50_percent = int(len(candidates_with_priority) * 0.5)
-                                chosen_cand = random.choice(candidates_with_priority[:max(1, top_50_percent)])
-                                selected_key = chosen_cand[1]
-                                selected_mid = chosen_cand[3]
-                                
-                                self._key_status[selected_key]["usage"] += 1
-                                self._key_status[selected_key]["active_requests"] += 1
-                        if candidates and selected_key:
-                            try:
-                                atomic_reserve_key(selected_key)
-                            except Exception:
-                                with self._key_lock:
-                                    if selected_key in self._key_status:
-                                        self._key_status[selected_key]["usage"] = max(0, self._key_status[selected_key]["usage"] - 1)
-                                        self._key_status[selected_key]["active_requests"] = max(0, self._key_status[selected_key]["active_requests"] - 1)
-                                continue
-                            record_key_model_usage(selected_key, selected_mid or "", estimated_tokens)
-                            return {
-                                "key": selected_key,
-                                "model_alias": member,
-                                "model_id": selected_mid or "",
-                                "provider": "gemini",
-                            }
-                logger.warning("All keys frozen or rate limited for pool %s members=%s", model_alias, pool_cfg["members"])
-                return None
+            else:
+                members = [model_alias]
 
             search_phases = ["standard"]
-
             for phase in search_phases:
-                with self._key_lock:
-                    now = time.time()
-                    candidates = []
-                    cfg = AVAILABLE_MODELS.get(model_alias, {})
-                    if not cfg:
-                        for alias, val in AVAILABLE_MODELS.items():
-                            if val.get("model_id") == concrete_model_id:
-                                cfg = val
-                                break
-                    rpm_limit = int(cfg.get("rpm", 5)) if cfg else 5
-                    tpm_limit = int(cfg.get("tpm", 250000)) if cfg else 250000
-
-                    selected_key = None
-                    selected_mid = None
-                    for k, s in self._key_status.items():
-                        if s.get("enabled", 1) == 0:
-                            continue
-                        if s.get("tier", "free") not in allowed_tiers:
-                            continue
-
-                        # Enforce Key pool mappings
-                        current_mid = concrete_model_id
-                        allowed_pools = s.get("allowed_pools")
-                        if allowed_pools:
-                            p_set = set(str(p).strip().lower() for p in allowed_pools)
-                            ma = model_alias.strip().lower()
-                            cm = concrete_model_id.strip().lower()
-                            if ma not in p_set and cm not in p_set:
-                                match_found = False
-                                for allowed in p_set:
-                                    if allowed in ma or allowed in cm or ma in allowed or cm in allowed:
-                                        match_found = True
-                                        break
-                                if not match_found:
-                                    continue
+                for member in members:
+                    mid = self.get_model_id(member)
+                    rpm_limit, tpm_limit = self._get_model_limits(member, mid)
+                    
+                    with self._key_lock:
+                        now = time.time()
+                        candidates = []
+                        for k, s in self._key_status.items():
+                            if self._is_key_eligible(
+                                key=k,
+                                status=s,
+                                model_id=mid,
+                                model_alias=model_alias,
+                                estimated_tokens=estimated_tokens,
+                                rpm_limit=rpm_limit,
+                                tpm_limit=tpm_limit,
+                                retry_attempt=retry_attempt,
+                                allowed_tiers=allowed_tiers,
+                                now=now,
+                                pool_member_alias=member if pool_cfg else None
+                            ):
+                                candidates.append((k, s, mid))
                         
-                        # Apply extreme checking logic if retry_attempt is 10 or greater to avoid 429 cascades
-                        if retry_attempt < 10:
-                            if s["frozen_until"] >= now:
-                                continue
-                            if self._key_is_circuit_open(k):
-                                continue
-                            # Auto-release stale active_requests
-                            auto_release_after = config.KEY_429_COOLDOWN_SECONDS * 5
-                            active_reqs = s.get("active_requests", 0)
-                            if active_reqs > 0:
-                                last_ok = s.get("last_success", 0.0)
-                                if now - last_ok > auto_release_after:
-                                    s["active_requests"] = 0
-                                else:
-                                    continue
-                        else:
-                            # Extreme: do NOT bypass. Check strictly to prevent picking frozen/busy keys.
-                            if s["frozen_until"] >= now:
-                                continue
-                            if self._key_is_circuit_open(k):
-                                continue
-                            if s.get("active_requests", 0) > 0:
-                                continue
-
-                        pm = s.get("per_model", {})
-                        pm_entry = pm.get(current_mid, {})
-                        
-                        if retry_attempt < 10:
-                            if isinstance(pm_entry, dict) and pm_entry.get("frozen_until", 0) >= now:
-                                continue
-                            if not check_key_model_limits(k, current_mid, estimated_tokens, rpm_limit, tpm_limit):
-                                continue
-                        else:
-                            if isinstance(pm_entry, dict) and pm_entry.get("frozen_until", 0) >= now:
-                                continue
-                            
-                            # Extra strict RPM and TPM checking for attempt >= 10
-                            from src.core.limits.gemini_rate_limiter import _key_model_requests, _key_model_tokens, _usage_lock
-                            k_m = f"{k}::{current_mid}"
-                            with _usage_lock:
-                                reqs = _key_model_requests.get(k_m)
-                                toks = _key_model_tokens.get(k_m)
-                                req_count = sum(1 for ts in reqs if now - ts < 60) if reqs else 0
-                                used_tokens = sum(t for ts, t in toks if now - ts < 60) if toks else 0
-                            
-                            # Check RPM with scaled limit (70% capacity)
-                            max_rpm = max(1, int(rpm_limit * 0.7))
-                            if req_count >= max_rpm:
-                                continue
-                            
-                            # Check TPM: if massive prompt exceeds normal tpm_limit, only allow if 100% idle
-                            max_tpm = int(tpm_limit * 0.7)
-                            if estimated_tokens <= tpm_limit:
-                                if used_tokens + estimated_tokens > max_tpm:
-                                    continue
-                            else:
-                                if req_count > 0 or used_tokens > 0:
-                                    continue
-
-                        candidates.append((k, s, current_mid))
-
-                    if candidates:
-                        candidates_with_priority = []
-                        for k, s, key_mid in candidates:
-                            pri = get_key_priority(k, key_mid)
-                            if pri < 0:
-                                continue
-                            candidates_with_priority.append((pri, k, s, key_mid))
-                        
-                        candidates_with_priority.sort(key=lambda x: (x[2].get("active_requests", 0), -x[0], x[2].get("consecutive_failures", 0)))
-                        if not candidates_with_priority:
+                        if not candidates:
                             continue
 
-                        # Lấy 50% key ngon nhất
-                        top_50_percent = int(len(candidates_with_priority) * 0.5)
-                        chosen_cand = random.choice(candidates_with_priority[:max(1, top_50_percent)])
+                        chosen = self._select_key_double_random(candidates)
+                        if not chosen:
+                            continue
 
-                        selected_key = chosen_cand[1]
-                        selected_mid = chosen_cand[3]
-                            
+                        selected_key, selected_mid = chosen
                         self._key_status[selected_key]["usage"] += 1
                         self._key_status[selected_key]["active_requests"] += 1
-                if candidates and selected_key:
+
+                    # Commit ngoài lock tránh giữ khóa luồng lâu trong quá trình giao tiếp DB
                     try:
                         atomic_reserve_key(selected_key)
                     except Exception:
@@ -358,15 +270,19 @@ class KeyResolverMixin:
                                 self._key_status[selected_key]["usage"] = max(0, self._key_status[selected_key]["usage"] - 1)
                                 self._key_status[selected_key]["active_requests"] = max(0, self._key_status[selected_key]["active_requests"] - 1)
                         continue
-                    record_key_model_usage(selected_key, selected_mid or "", estimated_tokens)
+
+                    record_key_model_usage(selected_key, selected_mid, estimated_tokens)
                     return {
                         "key": selected_key,
-                        "model_alias": model_alias,
-                        "model_id": selected_mid or "",
+                        "model_alias": member,
+                        "model_id": selected_mid,
                         "provider": "gemini",
                     }
 
-            logger.warning("All keys are frozen or rate limited for model %s", concrete_model_id)
+            if pool_cfg:
+                logger.warning("All keys frozen or rate limited for pool %s members=%s", model_alias, pool_cfg["members"])
+            else:
+                logger.warning("All keys are frozen or rate limited for model %s", concrete_model_id)
             return None
         except Exception as exc:
             logger.error("reserve_key error: %s", exc)

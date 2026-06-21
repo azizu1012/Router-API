@@ -13,6 +13,9 @@ __pycache__/
 .ruff_cache/
 .mypy_cache/
 
+# ─── CodeGraph index ───
+.codegraph/
+
 # ─── Virtual env ───
 .venv/
 
@@ -40,6 +43,12 @@ stop_router_ssl.sh
 
 # ─── Local Claude Code config ───
 .claude/settings.local.json
+
+# ─── Scratch / temp files ───
+scratch/
+task.md
+code_quality_audit.md
+*.audit.md
 
 # ─── Local OpenCode config ───
 opencode.json

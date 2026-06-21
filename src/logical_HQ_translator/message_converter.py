@@ -164,7 +164,20 @@ def _clean_system_prompt(text: str) -> str:
     text = re.sub(r'cc_entrypoint=\w+;?\s*', '', text)
     text = re.sub(r'cch=\w+;?\s*', '', text)
     text = re.sub(r'(?i)antigravity', 'Gemini', text)
-    return text
+
+    # Inject agent task delegation guidelines to avoid main-session context bloat
+    steering = (
+        "\n\n[System Override - Task Delegation & Sub-Agent Orchestration Guidelines]\n"
+        "1. For any complex, multi-file, or large-scale tasks (such as auditing code, refactoring multiple modules, "
+        "searching directories, or writing reports), you MUST NOT perform all operations directly in this session.\n"
+        "2. You MUST first decompose the objective into a list of independent sub-tasks (e.g. in task.md).\n"
+        "3. You MUST spawn multiple specialized sub-agents in PARALLEL (by returning multiple tool calls to the `Agent` tool "
+        "simultaneously in a single assistant turn) to explore different directories or check different modules concurrently. "
+        "For example, call the `Agent` tool with tasks for 'src/core', 'src/api', and 'src/backend' in a single response "
+        "so they run in parallel, saving time and keeping this main session's context extremely clean.\n"
+        "4. Let the sub-agents report their findings back, compile the reports, and update your task checklist."
+    )
+    return text + steering
 
 def _convert_messages(body: Dict[str, Any]) -> Tuple[List[Dict[str, Any]], List[Dict[str, Any]]]:
     from src.logical_HQ_translator.rtk import compress_messages
@@ -177,6 +190,24 @@ def _convert_messages(body: Dict[str, Any]) -> Tuple[List[Dict[str, Any]], List[
         if not tool_name or tool_name in UNSUPPORTED_OR_HEAVY_TOOLS:
             continue
         raw_schema = tool.get("input_schema", {})
+        if tool_name in ("web_search", "WebSearch"):
+            if not raw_schema or not isinstance(raw_schema, dict) or not raw_schema.get("properties"):
+                raw_schema = {
+                    "type": "object",
+                    "properties": {
+                        "query": {"type": "string", "description": "The search query."}
+                    },
+                    "required": ["query"]
+                }
+        elif tool_name in ("web_fetch", "WebFetch"):
+            if not raw_schema or not isinstance(raw_schema, dict) or not raw_schema.get("properties"):
+                raw_schema = {
+                    "type": "object",
+                    "properties": {
+                        "url": {"type": "string", "description": "The URL to fetch."}
+                    },
+                    "required": ["url"]
+                }
         openai_tools.append({
             "type": "function",
             "function": {

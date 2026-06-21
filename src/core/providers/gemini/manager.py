@@ -12,7 +12,7 @@ from src.core.limits import get_rate_limiter
 from .pool import ClientPool
 from . import caller
 from . import error as gerror
-from .thinking_config import build_thinking_config
+from src.core.providers.gemini_thinking import resolve_thinking_config
 from .utils import (
     get_excluded_models, all_models_excluded, prepare_tools,
     wait_global_cooldown, backoff, accumulate_parts, extract_stream_usage, handle_error,
@@ -112,7 +112,7 @@ class GeminiAPIManager:
                     use_grounding, request_tools = prepare_tools(
                         tools, model_id, image_count, contents, web_search,
                     )
-                    tc = build_thinking_config(model_id, thinking_level, thinking_budget, include_thoughts)
+                    tc = resolve_thinking_config(model_id, thinking_level, thinking_budget, include_thoughts)
                     response = await self._call_with_grounding_fallback(
                         api_key, model_id, system_instruction, contents,
                         max_tokens, temperature, top_p, request_tools,
@@ -267,7 +267,7 @@ class GeminiAPIManager:
                     use_grounding, request_tools = prepare_tools(
                         tools, model_id, image_count, contents, web_search,
                     )
-                    tc = build_thinking_config(model_id, thinking_level, thinking_budget, include_thoughts)
+                    tc = resolve_thinking_config(model_id, thinking_level, thinking_budget, include_thoughts)
                     try:
                         stream_gen = caller.generate_content_stream(
                             self.pool, api_key, model_id,

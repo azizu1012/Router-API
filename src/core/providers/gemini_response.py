@@ -32,6 +32,7 @@ def parse_gemini_chunk(chunk: Dict[str, Any], state: Dict[str, Any]) -> List[Dic
     for part in content.get("parts", []):
         is_thought = part.get("thought") is True
         text = part.get("text", "")
+        ts = part.get("thought_signature") or part.get("thoughtSignature")
 
         if text:
             delta = {}
@@ -39,6 +40,13 @@ def parse_gemini_chunk(chunk: Dict[str, Any], state: Dict[str, Any]) -> List[Dic
                 delta["reasoning_content"] = text
             else:
                 delta["content"] = text
+            if ts:
+                delta["thought_signature"] = ts
+            results.append(_make_chunk(state, delta, None))
+        elif ts and not part.get("functionCall"):
+            delta = {"thought_signature": ts}
+            if is_thought:
+                delta["reasoning_content"] = ""
             results.append(_make_chunk(state, delta, None))
 
         fc = part.get("functionCall")
@@ -54,7 +62,10 @@ def parse_gemini_chunk(chunk: Dict[str, Any], state: Dict[str, Any]) -> List[Dic
                     "arguments": json.dumps(fc.get("args", {})),
                 },
             }
-            results.append(_make_chunk(state, {"tool_calls": [tool_call]}, None))
+            delta = {"tool_calls": [tool_call]}
+            if ts:
+                delta["thought_signature"] = ts
+            results.append(_make_chunk(state, delta, None))
 
     _extract_usage(response, chunk, state)
 
@@ -78,6 +89,7 @@ def parse_gemini_nonstream(response: Dict[str, Any], model_alias: str) -> Dict[s
 
     content_parts: List[str] = []
     reasoning_parts: List[str] = []
+    thought_sig_parts: List[str] = []
     tool_calls: List[Dict[str, Any]] = []
 
     for chunk in chunks:
@@ -86,6 +98,8 @@ def parse_gemini_nonstream(response: Dict[str, Any], model_alias: str) -> Dict[s
             content_parts.append(delta["content"])
         if delta.get("reasoning_content"):
             reasoning_parts.append(delta["reasoning_content"])
+        if delta.get("thought_signature"):
+            thought_sig_parts.append(delta["thought_signature"])
         if delta.get("tool_calls"):
             tool_calls.extend(delta["tool_calls"])
 
@@ -94,6 +108,8 @@ def parse_gemini_nonstream(response: Dict[str, Any], model_alias: str) -> Dict[s
         message["tool_calls"] = tool_calls
     if reasoning_parts:
         message["reasoning_content"] = "".join(reasoning_parts)
+    if thought_sig_parts:
+        message["thought_signature"] = "".join(thought_sig_parts)
 
     finish_reason = "stop"
     for chunk in chunks:

@@ -40,34 +40,15 @@ def _compute_thinking_for_model(
     """Recompute thinking config for a specific model (handles V3 vs V2 correctly)."""
     if not thinking_params:
         return None
-    m = model_id.lower()
-    if "lite" in m:
-        return None
-    is_v3 = "gemini-3" in m and "gemini-2" not in m
-
-    thinking_level = thinking_params.get("thinking_level")
-    thinking_budget = thinking_params.get("thinking_budget")
-    include_thoughts = thinking_params.get("include_thoughts")
-
-    if thinking_level is not None:
-        if is_v3:
-            return {"thinking_level": str(thinking_level).lower(), "include_thoughts": include_thoughts if include_thoughts is not None else True}
-        budget_map = {"low": 1024, "medium": 2048, "high": 4096}
-        return {"thinking_budget": budget_map.get(str(thinking_level).lower(), 2048), "include_thoughts": include_thoughts if include_thoughts is not None else True}
-
-    if thinking_budget is not None:
-        if is_v3:
-            return {"thinking_level": "medium", "include_thoughts": include_thoughts if include_thoughts is not None else True}
-        return {"thinking_budget": int(thinking_budget), "include_thoughts": include_thoughts if include_thoughts is not None else True}
-
-    if include_thoughts is not None and include_thoughts:
-        if is_v3:
-            return {"thinking_level": "low" if "flash" in m and "pro" not in m else "medium", "include_thoughts": True}
-        return {"thinking_budget": 8192 if "flash" in m and "pro" not in m else 16384, "include_thoughts": True}
-
-    if is_v3:
-        return {"thinking_level": "low" if "flash" in m and "pro" not in m else "medium", "include_thoughts": True}
-    return {"thinking_budget": 8192 if "flash" in m and "pro" not in m else 16384, "include_thoughts": True}
+    from src.core.providers.gemini_thinking import resolve_thinking_config
+    res = resolve_thinking_config(
+        model_id=model_id,
+        thinking_level=thinking_params.get("thinking_level"),
+        thinking_budget=thinking_params.get("thinking_budget"),
+        include_thoughts=thinking_params.get("include_thoughts"),
+        is_sub_agent=False,
+    )
+    return res if res else None
 
 
 def _classify_error(e: Exception) -> str:
@@ -114,6 +95,8 @@ class PoolManager:
         """Unified pool call for non-streaming completions."""
         pool = router.resolve_pool(model_alias)
         if pool:
+            # --- CHẾ ĐỘ POOL (POOL MODE) ---
+            # Sử dụng nhóm các model thành viên (ví dụ: gemini-flash xoay vòng giữa 35, 30, 25)
             pool.start()
             pool_try = -1
             while not pool.exhausted:
@@ -122,12 +105,13 @@ class PoolManager:
                 model_id_val = None
                 reservation = {}
                 try:
+                    # Quyết định chọn model và key thích hợp nhất (có cơ chế Double Random & Jitter)
                     resp, api_key_val, model_id_val, input_tokens, reservation = await self._resolve_and_call(
                         model_alias, messages, tools, temperature, max_tokens, thinking_config,
                         account, extra_body, pool_mode=True, pool=pool, is_stream=False,
                         attempt=pool_try, thinking_params=thinking_params,
                     )
-                    # Successful call
+                    # Giao dịch thành công -> đánh dấu sức khỏe của model / custom endpoint hoạt động tốt
                     member_used = reservation.get("model_alias", pool.current_model)
                     is_custom = reservation.get("provider") == "custom"
                     if is_custom:
@@ -143,6 +127,7 @@ class PoolManager:
                         "reservation": reservation
                     }
                 except Exception as e:
+                    # Rút trích thông tin key và model từ lỗi PoolCallError đóng gói
                     if isinstance(e, PoolCallError):
                         api_key_val = e.api_key
                         model_id_val = e.model_id
@@ -151,38 +136,43 @@ class PoolManager:
                     member_used = reservation.get("model_alias", pool.current_model) if reservation else pool.current_model
                     is_custom = reservation.get("provider") == "custom"
                     if is_custom:
+                        # Gặp lỗi với custom endpoint (OpenAI SDK backend) -> swap ngay lập tức
                         logger.warning("[PoolManager] Custom endpoint failed: %s, swapping...", e)
                         endpoint_manager.mark_endpoint_failure(reservation.get("name", member_used))
                         pool.record_failure(member_used, "custom_endpoint_error")
                         pool.swap()
                         continue
 
-                    # Classify error
+                    # Phân loại lỗi trả về từ Gemini API
                     reason = _classify_error(e)
                     if reason in TRANSIENT_REASONS:
-                        # Update transient metrics
+                        # --- XỬ LÝ LỖI TẠM THỜI (SOFT HANDLING) ---
+                        # 429, 503, timeout: KHÔNG đóng băng lâu (3600s), KHÔNG tính là lỗi thành viên hỏng.
                         count_transient_error(reason)
                         if reason == "rate_limit":
                             router.record_429()
 
-                        # Apply temporary score penalty and freeze the key
+                        # Đóng băng key cực ngắn (KEY_429_COOLDOWN_SECONDS ~ 8-15s) và áp penalty để giảm điểm ưu tiên
                         if api_key_val and model_id_val:
                             router.freeze_key(api_key_val, config.KEY_429_COOLDOWN_SECONDS, model_id_val, reason)
                             apply_error_penalty(api_key_val, reason, model_id_val)
 
+                        # Tăng bộ đếm lỗi tạm thời của pool. Nếu lỗi liên tiếp >= POOL_SWAP_FAILURES (5) -> swap sang model khác
                         pool._consecutive_transient += 1
                         if pool._consecutive_transient >= config.POOL_SWAP_FAILURES:
                             logger.warning("[PoolManager] Transient error %s on member %s, too many retries - swapping...", reason, member_used)
                             pool._consecutive_transient = 0
                             pool.swap()
                         else:
+                            # Đợi một thời gian trễ ngẫu nhiên (Jitter) trước khi thử lại với key khác
                             delay = _retry_delay(pool._consecutive_transient)
                             logger.warning("[PoolManager] Transient error %s on member %s, retrying in %.1fs (attempt %d)", reason, member_used, delay, pool._consecutive_transient)
                             await asyncio.sleep(delay)
                         continue
                     else:
+                        # --- XỬ LÝ LỖI VĨNH VIỄN (HARD ERROR) ---
+                        # Lỗi invalid_key, billing, bad_request: Đóng băng lâu và swap model lập tức.
                         pool._consecutive_transient = 0
-                        # Permanent errors: freeze key, record failure & swap
                         logger.error("[PoolManager] Hard error %s on member %s: %s", reason, member_used, e)
                         if api_key_val and model_id_val:
                             cooldown = config.KEY_INVALID_COOLDOWN_SECONDS if reason == "invalid_key" else config.KEY_429_COOLDOWN_SECONDS
@@ -192,7 +182,8 @@ class PoolManager:
                         pool.swap()
             raise RuntimeError("Pool exhausted or all attempts failed")
         else:
-            # Standalone mode (no pool config)
+            # --- CHẾ ĐỘ ĐƠN LẺ (STANDALONE MODE) ---
+            # Gọi trực tiếp model không qua pool xoay vòng
             for attempt in range(config.MAX_RETRIES):
                 api_key_val = None
                 model_id_val = None
@@ -222,6 +213,7 @@ class PoolManager:
                         if reason == "rate_limit":
                             router.record_429()
                     if api_key_val and model_id_val:
+                        # Đóng băng key tương tự và áp dụng Timing Jitter khi ngủ
                         cooldown = config.KEY_INVALID_COOLDOWN_SECONDS if reason in ("invalid_key", "permission_denied") else config.KEY_429_COOLDOWN_SECONDS
                         router.freeze_key(api_key_val, cooldown, model_id_val, reason)
                         apply_error_penalty(api_key_val, reason, model_id_val)
@@ -244,8 +236,9 @@ class PoolManager:
         """Unified pool call for streaming completions. Yields dict chunks."""
         pool = router.resolve_pool(model_alias)
         if pool:
+            # --- CHẾ ĐỘ POOL STREAM ---
             pool.start()
-            committed = False
+            committed = False  # Khi stream đã yield ra chunk đầu tiên, committed=True và KHÔNG được phép retry/swap nữa
             pool_try = -1
             while not pool.exhausted:
                 pool_try += 1
@@ -253,7 +246,7 @@ class PoolManager:
                 model_id_val = None
                 reservation = {}
                 try:
-                    # Resolve key and pool member
+                    # Đăng ký và giữ key từ resolver
                     max_output = min(int(max_tokens or config.MAX_OUTPUT_TOKENS), config.MAX_OUTPUT_TOKENS)
                     estimated_tokens = len(str(messages)) // 4 + max_output
                     model_alias_val, model_id_val, api_key_val, model_full_val, reservation = await _resolve_model(
@@ -264,19 +257,21 @@ class PoolManager:
                     is_custom = reservation.get("provider") == "custom"
                     member_used = reservation.get("model_alias", pool.current_model)
 
-                    # Per-member thinking config
+                    # Tính toán thinking config động cho member được chọn
                     member_tc = _compute_thinking_for_model(thinking_params, model_full_val) if not is_custom else None
                     if member_tc is None:
                         member_tc = thinking_config
+                    if member_tc and "lite" in model_full_val.lower():
+                        member_tc = {}
 
-                    # Quota checks
+                    # Kiểm tra và trừ hạn ngạch tài khoản (Quota check)
                     has_quota = await router.acquire_quota(estimated_tokens, model_alias)
                     if not has_quota:
                         apply_error_penalty(api_key_val, "rate_limit_rpm_tpm", model_id_val)
                         router.freeze_key(api_key_val, config.KEY_429_COOLDOWN_SECONDS, model_id_val, "rate_limit")
                         raise RuntimeError("quota_exhausted")
 
-                    # Invoke stream
+                    # Thực hiện gọi API Stream
                     try:
                         kwargs = {
                             "model": model_full_val,
@@ -295,7 +290,7 @@ class PoolManager:
 
                         gen = await acompletion(**kwargs)
                         async for chunk in gen:
-                            committed = True
+                            committed = True  # Đánh dấu stream đã ghi nhận thành công dữ liệu đầu tiên
                             yield {
                                 "chunk": chunk,
                                 "api_key": api_key_val,
@@ -304,7 +299,7 @@ class PoolManager:
                                 "reservation": reservation
                             }
                         
-                        # Streaming completed successfully
+                        # Thành công -> cập nhật trạng thái tốt
                         if is_custom:
                             endpoint_manager.mark_endpoint_success(reservation.get("name", member_used))
                         else:
@@ -312,12 +307,13 @@ class PoolManager:
                         pool.record_success()
                         return
                     finally:
+                        # Bắt buộc phải giải phóng key sau khi tác vụ stream kết thúc/gặp lỗi
                         if api_key_val:
                             router.release_key(api_key_val)
 
                 except Exception as e:
+                    # Nếu stream đang chạy dở mà đứt giữa chừng -> không thể thực hiện retry với key/model khác (đã gửi headers/chunk cho client)
                     if committed:
-                        # Once stream starts and yields, we cannot retry or swap pool
                         logger.error("[PoolManager] Stream interrupted after committing: %s", e)
                         raise
 
@@ -332,17 +328,17 @@ class PoolManager:
 
                     reason = _classify_error(e)
                     if reason in TRANSIENT_REASONS:
-                        # Update transient metrics
+                        # Lỗi tạm thời (Soft handling) trong luồng stream
                         count_transient_error(reason)
                         if reason == "rate_limit":
                             router.record_429()
 
-                        # Apply temporary score penalty and freeze the key
                         if api_key_val and model_id_val:
                             router.freeze_key(api_key_val, config.KEY_429_COOLDOWN_SECONDS, model_id_val, reason)
                             apply_error_penalty(api_key_val, reason, model_id_val)
 
                         if not reservation:
+                            # Không có key nào để giữ -> swap model luôn
                             logger.warning("[PoolManager] Transient stream error %s on member %s, no key available - swapping...", reason, member_used)
                             pool._consecutive_transient = 0
                             pool.swap()
@@ -353,11 +349,13 @@ class PoolManager:
                                 pool._consecutive_transient = 0
                                 pool.swap()
                             else:
+                                # Chờ Timing Jitter rồi retry
                                 delay = _retry_delay(pool._consecutive_transient)
                                 logger.warning("[PoolManager] Transient stream error %s on member %s, retrying in %.1fs (attempt %d)", reason, member_used, delay, pool._consecutive_transient)
                                 await asyncio.sleep(delay)
                         continue
                     else:
+                        # Lỗi cứng (Hard error) -> đóng băng key dài hạn & swap ngay
                         pool._consecutive_transient = 0
                         logger.error("[PoolManager] Hard stream error %s: %s", reason, e)
                         if api_key_val and model_id_val:
@@ -368,7 +366,7 @@ class PoolManager:
                         pool.swap()
             raise RuntimeError("Pool stream exhausted or failed")
         else:
-            # Standalone stream mode
+            # --- CHẾ ĐỘ ĐƠN LẺ STREAM (STANDALONE STREAM MODE) ---
             for attempt in range(config.MAX_RETRIES):
                 api_key_val = None
                 model_id_val = None
@@ -380,8 +378,9 @@ class PoolManager:
                         retry_attempt=attempt, pool_mode=False
                     )
 
-                    # Per-member thinking config (standalone mode)
                     member_tc = _compute_thinking_for_model(thinking_params, model_full_val) if not thinking_config else thinking_config
+                    if member_tc and "lite" in model_full_val.lower():
+                        member_tc = {}
 
                     has_quota = await router.acquire_quota(estimated_tokens, model_alias)
                     if not has_quota:
@@ -460,6 +459,8 @@ class PoolManager:
         member_tc = _compute_thinking_for_model(thinking_params, model_full_val) if not is_custom else None
         if member_tc is None:
             member_tc = thinking_config
+        if member_tc and "lite" in model_full_val.lower():
+            member_tc = {}
 
         # Central pool quota / rate checks
         try:

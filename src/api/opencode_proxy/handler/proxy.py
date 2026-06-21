@@ -54,37 +54,14 @@ def _is_sub_agent_request(body: Dict[str, Any]) -> bool:
 
 def _resolve_thinking_config(body: Dict[str, Any], model_id: str) -> Dict[str, Any]:
     """Convert request thinking params → GenAI SDK thinking_config dict."""
-    m = model_id.lower()
-    if "lite" in m:
-        return {}
-
-    is_v3 = "gemini-3" in m and "gemini-2" not in m
-    thinking_level = body.get("thinking_level")
-    thinking_budget = body.get("thinking_budget")
-    include_thoughts = body.get("include_thoughts")
-
-    if thinking_level is not None:
-        if is_v3:
-            return {"thinking_level": str(thinking_level).lower(), "include_thoughts": include_thoughts if include_thoughts is not None else True}
-        budget_map = {"low": 1024, "medium": 2048, "high": 4096}
-        return {"thinking_budget": budget_map.get(str(thinking_level).lower(), 2048), "include_thoughts": include_thoughts if include_thoughts is not None else True}
-
-    if thinking_budget is not None:
-        if is_v3:
-            return {"thinking_level": "medium", "include_thoughts": include_thoughts if include_thoughts is not None else True}
-        return {"thinking_budget": int(thinking_budget), "include_thoughts": include_thoughts if include_thoughts is not None else True}
-
-    if include_thoughts is not None and include_thoughts:
-        if is_v3:
-            return {"thinking_level": "low" if "flash" in m and "pro" not in m else "medium", "include_thoughts": True}
-        return {"thinking_budget": 8192 if "flash" in m and "pro" not in m else 16384, "include_thoughts": True}
-
-    if _is_sub_agent_request({"system": body.get("system", "")}):
-        return {}
-
-    if is_v3:
-        return {"thinking_level": "low" if "flash" in m and "pro" not in m else "medium", "include_thoughts": True}
-    return {"thinking_budget": 8192 if "flash" in m and "pro" not in m else 16384, "include_thoughts": True}
+    from src.core.providers.gemini_thinking import resolve_thinking_config
+    return resolve_thinking_config(
+        model_id=model_id,
+        thinking_level=body.get("thinking_level"),
+        thinking_budget=body.get("thinking_budget"),
+        include_thoughts=body.get("include_thoughts"),
+        is_sub_agent=_is_sub_agent_request({"system": body.get("system", "")}),
+    )
 
 
 class OpenCodeProxy:

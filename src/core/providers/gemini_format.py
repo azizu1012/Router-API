@@ -71,8 +71,16 @@ def convert_messages_to_contents(messages: List[Dict[str, Any]]) -> Dict[str, An
             parts = []
 
             reasoning = msg.get("reasoning_content")
+            tsig = msg.get("thought_signature")
             if reasoning:
-                parts.append({"thought": True, "text": reasoning})
+                p_dict = {"thought": True, "text": reasoning}
+                if tsig:
+                    import base64
+                    try:
+                        p_dict["thought_signature"] = base64.b64decode(tsig)
+                    except Exception:
+                        p_dict["thought_signature"] = tsig if isinstance(tsig, bytes) else tsig.encode("utf-8")
+                parts.append(p_dict)
 
             if content:
                 text = content if isinstance(content, str) else _extract_text_content(content)
@@ -88,12 +96,19 @@ def convert_messages_to_contents(messages: List[Dict[str, Any]]) -> Dict[str, An
                         args = json.loads(tc.get("function", {}).get("arguments", "{}"))
                     except (json.JSONDecodeError, ValueError):
                         args = {}
-                    parts.append({
+                    p_dict = {
                         "functionCall": {
                             "name": sanitize_function_name(tc["function"]["name"]),
                             "args": args,
                         }
-                    })
+                    }
+                    if tsig:
+                        import base64
+                        try:
+                            p_dict["thought_signature"] = base64.b64decode(tsig)
+                        except Exception:
+                            p_dict["thought_signature"] = tsig if isinstance(tsig, bytes) else tsig.encode("utf-8")
+                    parts.append(p_dict)
 
             if parts:
                 contents.append({"role": "model", "parts": parts})

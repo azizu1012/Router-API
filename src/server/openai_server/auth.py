@@ -110,9 +110,6 @@ async def _apply_account_limit(account: Dict[str, Any], body: Dict[str, Any], is
                     "file search specialist",
                     "exploration task",
                     "read-only exploration",
-                    "plan agent",
-                    "software architect",
-                    "implementation plans",
                     "claude-code-guide",
                     "statusline-setup",
                     "specialized agent",
@@ -121,7 +118,6 @@ async def _apply_account_limit(account: Dict[str, Any], body: Dict[str, Any], is
                     "security monitor",
                     "you are the claude-code-guide",
                     "you are the explore",
-                    "you are the plan",
                     "you are the general-purpose",
                     "you are the statusline-setup",
                     "file_search_specialist", "file-search-specialist",
@@ -130,7 +126,6 @@ async def _apply_account_limit(account: Dict[str, Any], body: Dict[str, Any], is
                     "research specialist", "research_specialist", "research-specialist",
                     "code review", "code_review", "codereview",
                     "debug assistant", "debug_assistant", "debug-assistant",
-                    "planning", "planner",
                     "task agent", "task_agent", "task-agent",
                 ]
                 is_claude_code = (

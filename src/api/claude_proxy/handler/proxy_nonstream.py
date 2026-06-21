@@ -11,7 +11,7 @@ from src.core.config_n_logg import config
 from src.core.config_n_logg.logger import logger_proxy as logger
 from src.core.router import router
 from src.core.pool_manager import pool_manager
-from src.logical_HQ_translator import _convert_messages, _intercept_sub_agent, XMLThinkingExtractor
+from src.logical_HQ_translator import _convert_messages, _intercept_sub_agent, XMLThinkingExtractor, _get_simulated_cache_usage
 from .compaction import _pre_compact_and_truncate
 from .helpers import get_system_status_summary
 
@@ -32,21 +32,22 @@ class ClaudeProxyNonstreamMixin:
             openai_tools.append(_WEBSEARCH_TOOL_DEF)
             logger.info("[WebSearch] Injected WebSearch tool for Claude non-stream")
 
-        override_alias = _intercept_sub_agent(body)
+        override_alias = _intercept_sub_agent(body, account=account)
         model_alias = override_alias or router.resolve_model_alias(body.get("model", "")) or config.DEFAULT_MODEL_ALIAS
 
         await _pre_compact_and_truncate(body, openai_messages, openai_tools, model_alias)
 
-        try:
-            max_tokens = max(1, min(int(body.get("max_tokens", 4096)), config.MAX_OUTPUT_TOKENS))
-            temperature = float(body.get("temperature", 0.7))
-            thinking_config = _resolve_thinking_config(body, model_alias)
-            thinking_params = {
-                "thinking_level": body.get("thinking_level"),
-                "thinking_budget": body.get("thinking_budget"),
-                "include_thoughts": body.get("include_thoughts", True),
-            }
+        max_tokens = max(1, min(int(body.get("max_tokens", 4096)), config.MAX_OUTPUT_TOKENS))
+        temperature = float(body.get("temperature", 0.7))
+        thinking_config = _resolve_thinking_config(body, model_alias)
+        thinking_params = {
+            "thinking_level": body.get("thinking_level"),
+            "thinking_budget": body.get("thinking_budget"),
+            "include_thoughts": body.get("include_thoughts", True),
+        }
 
+        recursion_depth = 0
+        while recursion_depth < 5:
             result = await pool_manager.call_nonstream(
                 model_alias=model_alias,
                 messages=openai_messages,
@@ -58,46 +59,151 @@ class ClaudeProxyNonstreamMixin:
                 extra_body=None,
                 thinking_params=thinking_params,
             )
-        except Exception as e:
-            logger.error("[Claude NonStream] PoolManager failed: %s", e, exc_info=True)
-            summary_text = get_system_status_summary(model_alias)
-            return {
-                "id": "msg_err_" + uuid.uuid4().hex[:8],
-                "type": "message",
+
+            resp = result["response"]
+            input_tokens = result.get("input_tokens", 0) or 0
+            usage = getattr(resp, "usage", None) or {}
+            output_tokens = 0
+            if isinstance(usage, dict):
+                output_tokens = usage.get("completion_tokens", 0) or 0
+
+            choice = resp.choices[0] if getattr(resp, "choices", None) else None
+            msg = getattr(choice, "message", None) if choice else None
+            text = getattr(msg, "content", "") if msg else ""
+            thought = getattr(msg, "reasoning_content", None) if msg else None
+            tsig = None
+            if msg:
+                if isinstance(msg, dict):
+                    tsig = msg.get("thought_signature")
+                else:
+                    tsig = getattr(msg, "thought_signature", None)
+            finish_reason = getattr(choice, "finish_reason", "stop") if choice else "stop"
+
+            if not thought and text:
+                extractor = XMLThinkingExtractor()
+                events = extractor.feed(text) + extractor.flush()
+                clean_parts = []
+                thought_parts = []
+                for ev_type, ev_val in events:
+                    if ev_type == "thinking":
+                        thought_parts.append(ev_val)
+                    elif ev_type == "text":
+                        clean_parts.append(ev_val)
+                if thought_parts:
+                    thought = "".join(thought_parts)
+                    text = "".join(clean_parts)
+
+            # Check if there is an intercepted tool call (web_search / web_fetch)
+            raw_tool_calls = []
+            if msg:
+                if isinstance(msg, dict):
+                    raw_tool_calls = msg.get("tool_calls") or []
+                else:
+                    raw_tool_calls = getattr(msg, "tool_calls", None) or []
+
+            intercepted_call = None
+            for tc in raw_tool_calls:
+                if isinstance(tc, dict):
+                    name = tc.get("function", {}).get("name", "")
+                else:
+                    name = getattr(tc.function, "name", "")
+                if name in ("web_search", "WebSearch", "web_fetch", "WebFetch"):
+                    intercepted_call = tc
+                    break
+
+            if not intercepted_call:
+                break
+
+            # Execute the intercepted tool
+            tc_id = intercepted_call.get("id") if isinstance(intercepted_call, dict) else getattr(intercepted_call, "id", f"call_{uuid.uuid4().hex[:16]}")
+            if isinstance(intercepted_call, dict):
+                fn = intercepted_call.get("function", {})
+                name = fn.get("name", "")
+                args = fn.get("arguments", "{}")
+            else:
+                name = getattr(intercepted_call.function, "name", "")
+                args = getattr(intercepted_call.function, "arguments", "{}")
+
+            if isinstance(args, str):
+                try:
+                    args = json.loads(args)
+                except Exception:
+                    args = {}
+
+            tool_result = ""
+            if name in ("web_search", "WebSearch"):
+                query = args.get("query", "")
+                logger.info("[Claude Proxy Intercept - WebSearch] executing query=%r", query[:160])
+                try:
+                    from src.core.providers.search_manager import execute_hybrid_search
+                    from src.api.opencode_proxy.handler.websearch import resolve_search_engine
+                    se = resolve_search_engine(body, account)
+                    search_context, combined_citations = await execute_hybrid_search(
+                        [query], search_engine=se, auth_key_prefix=auth_key_prefix, account=account
+                    )
+                    if search_context:
+                        result_lines = [search_context]
+                        unique_links = []
+                        for c in combined_citations:
+                            url = c.get("url")
+                            if url and url not in search_context:
+                                title = c.get("title") or "Source"
+                                unique_links.append(f"- [{title}]({url})")
+                        if unique_links:
+                            result_lines.append("\n**Sources / Citations:**\n" + "\n".join(unique_links))
+                        tool_result = "\n".join(result_lines)
+                    else:
+                        tool_result = "No search results found."
+                except Exception as e:
+                    tool_result = f"Search error: {e}"
+                    logger.warning("[Claude Proxy Intercept - WebSearch] query failed: %s", e)
+
+            elif name in ("web_fetch", "WebFetch"):
+                url = args.get("url", "")
+                logger.info("[Claude Proxy Intercept - WebFetch] fetching url=%r", url[:200])
+                try:
+                    import aiohttp
+                    async with aiohttp.ClientSession() as session:
+                        async with session.get(url, timeout=aiohttp.ClientTimeout(total=10),
+                                               headers={"User-Agent": "Mozilla/5.0 (Router API; +http://127.0.0.1:58100)"}) as resp_fetch:
+                            if resp_fetch.status == 200:
+                                raw = await resp_fetch.text()
+                                tool_result = raw[:8000]
+                            else:
+                                tool_result = f"HTTP error {resp_fetch.status}"
+                except Exception as e:
+                    tool_result = f"WebFetch error: {e}"
+                    logger.warning("[Claude Proxy Intercept - WebFetch] fetch failed: %s", e)
+
+            # Construct messages for recursive turn
+            ast_text = text
+            if thought:
+                ast_text = f"<thinking>\n{thought}\n</thinking>\n{ast_text}" if ast_text else f"<thinking>\n{thought}\n</thinking>"
+
+            assistant_msg = {
                 "role": "assistant",
-                "model": body.get("model") or model_alias,
-                "content": [{"type": "text", "text": summary_text}],
-                "stop_reason": "end_turn",
-                "stop_sequence": None,
-                "usage": {"input_tokens": len(summary_text) // 4, "output_tokens": len(summary_text) // 4},
+                "content": ast_text or None,
+                "reasoning_content": thought or None,
+                "thought_signature": tsig or None,
+                "tool_calls": [
+                    {
+                        "id": tc_id,
+                        "type": "function",
+                        "function": {
+                            "name": name,
+                            "arguments": json.dumps(args)
+                        }
+                    }
+                ]
             }
-
-        resp = result["response"]
-        input_tokens = result.get("input_tokens", 0) or 0
-        usage = getattr(resp, "usage", None) or {}
-        output_tokens = 0
-        if isinstance(usage, dict):
-            output_tokens = usage.get("completion_tokens", 0) or 0
-
-        choice = resp.choices[0] if getattr(resp, "choices", None) else None
-        msg = getattr(choice, "message", None) if choice else None
-        text = getattr(msg, "content", "") if msg else ""
-        thought = getattr(msg, "reasoning_content", None) if msg else None
-        finish_reason = getattr(choice, "finish_reason", "stop") if choice else "stop"
-
-        if not thought and text:
-            extractor = XMLThinkingExtractor()
-            events = extractor.feed(text) + extractor.flush()
-            clean_parts = []
-            thought_parts = []
-            for ev_type, ev_val in events:
-                if ev_type == "thinking":
-                    thought_parts.append(ev_val)
-                elif ev_type == "text":
-                    clean_parts.append(ev_val)
-            if thought_parts:
-                thought = "".join(thought_parts)
-                text = "".join(clean_parts)
+            tool_result_msg = {
+                "role": "tool",
+                "tool_call_id": tc_id,
+                "name": name,
+                "content": tool_result
+            }
+            openai_messages.extend([assistant_msg, tool_result_msg])
+            recursion_depth += 1
 
         content_blocks = []
         if thought:
@@ -151,6 +257,7 @@ class ClaudeProxyNonstreamMixin:
         else:
             stop_reason = "end_turn"
 
+        cache_usage = _get_simulated_cache_usage(body or {}, input_tokens)
         return {
             "id": "msg_" + uuid.uuid4().hex[:24],
             "type": "message",
@@ -159,5 +266,9 @@ class ClaudeProxyNonstreamMixin:
             "content": content_blocks,
             "stop_reason": stop_reason,
             "stop_sequence": None,
-            "usage": {"input_tokens": input_tokens, "output_tokens": output_tokens},
+            "usage": {
+                "input_tokens": input_tokens,
+                "output_tokens": output_tokens,
+                **cache_usage
+            },
         }

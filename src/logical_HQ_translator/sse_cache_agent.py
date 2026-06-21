@@ -44,7 +44,16 @@ def _get_simulated_cache_usage(body: Dict[str, Any], input_tokens: int) -> Dict[
         "cache_read_input_tokens": cache_read,
     }
 
-def _intercept_sub_agent(body: Dict[str, Any]) -> Optional[str]:
+def _get_sub_agent_override_model(account: Optional[Dict[str, Any]] = None) -> str:
+    target_model = None
+    if account:
+        target_model = account.get("subagent_model") or account.get("agent_model") or account.get("sub_agent_model")
+    if not target_model:
+        import os
+        target_model = os.getenv("OPENCODE_SUB_AGENT_MODEL") or os.getenv("SUB_AGENT_MODEL")
+    return target_model or "gemini-flash-lite"
+
+def _intercept_sub_agent(body: Dict[str, Any], account: Optional[Dict[str, Any]] = None) -> Optional[str]:
     system_instruction = body.get("system", "")
     if isinstance(system_instruction, list):
         system_prompt = "\n".join([str(item.get("text", "")) for item in system_instruction if isinstance(item, dict)])
@@ -102,9 +111,11 @@ def _intercept_sub_agent(body: Dict[str, Any]) -> Optional[str]:
         if is_main:
             return None
 
+        sub_model = _get_sub_agent_override_model(account)
+
         if "you are claude code" in system_prompt_lower:
-            logger.info("[Sub-Agent Detect] Detected Claude Code sub-agent via non-interactive prompt, overriding to gemini-flash-lite")
-            return "gemini-flash-lite"
+            logger.info(f"[Sub-Agent Detect] Detected Claude Code sub-agent via non-interactive prompt, overriding to {sub_model}")
+            return sub_model
 
         sub_agent_keywords = [
             "general-purpose agent",
@@ -113,9 +124,6 @@ def _intercept_sub_agent(body: Dict[str, Any]) -> Optional[str]:
             "file search specialist",
             "exploration task",
             "read-only exploration",
-            "plan agent",
-            "software architect",
-            "implementation plans",
             "claude-code-guide",
             "statusline-setup",
             "specialized agent",
@@ -124,45 +132,47 @@ def _intercept_sub_agent(body: Dict[str, Any]) -> Optional[str]:
             "security monitor",
             "you are the claude-code-guide",
             "you are the explore",
-            "you are the plan",
             "you are the general-purpose",
             "you are the statusline-setup",
         ]
         if any(kw in system_prompt_lower for kw in sub_agent_keywords):
-            logger.info("[Sub-Agent Detect] Detected Claude Code sub-agent via system prompt keyword, overriding to gemini-flash-lite")
-            return "gemini-flash-lite"
+            logger.info(f"[Sub-Agent Detect] Detected Claude Code sub-agent via system prompt keyword, overriding to {sub_model}")
+            return sub_model
 
         if re.search(r"you are (a|an|the)[\s\w\-]*sub.?agent", system_prompt_lower):
-            logger.info("[Sub-Agent Detect] Detected sub-agent via 'you are a ... sub-agent' pattern in system prompt, overriding to gemini-flash-lite")
-            return "gemini-flash-lite"
+            logger.info(f"[Sub-Agent Detect] Detected sub-agent via 'you are a ... sub-agent' pattern in system prompt, overriding to {sub_model}")
+            return sub_model
 
         if "[sub-agent]" in system_prompt_lower:
-            logger.info("[Sub-Agent Detect] Detected [SUB-AGENT] tag in system prompt, overriding to gemini-flash-lite")
-            return "gemini-flash-lite"
+            logger.info(f"[Sub-Agent Detect] Detected [SUB-AGENT] tag in system prompt, overriding to {sub_model}")
+            return sub_model
         tool_count = len(body.get("tools", []))
         if 16 <= tool_count <= 25:
-            logger.info("[Sub-Agent Detect] Detected Claude Code sub-agent via tool count (%d), overriding to gemini-flash-lite", tool_count)
-            return "gemini-flash-lite"
+            logger.info(f"[Sub-Agent Detect] Detected Claude Code sub-agent via tool count ({tool_count}), overriding to {sub_model}")
+            return sub_model
 
     messages = body.get("messages", [])
     if not messages:
         return None
 
+    sub_model = _get_sub_agent_override_model(account)
     for msg in messages:
         if msg.get("role") != "user":
             continue
         content = msg.get("content")
         if isinstance(content, str) and content.strip().startswith("[SUB-AGENT]"):
             msg["content"] = content.replace("[SUB-AGENT]", "", 1).strip()
-            logger.info("[Sub-Agent Detect] Detected sub-agent via [SUB-AGENT] prefix in user message, overriding to gemini-flash-lite")
-            return "gemini-flash-lite"
+            logger.info(f"[Sub-Agent Detect] Detected sub-agent via [SUB-AGENT] prefix in user message, overriding to {sub_model}")
+            return sub_model
         elif isinstance(content, list):
             for block in content:
                 if isinstance(block, dict) and block.get("type") == "text":
                     if block.get("text", "").strip().startswith("[SUB-AGENT]"):
                         block["text"] = block["text"].replace("[SUB-AGENT]", "", 1).strip()
-                        logger.info("[Sub-Agent Detect] Detected sub-agent via [SUB-AGENT] prefix in user message list block, overriding to gemini-flash-lite")
-                        return "gemini-flash-lite"
+                        logger.info(f"[Sub-Agent Detect] Detected sub-agent via [SUB-AGENT] prefix in user message list block, overriding to {sub_model}")
+                        return sub_model
+
+    return None
 
     return None
 
@@ -235,9 +245,6 @@ def is_sub_agent_body(body: Dict[str, Any]) -> bool:
             "file search specialist",
             "exploration task",
             "read-only exploration",
-            "plan agent",
-            "software architect",
-            "implementation plans",
             "claude-code-guide",
             "statusline-setup",
             "specialized agent",
@@ -246,7 +253,6 @@ def is_sub_agent_body(body: Dict[str, Any]) -> bool:
             "security monitor",
             "you are the claude-code-guide",
             "you are the explore",
-            "you are the plan",
             "you are the general-purpose",
             "you are the statusline-setup",
         ]
