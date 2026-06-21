@@ -53,13 +53,16 @@ def parse_gemini_chunk(chunk: Dict[str, Any], state: Dict[str, Any]) -> List[Dic
         if fc:
             tool_call_index = state["function_index"]
             state["function_index"] += 1
+            fc_name = fc["name"]
+            fc_args = fc.get("args", {})
+            tool_call_id = f"{fc_name}-{int(time.time() * 1000)}-{tool_call_index}"
             tool_call = {
-                "id": f"{fc['name']}-{tool_call_index}",
+                "id": tool_call_id,
                 "index": tool_call_index,
                 "type": "function",
                 "function": {
-                    "name": fc["name"],
-                    "arguments": json.dumps(fc.get("args", {})),
+                    "name": fc_name,
+                    "arguments": json.dumps(fc_args),
                 },
             }
             delta = {"tool_calls": [tool_call]}

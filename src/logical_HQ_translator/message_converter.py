@@ -2,7 +2,7 @@ import re
 import json
 import threading
 from datetime import datetime
-from typing import Any, Dict, List, Tuple
+from typing import Any, Dict, List, Optional, Tuple
 
 class ToolNameCache:
     def __init__(self, max_size=5000):
@@ -26,13 +26,161 @@ class ToolNameCache:
 
     def get(self, key: str) -> str:
         with self.lock:
-            return self.cache.get(key)
+            return self.cache.get(key) or ""
 
 _GLOBAL_TOOL_NAME_CACHE = ToolNameCache()
 
+SCIENCE_TOOLS_TO_STRIP = {
+    "alphafold-database-fetch-and-analyze",
+    "alphagenome-single-variant-analysis",
+    "chembl-database",
+    "clinical-trials-database",
+    "clinvar-database",
+    "dbsnp-database",
+    "embl-ebi-ols",
+    "encode-ccres-database",
+    "ensembl-database",
+    "foldseek-structural-search",
+    "gnomad-database",
+    "gtex-database",
+    "human-protein-atlas-database",
+    "interpro-database",
+    "jaspar-database",
+    "literature-search-arxiv",
+    "literature-search-biorxiv",
+    "literature-search-europepmc",
+    "literature-search-openalex",
+    "ncbi-sequence-fetch",
+    "openfda-database",
+    "opentargets-database",
+    "pdb-database",
+    "protein-sequence-msa",
+    "protein-sequence-similarity-search",
+    "pubchem-database",
+    "pubmed-database",
+    "pymol",
+    "quickgo-database",
+    "reactome-database",
+    "science-skills-common",
+    "scienceskillscommon",
+    "string-database",
+    "ucsc-conservation-and-tfbs",
+    "unibind-database",
+    "uniprot-database",
+    "uv",
+    "workflow-skill-creator"
+}
+
 UNSUPPORTED_OR_HEAVY_TOOLS = {
     "NotebookRead", "NotebookEdit",
-}
+} | SCIENCE_TOOLS_TO_STRIP
+
+# Anthropic tool_use.id pattern: ^[a-zA-Z0-9_-]+$
+_TOOL_ID_PATTERN = re.compile(r"^[a-zA-Z0-9_-]+$")
+
+
+def sanitize_tool_id(tool_id: str) -> str:
+    """Sanitize tool ID to match Anthropic's [a-zA-Z0-9_-] pattern."""
+    if not tool_id or not isinstance(tool_id, str):
+        return ""
+    sanitized = re.sub(r"[^a-zA-Z0-9_-]", "", tool_id)
+    return sanitized if sanitized else ""
+
+
+def ensure_tool_ids_in_messages(messages: List[Dict[str, Any]]) -> None:
+    """Validate & fix all tool call IDs to match Anthropic pattern (mutates in-place)."""
+    for i, msg in enumerate(messages):
+        role = msg.get("role")
+        content = msg.get("content")
+
+        # OpenAI format: role=assistant with tool_calls
+        if role == "assistant" and msg.get("tool_calls"):
+            for j, tc in enumerate(msg["tool_calls"]):
+                tc_id = tc.get("id", "")
+                if not tc_id or not _TOOL_ID_PATTERN.match(tc_id):
+                    sanitized = sanitize_tool_id(tc_id)
+                    fn_name = tc.get("function", {}).get("name", "")
+                    tc["id"] = sanitized or f"call_msg{i}_tc{j}_{fn_name}" if fn_name else f"call_msg{i}_tc{j}"
+                if tc.get("function", {}).get("arguments") and isinstance(tc["function"]["arguments"], dict):
+                    tc["function"]["arguments"] = json.dumps(tc["function"]["arguments"])
+
+        # OpenAI format: role=tool with tool_call_id
+        if role == "tool" and msg.get("tool_call_id"):
+            tc_id = msg["tool_call_id"]
+            if not _TOOL_ID_PATTERN.match(tc_id):
+                sanitized = sanitize_tool_id(tc_id)
+                msg["tool_call_id"] = sanitized or f"tool_call_{i}"
+
+        # Claude format: content array with tool_use / tool_result
+        if isinstance(content, list):
+            for k, block in enumerate(content):
+                b_type = block.get("type")
+                if b_type in ("tool_use", "agent_use"):
+                    bid = block.get("id", "")
+                    if not _TOOL_ID_PATTERN.match(bid):
+                        sanitized = sanitize_tool_id(bid)
+                        block["id"] = sanitized or f"tool_msg{i}_block{k}_{block.get('name', 'tool')}"
+                if b_type in ("tool_result", "agent_result"):
+                    tid = block.get("tool_use_id") or block.get("agent_use_id", "")
+                    if tid and not _TOOL_ID_PATTERN.match(tid):
+                        sanitized = sanitize_tool_id(tid)
+                        new_id = sanitized or f"tool_result_msg{i}_block{k}"
+                        if block.get("tool_use_id") is not None:
+                            block["tool_use_id"] = new_id
+                        if block.get("agent_use_id") is not None:
+                            block["agent_use_id"] = new_id
+
+
+def fix_missing_tool_responses(messages: List[Dict[str, Any]]) -> None:
+    """Insert empty tool responses for any tool_call without a matching response (mutates in-place)."""
+    i = 0
+    while i < len(messages):
+        msg = messages[i]
+        if msg.get("role") == "assistant":
+            tool_ids = _get_tool_call_ids(msg)
+            if not tool_ids:
+                i += 1
+                continue
+            next_msg = messages[i + 1] if i + 1 < len(messages) else None
+            responded_ids = _get_tool_response_ids(next_msg)
+            missing = [tid for tid in tool_ids if tid not in responded_ids]
+            if missing:
+                inserted = []
+                for tid in missing:
+                    inserted.append({"role": "tool", "tool_call_id": tid, "content": ""})
+                messages[i + 1:i + 1] = inserted
+                i += len(inserted)
+        i += 1
+
+
+def _get_tool_call_ids(msg: Dict[str, Any]) -> List[str]:
+    """Extract tool call IDs from assistant message (OpenAI & Claude format)."""
+    ids = []
+    if msg.get("tool_calls"):
+        for tc in msg["tool_calls"]:
+            if tc.get("id"):
+                ids.append(tc["id"])
+    if isinstance(msg.get("content"), list):
+        for block in msg["content"]:
+            if block.get("type") in ("tool_use", "agent_use") and block.get("id"):
+                ids.append(block["id"])
+    return ids
+
+
+def _get_tool_response_ids(msg: Optional[Dict[str, Any]]) -> set:
+    """Extract tool response IDs from next message (OpenAI & Claude format)."""
+    if not msg:
+        return set()
+    ids = set()
+    if msg.get("role") == "tool" and msg.get("tool_call_id"):
+        ids.add(msg["tool_call_id"])
+    if isinstance(msg.get("content"), list):
+        for block in msg["content"]:
+            if block.get("type") in ("tool_result", "agent_result"):
+                tid = block.get("tool_use_id") or block.get("agent_use_id")
+                if tid:
+                    ids.add(tid)
+    return ids
 
 
 def _deep_merge_schemas(dict1: dict, dict2: dict) -> dict:
@@ -165,23 +313,51 @@ def _clean_system_prompt(text: str) -> str:
     text = re.sub(r'cch=\w+;?\s*', '', text)
     text = re.sub(r'(?i)antigravity', 'Gemini', text)
 
+    # Strip scientific/unused tools from system prompt lists
+    lines = text.split("\n")
+    cleaned_lines = []
+    for line in lines:
+        stripped = line.strip()
+        is_science_tool_bullet = False
+        for s_tool in SCIENCE_TOOLS_TO_STRIP:
+            if f"`{s_tool}`" in stripped or (stripped.startswith("-") and s_tool in stripped):
+                is_science_tool_bullet = True
+                break
+        if is_science_tool_bullet:
+            continue
+        cleaned_lines.append(line)
+    text = "\n".join(cleaned_lines)
+
+    # Clean up empty tool-list headers and footers
+    text = re.sub(
+        r"The tools you have access to have changed\. You now have access to the following tools:\s*(\n\s*)*You can use these tools to perform tasks in parallel\. Please use them responsibly\.",
+        "",
+        text
+    )
+
     # Inject agent task delegation guidelines to avoid main-session context bloat
     steering = (
         "\n\n[System Override - Task Delegation & Sub-Agent Orchestration Guidelines]\n"
         "1. For any complex, multi-file, or large-scale tasks (such as auditing code, refactoring multiple modules, "
         "searching directories, or writing reports), you MUST NOT perform all operations directly in this session.\n"
-        "2. You MUST first decompose the objective into a list of independent sub-tasks (e.g. in task.md).\n"
+        "2. You MUST decompose the objective into a list of independent sub-tasks.\n"
+        "   - If task is small (1-2 steps, few files), use TodoWrite/TodoRead tools inline — do NOT create task.md.\n"
+        "   - Only create task.md for large/complex tasks (3+ steps, touching many files).\n"
         "3. You MUST spawn multiple specialized sub-agents in PARALLEL (by returning multiple tool calls to the `Agent` tool "
         "simultaneously in a single assistant turn) to explore different directories or check different modules concurrently. "
         "For example, call the `Agent` tool with tasks for 'src/core', 'src/api', and 'src/backend' in a single response "
         "so they run in parallel, saving time and keeping this main session's context extremely clean.\n"
-        "4. Let the sub-agents report their findings back, compile the reports, and update your task checklist."
+        "4. Let the sub-agents report their findings back, compile the reports, and tick off completed tasks (use todowrite)."
     )
     return text + steering
 
 def _convert_messages(body: Dict[str, Any]) -> Tuple[List[Dict[str, Any]], List[Dict[str, Any]]]:
     from src.logical_HQ_translator.rtk import compress_messages
     compress_messages(body, enabled=True)
+
+    # Sanitize all tool IDs in the request body for Anthropic compatibility
+    ensure_tool_ids_in_messages(body.get("messages", []))
+    fix_missing_tool_responses(body.get("messages", []))
 
     openai_tools: List[Dict[str, Any]] = []
 

@@ -400,6 +400,8 @@ async def _execute_nonstream(proxy_instance: Any, kwargs: Dict[str, Any], api_ke
     cr = cache_usage.get("cache_read_input_tokens", 0) or 0
     await log_usage(model_id, (api_key or "")[-8:], input_tokens, out_tokens, auth_key_prefix, cc, cr)
 
+    client_input_tokens = max(1, adjusted_input_tokens - cc - cr)
+
     return {
         "id": "msg_" + uuid.uuid4().hex,
         "type": "message",
@@ -409,7 +411,7 @@ async def _execute_nonstream(proxy_instance: Any, kwargs: Dict[str, Any], api_ke
         "stop_reason": finish_str,
         "stop_sequence": None,
         "usage": {
-            "input_tokens": adjusted_input_tokens,
+            "input_tokens": client_input_tokens,
             "output_tokens": out_tokens,
             **cache_usage
         },

@@ -27,13 +27,16 @@ async def _process_anthropic_stream(
     include_thoughts = body.get("include_thoughts", True) if body else True
     adjusted_input_tokens = input_tokens
     cache_usage = _get_simulated_cache_usage(body or {}, adjusted_input_tokens)
+    cc = cache_usage.get("cache_creation_input_tokens", 0) or 0
+    cr = cache_usage.get("cache_read_input_tokens", 0) or 0
+    client_input_tokens = max(1, adjusted_input_tokens - cc - cr)
     yield _sse("message_start", {
         "type": "message_start",
         "message": {
             "id": msg_id, "type": "message", "role": "assistant", "model": model,
             "content": [], "stop_reason": None, "stop_sequence": None,
             "usage": {
-                "input_tokens": adjusted_input_tokens,
+                "input_tokens": client_input_tokens,
                 "output_tokens": 0,
                 **cache_usage
             },
@@ -232,24 +235,24 @@ async def _process_anthropic_stream(
                 for tc in delta.tool_calls:
                     if isinstance(tc, dict):
                         tc_idx = tc.get("index", 0)
-                        if tc_idx not in tool_buffers:
-                            t_id = tc.get("id") or f"toolu_{uuid.uuid4().hex}"
-                            fn = tc.get("function", {})
-                            t_name = fn.get("name", "") if isinstance(fn, dict) else ""
-                            tool_buffers[tc_idx] = {"id": t_id, "name": t_name, "args": "", "started": False}
                         fn = tc.get("function", {})
                         fn_name = fn.get("name", "") if isinstance(fn, dict) else ""
-                        if fn_name:
-                            tool_buffers[tc_idx]["name"] = fn_name
+                        if tc_idx not in tool_buffers:
+                            t_id = tc.get("id") or (f"toolu_{fn_name}_{uuid.uuid4().hex[:12]}" if fn_name else f"toolu_{uuid.uuid4().hex}")
+                            tool_buffers[tc_idx] = {"id": t_id, "name": fn_name, "args": "", "started": False}
+                        else:
+                            if fn_name:
+                                tool_buffers[tc_idx]["name"] = fn_name
                         args_value = fn.get("arguments") if isinstance(fn, dict) else None
                     else:
                         tc_idx = tc.index
+                        fn_name = getattr(tc.function, "name", "") if getattr(tc, "function", None) else ""
                         if tc_idx not in tool_buffers:
-                            t_id = getattr(tc, "id", f"toolu_{uuid.uuid4().hex}")
-                            t_name = getattr(tc.function, "name", "") if getattr(tc, "function", None) else ""
-                            tool_buffers[tc_idx] = {"id": t_id, "name": t_name, "args": "", "started": False}
-                        if getattr(tc.function, "name", None):
-                            tool_buffers[tc_idx]["name"] = tc.function.name
+                            t_id = getattr(tc, "id", f"toolu_{fn_name}_{uuid.uuid4().hex[:12]}" if fn_name else f"toolu_{uuid.uuid4().hex}")
+                            tool_buffers[tc_idx] = {"id": t_id, "name": fn_name, "args": "", "started": False}
+                        else:
+                            if fn_name:
+                                tool_buffers[tc_idx]["name"] = fn_name
                         args_value = getattr(tc.function, "arguments", None)
 
                     name = tool_buffers[tc_idx]["name"]

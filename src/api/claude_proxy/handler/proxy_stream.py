@@ -17,6 +17,7 @@ from src.logical_HQ_translator import (
     _dict_to_sse_events,
     _sse,
     _get_simulated_cache_usage,
+    XMLThinkingExtractor,
 )
 from .compaction import _pre_compact_and_truncate
 from .helpers import get_system_status_summary
@@ -93,6 +94,7 @@ class ClaudeProxyStreamMixin:
         try:
             text_started = False
             thinking_started = False
+            thinking_stopped = False
             text_index = start_block_index
             thinking_index = start_block_index
             output_chars = 0
@@ -102,6 +104,7 @@ class ClaudeProxyStreamMixin:
             accumulated_text = []
             accumulated_thought = []
             accumulated_thought_signature = []
+            extractor = XMLThinkingExtractor()
 
             started = False
 
@@ -121,6 +124,9 @@ class ClaudeProxyStreamMixin:
                     if recursion_depth == 0:
                         resolved_input_tokens = input_tokens or 0
                         cache_usage = _get_simulated_cache_usage(body or {}, resolved_input_tokens)
+                        cc = cache_usage.get("cache_creation_input_tokens", 0) or 0
+                        cr = cache_usage.get("cache_read_input_tokens", 0) or 0
+                        client_input_tokens = max(1, resolved_input_tokens - cc - cr)
                         yield _sse("ping", {"type": "ping", "retry": 0, "reason": "initial"})
                         yield _sse("message_start", {
                             "type": "message_start",
@@ -133,7 +139,7 @@ class ClaudeProxyStreamMixin:
                                 "stop_reason": None,
                                 "stop_sequence": None,
                                 "usage": {
-                                    "input_tokens": resolved_input_tokens,
+                                    "input_tokens": client_input_tokens,
                                     "output_tokens": 0,
                                     **cache_usage
                                 },
@@ -169,11 +175,156 @@ class ClaudeProxyStreamMixin:
                     output_chars += len(reasoning)
 
                 if content:
-                    accumulated_text.append(content)
+                    events = extractor.feed(content)
+                    for ev_type, ev_val in events:
+                        if ev_type == "start_thinking":
+                            if not thinking_started:
+                                thinking_started = True
+                                thinking_index = start_block_index
+                                yield _sse("content_block_start", {
+                                    "type": "content_block_start",
+                                    "index": thinking_index,
+                                    "content_block": {"type": "thinking", "thinking": "", "signature": ""},
+                                })
+                        elif ev_type == "thinking":
+                            accumulated_thought.append(ev_val)
+                            if not thinking_started:
+                                thinking_started = True
+                                thinking_index = start_block_index
+                                yield _sse("content_block_start", {
+                                    "type": "content_block_start",
+                                    "index": thinking_index,
+                                    "content_block": {"type": "thinking", "thinking": "", "signature": ""},
+                                })
+                            yield _sse("content_block_delta", {
+                                "type": "content_block_delta",
+                                "index": thinking_index,
+                                "delta": {"type": "thinking_delta", "thinking": ev_val},
+                            })
+                            output_chars += len(ev_val)
+                        elif ev_type == "end_thinking":
+                            if thinking_started and not thinking_stopped:
+                                thinking_stopped = True
+                                yield _sse("content_block_delta", {
+                                    "type": "content_block_delta",
+                                    "index": thinking_index,
+                                    "delta": {"type": "signature_delta", "signature": ""},
+                                })
+                                yield _sse("content_block_stop", {"type": "content_block_stop", "index": thinking_index})
+                        elif ev_type == "text":
+                            accumulated_text.append(ev_val)
+                            if not text_started:
+                                text_started = True
+                                text_index = start_block_index + 1 if thinking_started else start_block_index
+                                if thinking_started and not thinking_stopped:
+                                    thinking_stopped = True
+                                    yield _sse("content_block_delta", {
+                                        "type": "content_block_delta",
+                                        "index": thinking_index,
+                                        "delta": {"type": "signature_delta", "signature": ""},
+                                    })
+                                    yield _sse("content_block_stop", {"type": "content_block_stop", "index": thinking_index})
+                                yield _sse("content_block_start", {
+                                    "type": "content_block_start",
+                                    "index": text_index,
+                                    "content_block": {"type": "text", "text": ""},
+                                })
+                            yield _sse("content_block_delta", {
+                                "type": "content_block_delta",
+                                "index": text_index,
+                                "delta": {"type": "text_delta", "text": ev_val},
+                            })
+                            output_chars += len(ev_val)
+
+                tool_calls_val = getattr(delta, "tool_calls", None) or delta.get("tool_calls") if hasattr(delta, "get") else None
+                if tool_calls_val:
+                    for tc in tool_calls_val:
+                        if isinstance(tc, dict):
+                            tc_idx = tc.get("index", 0)
+                            fn = tc.get("function", {})
+                            fn_name = fn.get("name", "") if isinstance(fn, dict) else (getattr(fn, "name", "") if hasattr(fn, "name") else "")
+                            if tc_idx not in tool_buffers:
+                                tc_id = tc.get("id", f"toolu_{fn_name}_{uuid.uuid4().hex[:12]}" if fn_name else f"toolu_{uuid.uuid4().hex}")
+                                fn_args = fn.get("arguments") if isinstance(fn, dict) else (getattr(fn, "arguments", None) if hasattr(fn, "arguments") else None)
+                                tool_buffers[tc_idx] = {"id": tc_id, "name": fn_name, "args": ""}
+                                if fn_args:
+                                    if isinstance(fn_args, dict):
+                                        args_str = json.dumps(fn_args)
+                                    elif not isinstance(fn_args, str):
+                                        args_str = str(fn_args)
+                                    else:
+                                        args_str = fn_args
+                                    tool_buffers[tc_idx]["args"] += args_str
+                            else:
+                                if fn_name:
+                                    tool_buffers[tc_idx]["name"] = fn_name
+                                fn_args = fn.get("arguments") if isinstance(fn, dict) else (getattr(fn, "arguments", None) if hasattr(fn, "arguments") else None)
+                                if fn_args:
+                                    if isinstance(fn_args, dict):
+                                        args_str = json.dumps(fn_args)
+                                    elif not isinstance(fn_args, str):
+                                        args_str = str(fn_args)
+                                    else:
+                                        args_str = fn_args
+                                    tool_buffers[tc_idx]["args"] += args_str
+                        else:
+                            tc_idx = getattr(tc, "index", 0)
+                            fn = getattr(tc, "function", {}) if hasattr(tc, "function") else {}
+                            fn_name = getattr(fn, "name", "") if hasattr(fn, "name") else ""
+                            if tc_idx not in tool_buffers:
+                                tc_id = getattr(tc, "id", f"toolu_{fn_name}_{uuid.uuid4().hex[:12]}" if fn_name else f"toolu_{uuid.uuid4().hex}")
+                                fn_args = getattr(fn, "arguments", None) if hasattr(fn, "arguments") else None
+                                tool_buffers[tc_idx] = {"id": tc_id, "name": fn_name, "args": ""}
+                                if fn_args:
+                                    if isinstance(fn_args, dict):
+                                        args_str = json.dumps(fn_args)
+                                    elif not isinstance(fn_args, str):
+                                        args_str = str(fn_args)
+                                    else:
+                                        args_str = fn_args
+                                    tool_buffers[tc_idx]["args"] += args_str
+                            else:
+                                if fn_name:
+                                    tool_buffers[tc_idx]["name"] = fn_name
+                                fn_args = getattr(fn, "arguments", None) if hasattr(fn, "arguments") else None
+                                if fn_args:
+                                    if isinstance(fn_args, dict):
+                                        args_str = json.dumps(fn_args)
+                                    elif not isinstance(fn_args, str):
+                                        args_str = str(fn_args)
+                                    else:
+                                        args_str = fn_args
+                                    tool_buffers[tc_idx]["args"] += args_str
+
+                if fr:
+                    finish_reason = "tool_use" if str(fr).lower() == "tool_calls" else ("max_tokens" if "max" in str(fr).lower() else "end_turn")
+
+            # Flush extractor to handle any remaining tags or text
+            events = extractor.flush()
+            for ev_type, ev_val in events:
+                if ev_type == "thinking":
+                    accumulated_thought.append(ev_val)
+                    if not thinking_started:
+                        thinking_started = True
+                        thinking_index = start_block_index
+                        yield _sse("content_block_start", {
+                            "type": "content_block_start",
+                            "index": thinking_index,
+                            "content_block": {"type": "thinking", "thinking": "", "signature": ""},
+                        })
+                    yield _sse("content_block_delta", {
+                        "type": "content_block_delta",
+                        "index": thinking_index,
+                        "delta": {"type": "thinking_delta", "thinking": ev_val},
+                    })
+                    output_chars += len(ev_val)
+                elif ev_type == "text":
+                    accumulated_text.append(ev_val)
                     if not text_started:
                         text_started = True
                         text_index = start_block_index + 1 if thinking_started else start_block_index
-                        if thinking_started:
+                        if thinking_started and not thinking_stopped:
+                            thinking_stopped = True
                             yield _sse("content_block_delta", {
                                 "type": "content_block_delta",
                                 "index": thinking_index,
@@ -188,42 +339,12 @@ class ClaudeProxyStreamMixin:
                     yield _sse("content_block_delta", {
                         "type": "content_block_delta",
                         "index": text_index,
-                        "delta": {"type": "text_delta", "text": content},
+                        "delta": {"type": "text_delta", "text": ev_val},
                     })
-                    output_chars += len(content)
+                    output_chars += len(ev_val)
 
-                tool_calls_val = getattr(delta, "tool_calls", None) or delta.get("tool_calls") if hasattr(delta, "get") else None
-                if tool_calls_val:
-                    for tc in tool_calls_val:
-                        if isinstance(tc, dict):
-                            tc_idx = tc.get("index", 0)
-                            tc_id = tc.get("id", f"toolu_{uuid.uuid4().hex}")
-                            fn = tc.get("function", {})
-                            fn_name = fn.get("name", "") if isinstance(fn, dict) else (getattr(fn, "name", "") if hasattr(fn, "name") else "")
-                            fn_args = fn.get("arguments") if isinstance(fn, dict) else (getattr(fn, "arguments", None) if hasattr(fn, "arguments") else None)
-                        else:
-                            tc_idx = getattr(tc, "index", 0)
-                            tc_id = getattr(tc, "id", f"toolu_{uuid.uuid4().hex}")
-                            fn = getattr(tc, "function", {}) if hasattr(tc, "function") else {}
-                            fn_name = getattr(fn, "name", "") if hasattr(fn, "name") else ""
-                            fn_args = getattr(fn, "arguments", None) if hasattr(fn, "arguments") else None
-                        if tc_idx not in tool_buffers:
-                            tool_buffers[tc_idx] = {"id": tc_id, "name": fn_name, "args": ""}
-                        if fn_name:
-                            tool_buffers[tc_idx]["name"] = fn_name
-                        if fn_args:
-                            if isinstance(fn_args, dict):
-                                args_str = json.dumps(fn_args)
-                            elif not isinstance(fn_args, str):
-                                args_str = str(fn_args)
-                            else:
-                                args_str = fn_args
-                            tool_buffers[tc_idx]["args"] += args_str
-
-                if fr:
-                    finish_reason = "tool_use" if str(fr).lower() == "tool_calls" else ("max_tokens" if "max" in str(fr).lower() else "end_turn")
-
-            if thinking_started and not text_started:
+            if thinking_started and not thinking_stopped:
+                thinking_stopped = True
                 yield _sse("content_block_delta", {
                     "type": "content_block_delta",
                     "index": thinking_index,
