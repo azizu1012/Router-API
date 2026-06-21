@@ -52,6 +52,48 @@ def _load_gemini_oauth_files() -> List[str]:
     return []
 
 
+_DEFAULT_TOOLS_TO_STRIP = [
+    "alphafold-database-fetch-and-analyze",
+    "alphagenome-single-variant-analysis",
+    "chembl-database",
+    "clinical-trials-database",
+    "clinvar-database",
+    "dbsnp-database",
+    "embl-ebi-ols",
+    "encode-ccres-database",
+    "ensembl-database",
+    "foldseek-structural-search",
+    "gnomad-database",
+    "gtex-database",
+    "human-protein-atlas-database",
+    "interpro-database",
+    "jaspar-database",
+    "literature-search-arxiv",
+    "literature-search-biorxiv",
+    "literature-search-europepmc",
+    "literature-search-openalex",
+    "ncbi-sequence-fetch",
+    "openfda-database",
+    "opentargets-database",
+    "pdb-database",
+    "protein-sequence-msa",
+    "protein-sequence-similarity-search",
+    "pubchem-database",
+    "pubmed-database",
+    "pymol",
+    "quickgo-database",
+    "reactome-database",
+    "science-skills-common",
+    "scienceskillscommon",
+    "string-database",
+    "ucsc-conservation-and-tfbs",
+    "unibind-database",
+    "uniprot-database",
+    "uv",
+    "workflow-skill-creator"
+]
+
+
 @dataclass
 class RouterApiConfig:
     PROJECT_ROOT: Path = _PROJECT_ROOT
@@ -89,6 +131,12 @@ class RouterApiConfig:
     LITE_EMERGENCY_MAX_INPUT_TOKENS: int = _get_int("LITE_EMERGENCY_MAX_INPUT_TOKENS", 200000)
     CLAUDE_CODE_EMERGENCY_MAX_INPUT_TOKENS: int = _get_int("CLAUDE_CODE_EMERGENCY_MAX_INPUT_TOKENS", 200000)
     CLAUDE_CODE_LITE_EMERGENCY_MAX_INPUT_TOKENS: int = _get_int("CLAUDE_CODE_LITE_EMERGENCY_MAX_INPUT_TOKENS", 200000)
+
+    # Tools to strip from requests (e.g. heavy biology plugins)
+    TOOLS_TO_STRIP: List[str] = field(default_factory=lambda: (
+        [x.strip() for x in os.getenv("TOOLS_TO_STRIP").split(",") if x.strip()]
+        if os.getenv("TOOLS_TO_STRIP") else _DEFAULT_TOOLS_TO_STRIP
+    ))
 
     # Proxy / Relay
     PROXY_ENABLED: bool = _get_bool("GEMINI_PROXY_ENABLED", False)
