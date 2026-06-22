@@ -104,6 +104,56 @@ async def current_account(
     }
 
 
+@app.post("/v1/search")
+@app.post("/search")
+async def web_search_endpoint(
+    request: Request,
+    authorization: str | None = Header(default=None),
+    x_api_key: str | None = Header(default=None),
+) -> Dict[str, Any]:
+    auth = _resolve_auth(authorization, x_api_key)
+    account = _check_auth(auth)
+
+    try:
+        body = await request.json()
+    except Exception:
+        body = {}
+
+    query = body.get("query")
+    if not query or not isinstance(query, str) or not query.strip():
+        raise HTTPException(
+            status_code=400,
+            detail={"error": {"message": "`query` parameter is required and must be a non-empty string", "type": "invalid_request_error"}},
+        )
+
+    search_engine = body.get("search_engine") or "auto"
+
+    from src.server.openai_server.auth import _auth_key_prefix
+    akp = _auth_key_prefix(account)
+
+    from src.core.providers.search_manager import execute_hybrid_search
+    try:
+        search_context, combined_citations = await execute_hybrid_search(
+            [query.strip()],
+            search_engine=search_engine,
+            auth_key_prefix=akp,
+            account=account
+        )
+    except Exception as e:
+        logger_web.error("[Search Endpoint] execute_hybrid_search failed: %s", e, exc_info=True)
+        raise HTTPException(
+            status_code=500,
+            detail={"error": {"message": f"Search failed: {str(e)}", "type": "api_error"}},
+        )
+
+    return {
+        "status": "success",
+        "query": query.strip(),
+        "results": search_context,
+        "citations": combined_citations
+    }
+
+
 @app.get("/stats", response_class=HTMLResponse)
 @app.get("/stats/{path:path}", response_class=HTMLResponse)
 async def stats_page(path: str | None = None):
