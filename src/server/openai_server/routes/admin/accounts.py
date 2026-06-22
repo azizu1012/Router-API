@@ -18,7 +18,7 @@ async def admin_create_account(request: Request):
         search_engine = str(body.get("search_engine", "auto")).strip().lower()
         web_search_enabled = body.get("web_search_enabled")
         if web_search_enabled is None:
-            web_search_enabled = True
+            web_search_enabled = False
         else:
             web_search_enabled = bool(web_search_enabled)
     except Exception:
