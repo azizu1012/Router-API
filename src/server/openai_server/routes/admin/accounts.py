@@ -16,6 +16,11 @@ async def admin_create_account(request: Request):
         rpd = body.get("rpd")
         tier = str(body.get("tier", "free")).strip().lower()
         search_engine = str(body.get("search_engine", "auto")).strip().lower()
+        web_search_enabled = body.get("web_search_enabled")
+        if web_search_enabled is None:
+            web_search_enabled = True
+        else:
+            web_search_enabled = bool(web_search_enabled)
     except Exception:
         raise HTTPException(status_code=400, detail="Invalid JSON")
     if not name:
@@ -38,7 +43,7 @@ async def admin_create_account(request: Request):
     try:
         acct = await asyncio.to_thread(
             account_manager.create_account,
-            name=name, rpm=rpm_val, tpm=tpm_val, rpd=rpd_val, tier=tier, search_engine=search_engine,
+            name=name, rpm=rpm_val, tpm=tpm_val, rpd=rpd_val, tier=tier, search_engine=search_engine, web_search_enabled=web_search_enabled
         )
         return {"status": "success", "account": acct}
     except Exception as e:
@@ -116,6 +121,8 @@ async def admin_update_account(request: Request):
         tpm = body.get("tpm")
         rpd = body.get("rpd")
         tier = body.get("tier")
+        web_search_enabled = body.get("web_search_enabled")
+        search_engine = body.get("search_engine")
     except Exception:
         raise HTTPException(status_code=400, detail="Invalid JSON")
     if not name:
@@ -139,6 +146,10 @@ async def admin_update_account(request: Request):
             pass
     if tier is not None and tier in ("free", "premium", "admin"):
         updates["tier"] = tier
+    if web_search_enabled is not None:
+        updates["web_search_enabled"] = bool(web_search_enabled)
+    if search_engine is not None and search_engine in ("auto", "google_grounding", "duckduckgo", "disabled"):
+        updates["search_engine"] = search_engine
 
     import asyncio
     from src.core.accounts import account_manager

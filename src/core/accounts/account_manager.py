@@ -60,8 +60,9 @@ class AccountManager:
         rpd: Optional[int] = None,
         tier: str = "free",
         search_engine: str = "auto",
+        web_search_enabled: bool = True,
     ) -> Dict[str, Any]:
-        result = _create_account(name, rpm, tpm, rpd, tier=tier, search_engine=search_engine)
+        result = _create_account(name, rpm, tpm, rpd, tier=tier, search_engine=search_engine, web_search_enabled=web_search_enabled)
         self.invalidate_cache()
         return result
 

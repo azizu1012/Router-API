@@ -48,6 +48,7 @@ def create_account_db(
     rpd: Optional[int] = None,
     tier: str = "free",
     search_engine: str = "auto",
+    web_search_enabled: bool = True,
 ) -> Dict[str, Any]:
     clean = str(name or "").strip()
     if not clean:
@@ -64,7 +65,7 @@ def create_account_db(
         "rpm": int(config.DEFAULT_ACCOUNT_RPM if rpm is None else rpm),
         "tpm": int(config.DEFAULT_ACCOUNT_TPM if tpm is None else tpm),
         "rpd": int(config.DEFAULT_ACCOUNT_RPD if rpd is None else rpd),
-        "web_search_enabled": False,
+        "web_search_enabled": web_search_enabled,
         "search_engine": search_engine or "auto",
         "created_at": now,
         "updated_at": now,
@@ -78,7 +79,7 @@ def create_account_db(
                    VALUES (?,?,?,?,?,?,?,?,?,?,?,?)""",
                 (account["account_id"], account["name"], account["auth_key"],
                  1, account["tier"], account["rpm"], account["tpm"], account["rpd"],
-                 0, account["search_engine"], account["created_at"], account["updated_at"]),
+                 1 if account["web_search_enabled"] else 0, account["search_engine"], account["created_at"], account["updated_at"]),
             )
             c.commit()
         finally:
