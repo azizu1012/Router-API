@@ -115,8 +115,12 @@ Hệ thống Router API được thiết kế như một lớp trừu tượng, 
 
 *   **Custom Endpoint:**
     *   Các Custom Endpoint được quản lý bởi `src/core/providers/_custom_endpoint_manager.py`.
-    *   Người dùng có thể định nghĩa các endpoint LLM của riêng họ và gán chúng vào các pool.
-    *   Các yêu cầu sẽ được định tuyến đến các endpoint này và sau đó được `gemini_facade` chuyển đổi sang định dạng tương thích.
+    *   **Quản lý (CRUD):** Các endpoint có thể được thêm, cập nhật, xóa, bật/tắt thông qua các hàm trong `src/backend/endpoints.py`. Điều này cho phép quản lý linh hoạt các nhà cung cấp LLM bên ngoài.
+    *   **Kiểm tra sức khỏe (Health Checks):** `CustomEndpointManager` thực hiện các kiểm tra sức khỏe định kỳ (`ping_endpoint`) đến `/models` endpoint của Custom Endpoint. Kết quả ping được lưu vào bộ nhớ đệm (`_ping_cache`) để tránh gọi API liên tục.
+    *   **Circuit Breaker:** Một cơ chế circuit breaker (`_circuit_breaker`) được triển khai để đóng băng tạm thời các Custom Endpoint bị lỗi liên tiếp. Thời gian đóng băng sẽ tăng lên theo số lần lỗi, giúp hệ thống không gửi yêu cầu đến các endpoint không ổn định.
+    *   **Phát hiện Model:** Hàm `fetch_models` tự động khám phá các model có sẵn từ Custom Endpoint bằng cách gọi API `/models` của nó và cập nhật vào cấu hình của endpoint.
+    *   **Gán cho Pool/Tài khoản:** Các Custom Endpoint có thể được gán vào các pool cụ thể và liên kết với các tài khoản người dùng, cho phép kiểm soát chi tiết việc định tuyến và sử dụng.
+    *   **Xử lý Payload khi Fallback:** Khi một yêu cầu ban đầu đi qua các Proxy Layer (ClaudeProxy hoặc OpenCodeProxy), nó đã được dịch về một định dạng payload nội bộ dùng chung. Nếu `PoolManager` chọn một Custom Endpoint và sau đó Custom Endpoint này báo lỗi và hệ thống fallback về bể API Key của Gemini nội bộ, `GeminiFacade` (`src/core/providers/gemini_facade.py`) sẽ nhận lại đúng payload gốc của hệ thống. `GeminiFacade` chịu trách nhiệm tái cấu trúc payload (Strip/Convert các tham số đặc thù của OpenAI như `response_format` hay cấu trúc `tools` dạng function call) sang cấu hình tương thích với Gemini SDK/HTTP native một cách tự động. Logic này được triển khai trong các hàm phụ trợ của `gemini_facade.py` (ví dụ: `_sdk_acompletion` cho Gemini native, `_http_acompletion` cho OpenAI-compatible), đảm bảo cấu trúc `tool_calls` và các tham số khác được dịch đúng cách.
 
 **Luồng chung:** Tất cả các proxy đều ủy quyền cho `PoolManager`. `PoolManager` sau đó sử dụng `APIRouter` để giải quyết key và `gemini_facade` để thực hiện cuộc gọi API thực tế đến Gemini hoặc Custom Endpoint, và cuối cùng xử lý phản hồi trước khi trả về cho proxy để định dạng lại cho client.
 
@@ -209,3 +213,52 @@ Hiện tại, hệ thống được thiết kế để hoạt động ổn đị
 | `OPENCODE_SUB_AGENT_MODEL` | `gemini-flash-lite` | Ghi đè model cho Sub-agent của OpenCode |
 | `SUB_AGENT_MODEL` | `gemini-flash-lite` | Ghi đè model cho Sub-agent (fallback) |
 | `MODEL_CONTEXT_LENGTH` | `220000` | Độ dài context tối đa cho tính toán dung lượng pool |
+
+## 10. Web Search Architecture (Cách A & Cách B)
+
+Hệ thống Router API v2 hỗ trợ tìm kiếm Web linh hoạt và mạnh mẽ, được chia làm hai cơ chế thiết kế độc lập nhằm phục vụ các nhu cầu khác nhau:
+
+### 10.1. Cách A: Client-side Search (API tìm kiếm độc lập)
+Dành cho các ứng dụng client hoặc Agent độc lập chạy local (ví dụ: Claude Code, Cline, Roo Code) muốn tự quản lý logic tìm kiếm của mình.
+* **Endpoint**: `POST /v1/search` và `/search`.
+* **Xác thực**: Kiểm tra token thông qua `Bearer` token tương tự như API Completions.
+* **Payload đầu vào**:
+  ```json
+  {
+    "query": "từ khóa tìm kiếm",
+    "search_engine": "auto" | "duckduckgo" | "google_grounding"
+  }
+  ```
+* **Dữ liệu trả về**: Trả về dữ liệu tìm kiếm dưới dạng cấu trúc JSON bao gồm kết quả đã định dạng (`results`) và danh sách các nguồn thông tin nguồn gốc (`citations`):
+  ```json
+  {
+    "status": "success",
+    "query": "từ khóa tìm kiếm",
+    "results": "[Web Search Results] ... (nội dung định dạng)",
+    "citations": [
+      { "title": "Tiêu đề bài viết", "url": "https://example.com/..." }
+    ]
+  }
+  ```
+
+### 10.2. Cách B: Server-side Tool Use (Gọi hàm qua LLM)
+Dành cho các completions client truyền thống. Router đóng vai trò làm cầu nối (bridge) xử lý tool gọi hàm tự động.
+* **Cơ chế**: Khi client gửi request Completions kèm cờ kích hoạt tìm kiếm (ví dụ: `web_search: true`), Router sẽ tự động định nghĩa và tiêm (inject) schema công cụ `WebSearch` vào tham số `tools` gửi lên LLM.
+* **Luồng chạy**:
+  1. LLM nhận diện công cụ `WebSearch` trong danh sách `tools`.
+  2. Khi gặp câu hỏi cần thông tin thực tế, LLM sinh ra Tool Call: `WebSearch(query="...")`.
+  3. Router bắt được Tool Call này từ LLM, tự động chạy tìm kiếm trên server (qua Google Grounding hoặc DuckDuckGo).
+  4. Router trả kết quả tìm kiếm lại cho LLM dưới dạng tin nhắn của tool (`role: tool`), giúp LLM có đầy đủ ngữ cảnh để trả lời câu hỏi gốc.
+
+### 10.3. Cơ chế cấu hình & Độ ưu tiên (Precedence)
+Các thiết lập tìm kiếm có độ ưu tiên rõ ràng giữa Client (Request Body) và Web (Account Configuration):
+1. **Ưu tiên cao nhất (Client Override)**: Nếu trong request payload gửi lên có chứa cấu hình explicit (như `"search_engine": "duckduckgo"` hoặc cờ tắt tìm kiếm `"web_search": false`), hệ thống sẽ chạy ngay theo cấu hình này của Client và bỏ qua cấu hình trên Dashboard.
+2. **Ưu tiên thứ hai (Web/Database Account settings)**: Nếu Client không chỉ định gì, hệ thống sẽ lấy cấu hình tìm kiếm mặc định của tài khoản người dùng được lưu trên database (`account.get("search_engine")`).
+3. **Mặc định**: Nếu cả hai đều không thiết lập, công cụ tìm kiếm mặc định sẽ là `"auto"`.
+
+### 10.4. Tiết kiệm Quota thông qua DuckDuckGo
+Hệ thống hỗ trợ công cụ tìm kiếm `"duckduckgo"`. Khi cấu hình giá trị này (hoặc qua Web/Database hoặc qua Client payload):
+* Router chỉ gọi trực tiếp scraper DuckDuckGo ở local (`src/tools/duckduckgo.py`).
+* Không chạy qua sub-agent Gemini Flash Lite và không gọi Google Grounding API.
+* Giúp **tiết kiệm 100% hạn ngạch (quota) API Key của Gemini** và tối ưu hóa chi phí vận hành.
+
