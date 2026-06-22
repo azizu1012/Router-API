@@ -48,7 +48,7 @@ def create_account_db(
     rpd: Optional[int] = None,
     tier: str = "free",
     search_engine: str = "auto",
-    web_search_enabled: bool = True,
+    web_search_enabled: bool = False,
 ) -> Dict[str, Any]:
     clean = str(name or "").strip()
     if not clean:
