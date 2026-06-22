@@ -9,6 +9,8 @@ export default function EditAccountModal({ account, isOpen, onClose, onSaveSucce
   const [rpm, setRpm] = useState('');
   const [tpm, setTpm] = useState('');
   const [rpd, setRpd] = useState('');
+  const [webSearchEnabled, setWebSearchEnabled] = useState(true);
+  const [searchEngine, setSearchEngine] = useState('auto');
   
   const [loading, setLoading] = useState(false);
   const [msg, setMsg] = useState({ text: '', type: '' });
@@ -19,6 +21,8 @@ export default function EditAccountModal({ account, isOpen, onClose, onSaveSucce
       setRpm(account.rpm !== undefined && account.rpm !== null ? account.rpm.toString() : '');
       setTpm(account.tpm !== undefined && account.tpm !== null ? account.tpm.toString() : '');
       setRpd(account.rpd !== undefined && account.rpd !== null ? account.rpd.toString() : '');
+      setWebSearchEnabled(account.web_search_enabled !== undefined ? !!account.web_search_enabled : true);
+      setSearchEngine(account.search_engine || 'auto');
       setMsg({ text: '', type: '' });
     }
   }, [account, isOpen]);
@@ -30,7 +34,12 @@ export default function EditAccountModal({ account, isOpen, onClose, onSaveSucce
     setLoading(true);
     setMsg({ text: '⏳ Đang lưu...', type: 'info' });
 
-    const body = { name: account.name, tier };
+    const body = { 
+      name: account.name, 
+      tier,
+      web_search_enabled: webSearchEnabled,
+      search_engine: searchEngine
+    };
     if (rpm.trim() !== '') body.rpm = parseInt(rpm, 10);
     if (tpm.trim() !== '') body.tpm = parseInt(tpm, 10);
     if (rpd.trim() !== '') body.rpd = parseInt(rpd, 10);
@@ -105,6 +114,29 @@ export default function EditAccountModal({ account, isOpen, onClose, onSaveSucce
               placeholder="Hạn mức RPD (để trống để giữ nguyên)" 
               className="input input-bordered w-full text-sm focus:border-primary"
             />
+          </div>
+
+          <div className="form-control w-full flex flex-row items-center gap-2 py-2">
+            <input 
+              type="checkbox" 
+              checked={webSearchEnabled} 
+              onChange={(e) => setWebSearchEnabled(e.target.checked)} 
+              className="checkbox checkbox-primary checkbox-xs"
+              id="web-search-enabled-checkbox"
+            />
+            <label htmlFor="web-search-enabled-checkbox" className="label cursor-pointer py-0">
+              <span className="label-text font-bold text-xs uppercase text-base-content/70 select-none">Bật tìm kiếm Web</span>
+            </label>
+          </div>
+
+          <div className="form-control w-full">
+            <label className="label py-1"><span className="label-text font-bold text-xs uppercase text-base-content/70">Công cụ tìm kiếm mặc định</span></label>
+            <select value={searchEngine} onChange={(e) => setSearchEngine(e.target.value)} className="select select-bordered w-full text-xs select-sm">
+              <option value="auto">Tự động (Auto)</option>
+              <option value="google_grounding">Google Grounding</option>
+              <option value="duckduckgo">DuckDuckGo</option>
+              <option value="disabled">Tắt tìm kiếm (Disabled)</option>
+            </select>
           </div>
 
           {msg.text && (
