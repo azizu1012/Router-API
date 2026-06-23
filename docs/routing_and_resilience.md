@@ -33,18 +33,29 @@ graph TD
 
 Hệ thống sử dụng một cách tiếp cận hai tầng để phân loại lỗi: đầu tiên là phân loại lỗi cụ thể của nhà cung cấp (hiện tại là Gemini), sau đó là so khớp dựa trên văn bản cho các lỗi chung.
 
-**Bảng Ánh Xạ Phân Loại Lỗi (`_classify_error` trong `src/core/pool_manager.py`):**
+#### **Tầng 1: Phân loại lỗi Gemini cụ thể (`classify` trong `src/core/providers/gemini/error.py`)**
+Đây là tầng phân loại chính xác nhất cho các lỗi cụ thể của Gemini. Nó trích xuất `code` (mã HTTP), `status` (chuỗi trạng thái GRPC/Google Cloud), và `message` từ các ngoại lệ và phân loại theo thứ bậc:
+
+1.  **Mã trạng thái HTTP:** Ưu tiên phân loại dựa trên các mã HTTP (400, 401, 403, 404, 429, 500, 503, 504).
+2.  **Chuỗi trạng thái:** Nếu không có mã HTTP rõ ràng, kiểm tra các chuỗi trạng thái như "RESOURCE_EXHAUSTED", "PERMISSION_DENIED", "INVALID_ARGUMENT", "UNAVAILABLE".
+3.  **So khớp chuỗi fallback:** Đối với các lỗi ít cấu trúc hơn, sử dụng regex/so khớp từ khóa trong `message`.
+
+#### **Tầng 2: Phân loại lỗi chung (`_classify_error` trong `src/core/pool_manager.py`)**
+Đây là tầng phân loại thứ hai, hoạt động như một lưới an toàn. Nó gọi `classify(e)` từ tầng 1 trước. Nếu tầng 1 trả về "unknown", nó sẽ tiếp tục thực hiện so khớp dựa trên văn bản với các từ khóa rộng hơn để bắt các lỗi không được phân loại cụ thể bởi tầng Gemini.
+
+**Bảng Ánh Xạ Phân Loại Lỗi:**
 
 | Loại Lỗi (Text/Code Signature) | Lý Do Phân Loại | Mô Tả | Xử Lý |
 | :------------------------------ | :-------------- | :---- | :---- |
-| Gemini specific errors          | `classify_gemini_error(e)` | Các lỗi cụ thể từ Gemini API. | Xác định Soft Handling / Hard Freeze dựa trên phân loại của Gemini. |
-| "rate limit", "too many requests", "429", "quota_exhausted" | `rate_limit` | Vượt quá giới hạn yêu cầu hoặc token mỗi phút. | Soft Handling |
-| "quota exceeded"                | `rate_limit_rpd` | Vượt quá giới hạn yêu cầu mỗi ngày. | Soft Handling |
-| "billing", "precondition"       | `billing_error` | Lỗi liên quan đến thanh toán hoặc điều kiện tiên quyết. | Hard Freeze |
-| "api key", "invalid key", "401" | `invalid_key` | API Key không hợp lệ hoặc thiếu. | Hard Freeze |
-| "permission denied", "403"      | `permission_denied` | Không có quyền truy cập. | Hard Freeze |
-| "bad request", "400"            | `bad_request` | Yêu cầu không đúng định dạng. | Hard Freeze |
-| "unavailable", "overloaded", "503" | `unavailable` | Dịch vụ không khả dụng hoặc quá tải tạm thời. | Soft Handling |
+| Mã HTTP 400, "invalid_argument", "bad_request" | `bad_request` | Yêu cầu không đúng định dạng hoặc tham số không hợp lệ. | Hard Freeze |
+| Mã HTTP 401, "api key invalid", "unauthorized" | `invalid_key` | API Key không hợp lệ hoặc thiếu. | Hard Freeze |
+| Mã HTTP 403, "permission denied" | `permission_denied` | Không có quyền truy cập chung. | Hard Freeze |
+| Mã HTTP 403, "denied access" | `project_denied` | Không có quyền truy cập vào dự án cụ thể. | Hard Freeze |
+| Mã HTTP 404, "not found" | `unavailable` | Tài nguyên không tìm thấy hoặc model không khả dụng. | Soft Handling |
+| Mã HTTP 429, "rate limit", "resource exhausted" | `rate_limit` | Vượt quá giới hạn yêu cầu hoặc token mỗi phút (RPM/TPM). | Soft Handling |
+| Mã HTTP 429, "quota exceeded", "daily" | `project_quota_429` | Vượt quá giới hạn yêu cầu mỗi ngày (RPD). | Soft Handling |
+| Mã HTTP 500, 503, 504, "unavailable", "overloaded", "timeout" | `unavailable` | Dịch vụ không khả dụng, lỗi máy chủ, hoặc timeout. | Soft Handling |
+| "grounding", "google_search", "tool is not allowed" | `grounding_fallback` | Lỗi liên quan đến công cụ tìm kiếm hoặc grounding. | Soft Handling |
 | Mọi lỗi khác                    | `unknown`       | Lỗi không xác định. | Soft Handling (mặc định) |
 
 ### Sự khác biệt trong cách xử lý:
@@ -134,19 +145,24 @@ Trước đó, khi gặp lỗi Rate Limit (429) hoặc Overloaded (503), Claude 
 
 ---
 
-## 6. Quyết Định Định Tuyến Sub-Agent Linh Hoạt (Dynamic Sub-Agent Model Selection)
+## 7. Cơ Chế Tính Điểm Key (Priority Scoring)
 
-### Vấn đề trước refactor:
-Tầng xác thực `auth.py` nhận diện sub-agent và tính toán quota dựa trên cấu hình tùy chỉnh của tài khoản (`subagent_model`) hoặc biến môi trường (`SUB_AGENT_MODEL`). Tuy nhiên, tầng định tuyến tin nhắn `_intercept_sub_agent` trước đây lại **hardcode** việc ghi đè mô hình sub-agent về `"gemini-flash-lite"`.
+Logic tính điểm key ưu tiên nằm trong hàm `get_key_priority` (từ `src/core/limits/gemini_rate_limiter.py`), được sử dụng bởi `KeyResolverMixin` để chọn key hiệu quả nhất.
 
-Điều này dẫn đến việc:
-- Nếu người dùng cố tình cấu hình một mô hình con cụ thể (ví dụ: mô hình tùy chỉnh `haku` hoặc `gemini-flash` thường) làm sub-agent, tầng định tuyến vẫn ghi đè cưỡng bức về `gemini-flash-lite`.
-- Sự không đồng nhất giữa model dự kiến tính quota và model thực tế định tuyến gây ra xung đột cú pháp hoặc sai lệch hạn ngạch.
+#### **Các yếu tố được xem xét khi tính điểm:**
 
-### Giải pháp khắc phục:
-Hàm `_intercept_sub_agent` đã được cập nhật để nhận tham số `account` và tích hợp helper `_get_sub_agent_override_model(account)`. Luồng giải quyết mô hình sub-agent hiện tại diễn ra đồng bộ theo thứ tự ưu tiên:
-1. Đọc trường `subagent_model` / `agent_model` / `sub_agent_model` từ thông tin tài khoản cấu hình trong database.
-2. Đọc biến môi trường `OPENCODE_SUB_AGENT_MODEL` hoặc `SUB_AGENT_MODEL` từ `.env`.
-3. Fallback mặc định về `"gemini-flash-lite"` nếu không tìm thấy cấu hình riêng.
+*   **`active_requests` (Số yêu cầu đang hoạt động):** Đây là yếu tố quan trọng nhất để cân bằng tải theo thời gian thực. Key có ít yêu cầu đang hoạt động hơn sẽ có ưu tiên cao hơn.
+*   **`frozen_until` (Thời gian đóng băng):** Các key đang bị đóng băng (chưa hết thời gian `frozen_until`) sẽ có điểm ưu tiên rất thấp hoặc bị loại bỏ hoàn toàn khỏi danh sách ứng viên.
+*   **`consecutive_failures` (Số lỗi liên tiếp):** Key có số lỗi liên tiếp gần đây sẽ bị phạt điểm. Số lỗi càng nhiều, hình phạt càng nặng.
+*   **`last_success` (Lần thành công gần nhất):** Key có yêu cầu thành công gần đây hơn sẽ được ưu tiên, phản ánh tính ổn định hiện tại của key.
+*   **`_score_penalties` (Hình phạt điểm):** Các hình phạt động được áp dụng cho key vì các lý do lỗi khác nhau (ví dụ: `rate_limit`, `unavailable`) sẽ làm giảm điểm của key đó. Các hình phạt này có thời gian hết hạn và được quản lý trong bộ nhớ và đồng bộ với DB.
+*   **`model_priority` (Ưu tiên model):** Một điểm ưu tiên cơ bản có thể cấu hình cho các bí danh model khác nhau (được định nghĩa trong `MODEL_PRIORITY` từ `src/core/api_config.py`).
+*   **Tier (Hạng của tài khoản):** Hạng của tài khoản người dùng (free, premium, admin) ảnh hưởng đến việc những key nào được xem xét. Key của hạng cao hơn có thể được ưu tiên truy cập vào các pool key chất lượng hơn.
 
-Nhờ đó, Claude Code có thể gọi các sub-agent chạy trên bất kỳ model nào được cấu hình mà không sợ lệch hạn ngạch hoặc lỗi định dạng.
+#### **Logic tổng thể:**
+
+Hàm `get_key_priority` kết hợp tất cả các yếu tố này để tạo ra một điểm số số học toàn diện. Điểm số càng cao, key càng được ưu tiên. Điểm này sau đó được sử dụng trong thuật toán `_select_key_double_random` (`src/core/router/core/key_resolver.py`) để sắp xếp và chọn key, đảm bảo rằng các yêu cầu được phân phối một cách hiệu quả và linh hoạt nhất, tối ưu hóa hiệu suất và khả năng chống chịu lỗi của hệ thống.
+
+---
+
+## 8. Các Biến Môi Trường Chính

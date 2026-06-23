@@ -7,6 +7,7 @@ Exposes:
   - ``check_custom_pool_rate`` — RPM limiter for custom pool models
 """
 
+import asyncio
 import time
 from collections import defaultdict
 import json
@@ -276,7 +277,6 @@ class CustomEndpointStreamGen:
             if gen is None:
                 raise RuntimeError("Custom endpoint stream not initialized")
             try:
-                import asyncio
                 raw_chunk = await asyncio.wait_for(gen.__anext__(), timeout=30.0)
             except asyncio.TimeoutError:
                 from src.core.config_n_logg.logger import logger_proxy as logger

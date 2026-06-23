@@ -9,7 +9,7 @@ export default function EditAccountModal({ account, isOpen, onClose, onSaveSucce
   const [rpm, setRpm] = useState('');
   const [tpm, setTpm] = useState('');
   const [rpd, setRpd] = useState('');
-  const [webSearchEnabled, setWebSearchEnabled] = useState(true);
+  const [webSearchEnabled, setWebSearchEnabled] = useState(false);
   const [searchEngine, setSearchEngine] = useState('auto');
   
   const [loading, setLoading] = useState(false);
@@ -21,7 +21,7 @@ export default function EditAccountModal({ account, isOpen, onClose, onSaveSucce
       setRpm(account.rpm !== undefined && account.rpm !== null ? account.rpm.toString() : '');
       setTpm(account.tpm !== undefined && account.tpm !== null ? account.tpm.toString() : '');
       setRpd(account.rpd !== undefined && account.rpd !== null ? account.rpd.toString() : '');
-      setWebSearchEnabled(account.web_search_enabled !== undefined ? !!account.web_search_enabled : true);
+      setWebSearchEnabled(account.web_search_enabled !== undefined ? !!account.web_search_enabled : false);
       setSearchEngine(account.search_engine || 'auto');
       setMsg({ text: '', type: '' });
     }

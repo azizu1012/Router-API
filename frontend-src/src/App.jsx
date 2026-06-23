@@ -258,32 +258,32 @@ export default function App() {
 
   // 4. Render Main Dashboard Shell
   return (
-    <div className="relative h-screen w-screen flex flex-col overflow-hidden">
+    <div className="relative h-screen w-full flex flex-col overflow-hidden">
       <CanvasParticles />
       
       {/* Header */}
-      <header className="h-16 flex items-center justify-between px-6 border-b border-base-content/5 glass-nav z-30 fixed top-0 w-full">
-        <div onClick={handleStatusClick} className="flex items-center gap-3 cursor-pointer select-none group">
+      <header className="h-16 flex items-center justify-between px-3 sm:px-6 border-b border-base-content/5 glass-nav z-30 fixed top-0 w-full">
+        <div onClick={handleStatusClick} className="flex items-center gap-2 sm:gap-3 cursor-pointer select-none group">
           <div className="w-2.5 h-2.5 rounded-full bg-emerald-500 animate-pulse group-hover:scale-125 transition-transform"></div>
-          <span className="font-extrabold text-sm tracking-tight group-hover:text-primary transition-colors">{t('header_title', lang)}</span>
+          <span className="font-extrabold text-xs sm:text-sm tracking-tight group-hover:text-primary transition-colors">{t('header_title', lang)}</span>
           {loading && <span className="loading loading-ring loading-xs text-indigo-400"></span>}
         </div>
         
-        <div className="flex items-center gap-6">
+        <div className="flex items-center gap-2 sm:gap-4 lg:gap-6">
           <button 
             onClick={() => setShowEggsModal(true)}
-            className="btn btn-xs btn-outline hover:bg-amber-500/10 border-amber-500/25 text-amber-500 gap-1.5 rounded-full font-bold transition-all hover:scale-105 active:scale-95"
+            className="btn btn-xs btn-outline hover:bg-amber-500/10 border-amber-500/25 text-amber-500 gap-1 rounded-full font-bold transition-all hover:scale-105 active:scale-95 px-2"
             title="Click to view easter eggs tracker"
           >
-            <span>🎯 Eggs: {foundEggs.length}/9</span>
+            <span>🎯 <span className="hidden sm:inline">Eggs:</span> {foundEggs.length}/9</span>
           </button>
           <ThemeLanguageSelector />
           
-          <div onClick={handleSakuraClick} className="flex items-center gap-2 cursor-pointer select-none hover:scale-105 transition-all">
-            <div className="w-8 h-8 rounded-full bg-indigo-500/20 text-indigo-400 font-bold flex items-center justify-center text-xs uppercase border border-indigo-500/30">
+          <div onClick={handleSakuraClick} className="flex items-center gap-1.5 sm:gap-2 cursor-pointer select-none hover:scale-105 transition-all">
+            <div className="w-7 h-7 sm:w-8 sm:h-8 rounded-full bg-indigo-500/20 text-indigo-400 font-bold flex items-center justify-center text-xs uppercase border border-indigo-500/30">
               {user?.name?.substring(0, 2).toUpperCase()}
             </div>
-            <div className="flex flex-col text-left">
+            <div className="hidden md:flex flex-col text-left">
               <span className="text-xs font-bold text-base-content/90 leading-tight">{user?.name}</span>
               <span className={`badge badge-xs text-[9px] font-extrabold uppercase mt-0.5 ${
                 user?.tier === 'admin' ? 'badge-primary' : user?.tier === 'premium' ? 'badge-accent' : 'badge-ghost'
@@ -295,24 +295,24 @@ export default function App() {
           
           <button 
             onClick={logout}
-            className="btn btn-ghost btn-sm text-error/80 hover:text-error hover:bg-error/10 gap-2 normal-case font-bold"
+            className="btn btn-ghost btn-sm text-error/85 hover:text-error hover:bg-error/10 gap-1 normal-case font-bold px-2"
           >
             <LogOut className="w-4 h-4" />
-            <span>{t('logout_btn', lang)}</span>
+            <span className="hidden sm:inline">{t('logout_btn', lang)}</span>
           </button>
         </div>
       </header>
 
       {/* Main Body */}
-      <div className="flex flex-1 pt-16 h-[calc(100vh-4rem)] overflow-hidden">
+      <div className="flex flex-col lg:flex-row flex-1 pt-16 h-[calc(100vh-4rem)] overflow-hidden">
         {/* Sidebar */}
-        <aside className="w-64 glass-nav flex flex-col p-4 gap-1 z-20 overflow-y-auto h-full">
+        <aside className="w-full lg:w-64 glass-nav flex flex-row lg:flex-col p-2 lg:p-4 gap-1 z-20 overflow-x-auto lg:overflow-y-auto h-auto lg:h-full shrink-0 border-b lg:border-b-0 lg:border-r border-base-content/5">
           {/* Admin Navigation */}
           {isAdmin && (
             <>
               <button 
                 onClick={() => setActiveTab('ov')} 
-                className={`btn btn-sm btn-ghost justify-start gap-3 normal-case font-medium w-full text-left rounded-xl ${activeTab === 'ov' ? 'bg-primary/15 text-primary font-bold border border-primary/20' : 'text-base-content/75'}`}
+                className={`btn btn-xs lg:btn-sm btn-ghost justify-start gap-2 lg:gap-3 normal-case font-medium w-auto lg:w-full text-left rounded-xl shrink-0 whitespace-nowrap ${activeTab === 'ov' ? 'bg-primary/15 text-primary font-bold border border-primary/20' : 'text-base-content/75'}`}
               >
                 <LayoutDashboard className="w-4 h-4" />
                 <span>{t('nav_ov', lang)}</span>
@@ -320,7 +320,7 @@ export default function App() {
               
               <button 
                 onClick={() => setActiveTab('ks')} 
-                className={`btn btn-sm btn-ghost justify-start gap-3 normal-case font-medium w-full text-left rounded-xl ${activeTab === 'ks' ? 'bg-primary/15 text-primary font-bold border border-primary/20' : 'text-base-content/75'}`}
+                className={`btn btn-xs lg:btn-sm btn-ghost justify-start gap-2 lg:gap-3 normal-case font-medium w-auto lg:w-full text-left rounded-xl shrink-0 whitespace-nowrap ${activeTab === 'ks' ? 'bg-primary/15 text-primary font-bold border border-primary/20' : 'text-base-content/75'}`}
               >
                 <Key className="w-4 h-4" />
                 <span>{t('nav_ks', lang)}</span>
@@ -328,17 +328,17 @@ export default function App() {
               
               <button 
                 onClick={() => setActiveTab('ac')} 
-                className={`btn btn-sm btn-ghost justify-start gap-3 normal-case font-medium w-full text-left rounded-xl ${activeTab === 'ac' ? 'bg-primary/15 text-primary font-bold border border-primary/20' : 'text-base-content/75'}`}
+                className={`btn btn-xs lg:btn-sm btn-ghost justify-start gap-2 lg:gap-3 normal-case font-medium w-auto lg:w-full text-left rounded-xl shrink-0 whitespace-nowrap ${activeTab === 'ac' ? 'bg-primary/15 text-primary font-bold border border-primary/20' : 'text-base-content/75'}`}
               >
                 <Users className="w-4 h-4" />
                 <span>{t('nav_ac', lang)}</span>
               </button>
               
-              <div className="divider opacity-20 my-2"></div>
+              <div className="divider hidden lg:flex opacity-20 my-2"></div>
               
               <button 
                 onClick={() => setActiveTab('us')} 
-                className={`btn btn-sm btn-ghost justify-start gap-3 normal-case font-medium w-full text-left rounded-xl ${activeTab === 'us' ? 'bg-primary/15 text-primary font-bold border border-primary/20' : 'text-base-content/75'}`}
+                className={`btn btn-xs lg:btn-sm btn-ghost justify-start gap-2 lg:gap-3 normal-case font-medium w-auto lg:w-full text-left rounded-xl shrink-0 whitespace-nowrap ${activeTab === 'us' ? 'bg-primary/15 text-primary font-bold border border-primary/20' : 'text-base-content/75'}`}
               >
                 <PieChart className="w-4 h-4" />
                 <span>{t('nav_us', lang)}</span>
@@ -346,7 +346,7 @@ export default function App() {
               
               <button 
                 onClick={() => setActiveTab('ep')} 
-                className={`btn btn-sm btn-ghost justify-start gap-3 normal-case font-medium w-full text-left rounded-xl ${activeTab === 'ep' ? 'bg-primary/15 text-primary font-bold border border-primary/20' : 'text-base-content/75'}`}
+                className={`btn btn-xs lg:btn-sm btn-ghost justify-start gap-2 lg:gap-3 normal-case font-medium w-auto lg:w-full text-left rounded-xl shrink-0 whitespace-nowrap ${activeTab === 'ep' ? 'bg-primary/15 text-primary font-bold border border-primary/20' : 'text-base-content/75'}`}
               >
                 <Network className="w-4 h-4" />
                 <span>{t('nav_ep', lang)}</span>
@@ -354,7 +354,7 @@ export default function App() {
               
               <button 
                 onClick={() => setActiveTab('pe')} 
-                className={`btn btn-sm btn-ghost justify-start gap-3 normal-case font-medium w-full text-left rounded-xl ${activeTab === 'pe' ? 'bg-primary/15 text-primary font-bold border border-primary/20' : 'text-base-content/75'}`}
+                className={`btn btn-xs lg:btn-sm btn-ghost justify-start gap-2 lg:gap-3 normal-case font-medium w-auto lg:w-full text-left rounded-xl shrink-0 whitespace-nowrap ${activeTab === 'pe' ? 'bg-primary/15 text-primary font-bold border border-primary/20' : 'text-base-content/75'}`}
               >
                 <AlertTriangle className="w-4 h-4" />
                 <span>{t('nav_pe', lang)}</span>
@@ -362,7 +362,7 @@ export default function App() {
               
               <button 
                 onClick={() => setActiveTab('mu')} 
-                className={`btn btn-sm btn-ghost justify-start gap-3 normal-case font-medium w-full text-left rounded-xl ${activeTab === 'mu' ? 'bg-primary/15 text-primary font-bold border border-primary/20' : 'text-base-content/75'}`}
+                className={`btn btn-xs lg:btn-sm btn-ghost justify-start gap-2 lg:gap-3 normal-case font-medium w-auto lg:w-full text-left rounded-xl shrink-0 whitespace-nowrap ${activeTab === 'mu' ? 'bg-primary/15 text-primary font-bold border border-primary/20' : 'text-base-content/75'}`}
               >
                 <ShieldCheck className="w-4 h-4" />
                 <span>{t('nav_mu', lang)}</span>
@@ -370,7 +370,7 @@ export default function App() {
 
               <button 
                 onClick={() => setActiveTab('st')} 
-                className={`btn btn-sm btn-ghost justify-start gap-3 normal-case font-medium w-full text-left rounded-xl ${activeTab === 'st' ? 'bg-primary/15 text-primary font-bold border border-primary/20' : 'text-base-content/75'}`}
+                className={`btn btn-xs lg:btn-sm btn-ghost justify-start gap-2 lg:gap-3 normal-case font-medium w-auto lg:w-full text-left rounded-xl shrink-0 whitespace-nowrap ${activeTab === 'st' ? 'bg-primary/15 text-primary font-bold border border-primary/20' : 'text-base-content/75'}`}
               >
                 <Settings className="w-4 h-4" />
                 <span>{t('nav_st', lang) || 'Cấu hình Hệ thống'}</span>
@@ -378,20 +378,20 @@ export default function App() {
 
               <button 
                 onClick={() => setShowLogsModal(true)} 
-                className="btn btn-sm btn-ghost justify-start gap-3 normal-case font-medium w-full text-left rounded-xl text-base-content/75 hover:bg-primary/15 hover:text-primary transition-all duration-200"
+                className="btn btn-xs lg:btn-sm btn-ghost justify-start gap-2 lg:gap-3 normal-case font-medium w-auto lg:w-full text-left rounded-xl text-base-content/75 hover:bg-primary/15 hover:text-primary transition-all duration-200 shrink-0 whitespace-nowrap"
               >
                 <Terminal className="w-4 h-4 text-green-400" />
                 <span>Log Stream (Live)</span>
               </button>
               
-              <div className="divider opacity-20 my-2"></div>
+              <div className="divider hidden lg:flex opacity-20 my-2"></div>
             </>
           )}
 
           {/* User Navigation (Available for both admin and users) */}
           <button 
             onClick={() => setActiveTab('myacc')} 
-            className={`btn btn-sm btn-ghost justify-start gap-3 normal-case font-medium w-full text-left rounded-xl ${activeTab === 'myacc' ? 'bg-primary/15 text-primary font-bold border border-primary/20' : 'text-base-content/75'}`}
+            className={`btn btn-xs lg:btn-sm btn-ghost justify-start gap-2 lg:gap-3 normal-case font-medium w-auto lg:w-full text-left rounded-xl shrink-0 whitespace-nowrap ${activeTab === 'myacc' ? 'bg-primary/15 text-primary font-bold border border-primary/20' : 'text-base-content/75'}`}
           >
             <User className="w-4 h-4" />
             <span>{t('nav_myacc', lang)}</span>
@@ -399,7 +399,7 @@ export default function App() {
           
           <button 
             onClick={() => setActiveTab('myuse')} 
-            className={`btn btn-sm btn-ghost justify-start gap-3 normal-case font-medium w-full text-left rounded-xl ${activeTab === 'myuse' ? 'bg-primary/15 text-primary font-bold border border-primary/20' : 'text-base-content/75'}`}
+            className={`btn btn-xs lg:btn-sm btn-ghost justify-start gap-2 lg:gap-3 normal-case font-medium w-auto lg:w-full text-left rounded-xl shrink-0 whitespace-nowrap ${activeTab === 'myuse' ? 'bg-primary/15 text-primary font-bold border border-primary/20' : 'text-base-content/75'}`}
           >
             <BarChart3 className="w-4 h-4" />
             <span>{t('nav_myuse', lang)}</span>
@@ -407,7 +407,7 @@ export default function App() {
         </aside>
 
         {/* Content Area */}
-        <main className="flex-1 p-8 overflow-y-auto z-10">
+        <main className="flex-1 p-4 lg:p-8 overflow-y-auto z-10 w-full min-w-0 max-w-full">
           <div className="max-w-7xl mx-auto animate-tab-in">
             {activeTab === 'ov' && <OverviewTab />}
             {activeTab === 'ks' && <KeysTab />}

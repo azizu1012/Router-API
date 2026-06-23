@@ -31,16 +31,51 @@ def get_key_status_db() -> Dict[str, Dict[str, Any]]:
         c = _conn()
         try:
             result = {}
+            now = time.time()
             for r in c.execute("SELECT * FROM key_status").fetchall():
                 d = dict(r)
+                
+                # Check auto-reset if idle and unfrozen for more than 5 minutes (300s)
+                dirty = False
+                cf = d.get("consecutive_failures", 0) or 0
+                frozen_until = d.get("frozen_until", 0.0) or 0.0
+                if cf > 0 and now >= frozen_until + 300:
+                    d["consecutive_failures"] = 0
+                    d["frozen_until"] = 0.0
+                    dirty = True
+
                 pm = d.pop("data", None)
+                pm_dict = {}
                 if d.get("per_model"):
                     try:
-                        d["per_model"] = json.loads(d["per_model"])
+                        pm_dict = json.loads(d["per_model"])
                     except Exception:
-                        d["per_model"] = {}
+                        pm_dict = {}
+                    
+                    pm_dirty = False
+                    for mid, pm_entry in pm_dict.items():
+                        if isinstance(pm_entry, dict) and pm_entry.get("failures", 0) > 0:
+                            if now >= pm_entry.get("frozen_until", 0.0) + 300:
+                                pm_entry["failures"] = 0
+                                pm_entry["frozen_until"] = 0.0
+                                pm_dirty = True
+                    if pm_dirty:
+                        d["per_model"] = json.dumps(pm_dict)
+                        dirty = True
+                    else:
+                        d["per_model"] = pm_dict
                 else:
-                    d.setdefault("per_model", {})
+                    d["per_model"] = {}
+
+                if dirty:
+                    pm_str = d["per_model"] if isinstance(d["per_model"], str) else json.dumps(d["per_model"])
+                    c.execute(
+                        "UPDATE key_status SET consecutive_failures = ?, frozen_until = ?, per_model = ? WHERE key = ?",
+                        (d.get("consecutive_failures", 0), d.get("frozen_until", 0.0), pm_str, d["key"])
+                    )
+                    c.commit()
+                    if not isinstance(d["per_model"], dict):
+                        d["per_model"] = pm_dict
 
                 if pm:
                     try:

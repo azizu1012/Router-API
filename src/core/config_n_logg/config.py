@@ -94,6 +94,13 @@ _DEFAULT_TOOLS_TO_STRIP = [
 ]
 
 
+def _load_tools_to_strip() -> List[str]:
+    val = os.getenv("TOOLS_TO_STRIP")
+    if val:
+        return [x.strip() for x in val.split(",") if x.strip()]
+    return _DEFAULT_TOOLS_TO_STRIP
+
+
 @dataclass
 class RouterApiConfig:
     PROJECT_ROOT: Path = _PROJECT_ROOT
@@ -133,10 +140,7 @@ class RouterApiConfig:
     CLAUDE_CODE_LITE_EMERGENCY_MAX_INPUT_TOKENS: int = _get_int("CLAUDE_CODE_LITE_EMERGENCY_MAX_INPUT_TOKENS", 200000)
 
     # Tools to strip from requests (e.g. heavy biology plugins)
-    TOOLS_TO_STRIP: List[str] = field(default_factory=lambda: (
-        [x.strip() for x in os.getenv("TOOLS_TO_STRIP").split(",") if x.strip()]
-        if os.getenv("TOOLS_TO_STRIP") else _DEFAULT_TOOLS_TO_STRIP
-    ))
+    TOOLS_TO_STRIP: List[str] = field(default_factory=_load_tools_to_strip)
 
     # Proxy / Relay
     PROXY_ENABLED: bool = _get_bool("GEMINI_PROXY_ENABLED", False)

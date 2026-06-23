@@ -157,7 +157,12 @@ export const TR = {
     msg_oauth_error: "Lỗi upload OAuth: ", msg_ep_added: "Đã thêm endpoint thành công",
     msg_ep_error: "Lỗi thêm endpoint: ", msg_saved: "Đã lưu cấu hình",
     lbl_pool_assign: "Phân bổ Pool", msg_import_success: "Import OAuth thành công",
-    msg_import_error: "Lỗi import OAuth: "
+    msg_import_error: "Lỗi import OAuth: ",
+    lbl_font_size: "Cỡ chữ",
+    opt_font_small: "Nhỏ (90%)",
+    opt_font_medium: "Vừa (100%)",
+    opt_font_large: "Lớn (115%)",
+    opt_font_xlarge: "Rất lớn (130%)"
   },
   en: {
     dtw_title: "Security Alert",
@@ -299,7 +304,12 @@ export const TR = {
     msg_oauth_error: "OAuth upload error: ", msg_ep_added: "Endpoint added successfully",
     msg_ep_error: "Error adding endpoint: ", msg_saved: "Configuration saved",
     lbl_pool_assign: "Pool Assignment", msg_import_success: "OAuth import successful",
-    msg_import_error: "OAuth import error: "
+    msg_import_error: "OAuth import error: ",
+    lbl_font_size: "Font Size",
+    opt_font_small: "Small (90%)",
+    opt_font_medium: "Medium (100%)",
+    opt_font_large: "Large (115%)",
+    opt_font_xlarge: "Extra Large (130%)"
   },
   ja: {
     dtw_title: "セキュリティ警告",
@@ -442,7 +452,12 @@ export const TR = {
     msg_oauth_error: "OAuthアップロードエラー: ", msg_ep_added: "エンドポイントが追加されました",
     msg_ep_error: "エンドポイント追加エラー: ", msg_saved: "設定が保存されました",
     lbl_pool_assign: "プール割り当て", msg_import_success: "OAuthインポート成功",
-    msg_import_error: "OAuthインポートエラー: "
+    msg_import_error: "OAuthインポートエラー: ",
+    lbl_font_size: "文字サイズ",
+    opt_font_small: "小 (90%)",
+    opt_font_medium: "中 (100%)",
+    opt_font_large: "大 (115%)",
+    opt_font_xlarge: "特大 (130%)"
   }
 };
 

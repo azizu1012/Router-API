@@ -44,7 +44,22 @@ async def admin_delete_key(request: Request):
     target_key = normalize_key_name(target_key)
     success = remove_key_from_env(target_key)
 
-    if not success:
+    from src.backend._db import _LOCK, conn as _conn
+    db_exists = False
+    with _LOCK:
+        c = _conn()
+        try:
+            row = c.execute("SELECT 1 FROM key_status WHERE key = ?", (target_key,)).fetchone()
+            if row:
+                db_exists = True
+                c.execute("DELETE FROM key_status WHERE key = ?", (target_key,))
+                c.commit()
+        except Exception:
+            pass
+        finally:
+            c.close()
+
+    if not success and not db_exists:
         raise HTTPException(status_code=404, detail="Key not found or could not delete")
 
     from src.core.config_n_logg import reload_config
@@ -97,3 +112,75 @@ async def admin_pool_key(request: Request):
     router.refresh_keys()
 
     return {"status": "success"}
+
+
+@app.post("/dashboard/admin/keys/toggle")
+async def admin_toggle_key(request: Request):
+    _require_admin(request)
+    try:
+        body = await request.json()
+        target_key = str(body.get("key", "")).strip()
+        enabled = body.get("enabled")
+        if enabled is None:
+            enabled = True
+        else:
+            enabled = bool(enabled)
+    except Exception:
+        raise HTTPException(status_code=400, detail="Invalid JSON")
+    if not target_key:
+        raise HTTPException(status_code=400, detail="key is required")
+
+    target_key = normalize_key_name(target_key)
+
+    from src.backend._db import _LOCK, conn as _conn
+    with _LOCK:
+        c = _conn()
+        try:
+            c.execute("UPDATE key_status SET enabled = ? WHERE key = ?", (1 if enabled else 0, target_key))
+            c.commit()
+        except Exception as e:
+            raise HTTPException(status_code=500, detail=f"Database update failed: {e}")
+        finally:
+            c.close()
+
+    from src.core.router import router
+    router.refresh_keys()
+
+    return {"status": "success", "enabled": enabled}
+
+
+@app.post("/dashboard/admin/keys/reset")
+async def admin_reset_key(request: Request):
+    _require_admin(request)
+    try:
+        body = await request.json()
+        target_key = str(body.get("key", "")).strip()
+    except Exception:
+        raise HTTPException(status_code=400, detail="Invalid JSON")
+    if not target_key:
+        raise HTTPException(status_code=400, detail="key is required")
+
+    target_key = normalize_key_name(target_key)
+
+    from src.backend._db import _LOCK, conn as _conn
+    with _LOCK:
+        c = _conn()
+        try:
+            c.execute(
+                """UPDATE key_status 
+                   SET consecutive_failures = 0, frozen_until = 0.0, enabled = 1, active_requests = 0 
+                   WHERE key = ?""",
+                (target_key,)
+            )
+            c.execute("DELETE FROM key_penalties WHERE api_key = ?", (target_key,))
+            c.commit()
+        except Exception as e:
+            raise HTTPException(status_code=500, detail=f"Database update failed: {e}")
+        finally:
+            c.close()
+
+    from src.core.router import router
+    router.refresh_keys()
+
+    return {"status": "success"}
+

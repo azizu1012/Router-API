@@ -187,7 +187,7 @@ async def _execute_stream(proxy_instance: Any, kwargs: Dict[str, Any], api_key: 
                         stream_thought = str(evt_vals[3] or "") if len(evt_vals) > 3 else ""
 
                 text = stream_accumulated_text or "".join(text_buf)
-                stream_thought or "".join(thinking_buf)
+                thought = stream_thought or "".join(thinking_buf)
                 tool_calls = stream_tool_calls
                 finish_reason = stream_fr
 

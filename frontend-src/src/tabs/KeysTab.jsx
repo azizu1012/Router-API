@@ -3,7 +3,7 @@ import { useApp } from '../context/AppContext';
 import { t } from '../utils/i18n';
 import { fmt, relt } from '../utils/format';
 import { api } from '../utils/api';
-import { Search, Trash2, Key, Plus, ShieldCheck } from 'lucide-react';
+import { Search, Trash2, Key, Plus, ShieldCheck, ShieldAlert, RefreshCw } from 'lucide-react';
 import Loading from '../components/Loading';
 
 export default function KeysTab() {
@@ -166,6 +166,34 @@ export default function KeysTab() {
     }
   };
 
+  // Handle Toggle Key Status
+  const handleToggleKey = async (keyName, currentEnabled) => {
+    const newEnabled = !currentEnabled;
+    try {
+      await api('/dashboard/admin/keys/toggle', {
+        method: 'POST',
+        body: JSON.stringify({ key: keyName, enabled: newEnabled })
+      }, token);
+      refreshTab();
+    } catch (err) {
+      alert('Error: ' + err.message);
+    }
+  };
+
+  // Handle Reset Key Failures / Cooldowns
+  const handleResetKey = async (keyName) => {
+    try {
+      await api('/dashboard/admin/keys/reset', {
+        method: 'POST',
+        body: JSON.stringify({ key: keyName })
+      }, token);
+      refreshTab();
+    } catch (err) {
+      alert('Error: ' + err.message);
+    }
+  };
+
+
   const adminKeys = sortedKeys.filter(k => k.tier === 'admin');
   const premiumKeys = sortedKeys.filter(k => k.tier === 'premium');
   const freeKeys = sortedKeys.filter(k => k.tier === 'free');
@@ -192,17 +220,17 @@ export default function KeysTab() {
           </span>
         </div>
         <div className="overflow-x-auto w-full">
-          <table className="table table-zebra table-fixed w-full text-xs">
+          <table className="table table-zebra w-full text-xs">
             <thead>
               <tr className="border-b border-base-content/5 text-base-content/60 bg-base-200/35">
-                <SortTh field="key" label={t('th_key_code', lang)} className="w-[36%]" />
-                <SortTh field="status" label={t('th_status', lang)} className="w-[18%]" />
-                <SortTh field="today" label={t('th_today', lang)} className="w-[8%]" />
-                <SortTh field="usage" label={t('th_total', lang)} className="w-[9%]" />
-                <SortTh field="concurrency" label={t('th_concurrency', lang)} className="w-[8%]" />
-                <SortTh field="failures" label={t('th_failures', lang)} className="w-[7%]" />
-                <th className="font-bold whitespace-nowrap w-[10%]">{t('lbl_pool_assign', lang)}</th>
-                <th className="w-8"></th>
+                <SortTh field="key" label={t('th_key_code', lang)} className="w-[28%] min-w-[180px]" />
+                <SortTh field="status" label={t('th_status', lang)} className="w-[18%] min-w-[140px]" />
+                <SortTh field="today" label={t('th_today', lang)} className="w-[8%] min-w-[70px]" />
+                <SortTh field="usage" label={t('th_total', lang)} className="w-[9%] min-w-[70px]" />
+                <SortTh field="concurrency" label={t('th_concurrency', lang)} className="w-[8%] min-w-[80px]" />
+                <SortTh field="failures" label={t('th_failures', lang)} className="w-[7%] min-w-[70px]" />
+                <th className="font-bold whitespace-nowrap w-[12%] min-w-[120px]">{t('lbl_pool_assign', lang)}</th>
+                <th className="w-24 min-w-[96px]">Hành động</th>
               </tr>
             </thead>
             <tbody>
@@ -215,10 +243,10 @@ export default function KeysTab() {
                 
                 const allowedPools = k.allowed_pools || [];
                 const assignedPool = allowedPools.length > 0 ? allowedPools[0] : 'all';
-
+ 
                 return (
                   <tr key={i} className="border-b border-base-content/5 hover:bg-base-200/50">
-                    <td className="w-[36%] max-w-0">
+                    <td className="w-[28%] min-w-[180px] max-w-0">
                       <code
                         className="font-mono font-semibold text-primary block w-full overflow-hidden text-ellipsis whitespace-nowrap"
                         title={k.key}
@@ -259,13 +287,33 @@ export default function KeysTab() {
                       </select>
                     </td>
                     <td>
-                      <button 
-                        onClick={() => handleDeleteKey(k.key)}
-                        className="btn btn-ghost btn-xs btn-square text-error hover:bg-error/15"
-                        title="Remove Key"
-                      >
-                        <Trash2 className="w-3.5 h-3.5" />
-                      </button>
+                      <div className="flex items-center gap-0.5">
+                        <button 
+                          onClick={() => handleToggleKey(k.key, k.enabled)}
+                          className={`btn btn-ghost btn-xs btn-square ${k.enabled ? 'text-error hover:bg-error/15' : 'text-success hover:bg-success/15'}`}
+                          title={k.enabled ? 'Disable Key' : 'Enable Key'}
+                        >
+                          {k.enabled ? <ShieldAlert className="w-3.5 h-3.5" /> : <ShieldCheck className="w-3.5 h-3.5" />}
+                        </button>
+                        
+                        {(k.consecutive_failures > 0 || isFrozen) && (
+                          <button 
+                            onClick={() => handleResetKey(k.key)}
+                            className="btn btn-ghost btn-xs btn-square text-warning hover:bg-warning/15"
+                            title="Reset Failures & Unfreeze"
+                          >
+                            <RefreshCw className="w-3.5 h-3.5" />
+                          </button>
+                        )}
+ 
+                        <button 
+                          onClick={() => handleDeleteKey(k.key)}
+                          className="btn btn-ghost btn-xs btn-square text-error hover:bg-error/15"
+                          title="Remove Key"
+                        >
+                          <Trash2 className="w-3.5 h-3.5" />
+                        </button>
+                      </div>
                     </td>
                   </tr>
                 );
