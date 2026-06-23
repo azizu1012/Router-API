@@ -107,7 +107,7 @@ def convert_messages_to_contents(messages: List[Dict[str, Any]]) -> Dict[str, An
             reasoning = msg.get("reasoning_content")
             tsig = msg.get("thought_signature")
             if reasoning:
-                p_dict = {"thought": True, "text": reasoning}
+                p_dict: Dict[str, Any] = {"thought": True, "text": reasoning}
                 if tsig:
                     import base64
                     try:
@@ -130,7 +130,7 @@ def convert_messages_to_contents(messages: List[Dict[str, Any]]) -> Dict[str, An
                         args = json.loads(tc.get("function", {}).get("arguments", "{}"))
                     except (json.JSONDecodeError, ValueError):
                         args = {}
-                    p_dict = {
+                    p_dict: Dict[str, Any] = {
                         "functionCall": {
                             "name": sanitize_function_name(tc["function"]["name"]),
                             "args": args,
@@ -169,7 +169,7 @@ def convert_messages_to_contents(messages: List[Dict[str, Any]]) -> Dict[str, An
                 }
             })
 
-    result = {"contents": contents}
+    result: Dict[str, Any] = {"contents": contents}
     if system_instruction:
         result["systemInstruction"] = system_instruction
     return result

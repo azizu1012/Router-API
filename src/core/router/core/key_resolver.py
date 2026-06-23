@@ -11,6 +11,7 @@ from src.core.config_n_logg.logger import logger_keys as logger
 from src.backend.key_status import (
     get_key_tiers_db,
     atomic_reserve_key,
+    atomic_record_success,
 )
 from src.core.limits.gemini_rate_limiter import (
     get_key_priority,
@@ -134,6 +135,21 @@ class KeyResolverMixin:
             return False
         if status.get("tier", "free") not in allowed_tiers:
             return False
+
+        # Auto-reset consecutive failures if the key has been unfrozen and idle for more than 5 minutes (300s)
+        cf = status.get("consecutive_failures", 0)
+        frozen_until = status.get("frozen_until", 0.0)
+        if cf > 0 and now >= frozen_until + 300:
+            status["consecutive_failures"] = 0
+            atomic_record_success(key)
+
+        pm = status.get("per_model", {})
+        for mid, pm_entry in pm.items():
+            if isinstance(pm_entry, dict) and pm_entry.get("failures", 0) > 0:
+                if now >= pm_entry.get("frozen_until", 0.0) + 300:
+                    pm_entry["failures"] = 0
+                    pm_entry["frozen_until"] = 0.0
+                    atomic_record_success(key, mid)
 
         # Checks the `allowed_pools` for the key
         allowed_pools = status.get("allowed_pools")

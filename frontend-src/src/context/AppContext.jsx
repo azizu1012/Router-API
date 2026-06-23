@@ -45,6 +45,7 @@ export function AppProvider({ children }) {
   });
   const [theme, setTheme] = useState(() => localStorage.getItem('_rtm') || 'auto');
   const [lang, setLang] = useState(() => localStorage.getItem('_rl') || 'vi');
+  const [fontSize, setFontSize] = useState(() => localStorage.getItem('_rfs') || '100%');
   
   // Easter egg tracker states
   const [foundEggs, setFoundEggs] = useState(() => {
@@ -126,6 +127,12 @@ export function AppProvider({ children }) {
     if (active === 'light') root.classList.add('theme-light');
     if (active === 'sakura' || active === 'valentine') root.classList.add('theme-sakura');
   }, [theme]);
+
+  // Handle Font Size scaling
+  useEffect(() => {
+    localStorage.setItem('_rfs', fontSize);
+    document.documentElement.style.fontSize = fontSize;
+  }, [fontSize]);
 
   // Listen for system theme changes if 'auto'
   useEffect(() => {
@@ -333,7 +340,7 @@ export function AppProvider({ children }) {
   return (
     <AppContext.Provider value={{
       token, user, activeTab, theme, lang, tabData, loading,
-      foundEggs, unlockEgg, toast, wsHook,
+      foundEggs, unlockEgg, toast, wsHook, fontSize, setFontSize,
       setActiveTab, setTheme, changeLanguage, login, logout, refreshTab: () => fetchTabData(activeTab, false)
     }}>
       {children}

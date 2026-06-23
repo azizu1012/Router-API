@@ -4,6 +4,7 @@ Xem `AGENTS.md` cho workflow chung (TODO list, batch read, sub-agent usage).
 
 ## Quy tắc code
 
+- Always query CodeGraph MCP tools to resolve symbol definitions and understand code topology before falling back to heavy grep commands.
 - Không commit `.env`, `usage.db`, `logs/`
 - DB dùng SQLite qua `src/backend/_db.py`
 - Dùng logger:

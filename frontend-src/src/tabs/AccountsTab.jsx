@@ -24,6 +24,8 @@ export default function AccountsTab() {
   const [newRpm, setNewRpm] = useState('');
   const [newTpm, setNewTpm] = useState('');
   const [newRpd, setNewRpd] = useState('');
+  const [newWebSearchEnabled, setNewWebSearchEnabled] = useState(false);
+  const [newSearchEngine, setNewSearchEngine] = useState('auto');
   const [showCreateForm, setShowCreateForm] = useState(false);
   const [isCreating, setIsCreating] = useState(false);
   const [createMsg, setCreateMsg] = useState({ text: '', type: '' });
@@ -118,7 +120,12 @@ export default function AccountsTab() {
     setIsCreating(true);
     setCreateMsg({ text: '⏳ Đang tạo...', type: 'info' });
 
-    const body = { name: newName.trim(), tier: newTier };
+    const body = { 
+      name: newName.trim(), 
+      tier: newTier,
+      web_search_enabled: newWebSearchEnabled,
+      search_engine: newSearchEngine
+    };
     if (newRpm.trim() !== '') body.rpm = parseInt(newRpm, 10);
     if (newTpm.trim() !== '') body.tpm = parseInt(newTpm, 10);
     if (newRpd.trim() !== '') body.rpd = parseInt(newRpd, 10);
@@ -134,6 +141,8 @@ export default function AccountsTab() {
       setNewTpm('');
       setNewRpd('');
       setNewTier('free');
+      setNewWebSearchEnabled(false);
+      setNewSearchEngine('auto');
       
       if (res && res.account) {
         alert(`Tạo tài khoản ${res.account.name} thành công!\nKey truy cập: ${res.account.auth_key}\n\n(Hãy copy và lưu lại khóa này!)`);
@@ -226,32 +235,59 @@ export default function AccountsTab() {
             <Plus className="w-4 h-4 text-primary" />
             {t('ac_add_account_title', lang) || 'Tạo tài khoản con mới'}
           </h3>
-          <form onSubmit={handleCreate} className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3 items-end">
-            <div className="form-control">
-              <label className="label py-1"><span className="label-text text-[11px] font-bold text-base-content/60 uppercase">{t('th_account_name', lang) || 'Tên tài khoản'}</span></label>
-              <input type="text" required disabled={isCreating} value={newName} onChange={(e) => setNewName(e.target.value)} placeholder="e.g. user_dev" className="input input-bordered input-sm text-xs w-full" />
-            </div>
-            <div className="form-control">
-              <label className="label py-1"><span className="label-text text-[11px] font-bold text-base-content/60 uppercase">{t('lbl_tier', lang)}</span></label>
-              <select disabled={isCreating} value={newTier} onChange={(e) => setNewTier(e.target.value)} className="select select-bordered select-sm text-xs w-full">
-                <option value="free">Free</option>
-                <option value="premium">Premium</option>
-                <option value="admin">Admin</option>
-              </select>
-            </div>
-            <div className="form-control">
-              <label className="label py-1"><span className="label-text text-[11px] font-bold text-base-content/60 uppercase">Giới hạn (RPM / TPM / RPD)</span></label>
-              <div className="flex gap-2">
-                <input type="number" disabled={isCreating} value={newRpm} onChange={(e) => setNewRpm(e.target.value)} placeholder="RPM" className="input input-bordered input-sm text-xs w-full" />
-                <input type="number" disabled={isCreating} value={newTpm} onChange={(e) => setNewTpm(e.target.value)} placeholder="TPM" className="input input-bordered input-sm text-xs w-full" />
-                <input type="number" disabled={isCreating} value={newRpd} onChange={(e) => setNewRpd(e.target.value)} placeholder="RPD" className="input input-bordered input-sm text-xs w-full" />
+          <form onSubmit={handleCreate} className="space-y-4">
+            <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
+              <div className="form-control">
+                <label className="label py-1"><span className="label-text text-[11px] font-bold text-base-content/60 uppercase">{t('th_account_name', lang) || 'Tên tài khoản'}</span></label>
+                <input type="text" required disabled={isCreating} value={newName} onChange={(e) => setNewName(e.target.value)} placeholder="e.g. user_dev" className="input input-bordered input-sm text-xs w-full" />
+              </div>
+              <div className="form-control">
+                <label className="label py-1"><span className="label-text text-[11px] font-bold text-base-content/60 uppercase">{t('lbl_tier', lang)}</span></label>
+                <select disabled={isCreating} value={newTier} onChange={(e) => setNewTier(e.target.value)} className="select select-bordered select-sm text-xs w-full">
+                  <option value="free">Free</option>
+                  <option value="premium">Premium</option>
+                  <option value="admin">Admin</option>
+                </select>
+              </div>
+              <div className="form-control">
+                <label className="label py-1"><span className="label-text text-[11px] font-bold text-base-content/60 uppercase">Giới hạn (RPM / TPM / RPD)</span></label>
+                <div className="flex gap-2">
+                  <input type="number" disabled={isCreating} value={newRpm} onChange={(e) => setNewRpm(e.target.value)} placeholder="RPM" className="input input-bordered input-sm text-xs w-full" />
+                  <input type="number" disabled={isCreating} value={newTpm} onChange={(e) => setNewTpm(e.target.value)} placeholder="TPM" className="input input-bordered input-sm text-xs w-full" />
+                  <input type="number" disabled={isCreating} value={newRpd} onChange={(e) => setNewRpd(e.target.value)} placeholder="RPD" className="input input-bordered input-sm text-xs w-full" />
+                </div>
               </div>
             </div>
-            <div className="flex gap-2">
-              <button type="button" disabled={isCreating} onClick={() => setShowCreateForm(false)} className="btn btn-ghost btn-sm font-bold flex-1">Hủy</button>
-              <button type="submit" disabled={isCreating} className="btn btn-primary btn-sm font-bold flex-1">
-                {isCreating ? <span className="loading loading-spinner loading-xs"></span> : t('btn_add', lang)}
-              </button>
+            
+            <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4 items-end pt-2 border-t border-base-content/5">
+              <div className="form-control flex flex-row items-center gap-2 h-9">
+                <input 
+                  type="checkbox" 
+                  checked={newWebSearchEnabled} 
+                  onChange={(e) => setNewWebSearchEnabled(e.target.checked)} 
+                  disabled={isCreating}
+                  className="checkbox checkbox-primary checkbox-xs"
+                  id="new-web-search-enabled-checkbox"
+                />
+                <label htmlFor="new-web-search-enabled-checkbox" className="label cursor-pointer py-0">
+                  <span className="label-text font-bold text-xs uppercase text-base-content/70 select-none">Bật tìm kiếm Web</span>
+                </label>
+              </div>
+              <div className="form-control">
+                <label className="label py-1"><span className="label-text text-[11px] font-bold text-base-content/60 uppercase">Công cụ tìm kiếm mặc định</span></label>
+                <select disabled={isCreating} value={newSearchEngine} onChange={(e) => setNewSearchEngine(e.target.value)} className="select select-bordered select-sm text-xs w-full">
+                  <option value="auto">Tự động (Auto)</option>
+                  <option value="google_grounding">Google Grounding</option>
+                  <option value="duckduckgo">DuckDuckGo</option>
+                  <option value="disabled">Tắt tìm kiếm (Disabled)</option>
+                </select>
+              </div>
+              <div className="flex gap-2 justify-end">
+                <button type="button" disabled={isCreating} onClick={() => setShowCreateForm(false)} className="btn btn-ghost btn-sm font-bold w-24">Hủy</button>
+                <button type="submit" disabled={isCreating} className="btn btn-primary btn-sm font-bold w-24">
+                  {isCreating ? <span className="loading loading-spinner loading-xs"></span> : t('btn_add', lang)}
+                </button>
+              </div>
             </div>
           </form>
           {createMsg.text && (

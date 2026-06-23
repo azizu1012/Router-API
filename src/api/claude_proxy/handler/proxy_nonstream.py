@@ -86,6 +86,12 @@ class ClaudeProxyNonstreamMixin:
         }
 
         recursion_depth = 0
+        input_tokens = 0
+        output_tokens = 0
+        text = ""
+        thought = None
+        finish_reason = "stop"
+        msg = None
         while recursion_depth < 5:
             result = await pool_manager.call_nonstream(
                 model_alias=model_alias,

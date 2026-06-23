@@ -14,16 +14,6 @@ from pathlib import Path
 # Ensure src/ is on the path
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
-# ── Block botocore pre-load (unused AWS dependency) ──
-from unittest.mock import MagicMock as _Mock
-_boto = _Mock()
-_boto.exceptions = _Mock()
-_boto.compat = _Mock()
-_boto.awsrequest = _Mock()
-sys.modules["botocore"] = _boto
-sys.modules["botocore.exceptions"] = _boto.exceptions
-sys.modules["botocore.compat"] = _boto.compat
-sys.modules["botocore.awsrequest"] = _boto.awsrequest
 
 
 import uvicorn

@@ -272,6 +272,12 @@ async def anthropic_messages(
         body["max_tokens"] = config.MAX_OUTPUT_TOKENS
 
     akp = _auth_key_prefix(account)
+    response_headers = {
+        "anthropic-version": "2023-06-01",
+        "Cache-Control": "no-cache",
+        "Connection": "keep-alive",
+        "X-Accel-Buffering": "no",
+    }
 
     try:
         chat_like = {
@@ -295,8 +301,7 @@ async def anthropic_messages(
         remaining_tokens = max(1000, limit_tokens - input_tokens_est)
         utilization_val = min(0.99, round(input_tokens_est / limit_tokens, 4))
         
-        response_headers = {
-            "anthropic-version": "2023-06-01",
+        response_headers.update({
             "anthropic-ratelimit-requests-limit": "1000",
             "anthropic-ratelimit-requests-remaining": "999",
             "anthropic-ratelimit-tokens-limit": str(limit_tokens),
@@ -304,10 +309,7 @@ async def anthropic_messages(
             "anthropic-ratelimit-unified-5h-utilization": f"{utilization_val:.4f}",
             "anthropic-ratelimit-unified-7d-utilization": f"{utilization_val:.4f}",
             "anthropic-ratelimit-unified-status": "allowed",
-            "Cache-Control": "no-cache",
-            "Connection": "keep-alive",
-            "X-Accel-Buffering": "no",
-        }
+        })
 
         stream = body.get("stream", False)
         if stream:

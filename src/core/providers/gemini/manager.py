@@ -113,10 +113,11 @@ class GeminiAPIManager:
                         tools, model_id, image_count, contents, web_search,
                     )
                     tc = resolve_thinking_config(model_id, thinking_level, thinking_budget, include_thoughts)
+                    tc_obj = types.ThinkingConfig(**tc) if tc else None
                     response = await self._call_with_grounding_fallback(
                         api_key, model_id, system_instruction, contents,
                         max_tokens, temperature, top_p, request_tools,
-                        tier, use_grounding, thinking_config=tc,
+                        tier, use_grounding, thinking_config=tc_obj,
                     )
 
                     usage = getattr(response, "usage_metadata", None)
@@ -268,13 +269,14 @@ class GeminiAPIManager:
                         tools, model_id, image_count, contents, web_search,
                     )
                     tc = resolve_thinking_config(model_id, thinking_level, thinking_budget, include_thoughts)
+                    tc_obj = types.ThinkingConfig(**tc) if tc else None
                     try:
                         stream_gen = caller.generate_content_stream(
                             self.pool, api_key, model_id,
                             system_instruction, contents,
                             max_tokens, temperature, top_p,
                             tools=request_tools or None, tier=tier,
-                            thinking_config=tc,
+                            thinking_config=tc_obj,
                         )
                     except Exception as ge_err:
                         if use_grounding and gerror.is_grounding_suppression(str(ge_err)):
@@ -286,7 +288,7 @@ class GeminiAPIManager:
                                 system_instruction, contents,
                                 max_tokens, temperature, top_p,
                                 tools=non_grounding or None, tier=tier,
-                                thinking_config=tc,
+                                thinking_config=tc_obj,
                             )
                         else:
                             raise ge_err

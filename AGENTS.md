@@ -1,5 +1,7 @@
 # Project Instructions
 
+- Always query CodeGraph MCP tools to resolve symbol definitions and understand code topology before falling back to heavy grep commands.
+
 ## 1. TODO bắt buộc cho task phức tạp
 
 - Task từ 3 bước trở lên hoặc chạm nhiều file → tạo TODO list ngay trước khi làm.
