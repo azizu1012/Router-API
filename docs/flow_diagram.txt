@@ -194,15 +194,13 @@
   ├── _execute_stream() — Stream execution
   └── _stream_with_pool() — Pool retry loop + usage logging
 
-  5b-iii. COMPACTION
-  ────────────────────────────────────────────────────────────────────────────────
-  handler/compaction.py
-  └── _pre_compact_and_truncate() — Gate check + truncation
+  5b-iii. TRUNCATION
+   ────────────────────────────────────────────────────────────────────────────────
+   handler/compaction.py
+   └── _pre_compact_and_truncate() — Gate check + hard truncation
 
-  utils/compaction_utils.py
-  ├── should_compact() — Threshold check (80K Claude Code / 160K standard)
-  ├── _emergency_truncate_to_limit() — Hard truncation (180K)
-  └── _compact_conversation() — LLM summarization via gemini-flash-lite
+   logical_HQ_translator/truncation.py
+   └── emergency_truncate_to_limit() — Middle-out drop (preserve system + newest)
 
   5b-iv. CONVERTERS & HELPERS
   ────────────────────────────────────────────────────────────────────────────────
@@ -553,7 +551,7 @@
                                                                        │
                                                              Anthropic → OpenAI conversion
                                                                        │
-                                                             compaction nếu cần (gemini-flash-lite)
+                                                              hard truncation nếu quá tải token
                                                                        │
                                                              handler.py → Gemini/Custom Pool
                                                                        │
