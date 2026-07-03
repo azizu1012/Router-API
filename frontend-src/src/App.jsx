@@ -5,7 +5,7 @@ import CanvasParticles from './components/CanvasParticles';
 import ThemeLanguageSelector from './components/ThemeLanguageSelector';
 import { 
   LayoutDashboard, Key, Users, PieChart, Network, 
-  AlertTriangle, ShieldCheck, User, BarChart3, LogOut, Lock, Eye, EyeOff, Settings, Terminal
+  AlertTriangle,   ShieldCheck, User, BarChart3, LogOut, Lock, Eye, EyeOff, Settings, Terminal, Layers
 } from 'lucide-react';
 import LogHistoryModal from './components/LogHistoryModal';
 
@@ -20,6 +20,7 @@ import PoolStructureTab from './tabs/PoolStructureTab';
 import MyAccountTab from './tabs/MyAccountTab';
 import MyUsageTab from './tabs/MyUsageTab';
 import SettingsTab from './tabs/SettingsTab';
+import ModelsTab from './tabs/ModelsTab';
 
 export default function App() {
   const { 
@@ -369,6 +370,14 @@ export default function App() {
               </button>
 
               <button 
+                onClick={() => setActiveTab('md')} 
+                className={`btn btn-xs lg:btn-sm btn-ghost justify-start gap-2 lg:gap-3 normal-case font-medium w-auto lg:w-full text-left rounded-xl shrink-0 whitespace-nowrap ${activeTab === 'md' ? 'bg-primary/15 text-primary font-bold border border-primary/20' : 'text-base-content/75'}`}
+              >
+                <Layers className="w-4 h-4" />
+                <span>{t('nav_md', lang)}</span>
+              </button>
+
+              <button 
                 onClick={() => setActiveTab('st')} 
                 className={`btn btn-xs lg:btn-sm btn-ghost justify-start gap-2 lg:gap-3 normal-case font-medium w-auto lg:w-full text-left rounded-xl shrink-0 whitespace-nowrap ${activeTab === 'st' ? 'bg-primary/15 text-primary font-bold border border-primary/20' : 'text-base-content/75'}`}
               >
@@ -416,6 +425,7 @@ export default function App() {
             {activeTab === 'ep' && <EndpointsTab />}
             {activeTab === 'pe' && <PenaltiesTab />}
             {activeTab === 'mu' && <PoolStructureTab />}
+            {activeTab === 'md' && <ModelsTab />}
             {activeTab === 'myacc' && <MyAccountTab />}
             {activeTab === 'myuse' && <MyUsageTab />}
             {activeTab === 'st' && <SettingsTab />}

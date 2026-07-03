@@ -101,6 +101,29 @@ async def admin_assign_endpoint(request: Request):
         raise HTTPException(status_code=400, detail=str(e))
 
 
+@app.post("/dashboard/admin/endpoints/pool-assign")
+async def admin_endpoint_pool_assign(request: Request):
+    _require_admin(request)
+    try:
+        body = await request.json()
+        name = str(body.get("name", "")).strip()
+        pool_name = str(body.get("pool_name", "")).strip()
+        model_id = str(body.get("model_id", "")).strip()
+    except Exception:
+        raise HTTPException(status_code=400, detail="Invalid JSON")
+    if not name or not pool_name:
+        raise HTTPException(status_code=400, detail="name and pool_name are required")
+
+    from src.core.providers import _custom_endpoint_manager
+    if model_id:
+        r = _custom_endpoint_manager.assign_pool_model(name, pool_name, model_id)
+    else:
+        r = _custom_endpoint_manager.remove_pool_model(name, pool_name)
+    if not r:
+        raise HTTPException(status_code=404, detail=f"Endpoint '{name}' not found")
+    return {"status": "success", "endpoint": r}
+
+
 @app.post("/dashboard/admin/endpoints/toggle-model")
 async def admin_toggle_endpoint_model(request: Request):
     _require_admin(request)

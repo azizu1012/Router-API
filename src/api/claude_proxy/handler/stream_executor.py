@@ -303,7 +303,10 @@ async def _execute_stream(proxy_instance: Any, kwargs: Dict[str, Any], api_key: 
         try:
             async def _fetch_stream():
                 g = await acompletion(**kwargs)
-                fc = await g.__anext__()
+                try:
+                    fc = await g.__anext__()
+                except StopAsyncIteration:
+                    raise RuntimeError("Empty stream from Claude proxy completion")
                 return g, fc
 
             fetch_task = asyncio.create_task(_fetch_stream())

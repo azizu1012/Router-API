@@ -191,12 +191,14 @@ async def _apply_account_limit(account: Dict[str, Any], body: Dict[str, Any], is
     # Detect if the request goes to a custom endpoint
     from src.core.providers import _custom_endpoint_manager
     is_custom = False
-    ep = _custom_endpoint_manager.get_endpoint_for_account(account)
-    if ep and ep.get("enabled", True):
+    for ep in _custom_endpoint_manager.get_endpoints_for_account(account):
+        if not ep.get("enabled", True):
+            continue
         model_to_use = body.get("model", model_alias)
         enabled_models = ep.get("enabled_models", [])
         if model_to_use in enabled_models:
             is_custom = True
+            break
     if not is_custom:
         pool_models = router.get_pool_custom_models(model_alias)
         # Only treat as custom if there are actually enabled custom endpoints in the pool

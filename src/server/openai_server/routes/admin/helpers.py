@@ -52,6 +52,24 @@ def normalize_key_name(key: str) -> str:
     return key
 
 
+def remove_env_var(key_name: str) -> None:
+    """Remove an environment variable from the ``.env`` file if it exists."""
+    if not ENV_PATH.exists():
+        return
+    content = ENV_PATH.read_text(encoding="utf-8")
+    lines = content.splitlines()
+    new_lines = []
+    for line in lines:
+        stripped = line.strip()
+        if "=" in line and not stripped.startswith("#"):
+            k = line.split("=", 1)[0].strip()
+            if k == key_name:
+                continue
+        new_lines.append(line)
+    if len(new_lines) != len(lines):
+        ENV_PATH.write_text("\n".join(new_lines) + "\n", encoding="utf-8")
+
+
 def update_env_var(key_name: str, val: str) -> None:
     """Update or append an environment variable in the ``.env`` file."""
     if not ENV_PATH.exists():

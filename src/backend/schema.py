@@ -76,7 +76,10 @@ def init_config_tables() -> None:
                 );
             """)
             c.commit()
- 
+
+            # Migration: add tier to accounts
+            init_model_config_table(c)
+
             # Migration: add tier to accounts
             try:
                 c.execute("ALTER TABLE accounts ADD COLUMN tier TEXT DEFAULT 'free'")
@@ -182,6 +185,71 @@ def init_config_tables() -> None:
             c.close()
             
 
+
+
+def init_model_config_table(c) -> None:
+    c.executescript("""
+        CREATE TABLE IF NOT EXISTS model_config (
+            alias TEXT NOT NULL,
+            account_id TEXT DEFAULT '',
+            display TEXT DEFAULT '',
+            model_id TEXT DEFAULT '',
+            rpm INTEGER DEFAULT 10,
+            tpm INTEGER DEFAULT 1000000,
+            rpd INTEGER DEFAULT 1000,
+            rpd_enabled INTEGER DEFAULT 0,
+            hidden INTEGER DEFAULT 0,
+            priority INTEGER DEFAULT 1,
+            context_length INTEGER DEFAULT 220000,
+            pool_name TEXT DEFAULT '',
+            enabled INTEGER DEFAULT 1,
+            updated_at TEXT,
+            PRIMARY KEY (alias, account_id)
+        );
+    """)
+
+    try:
+        c.execute("ALTER TABLE model_config ADD COLUMN rpd_enabled INTEGER DEFAULT 0")
+    except Exception:
+        pass
+    try:
+        c.execute("ALTER TABLE model_config ADD COLUMN pool_name TEXT DEFAULT ''")
+    except Exception:
+        pass
+    _migrate_model_config_pk(c)
+
+
+def _migrate_model_config_pk(c) -> None:
+    try:
+        c.execute("ALTER TABLE model_config ADD COLUMN account_id TEXT DEFAULT ''")
+    except Exception:
+        pass
+    info = c.execute("PRAGMA table_info(model_config)").fetchall()
+    pk_cols = [row[0] for row in info if row[5] == 1]
+    if pk_cols == ["alias"]:
+        c.executescript("""
+            CREATE TABLE model_config_v2 (
+                alias TEXT NOT NULL,
+                account_id TEXT DEFAULT '',
+                display TEXT DEFAULT '',
+                model_id TEXT DEFAULT '',
+                rpm INTEGER DEFAULT 10,
+                tpm INTEGER DEFAULT 1000000,
+                rpd INTEGER DEFAULT 1000,
+                rpd_enabled INTEGER DEFAULT 0,
+                hidden INTEGER DEFAULT 0,
+                priority INTEGER DEFAULT 1,
+                context_length INTEGER DEFAULT 220000,
+                pool_name TEXT DEFAULT '',
+                enabled INTEGER DEFAULT 1,
+                updated_at TEXT,
+                PRIMARY KEY (alias, account_id)
+            );
+            INSERT INTO model_config_v2 (alias, account_id, display, model_id, rpm, tpm, rpd, rpd_enabled, hidden, priority, context_length, pool_name, enabled, updated_at)
+                SELECT alias, COALESCE(account_id, ''), display, model_id, rpm, tpm, rpd, COALESCE(rpd_enabled, 0), hidden, priority, context_length, COALESCE(pool_name, ''), enabled, updated_at FROM model_config;
+            DROP TABLE model_config;
+            ALTER TABLE model_config_v2 RENAME TO model_config;
+        """)
 
 
 def _migrate_key_status_columns() -> None:

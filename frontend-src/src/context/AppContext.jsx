@@ -16,6 +16,7 @@ const getTabFromPath = (path) => {
   if (normalized === '/stats/pool-structure') return 'mu';
   if (normalized === '/stats/my-account') return 'myacc';
   if (normalized === '/stats/my-usage') return 'myuse';
+  if (normalized === '/stats/model-config') return 'md';
   if (normalized === '/stats/settings') return 'st';
   return null;
 };
@@ -31,6 +32,7 @@ const getPathFromTab = (tab) => {
     case 'mu': return '/stats/pool-structure';
     case 'myacc': return '/stats/my-account';
     case 'myuse': return '/stats/my-usage';
+    case 'md': return '/stats/model-config';
     case 'st': return '/stats/settings';
     default: return '/stats';
   }

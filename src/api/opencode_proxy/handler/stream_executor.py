@@ -286,8 +286,11 @@ async def execute_stream(
         return
 
     # ── Normal stream path ──────────────────────────────────────────────────
+    from .proxy import _is_sub_agent_request
+    is_sub_agent = _is_sub_agent_request(body)
+
     normalizer = StreamingTextNormalizer()
-    extractor = XMLThinkingExtractor()
+    extractor = None if is_sub_agent else XMLThinkingExtractor()
     out_len = 0
     _reasoning_buf: List[str] = []
     _BUF_FLUSH_SIZE = 80
@@ -366,7 +369,10 @@ async def execute_stream(
             account=account,
             thinking_params=thinking_params,
         )
-        first_item = await gen.__anext__()
+        try:
+            first_item = await gen.__anext__()
+        except StopAsyncIteration:
+            raise RuntimeError("Empty stream from pool manager")
         return gen, first_item
 
     fetch_task = asyncio.create_task(_fetch_first())
@@ -432,26 +438,35 @@ async def execute_stream(
                 stream_finish_reason = fr
 
             if reasoning:
-                async for c in _yield_reasoning(reasoning):
-                    yield c
+                if is_sub_agent:
+                    async for c in _yield_text(reasoning):
+                        yield c
+                else:
+                    async for c in _yield_reasoning(reasoning):
+                        yield c
             if content:
-                async for c in _process_content(content, bool(reasoning)):
-                    yield c
+                if is_sub_agent or not extractor:
+                    async for c in _yield_text(content):
+                        yield c
+                else:
+                    async for c in _process_content(content, bool(reasoning)):
+                        yield c
             if tool_calls:
                 has_tool_calls = True
                 yield _openai_sse(model_name, tool_calls=tool_calls, chunk_id=chunk_id)
 
-        async for c in _flush_reasoning():
-            yield c
-        for _et, _ev in extractor.flush():
-            if _et == "thinking" and _ev and include_thoughts:
-                async for c in _yield_reasoning(_ev):
-                    yield c
-            elif _et == "text" and _ev:
-                async for c in _yield_text(_ev):
-                    yield c
-        async for c in _flush_reasoning():
-            yield c
+        if extractor:
+            async for c in _flush_reasoning():
+                yield c
+            for _et, _ev in extractor.flush():
+                if _et == "thinking" and _ev and include_thoughts:
+                    async for c in _yield_reasoning(_ev):
+                        yield c
+                elif _et == "text" and _ev:
+                    async for c in _yield_text(_ev):
+                        yield c
+            async for c in _flush_reasoning():
+                yield c
         flushed = normalizer.flush()
         if flushed:
             async for c in _yield_text(flushed):

@@ -181,12 +181,20 @@ def set_fallback_db(name: str, enabled: bool) -> Optional[Dict[str, Any]]:
     return ep
 
 
+def get_endpoints_by_account_db(account_id: str) -> List[Dict[str, Any]]:
+    with _LOCK:
+        c = _conn()
+        try:
+            return [_endpoint_row(r) for r in c.execute(
+                "SELECT * FROM custom_endpoints WHERE account_id = ? AND enabled = 1",
+                (account_id,),
+            ).fetchall()]
+        finally:
+            c.close()
+
+
 def assign_endpoint_to_account_db(name: str, account_id: str) -> Optional[Dict[str, Any]]:
     ep = get_endpoint_db(name)
     if not ep:
         return None
-    if account_id:
-        existing = get_endpoint_by_account_db(account_id)
-        if existing and existing["name"] != name:
-            raise ValueError(f"Account '{account_id}' already has endpoint '{existing['name']}'")
     return update_endpoint_db(name, account_id=account_id)

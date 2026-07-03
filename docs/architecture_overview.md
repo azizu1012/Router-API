@@ -55,9 +55,10 @@ d:\AI_Projects\router_api/
 *   **Theo dõi sức khỏe Model**: `update_model_health` điều chỉnh điểm số của mô hình dựa trên thành công/thất bại.
 
 ### 3.2. PoolManager (`src/core/pool_manager.py`)
-*   **Vai trò**: Điều phối vòng lặp xoay vòng (rotation) qua các pool member và thực hiện retry khi gặp lỗi tạm thời. Đây là module trung tâm xử lý logic retry, failover và quản lý pool một cách "monolithic" (tập trung). Nó là thành phần điều phối chính trong việc lựa chọn key/model, quản lý quota và xử lý vòng lặp retry.
+*   **Vai trò**: Điều phối vòng lặp xoay vòng (rotation) qua các pool member, quản lý slot concurrency qua `ModelPool`, và thực hiện retry khi gặp lỗi tạm thời. Đây là module trung tâm xử lý logic retry, failover và quản lý pool một cách "monolithic" (tập trung). Nó là thành phần điều phối chính trong việc lựa chọn key/model, quản lý quota và xử lý vòng lặp retry.
 *   **Chức năng chính**:
     *   **Vòng lặp Pool**: Chứa logic chính cho việc thử lại và xoay vòng qua các thành viên trong pool (ví dụ: các phiên bản khác nhau của Gemini Flash).
+    *   **Slot Concurrency**: Sử dụng `ModelPool` (`src/core/router/pool.py`) để quản lý slot-based concurrent workers — `acquire`/`release` với `asyncio.Lock()` cho mỗi member. Model ngoài `MODEL_POOLS` chạy standalone (không qua acquire/release).
     *   **Phân loại lỗi**: Sử dụng `_classify_error` để phân loại các loại lỗi khác nhau từ các nhà cung cấp LLM.
     *   **Gọi API thống nhất**: Cung cấp các phương thức `call_nonstream` và `call_stream` để thực hiện các cuộc gọi API đến LLM, xử lý logic chọn key và retry.
 
@@ -95,7 +96,15 @@ d:\AI_Projects\router_api/
     *   **`gemini/`**: Chứa các module cụ thể cho Gemini API (Manager, Caller, Pool, Error classification).
     *   **`custom_endpoint_manager.py`**: Quản lý các custom endpoints (CRUD, pool, health).
 
-### 3.8. Giao Thức Từ Provider Tới Endpoint
+### 3.8. ModelPool (`src/core/router/pool.py`)
+*   **Vai trò**: Quản lý slot-based concurrent workers cho pool model. Là Singleton per pool (dùng `get_or_create`), đảm bảo mỗi pool member chỉ xử lý một request tại một thời điểm thông qua `asyncio.Lock()`.
+*   **Chức năng chính**:
+    *   **`acquire(skip, timeout)`**: Chọn một member rảnh rỗi. Ưu tiên custom endpoint members trước, sau đó fallback về Gemini members. Nếu tất cả đều busy, chờ 50ms rồi thử lại đến `timeout` giây.
+    *   **`release(member)`**: Giải phóng lock của member, cho phép request khác sử dụng.
+    *   **`sync_custom_members()`**: Thêm custom endpoint members vào pool đã tồn tại (xử lý cache lạnh khi config thay đổi sau khi pool được khởi tạo).
+*   **Tích hợp với PoolManager**: `PoolManager` gọi `ModelPool.acquire()` trước khi gửi request qua pool member, và `release()` trong `finally` block để đảm bảo luôn giải phóng slot.
+
+### 3.9. Giao Thức Từ Provider Tới Endpoint
 
 Hệ thống Router API được thiết kế như một lớp trừu tượng, chấp nhận các định dạng yêu cầu khác nhau (OpenAI-compatible, Anthropic-like) và định tuyến chúng đến các endpoint backend (Gemini native, Custom Endpoint) với các cơ chế chuyển đổi định dạng rõ ràng.
 
@@ -119,7 +128,7 @@ Hệ thống Router API được thiết kế như một lớp trừu tượng, 
     *   **Kiểm tra sức khỏe (Health Checks):** `CustomEndpointManager` thực hiện các kiểm tra sức khỏe định kỳ (`ping_endpoint`) đến `/models` endpoint của Custom Endpoint. Kết quả ping được lưu vào bộ nhớ đệm (`_ping_cache`) để tránh gọi API liên tục.
     *   **Circuit Breaker:** Một cơ chế circuit breaker (`_circuit_breaker`) được triển khai để đóng băng tạm thời các Custom Endpoint bị lỗi liên tiếp. Thời gian đóng băng sẽ tăng lên theo số lần lỗi, giúp hệ thống không gửi yêu cầu đến các endpoint không ổn định.
     *   **Phát hiện Model:** Hàm `fetch_models` tự động khám phá các model có sẵn từ Custom Endpoint bằng cách gọi API `/models` của nó và cập nhật vào cấu hình của endpoint.
-    *   **Gán cho Pool/Tài khoản:** Các Custom Endpoint có thể được gán vào các pool cụ thể và liên kết với các tài khoản người dùng, cho phép kiểm soát chi tiết việc định tuyến và sử dụng.
+    *   **Gán cho Pool/Tài khoản:** Custom endpoint là first-class pool member thông qua `pool_assignments`. Khi gán endpoint vào pool (VD: `endpoint assign my-provider pool gemini-flash:flash`), model của endpoint trở thành member của pool đó, được ModelPool quản lý slot concurrency như các Gemini members khác. Nếu model không có trong `MODEL_POOLS`, endpoint fallback về standalone mode (không qua pool acquire/release).
     *   **Xử lý Payload khi Fallback:** Khi một yêu cầu ban đầu đi qua các Proxy Layer (ClaudeProxy hoặc OpenCodeProxy), nó đã được dịch về một định dạng payload nội bộ dùng chung. Nếu `PoolManager` chọn một Custom Endpoint và sau đó Custom Endpoint này báo lỗi và hệ thống fallback về bể API Key của Gemini nội bộ, `GeminiFacade` (`src/core/providers/gemini_facade.py`) sẽ nhận lại đúng payload gốc của hệ thống. `GeminiFacade` chịu trách nhiệm tái cấu trúc payload (Strip/Convert các tham số đặc thù của OpenAI như `response_format` hay cấu trúc `tools` dạng function call) sang cấu hình tương thích với Gemini SDK/HTTP native một cách tự động. Logic này được triển khai trong các hàm phụ trợ của `gemini_facade.py` (ví dụ: `_sdk_acompletion` cho Gemini native, `_http_acompletion` cho OpenAI-compatible), đảm bảo cấu trúc `tool_calls` và các tham số khác được dịch đúng cách.
 
 **Luồng chung:** Tất cả các proxy đều ủy quyền cho `PoolManager`. `PoolManager` sau đó sử dụng `APIRouter` để giải quyết key và `gemini_facade` để thực hiện cuộc gọi API thực tế đến Gemini hoặc Custom Endpoint, và cuối cùng xử lý phản hồi trước khi trả về cho proxy để định dạng lại cho client.
@@ -136,7 +145,8 @@ graph TD
     APIRouter --> KeyResolver[KeyResolverMixin: Circuit Breaker, Adaptive Cooldown, Double Random Key Selection]
     KeyResolver --> Backend_KeyStatus[Backend/Key Status DB]
     APIRouter --> RateLimiter[Gemini Rate Limiter]
-    PoolManager --> Proxy_Handler[Proxy Handler (e.g., opencode_proxy/handler/proxy.py)]
+    PoolManager --> ModelPool[ModelPool: Slot-based Concurrent Workers]
+    ModelPool --> Proxy_Handler[Proxy Handler (e.g., opencode_proxy/handler/proxy.py)]
     Proxy_Handler --> GeminiFacade[Gemini Facade (SDK / Custom Endpoint)]
     GeminiFacade --> External_LLM[External LLM APIs (Gemini, Claude, Custom)]
     External_LLM --> GeminiFacade_Response[Gemini Facade: Parses LLM Response]
@@ -156,6 +166,7 @@ Các cơ chế này được thiết kế để đảm bảo hệ thống hoạt
     *   **Priority Selection Randomization**: Chọn ngẫu nhiên key từ nhóm tốt nhất để phân tán tải, giảm thiểu xung đột hạn ngạch.
 *   **Chế độ Phòng Chống Nghẽn Tải Cực Cao (Extreme Checking Logic)**: Khi gặp lỗi liên tục, hệ thống sẽ siết chặt hạn ngạch và ưu tiên các yêu cầu nhỏ để hạ nhiệt.
 *   **Cơ chế Lan Truyền Lỗi HTTP Chuẩn (Proper HTTP Error Propagation)**: Tách biệt luồng xử lý lỗi cho Main Agent (trả về lỗi HTTP thật) và Sub-Agent (trả về phản hồi mô phỏng 200 OK) để tối ưu hóa hành vi client và tránh làm bẩn context.
+*   **Cơ chế Pool Concurrency (ModelPool slot-based workers)**: Mỗi pool member có lock riêng (`asyncio.Lock`), đảm bảo chỉ một request xử lý tại một thời điểm. Custom endpoint là first-class member qua `pool_assignments`. Model ngoài `MODEL_POOLS` chạy standalone (không qua acquire/release).
 *   **Quyết Định Định Tuyến Sub-Agent Linh Hoạt (Dynamic Sub-Agent Model Selection)**: Cho phép cấu hình mô hình sub-agent động, tránh hardcode và đảm bảo tính nhất quán giữa tính toán quota và định tuyến thực tế.
 
 ## 6. Các Quyết Định Thiết Kế & Trade-offs (Chủ ý về Coupling & Complexity)
@@ -163,10 +174,11 @@ Các cơ chế này được thiết kế để đảm bảo hệ thống hoạt
 Trong quá trình phát triển, đặc biệt với việc tái sử dụng code và hỗ trợ từ AI, một số quyết định đã được đưa ra để ưu tiên tính thực chiến và tốc độ, dù có thể làm tăng độ Coupling và Cognitive Complexity:
 
 *   **Coupling giữa Core Router và Translator**: Việc `APIRouter` phụ thuộc vào các hàm từ `src.logical_HQ_translator` (ví dụ: `_resolve_model`) là một chủ ý. Điều này giúp tích hợp nhanh các logic chuyển đổi và giải quyết mô hình phức tạp vào ngay luồng định tuyến cốt lõi, đặc biệt khi các yêu cầu từ các proxy khác nhau cần được chuẩn hóa trước khi đến `PoolManager`. Dù vi phạm nguyên tắc phân tầng truyền thống, nó giúp giảm thiểu boilerplate code và tăng tốc độ phát triển tính năng.
-*   **Monolithic `PoolManager`**: `PoolManager` đảm nhận nhiều trách nhiệm (xoay vòng key, retry, quota check, phân loại lỗi) trong một lớp duy nhất. Quyết định này được đưa ra để:
+*   **Monolithic `PoolManager`**: `PoolManager` đảm nhận nhiều trách nhiệm (xoay vòng key, retry, quota check, phân loại lỗi, quản lý slot concurrency qua `ModelPool`) trong một lớp duy nhất. Quyết định này được đưa ra để:
     *   **Đơn giản hóa luồng điều khiển**: Tất cả logic xử lý lỗi và retry được tập trung tại một nơi, dễ theo dõi và điều chỉnh hơn trong môi trường production thực tế, nơi mà các lỗi từ LLM API thường rất khó đoán.
     *   **Tối ưu hóa hiệu suất**: Tránh overhead của việc gọi qua lại giữa nhiều dịch vụ nhỏ hơn, đặc biệt quan trọng trong các ứng dụng có độ trễ thấp.
     *   **Khả năng tái sử dụng nhanh**: Dễ dàng được các Proxy khác nhau ủy quyền mà không cần tái tạo lại logic phức tạp.
+    *   **Cấp slot concurrency riêng**: Việc quản lý slot-based concurrent worker được tách biệt thành `ModelPool` nhưng vẫn do `PoolManager` gọi, giữ nguyên architecture tập trung.
 *   **Sử dụng `ContextVar` cho Sub-Agent Context**: Việc sử dụng `is_sub_agent_context` (`src/core/router/core/router.py`) là một giải pháp tình thế có chủ ý để thay đổi hành vi của `freeze_key` trong ngữ cảnh Sub-Agent. Thay vì refactor toàn bộ interface của `APIRouter` để truyền context, `ContextVar` cung cấp một cách nhanh chóng để "luồn lách" qua các tầng kiểm soát mà không cần thay đổi chữ ký hàm, giúp triển khai tính năng Sub-Agent nhanh chóng.
 *   **Xử lý lỗi "Defensive Over-engineering"**: Việc luôn cố gắng trả về phản hồi mô phỏng 200 OK cho client (trừ Main Agent) khi có lỗi là một chiến lược phòng thủ mạnh mẽ. Điều này giúp hệ thống cực kỳ lỳ lợm khi gặp lỗi từ LLM, giảm thiểu khả năng client bị crash và cung cấp trải nghiệm người dùng mượt mà hơn, dù có thể làm khó khăn cho việc debug nội bộ.
 

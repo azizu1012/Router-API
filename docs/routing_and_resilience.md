@@ -15,17 +15,32 @@ graph TD
     PM -->|Yêu cầu Key| KR[KeyResolver: Đọc trạng thái key]
     KR -->|Double Random| KeySelected[Chọn Key tối ưu từ RAM & DB]
     KeySelected -->|Thực hiện Call| Facade[Gemini Facade]
+    PM -.->|Pool Mode| MP[ModelPool: Acquire Slot]
+    MP --> Facade
     Facade -->|Thành công| ClientSuccess[Trả về Client]
     Facade -->|Lỗi 429/503| PMRetry[PoolManager: Phạt Key & Backoff Retry]
+    PMRetry -.->|Release Slot| MP
 ```
 
 1. **Proxy Layer (Tầng chuyển đổi):** [ClaudeProxy](file:///d:/AI_Projects/router_api/src/api/claude_proxy/handler/proxy.py) và [OpenCodeProxy](file:///d:/AI_Projects/router_api/src/api/opencode_proxy/handler/proxy.py) chỉ đóng vai trò chuyển đổi định dạng request/response từ client thành định dạng dùng chung của hệ thống. Tầng này không chứa logic chọn key hay retry.
-2. **PoolManager (Tầng điều phối vòng lặp):** [PoolManager](file:///d:/AI_Projects/router_api/src/core/pool_manager.py) quản lý vòng lặp xoay vòng (rotation) qua các pool member và thực hiện retry khi gặp lỗi tạm thời.
+2. **PoolManager (Tầng điều phối vòng lặp):** [PoolManager](file:///d:/AI_Projects/router_api/src/core/pool_manager.py) quản lý vòng lặp xoay vòng (rotation) qua các pool member và thực hiện retry khi gặp lỗi tạm thời. Khi chạy ở pool mode, PoolManager gọi `ModelPool.acquire()` để lấy slot cho mỗi member.
 3. **KeyResolver & Router (Tầng quyết định):** [KeyResolver](file:///d:/AI_Projects/router_api/src/core/router/core/key_resolver.py) thực hiện việc tính toán độ ưu tiên (Priority Score), kiểm tra giới hạn RPM/TPM thực tế của từng key, và chọn key.
+
+## 2. Cơ Chế Pool Concurrency (ModelPool)
+
+Để kiểm soát độ đồng thời (concurrency) cho các pool model, hệ thống sử dụng **ModelPool** (`src/core/router/pool.py`) — một Singleton per pool với cơ chế slot-based workers:
+
+- **Mỗi pool member có một `asyncio.Lock` riêng**, đảm bảo tại một thời điểm chỉ một request được xử lý bởi member đó. Điều này ngăn chặn tình trạng quá tải key do nhiều request đồng thời.
+- **Custom endpoint là first-class citizen** trong pool: ModelPool ưu tiên chọn custom endpoint members trước Gemini members khi có member rảnh (`acquire`).
+- **Model ngoài `MODEL_POOLS` chạy standalone** — không qua `acquire`/`release`, cho phép mỗi key tự quản lý concurrency riêng.
+- **`sync_custom_members()`** giải quyết vấn đề cache lạnh: khi custom endpoint được thêm/gán vào pool sau khi ModelPool đã khởi tạo, hàm này cập nhật member list và tạo lock mới mà không cần khởi tạo lại pool.
+- **PoolManager** gọi `ModelPool.acquire()` trước khi gửi request và `release()` trong `finally` block, đảm bảo slot luôn được giải phóng.
 
 ---
 
-## 2. Cơ Chế Xử Lý Lỗi 429 và 503 (Soft Handling vs Hard Freeze)
+
+
+## 3. Cơ Chế Xử Lý Lỗi 429 và 503 (Soft Handling vs Hard Freeze)
 
 Để duy trì hiệu suất cao, hệ thống phân loại lỗi thành hai nhóm chính: **Lỗi tạm thời (Transient Errors)** và **Lỗi vĩnh viễn (Permanent Errors)**.
 
@@ -66,12 +81,12 @@ Hệ thống sử dụng một cách tiếp cận hai tầng để phân loại 
 | :--- | :--- | :--- |
 | **Trạng thái key** | **Soft Handling**: Cooldown cực ngắn (`KEY_429_COOLDOWN_SECONDS` ≈ 8-15 giây). | **Hard Freeze**: Đóng băng dài hạn (`KEY_INVALID_COOLDOWN_SECONDS` = 3600 giây). |
 | **Xếp hạng Priority** | Áp dụng hình phạt giảm điểm tạm thời (`apply_error_penalty` trừ điểm score) để tránh chọn lại ngay. | Đóng băng vĩnh viễn trên RAM & DB, không cho phép chọn. |
-| **Xử lý Pool** | Không tăng chỉ số lỗi vĩnh viễn của thành viên pool (`pool.record_failure`), chỉ tích lũy bộ đếm tạm thời để chuẩn bị swap model khi vượt quá giới hạn. | Gọi `pool.record_failure` ngay lập tức để swap sang model thành viên khác hoặc custom endpoint khác. |
+| **Xử lý Pool** | Không tăng chỉ số lỗi vĩnh viễn của thành viên pool, chỉ tích lũy bộ đếm tạm thời để chuẩn bị swap model qua `model_health` khi vượt quá giới hạn. | Gọi `record_failure` ngay lập tức để giảm `model_health` score và swap sang model thành viên khác hoặc custom endpoint khác. |
 | **Độ trễ Retry** | Áp dụng thuật toán **Timing Jitter** rồi thử lại. | Chuyển đổi key hoặc model ngay lập tức. |
 
 ---
 
-## 3. Thuật Toán Double Random (Tránh Thundering Herd & Key Collision)
+## 4. Thuật Toán Double Random (Tránh Thundering Herd & Key Collision)
 
 Khi hệ thống xử lý đồng thời hàng chục request (high concurrency), nếu tất cả các luồng đều chọn key "tốt nhất" (Greedy Selection) hoặc thử lại cùng một lúc (Synchronized Retry), hệ thống sẽ ngay lập tức kích hoạt lỗi 429 hàng loạt trên key đó (Rate Limit Cascade). 
 
@@ -107,7 +122,7 @@ selected_key = chosen_cand[1]
 
 ---
 
-## 4. Chế Độ Phòng Chống Nghẽn Tải Cực Cao (Extreme Checking Logic)
+## 5. Chế Độ Phòng Chống Nghẽn Tải Cực Cao (Extreme Checking Logic)
 
 Khi một request bị lỗi liên tục và số lần thử lại đạt tới giới hạn nghiêm trọng (`attempt >= 10`), hệ thống sẽ kích hoạt bộ lọc bảo vệ cực đoan (**Extreme Checking**):
 
@@ -120,7 +135,7 @@ Cơ chế này hoạt động như một van an toàn (Safety Valve) giúp hạ 
 
 ---
 
-## 5. Cơ Chế Giới Hạn Tải Trượt (Sliding Window Deque) trong Concurrency
+## 6. Cơ Chế Giới Hạn Tải Trượt (Sliding Window Deque) trong Concurrency
 
 Trong `GeminiRateLimiter` (`src/core/limits/gemini_rate_limiter.py`), các hàng đợi hai đầu (deque) được sử dụng để theo dõi số lượng yêu cầu (RPM) và token (TPM) trong cửa sổ trượt 60 giây. Để đảm bảo an toàn luồng và tính nguyên tử (atomicity) của các thao tác kiểm tra và cập nhật giới hạn, phương thức `acquire_quota` sử dụng một `asyncio.Lock()`.
 
@@ -128,7 +143,7 @@ Trong `GeminiRateLimiter` (`src/core/limits/gemini_rate_limiter.py`), các hàng
 
 ---
 
-## 6. Cơ chế Lan Truyền Lỗi HTTP Chuẩn (Proper HTTP Error Propagation)
+## 7. Cơ chế Lan Truyền Lỗi HTTP Chuẩn (Proper HTTP Error Propagation)
 
 ### Vấn đề trước refactor:
 Trước đó, khi gặp lỗi Rate Limit (429) hoặc Overloaded (503), Claude Proxy luôn bắt ngoại lệ (exception) ở tầng handler bên trong và trả lời client bằng một chuỗi SSE text thông báo lỗi ở mã trạng thái **HTTP 200 OK**:
@@ -145,7 +160,7 @@ Trước đó, khi gặp lỗi Rate Limit (429) hoặc Overloaded (503), Claude 
 
 ---
 
-## 7. Cơ Chế Tính Điểm Key (Priority Scoring)
+## 8. Cơ Chế Tính Điểm Key (Priority Scoring)
 
 Logic tính điểm key ưu tiên nằm trong hàm `get_key_priority` (từ `src/core/limits/gemini_rate_limiter.py`), được sử dụng bởi `KeyResolverMixin` để chọn key hiệu quả nhất.
 
@@ -165,4 +180,4 @@ Hàm `get_key_priority` kết hợp tất cả các yếu tố này để tạo 
 
 ---
 
-## 8. Các Biến Môi Trường Chính
+## 9. Các Biến Môi Trường Chính
