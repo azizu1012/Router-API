@@ -8,7 +8,7 @@ Proxies (OpenCodeProxy, ClaudeProxy) delegate pool/retry logic to this class.
 import asyncio
 import time
 import random
-from typing import Any, AsyncIterator, Dict, List, Optional, Tuple, Union
+from typing import Any, AsyncIterator, Dict, List, Optional, Set, Tuple, Union
 
 from src.core.config_n_logg import config
 from src.core.config_n_logg.logger import logger_system as logger
@@ -158,92 +158,100 @@ class PoolManager:
         """
         pool = router.resolve_pool(model_alias)
         if pool:
-            # --- POOL MODE ---
-            # Uses a group of model members (e.g., gemini-flash rotates between 35, 30, 25)
-            pool.start()
+            # --- POOL MODE (concurrent worker pool) ---
+            # Shared pool: each member handles 1 request at a time.
+            # Local tracking per request: exhausted_members, consecutive_transient, start_time.
+            exhausted_members: Set[str] = set()
+            consecutive_transient = 0
+            start_time = time.time()
+            member: str
+            member = await pool.acquire(timeout=pool.max_retry_seconds)
             pool_try = -1
-            while not pool.exhausted:
-                pool_try += 1
-                api_key_val = None
-                model_id_val = None
-                reservation = {}
-                try:
-                    # Decides the most suitable model and key (using Double Random & Jitter mechanisms)
-                    resp, api_key_val, model_id_val, input_tokens, reservation = await self._resolve_and_call(
-                        model_alias, messages, tools, temperature, max_tokens, thinking_config,
-                        account, extra_body, pool_mode=True, pool=pool, is_stream=False,
-                        attempt=pool_try, thinking_params=thinking_params,
-                    )
-                    # Successful transaction -> marks model / custom endpoint as healthy
-                    member_used = reservation.get("model_alias", pool.current_model)
-                    is_custom = reservation.get("provider") == "custom"
-                    if is_custom:
-                        endpoint_manager.mark_endpoint_success(reservation.get("name", member_used))
-                    else:
-                        router.update_model_health(member_used, success=True)
-                    pool.record_success()
-                    return {
-                        "response": resp,
-                        "api_key": api_key_val,
-                        "model_id": model_id_val,
-                        "input_tokens": input_tokens,
-                        "reservation": reservation
-                    }
-                except Exception as e:
-                    # Extracts key and model information from the wrapped PoolCallError
-                    if isinstance(e, PoolCallError):
-                        api_key_val = e.api_key
-                        model_id_val = e.model_id
-                        reservation = e.reservation or {}
-                        e = e.original_error
-                    member_used = reservation.get("model_alias", pool.current_model) if reservation else pool.current_model
-                    is_custom = reservation.get("provider") == "custom"
-                    if is_custom:
-                        # Encountered error with custom endpoint (OpenAI SDK backend) -> swap immediately
-                        logger.warning("[PoolManager] Custom endpoint failed: %s, swapping...", e)
-                        endpoint_manager.mark_endpoint_failure(reservation.get("name", member_used))
-                        pool.record_failure(member_used, "custom_endpoint_error")
-                        pool.swap()
-                        continue
 
-                    # Classifies errors returned from Gemini API
-                    reason = _classify_error(e)
-                    if reason in TRANSIENT_REASONS:
-                        # --- TRANSIENT ERROR HANDLING (SOFT HANDLING) ---
-                        # 429, 503, timeout: NO long freeze (3600s), NOT counted as a permanent member failure.
-                        count_transient_error(reason)
-                        if reason == "rate_limit":
-                            router.record_429()
+            try:
+                while time.time() - start_time < pool.max_retry_seconds:
+                    if member in exhausted_members:
+                        member = await pool.acquire(skip=exhausted_members, timeout=max(1.0, pool.max_retry_seconds - (time.time() - start_time)))
 
-                        # Freezes key for a very short duration (KEY_429_COOLDOWN_SECONDS ~ 8-15s) and applies penalty to reduce priority score.
-                        if api_key_val and model_id_val:
-                            router.freeze_key(api_key_val, config.KEY_429_COOLDOWN_SECONDS, model_id_val, reason)
-                            apply_error_penalty(api_key_val, reason, model_id_val)
-
-                        # Increments pool's transient error counter. If consecutive errors >= POOL_SWAP_FAILURES (5) -> swap to another model.
-                        pool._consecutive_transient += 1
-                        if pool._consecutive_transient >= config.POOL_SWAP_FAILURES:
-                            logger.warning("[PoolManager] Transient error %s on member %s, too many retries - swapping...", reason, member_used)
-                            pool._consecutive_transient = 0
-                            pool.swap()
+                    pool_try += 1
+                    api_key_val = None
+                    model_id_val = None
+                    reservation = {}
+                    try:
+                        resp, api_key_val, model_id_val, input_tokens, reservation = await self._resolve_and_call(
+                            model_alias, messages, tools, temperature, max_tokens, thinking_config,
+                            account, extra_body, pool_mode=True, pool=pool, is_stream=False,
+                            attempt=pool_try, thinking_params=thinking_params,
+                            member_override=member,
+                        )
+                        member_used = reservation.get("model_alias", member)
+                        is_custom = reservation.get("provider") == "custom"
+                        if is_custom:
+                            endpoint_manager.mark_endpoint_success(reservation.get("name", member_used))
                         else:
-                            # Waits for a random delay (Jitter) before retrying with a different key.
-                            delay = _retry_delay(pool._consecutive_transient)
-                            logger.warning("[PoolManager] Transient error %s on member %s, retrying in %.1fs (attempt %d)", reason, member_used, delay, pool._consecutive_transient)
-                            await asyncio.sleep(delay)
-                        continue
-                    else:
-                        # --- PERMANENT ERROR HANDLING (HARD ERROR) ---
-                        # invalid_key, billing, bad_request errors: Long freeze and immediate model swap.
-                        pool._consecutive_transient = 0
-                        logger.error("[PoolManager] Hard error %s on member %s: %s", reason, member_used, e)
-                        if api_key_val and model_id_val:
-                            cooldown = config.KEY_INVALID_COOLDOWN_SECONDS if reason == "invalid_key" else config.KEY_429_COOLDOWN_SECONDS
-                            router.freeze_key(api_key_val, cooldown, model_id_val, reason)
-                            apply_error_penalty(api_key_val, reason, model_id_val)
-                        pool.record_failure(member_used, reason)
-                        pool.swap()
-            raise RuntimeError("Pool exhausted or all attempts failed")
+                            router.update_model_health(member_used, success=True)
+                        return {
+                            "response": resp,
+                            "api_key": api_key_val,
+                            "model_id": model_id_val,
+                            "input_tokens": input_tokens,
+                            "reservation": reservation
+                        }
+                    except Exception as e:
+                        if isinstance(e, PoolCallError):
+                            api_key_val = e.api_key
+                            model_id_val = e.model_id
+                            reservation = e.reservation or {}
+                            e = e.original_error
+                        member_used = reservation.get("model_alias", member) if reservation else member
+                        is_custom = reservation.get("provider") == "custom"
+                        if is_custom:
+                            logger.warning("[PoolManager] Custom endpoint failed: %s, swapping...", e)
+                            endpoint_manager.mark_endpoint_failure(reservation.get("name", member_used))
+                            pool.release(member)
+                            exhausted_members.add(member)
+                            continue
+
+                        reason = _classify_error(e)
+                        if reason in TRANSIENT_REASONS:
+                            count_transient_error(reason)
+                            if reason == "rate_limit":
+                                router.record_429()
+
+                            if api_key_val and model_id_val:
+                                router.freeze_key(api_key_val, config.KEY_429_COOLDOWN_SECONDS, model_id_val, reason)
+                                apply_error_penalty(api_key_val, reason, model_id_val)
+
+                            consecutive_transient += 1
+                            if consecutive_transient >= config.POOL_SWAP_FAILURES:
+                                logger.warning("[PoolManager] Transient error %s on member %s, too many retries - swapping...", reason, member_used)
+                                pool.release(member)
+                                exhausted_members.add(member)
+                                consecutive_transient = 0
+                            else:
+                                delay = _retry_delay(consecutive_transient)
+                                logger.warning("[PoolManager] Transient error %s on member %s, retrying in %.1fs (attempt %d)", reason, member_used, delay, consecutive_transient)
+                                await asyncio.sleep(delay)
+                            continue
+                        else:
+                            consecutive_transient = 0
+                            logger.error("[PoolManager] Hard error %s on member %s: %s", reason, member_used, e)
+                            if api_key_val and model_id_val:
+                                cooldown = config.KEY_INVALID_COOLDOWN_SECONDS if reason == "invalid_key" else config.KEY_429_COOLDOWN_SECONDS
+                                router.freeze_key(api_key_val, cooldown, model_id_val, reason)
+                                apply_error_penalty(api_key_val, reason, model_id_val)
+                            pool.release(member)
+                            exhausted_members.add(member)
+
+                raise RuntimeError("Pool max_retry_seconds exhausted")
+            except:
+                raise
+            finally:
+                if member:
+                    try:
+                        pool.release(member)
+                    except RuntimeError:
+                        pass
         else:
             # --- STANDALONE MODE ---
             # Directly calls the model without pool rotation.
@@ -324,152 +332,140 @@ class PoolManager:
         """
         pool = router.resolve_pool(model_alias)
         if pool:
-            # --- POOL STREAM MODE ---
-            # In pool stream mode, the system attempts to iterate through available pool members
-            # to find a healthy one for streaming. Once the first chunk is yielded (`committed = True`),
-            # no further retries or key/model swaps are possible for that specific request.
-            pool.start()
-            committed = False  # Flag to indicate if the first stream chunk has been successfully yielded.
-                               # Once committed, no further retries or key/model swaps are allowed for this request.
+            # --- POOL STREAM MODE (concurrent worker pool) ---
+            exhausted_members: Set[str] = set()
+            consecutive_transient = 0
+            start_time = time.time()
+            member: str
+            member = await pool.acquire(timeout=pool.max_retry_seconds)
+            committed = False
 
-            pool_try = -1
-            while not pool.exhausted:
-                pool_try += 1
-                api_key_val = None
-                model_id_val = None
-                reservation = {}
-                try:
-                    # Register and reserve a key from the resolver using `_resolve_model`.
-            # This step is critical for acquiring a valid, un-frozen key with sufficient quota.
-                    max_output = min(int(max_tokens or config.MAX_OUTPUT_TOKENS), config.MAX_OUTPUT_TOKENS)
-                    estimated_tokens = len(str(messages)) // 4 + max_output
-                    model_alias_val, model_id_val, api_key_val, model_full_val, reservation = await _resolve_model(
-                        {"model": model_alias}, model_alias, account=account, estimated_tokens=estimated_tokens,
-                        retry_attempt=pool_try, pool_mode=True
-                    )
+            try:
+                while time.time() - start_time < pool.max_retry_seconds:
+                    if member in exhausted_members:
+                        member = await pool.acquire(skip=exhausted_members, timeout=max(1.0, pool.max_retry_seconds - (time.time() - start_time)))
 
-                    is_custom = reservation.get("provider") == "custom"
-                    member_used = reservation.get("model_alias", pool.current_model)
-
-                    # Dynamically compute thinking configuration for the selected pool member.
-            # This ensures compatibility with different model versions (e.g., V3 vs V2) and custom endpoints.
-                    member_tc = _compute_thinking_for_model(thinking_params, model_full_val) if not is_custom else None
-                    if member_tc is None:
-                        member_tc = thinking_config
-                    if member_tc and "lite" in model_full_val.lower():
-                        member_tc = {}
-
-                    # Perform central pool quota and rate limit checks via `router.acquire_quota`.
-            # If quota is exhausted, the key is frozen, and a `RuntimeError` is raised to trigger pool swap.
-                    has_quota = await router.acquire_quota(estimated_tokens, model_alias)
-                    if not has_quota:
-                        apply_error_penalty(api_key_val, "rate_limit_rpm_tpm", model_id_val)
-                        router.freeze_key(api_key_val, config.KEY_429_COOLDOWN_SECONDS, model_id_val, "rate_limit")
-                        raise RuntimeError("quota_exhausted")
-
-                    # Execute the streaming API call using the `acompletion` facade.
-            # This facade abstracts away the underlying LLM provider (Gemini SDK or Custom Endpoint).
+                    pool_try = -1
+                    pool_try += 1
+                    api_key_val = None
+                    model_id_val = None
+                    reservation = {}
                     try:
-                        kwargs = {
-                            "model": model_full_val,
-                            "messages": messages,
-                            "api_key": api_key_val,
-                            "max_tokens": max_output,
-                            "temperature": temperature,
-                            "stream": True,
-                            "tools": tools,
-                            "thinking_config": member_tc if not is_custom else None,
-                        }
-                        if is_custom:
-                            kwargs["api_base"] = reservation["api_base"]
-                            if extra_body:
-                                kwargs["extra_body"] = extra_body
+                        max_output = min(int(max_tokens or config.MAX_OUTPUT_TOKENS), config.MAX_OUTPUT_TOKENS)
+                        estimated_tokens = len(str(messages)) // 4 + max_output
+                        model_alias_val, model_id_val, api_key_val, model_full_val, reservation = await _resolve_model(
+                            {"model": model_alias}, model_alias, account=account, estimated_tokens=estimated_tokens,
+                            retry_attempt=pool_try, pool_mode=True, member_override=member,
+                        )
 
-                        gen = await acompletion(**kwargs)
-                        async for chunk in gen:
-                            committed = True  # Mark that the stream has successfully yielded its first chunk.
-                                              # After this, no further retries or swaps are possible for this request.
-                            yield {
-                                "chunk": chunk,
+                        is_custom = reservation.get("provider") == "custom"
+                        member_used = reservation.get("model_alias", member)
+
+                        member_tc = _compute_thinking_for_model(thinking_params, model_full_val) if not is_custom else None
+                        if member_tc is None:
+                            member_tc = thinking_config
+                        if member_tc and "lite" in model_full_val.lower():
+                            member_tc = {}
+
+                        has_quota = await router.acquire_quota(estimated_tokens, model_alias)
+                        if not has_quota:
+                            apply_error_penalty(api_key_val, "rate_limit_rpm_tpm", model_id_val)
+                            router.freeze_key(api_key_val, config.KEY_429_COOLDOWN_SECONDS, model_id_val, "rate_limit")
+                            raise RuntimeError("quota_exhausted")
+
+                        try:
+                            kwargs = {
+                                "model": model_full_val,
+                                "messages": messages,
                                 "api_key": api_key_val,
-                                "model_id": model_id_val,
-                                "input_tokens": estimated_tokens,
-                                "reservation": reservation
+                                "max_tokens": max_output,
+                                "temperature": temperature,
+                                "stream": True,
+                                "tools": tools,
+                                "thinking_config": member_tc if not is_custom else None,
                             }
-                        
-                        # On successful stream completion, update the health status of the used model/custom endpoint.
-            # This ensures the `ModelPool` and `CustomEndpointManager` reflect the current health of providers.
-                        if is_custom:
-                            endpoint_manager.mark_endpoint_success(reservation.get("name", member_used))
-                        else:
-                            router.update_model_health(member_used, success=True)
-                        pool.record_success()
-                        return
-                    finally:
-                        # Crucially, release the API key after the stream task completes or encounters an error.
-            # This ensures the `active_requests` count for the key is decremented, allowing other requests to use it.
-                        if api_key_val:
-                            router.release_key(api_key_val)
+                            if is_custom:
+                                kwargs["api_base"] = reservation["api_base"]
+                                if extra_body:
+                                    kwargs["extra_body"] = extra_body
 
-                except Exception as e:
-                    # If the stream is interrupted mid-way (after `committed = True`),
-            # it's impossible to retry with a different key/model because headers/chunks have already been sent to the client.
-            # In this scenario, the error is logged and re-raised to the client.
-                    if committed:
-                        logger.error("[PoolManager] Stream interrupted after committing: %s", e)
-                        raise
+                            gen = await acompletion(**kwargs)
+                            async for chunk in gen:
+                                committed = True
+                                yield {
+                                    "chunk": chunk,
+                                    "api_key": api_key_val,
+                                    "model_id": model_id_val,
+                                    "input_tokens": estimated_tokens,
+                                    "reservation": reservation
+                                }
 
-                    member_used = reservation.get("model_alias", pool.current_model) if reservation else pool.current_model
-                    is_custom = reservation.get("provider") == "custom"
-                    if is_custom:
-                        logger.warning("[PoolManager] Custom endpoint stream failed: %s, swapping...", e)
-                        endpoint_manager.mark_endpoint_failure(reservation.get("name", member_used))
-                        pool.record_failure(member_used, "custom_endpoint_error")
-                        pool.swap()
-                        continue
-
-                    reason = _classify_error(e)
-                    if reason in TRANSIENT_REASONS:
-                        # Transient error (Soft handling) in the stream flow.
-            # Similar to non-stream, but with specific handling for stream contexts before committing.
-                        count_transient_error(reason)
-                        if reason == "rate_limit":
-                            router.record_429()
-
-                        if api_key_val and model_id_val:
-                            router.freeze_key(api_key_val, config.KEY_429_COOLDOWN_SECONDS, model_id_val, reason)
-                            apply_error_penalty(api_key_val, reason, model_id_val)
-
-                        if not reservation:
-                            # If no key was successfully reserved (e.g., all keys were frozen initially) and a transient error occurs,
-            # immediately swap the pool member as there's no key to hold onto for a retry.
-                            logger.warning("[PoolManager] Transient stream error %s on member %s, no key available - swapping...", reason, member_used)
-                            pool._consecutive_transient = 0
-                            pool.swap()
-                        else:
-                            pool._consecutive_transient += 1
-                            if pool._consecutive_transient >= config.POOL_SWAP_FAILURES:
-                                logger.warning("[PoolManager] Transient stream error %s on member %s, too many retries - swapping...", reason, member_used)
-                                pool._consecutive_transient = 0
-                                pool.swap()
+                            if is_custom:
+                                endpoint_manager.mark_endpoint_success(reservation.get("name", member_used))
                             else:
-                                # Wait for an adaptive, jittered delay before retrying with a potentially different key/model.
-            # This prevents "Thundering Herd" and allows keys/models to recover.
-                                delay = _retry_delay(pool._consecutive_transient)
-                                logger.warning("[PoolManager] Transient stream error %s on member %s, retrying in %.1fs (attempt %d)", reason, member_used, delay, pool._consecutive_transient)
-                                await asyncio.sleep(delay)
-                        continue
-                    else:
-                        # Lỗi cứng (Hard error) -> đóng băng key dài hạn & swap ngay
-                        pool._consecutive_transient = 0
-                        logger.error("[PoolManager] Hard stream error %s: %s", reason, e)
-                        if api_key_val and model_id_val:
-                            cooldown = config.KEY_INVALID_COOLDOWN_SECONDS if reason == "invalid_key" else config.KEY_429_COOLDOWN_SECONDS
-                            router.freeze_key(api_key_val, cooldown, model_id_val, reason)
-                            apply_error_penalty(api_key_val, reason, model_id_val)
-                        pool.record_failure(member_used, reason)
-                        pool.swap()
-            raise RuntimeError("Pool stream exhausted or failed")
+                                router.update_model_health(member_used, success=True)
+                            return
+                        finally:
+                            if api_key_val:
+                                router.release_key(api_key_val)
+
+                    except Exception as e:
+                        if committed:
+                            logger.error("[PoolManager] Stream interrupted after committing: %s", e)
+                            raise
+
+                        member_used = reservation.get("model_alias", member) if reservation else member
+                        is_custom = reservation.get("provider") == "custom"
+                        if is_custom:
+                            logger.warning("[PoolManager] Custom endpoint stream failed: %s, swapping...", e)
+                            endpoint_manager.mark_endpoint_failure(reservation.get("name", member_used))
+                            pool.release(member)
+                            exhausted_members.add(member)
+                            continue
+
+                        reason = _classify_error(e)
+                        if reason in TRANSIENT_REASONS:
+                            count_transient_error(reason)
+                            if reason == "rate_limit":
+                                router.record_429()
+
+                            if api_key_val and model_id_val:
+                                router.freeze_key(api_key_val, config.KEY_429_COOLDOWN_SECONDS, model_id_val, reason)
+                                apply_error_penalty(api_key_val, reason, model_id_val)
+
+                            if not reservation:
+                                logger.warning("[PoolManager] Transient stream error %s on member %s, no key available - swapping...", reason, member_used)
+                                pool.release(member)
+                                exhausted_members.add(member)
+                                consecutive_transient = 0
+                            else:
+                                consecutive_transient += 1
+                                if consecutive_transient >= config.POOL_SWAP_FAILURES:
+                                    logger.warning("[PoolManager] Transient stream error %s on member %s, too many retries - swapping...", reason, member_used)
+                                    pool.release(member)
+                                    exhausted_members.add(member)
+                                    consecutive_transient = 0
+                                else:
+                                    delay = _retry_delay(consecutive_transient)
+                                    logger.warning("[PoolManager] Transient stream error %s on member %s, retrying in %.1fs (attempt %d)", reason, member_used, delay, consecutive_transient)
+                                    await asyncio.sleep(delay)
+                            continue
+                        else:
+                            consecutive_transient = 0
+                            logger.error("[PoolManager] Hard stream error %s: %s", reason, e)
+                            if api_key_val and model_id_val:
+                                cooldown = config.KEY_INVALID_COOLDOWN_SECONDS if reason == "invalid_key" else config.KEY_429_COOLDOWN_SECONDS
+                                router.freeze_key(api_key_val, cooldown, model_id_val, reason)
+                                apply_error_penalty(api_key_val, reason, model_id_val)
+                            pool.release(member)
+                            exhausted_members.add(member)
+
+                raise RuntimeError("Pool stream max_retry_seconds exhausted")
+            finally:
+                try:
+                    pool.release(member)
+                except RuntimeError:
+                    pass
         else:
             # --- CHẾ ĐỘ ĐƠN LẺ STREAM (STANDALONE STREAM MODE) ---
             for attempt in range(config.MAX_RETRIES):
@@ -547,6 +543,7 @@ class PoolManager:
         is_stream: bool = False,
         attempt: int = 0,
         thinking_params: Optional[Dict[str, Any]] = None,
+        member_override: Optional[str] = None,
     ) -> Tuple[Any, str, str, int, dict]:
         """
         Internal helper method to resolve the optimal API key and model, check quotas,
@@ -582,11 +579,11 @@ class PoolManager:
 
         model_alias_val, model_id_val, api_key_val, model_full_val, reservation = await _resolve_model(
             {"model": model_alias}, model_alias, account=account, estimated_tokens=estimated_tokens,
-            retry_attempt=attempt, pool_mode=pool_mode,
+            retry_attempt=attempt, pool_mode=pool_mode, member_override=member_override,
         )
 
         is_custom = reservation.get("provider") == "custom"
-        member_used = reservation.get("model_alias", pool.current_model) if (pool_mode and pool) else model_alias_val
+        member_used = reservation.get("model_alias", member_override) if (pool_mode and pool and member_override) else model_alias_val
 
         # Per-member thinking config
         member_tc = _compute_thinking_for_model(thinking_params, model_full_val) if not is_custom else None

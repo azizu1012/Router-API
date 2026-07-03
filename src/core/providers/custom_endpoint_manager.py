@@ -2,7 +2,7 @@ import asyncio
 import time
 from datetime import datetime
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, TYPE_CHECKING
 
 import aiohttp
 
@@ -18,6 +18,7 @@ from src.backend.endpoints import (
     update_endpoint_db,
     set_fallback_db,
     assign_endpoint_to_account_db,
+    get_endpoints_by_account_db,
 )
 
 
@@ -27,7 +28,7 @@ _CACHE_TTL = 5.0
 
 class CustomEndpointManager:
     _cache: Optional[Dict[str, Dict[str, Any]]] = None
-    _account_map: Optional[Dict[str, str]] = None
+    _account_map: Optional[Dict[str, List[str]]] = None
     _cache_ts: float = 0.0
     _ping_cache: Dict[str, tuple[float, bool]] = {}  # name -> (timestamp, alive)
     _ping_ttl: float = 30.0  # Ping cache TTL in seconds
@@ -42,12 +43,12 @@ class CustomEndpointManager:
 
     def _load_cache(self) -> None:
         eps = {ep["name"]: ep for ep in list_endpoints_db()}
-        am = {}
+        am: Dict[str, List[str]] = {}
         for name, ep in eps.items():
             if ep.get("enabled", True):
                 aid = ep.get("account_id") or ""
                 if aid:
-                    am[aid] = name
+                    am.setdefault(aid, []).append(name)
         self.__class__._cache = eps
         self.__class__._account_map = am
         self.__class__._cache_ts = time.time()
@@ -151,17 +152,21 @@ class CustomEndpointManager:
 
     # ── Account-based lookup ─────────────────────────────────────
     def get_endpoint_for_account(self, account: Optional[Dict[str, Any]]) -> Optional[Dict[str, Any]]:
+        eps = self.get_endpoints_for_account(account)
+        return eps[0] if eps else None
+
+    def get_endpoints_for_account(self, account: Optional[Dict[str, Any]]) -> List[Dict[str, Any]]:
         if not account:
-            return None
+            return []
         aid = account.get("account_id") or ""
         if not aid:
-            return None
+            return []
         if not self._cache_fresh():
             self._load_cache()
-        ep_name = (self._account_map or {}).get(aid)
-        if ep_name and self._cache is not None:
-            return self._cache.get(ep_name)
-        return None
+        ep_names = (self._account_map or {}).get(aid, [])
+        if self._cache is None:
+            return []
+        return [self._cache[n] for n in ep_names if n in self._cache]
 
     def assign_to_account(self, name: str, account_id: str) -> Optional[Dict[str, Any]]:
         r = assign_endpoint_to_account_db(name, account_id)

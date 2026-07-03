@@ -45,16 +45,54 @@ async def chat_completions(
         )
 
     try:
+        requested_model = body.get("model", "")
+        from src.core.api_config import AVAILABLE_MODELS, MODEL_CONTEXT_LENGTH
+        from src.core.router import router
+        model_alias = router.resolve_model_alias(requested_model)
+        model_cfg = AVAILABLE_MODELS.get(model_alias)
+        limit_tokens = model_cfg.get("context_length", MODEL_CONTEXT_LENGTH) if model_cfg else MODEL_CONTEXT_LENGTH
+
+        # Estimate input tokens
+        messages_val = body.get("messages", [])
+        system_val = body.get("system", "")
+        for msg in messages_val:
+            if isinstance(msg, dict) and msg.get("role") in ("system", "developer"):
+                system_val = str(system_val) + "\n" + str(msg.get("content", ""))
+        text_content = str(system_val) + str(messages_val)
+        input_tokens_est = len(text_content) // 4
+
+        # Active Reject: check if estimated input tokens exceed model context length limit
+        if input_tokens_est > limit_tokens:
+            return JSONResponse(
+                status_code=400,
+                content={
+                    "error": {
+                        "message": f"Your request's input tokens ({input_tokens_est}) exceeds the model's configured context length limit of {limit_tokens}.",
+                        "type": "invalid_request_error",
+                    }
+                }
+            )
+
         await _apply_account_limit(account, body)
         stream = body.get("stream", False)
+        
+        remaining_tokens = max(1000, limit_tokens - input_tokens_est)
+        response_headers = {
+            "x-ratelimit-limit-requests": "1000",
+            "x-ratelimit-limit-tokens": str(limit_tokens),
+            "x-ratelimit-remaining-requests": "999",
+            "x-ratelimit-remaining-tokens": str(remaining_tokens),
+        }
+
         from src.api.opencode_proxy import opencode_proxy
         if stream:
             return StreamingResponse(
                 opencode_proxy.stream_chat_completion(body, account=account, is_opencode=False),
                 media_type="text/event-stream",
+                headers=response_headers,
             )
         result = await opencode_proxy.chat_completion(body, account=account, is_opencode=False)
-        return result
+        return JSONResponse(content=result, headers=response_headers)
     except Exception as e:
         logger_api.error("chat_completion failed: %s", e)
         if is_sub_agent_request(body, is_opencode=False):
@@ -104,12 +142,44 @@ async def completions(
         "stream": body.get("stream", False),
     }
     try:
+        requested_model = chat_body.get("model", "")
+        from src.core.api_config import AVAILABLE_MODELS, MODEL_CONTEXT_LENGTH
+        from src.core.router import router
+        model_alias = router.resolve_model_alias(requested_model)
+        model_cfg = AVAILABLE_MODELS.get(model_alias)
+        limit_tokens = model_cfg.get("context_length", MODEL_CONTEXT_LENGTH) if model_cfg else MODEL_CONTEXT_LENGTH
+
+        # Estimate input tokens
+        input_tokens_est = len(str(prompt)) // 4
+
+        # Active Reject: check if estimated input tokens exceed model context length limit
+        if input_tokens_est > limit_tokens:
+            return JSONResponse(
+                status_code=400,
+                content={
+                    "error": {
+                        "message": f"Your request's input tokens ({input_tokens_est}) exceeds the model's configured context length limit of {limit_tokens}.",
+                        "type": "invalid_request_error",
+                    }
+                }
+            )
+
         await _apply_account_limit(account, chat_body)
+        
+        remaining_tokens = max(1000, limit_tokens - input_tokens_est)
+        response_headers = {
+            "x-ratelimit-limit-requests": "1000",
+            "x-ratelimit-limit-tokens": str(limit_tokens),
+            "x-ratelimit-remaining-requests": "999",
+            "x-ratelimit-remaining-tokens": str(remaining_tokens),
+        }
+
         from src.api.opencode_proxy import opencode_proxy
         if chat_body.get("stream"):
             return StreamingResponse(
                 opencode_proxy.stream_chat_completion(chat_body, account=account, is_opencode=False),
                 media_type="text/event-stream",
+                headers=response_headers,
             )
         result = await opencode_proxy.chat_completion(chat_body, account=account, is_opencode=False)
     except HTTPException:
@@ -139,14 +209,17 @@ async def completions(
     )
 
     now = int(time.time())
-    return {
-        "id": f"cmpl-{uuid.uuid4().hex}",
-        "object": "text_completion",
-        "created": now,
-        "model": result.get("model") or body.get("model", ""),
-        "choices": [{"text": _extract_response_text(result), "index": 0, "logprobs": None, "finish_reason": _extract_finish_reason(result)}],
-        "usage": usage,
-    }
+    return JSONResponse(
+        content={
+            "id": f"cmpl-{uuid.uuid4().hex}",
+            "object": "text_completion",
+            "created": now,
+            "model": result.get("model") or body.get("model", ""),
+            "choices": [{"text": _extract_response_text(result), "index": 0, "logprobs": None, "finish_reason": _extract_finish_reason(result)}],
+            "usage": usage,
+        },
+        headers=response_headers,
+    )
 
 
 @app.post("/v1/responses")

@@ -116,8 +116,26 @@ Nếu không cấu hình, mặc định sub-agent của cả OpenCode và Claude
 
 ---
 
+## Cấu hình Custom Endpoint
+
+Router API hỗ trợ custom endpoint (ví dụ: OpenAI-compatible proxy) làm first-class pool member thông qua `pool_assignments`.
+
+### Thêm endpoint qua Admin Console
+
+```bash
+python -m src.console.admin_console endpoint add my-provider https://api.example.com/v1
+python -m src.console.admin_console endpoint set-model my-provider my-model
+python -m src.console.admin_console endpoint assign my-provider pool gemini-flash:flash
+```
+
+Endpoint được gán vào pool member qua `pool_assignments` (VD: `gemini-flash` pool → member `flash` = endpoint `my-provider/model`). Nếu model không có trong `MODEL_POOLS`, endpoint sẽ fallback về standalone mode.
+
+Xem `docs/architecture_overview.md` để biết chi tiết luồng xử lý.
+
+---
+
 ## Chi tiết Dự án & Kiến trúc
 
 Để biết thêm thông tin chi tiết về các endpoints, sơ đồ cơ sở dữ liệu, các giao thức, công cụ tìm kiếm, cơ chế keepalive, cấu hình thinking và cấu trúc dự án, vui lòng tham khảo các tài liệu sau:
-👉 **[project_snapshot.md](./project_snapshot.md)** — Tổng quan toàn bộ kiến trúc & cấu trúc dự án.
+👉 **[architecture_overview.md](./docs/architecture_overview.md)** — Tổng quan toàn bộ kiến trúc & cấu trúc dự án.
 👉 **[routing_and_resilience.md](./docs/routing_and_resilience.md)** — Chi tiết cơ chế chống lỗi 429/503, thuật toán Double Random, Jitter và phòng chống nghẽn tải.

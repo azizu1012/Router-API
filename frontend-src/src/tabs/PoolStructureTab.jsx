@@ -2,7 +2,8 @@ import React, { useState, useEffect, useRef } from 'react';
 import { useApp } from '../context/AppContext';
 import { t } from '../utils/i18n';
 import { fmt } from '../utils/format';
-import { ShieldCheck, Network, DollarSign, Activity, HelpCircle, ArrowRight, Zap, RefreshCw, Layers, Server, Cpu } from 'lucide-react';
+import { api } from '../utils/api';
+import { ShieldCheck, Network, DollarSign, Activity, HelpCircle, ArrowRight, Zap, RefreshCw, Layers, Server, Cpu, Edit3, X, Check } from 'lucide-react';
 import Loading from '../components/Loading';
 
 function PoolFlowGraph({
@@ -13,6 +14,11 @@ function PoolFlowGraph({
   hoveredModel,
   setHoveredModel,
   lang,
+  editMode,
+  endpoints,
+  onPoolAssign,
+  assigning,
+  selectKey,
 }) {
   const members = pool.members || (pool.models ? pool.models.split(',').map(m => ({alias: m.trim(), model_id: m.trim()})) : []);
   const poolLive = liveStats?.models?.[pool.name] || {};
@@ -415,6 +421,72 @@ function PoolFlowGraph({
         </div>
 
       </div>
+
+      {/* Pool Assignment Edit Panel */}
+      {editMode && (
+        <div className="mt-6 pt-4 border-t border-base-content/10 space-y-3">
+          <div className="flex items-center justify-between">
+            <span className="text-[10px] font-extrabold uppercase tracking-wider text-base-content/40 flex items-center gap-1.5">
+              <Layers className="w-3 h-3" /> Pool Assignments ({pool.name})
+            </span>
+          </div>
+
+          {/* Current assignments */}
+          <div className="flex flex-wrap gap-2">
+            {pool.members
+              .filter(m => m.endpoint_name)
+              .map((m) => {
+                const ep = endpoints.find(e => e.name === m.endpoint_name);
+                return (
+                  <div key={m.endpoint_name} className="flex items-center gap-1 bg-base-200/40 rounded-lg px-2 py-1 border border-base-content/5">
+                    <span className="text-[10px] font-bold text-primary">{m.endpoint_name}</span>
+                    <ArrowRight className="w-2.5 h-2.5 text-base-content/30" />
+                    <code className="text-[10px] font-mono text-base-content/70">{m.model_id}</code>
+                    <button
+                      onClick={() => onPoolAssign(m.endpoint_name, pool.name, '')}
+                      disabled={assigning === pool.name}
+                      className="btn btn-ghost btn-xs btn-square text-error hover:bg-error/15 ml-1"
+                      title="Remove from pool"
+                    >
+                      <X className="w-3 h-3" />
+                    </button>
+                  </div>
+                );
+              })}
+            {pool.members.filter(m => m.endpoint_name).length === 0 && (
+              <span className="text-[10px] text-base-content/30 italic">Chưa có custom endpoint nào được gán vào pool này</span>
+            )}
+          </div>
+
+          {/* Add assignment */}
+          {endpoints.length > 0 && (
+            <div className="flex flex-wrap items-center gap-2 pt-1">
+              <span className="text-[10px] font-bold text-base-content/50 mr-1">Gán thêm:</span>
+              <select
+                key={selectKey}
+                onChange={(e) => {
+                  if (!e.target.value) return;
+                  const [epName, modelId] = e.target.value.split('|');
+                  onPoolAssign(epName, pool.name, modelId);
+                  e.target.value = '';
+                }}
+                disabled={assigning === pool.name}
+                className="select select-ghost select-xs text-[10px] font-mono max-w-[240px] bg-base-200/40"
+              >
+                <option value="">— Chọn endpoint + model —</option>
+                {endpoints.filter(e => e.enabled && e.enabled_models?.length).map(ep => (
+                  ep.enabled_models.map(mid => (
+                    <option key={ep.name + '|' + mid} value={ep.name + '|' + mid}>
+                      {ep.name} → {mid}
+                    </option>
+                  ))
+                ))}
+              </select>
+              {assigning === pool.name && <span className="loading loading-spinner loading-xs"></span>}
+            </div>
+          )}
+        </div>
+      )}
     </div>
   );
 }
@@ -422,9 +494,15 @@ function PoolFlowGraph({
 export default function PoolStructureTab() {
   const { tabData, lang, token, wsHook } = useApp();
   const muData = tabData.mu;
+  const endpoints = tabData.ep || [];
+
   const [liveStats, setLiveStats] = useState(null);
   const [hoveredPool, setHoveredPool] = useState(null);
   const [hoveredModel, setHoveredModel] = useState(null);
+  const [editMode, setEditMode] = useState(false);
+  const [assigning, setAssigning] = useState(null);
+  const [selectKey, setSelectKey] = useState(0);
+  const [msg, setMsg] = useState({ text: '', type: '' });
 
   useEffect(() => {
     if (!wsHook || !wsHook.connected) return;
@@ -433,6 +511,27 @@ export default function PoolStructureTab() {
     });
     return unsub;
   }, [wsHook, wsHook?.connected]);
+
+  const showMsg = (text, type) => {
+    setMsg({ text, type });
+    setTimeout(() => setMsg({ text: '', type: '' }), 3000);
+  };
+
+  const handlePoolAssign = async (epName, poolName, modelId) => {
+    setAssigning(poolName);
+    try {
+      await api('/dashboard/admin/endpoints/pool-assign', {
+        method: 'POST',
+        body: JSON.stringify({ name: epName, pool_name: poolName, model_id: modelId || '' }),
+      }, token);
+      showMsg(`Pool ${poolName}: ${modelId ? `gán ${epName} → ${modelId}` : `xoá ${epName}`}`, 'success');
+      setSelectKey(k => k + 1);
+    } catch (err) {
+      showMsg('Pool assign error: ' + err.message, 'error');
+    } finally {
+      setAssigning(null);
+    }
+  };
 
   if (!muData) {
     return <Loading message={t('loading', lang) || 'Đang tải...'} />;
@@ -444,15 +543,34 @@ export default function PoolStructureTab() {
   return (
     <div className="space-y-6">
       {/* Title */}
-      <div className="text-left animate-tab-in">
-        <h1 className="text-2xl font-black tracking-tight flex items-center gap-2">
-          <Network className="w-6 h-6 text-primary" />
-          Cấu trúc Tài nguyên & Tiết kiệm
-        </h1>
-        <p className="text-xs text-base-content/60 mt-1">
-          Báo cáo thống kê hiệu quả tiết kiệm chi phí nhờ Smart Caching và sơ đồ luồng định tuyến (Model Pools) thời gian thực.
-        </p>
+      <div className="flex flex-col sm:flex-row sm:items-start sm:justify-between gap-4 animate-tab-in">
+        <div className="text-left">
+          <h1 className="text-2xl font-black tracking-tight flex items-center gap-2">
+            <Network className="w-6 h-6 text-primary" />
+            Cấu trúc Tài nguyên & Tiết kiệm
+          </h1>
+          <p className="text-xs text-base-content/60 mt-1">
+            Báo cáo thống kê hiệu quả tiết kiệm chi phí nhờ Smart Caching và sơ đồ luồng định tuyến (Model Pools) thời gian thực.
+          </p>
+        </div>
+        <div className="flex gap-2 shrink-0">
+          <button
+            onClick={() => setEditMode(v => !v)}
+            className={`btn btn-sm gap-1 font-bold transition-all ${editMode ? 'btn-primary shadow-lg shadow-primary/25' : 'btn-ghost'}`}
+          >
+            <Edit3 className="w-3.5 h-3.5" />
+            {editMode ? 'Xong' : 'Edit Pool Assignments'}
+          </button>
+        </div>
       </div>
+
+      {msg.text && (
+        <div className={`text-xs font-semibold p-3 rounded-lg border ${
+          msg.type === 'error' ? 'bg-error/10 text-error border-error/20' : 'bg-success/10 text-success border-success/20'
+        }`}>
+          {msg.text}
+        </div>
+      )}
 
       {/* Cost Savings Analytics */}
       <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4 animate-fade-in-up cascade-1">
@@ -507,9 +625,11 @@ export default function PoolStructureTab() {
 
       {/* Visual Pools Section */}
       <div className="space-y-6 animate-fade-in-up cascade-2">
-        <h2 className="text-sm font-extrabold uppercase tracking-wider text-base-content/40 text-left">
-          Sơ đồ Định tuyến Mạng lưới Pool (Pool Routing Flow)
-        </h2>
+        <div className="flex items-center justify-between">
+          <h2 className="text-sm font-extrabold uppercase tracking-wider text-base-content/40 text-left">
+            Sơ đồ Định tuyến Mạng lưới Pool (Pool Routing Flow)
+          </h2>
+        </div>
 
         {pools.map((p) => (
           <PoolFlowGraph
@@ -521,6 +641,11 @@ export default function PoolStructureTab() {
             hoveredModel={hoveredModel}
             setHoveredModel={setHoveredModel}
             lang={lang}
+            editMode={editMode}
+            endpoints={endpoints}
+            onPoolAssign={handlePoolAssign}
+            assigning={assigning}
+            selectKey={selectKey}
           />
         ))}
       </div>

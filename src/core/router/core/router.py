@@ -1,7 +1,7 @@
 import random
 import threading
 import time
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Set
 
 from src.core.api_config import AVAILABLE_MODELS, MODEL_POOLS, MODEL_PRIORITY, is_sunset_25
 from src.core.router.pool import ModelPool
@@ -212,14 +212,6 @@ class APIRouter(KeyResolverMixin):
             logger.info("APIRouter keys refreshed in-memory. Total keys: %d (API: %d)", len(self._key_status), len(config.GEMINI_API_KEYS))
 
     def list_models(self) -> List[Dict[str, Any]]:
-        """
-        Retrieves a list of available models, formatted for API exposure (e.g., OpenAI-compatible).
-        It filters out hidden models and models that are sunset based on `is_sunset_25()` logic.
-
-        Returns:
-            A list of dictionaries, each representing an available model with its ID, object type,
-            owner, root model ID, display name, and context length.
-        """
         models = []
         for alias, cfg in AVAILABLE_MODELS.items():
             if cfg.get("hidden"):
@@ -238,6 +230,26 @@ class APIRouter(KeyResolverMixin):
             if cl:
                 m["context_length"] = cl
             models.append(m)
+
+        # Include custom endpoint models
+        try:
+            from src.core.providers import _custom_endpoint_manager
+            for ep in _custom_endpoint_manager.list_endpoints():
+                if not ep.get("enabled", True):
+                    continue
+                for mid in (ep.get("enabled_models") or ep.get("models") or []):
+                    if not any(m["id"] == mid for m in models):
+                        models.append({
+                            "id": mid,
+                            "object": "model",
+                            "created": 0,
+                            "owned_by": ep.get("name", "custom"),
+                            "root": mid,
+                            "display": f"{mid} ({ep.get('name', 'custom')})",
+                        })
+        except Exception:
+            pass
+
         return models
 
     def resolve_model_alias(self, model: Optional[str]) -> str:
@@ -301,7 +313,16 @@ class APIRouter(KeyResolverMixin):
         pool_cfg = MODEL_POOLS.get(alias)
         if pool_cfg:
             members = [m for m in pool_cfg["members"] if not (is_sunset_25() and m in ("gemini-flash-25", "gemini-flash-25-lite"))]
-            # Account-dedicated endpoints are resolved per-account, not per-pool
+
+            # Add custom endpoints with pool_assignments for this alias as real pool members
+            custom_endpoint_members: Set[str] = set()
+            pool_models = self.get_pool_custom_models(alias)
+            for pm in pool_models:
+                ep_name = pm["endpoint"].get("name", "")
+                if ep_name and ep_name not in members:
+                    members.append(ep_name)
+                    custom_endpoint_members.add(ep_name)
+
             if not members:
                 return None
             pool_cfg = {
@@ -310,7 +331,9 @@ class APIRouter(KeyResolverMixin):
                 "swap_failures": config.POOL_SWAP_FAILURES,
                 "max_retry_seconds": config.POOL_RETRY_SECONDS,
             }
-            return ModelPool(pool_cfg)
+            pool = ModelPool.get_or_create(alias, pool_cfg, custom_endpoint_members)
+            pool.sync_custom_members(custom_endpoint_members)
+            return pool
         return None
 
     def is_global_cooldown_active(self) -> bool:
@@ -579,7 +602,8 @@ class APIRouter(KeyResolverMixin):
             if pool_name in pool_assignments:
                 model_id = pool_assignments[pool_name]
                 enabled_models = ep.get("enabled_models", [])
-                if model_id in enabled_models:
+                # If enabled_models is empty, treat pool_assignment model as implicitly enabled
+                if not enabled_models or model_id in enabled_models:
                     results.append({"endpoint": ep, "model_id": model_id})
         return results
 

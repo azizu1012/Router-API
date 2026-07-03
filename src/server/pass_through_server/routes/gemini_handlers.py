@@ -55,7 +55,16 @@ async def _handle_gemini_native(
     )
     prompt_text = api_manager._flatten_contents_text(contents)
     is_lite = "lite" in model_alias.lower()
-    limit = config.LITE_EMERGENCY_MAX_INPUT_TOKENS if is_lite else config.EMERGENCY_MAX_INPUT_TOKENS
+    
+    # Resolve the model's configured context length limit
+    requested_model = model_alias
+    from src.core.api_config import AVAILABLE_MODELS, MODEL_CONTEXT_LENGTH
+    model_alias_resolved = router.resolve_model_alias(requested_model)
+    model_cfg = AVAILABLE_MODELS.get(model_alias_resolved)
+    limit_tokens = model_cfg.get("context_length", MODEL_CONTEXT_LENGTH) if model_cfg else MODEL_CONTEXT_LENGTH
+    
+    limit = limit_tokens  # Truncate messages to match the specific model's context length limit
+    
     estimated_input_tokens = max(1, len(prompt_text) // 4) + (image_count * 258)
     while len(contents) > 2 and estimated_input_tokens > limit:
         contents.pop(0)
@@ -66,6 +75,19 @@ async def _handle_gemini_native(
         )
         prompt_text = api_manager._flatten_contents_text(contents)
         estimated_input_tokens = max(1, len(prompt_text) // 4) + (image_count * 258)
+
+    # Active Reject: check if the estimated input tokens still exceed the model's context length limit
+    if estimated_input_tokens > limit_tokens:
+        raise HTTPException(
+            status_code=400,
+            detail={
+                "error": {
+                    "code": 400,
+                    "message": f"Your request's input tokens ({estimated_input_tokens}) exceeds the model's configured context length limit of {limit_tokens}.",
+                    "status": "INVALID_ARGUMENT"
+                }
+            }
+        )
     pool_type = "lite" if is_lite else "flash"
     from src.core.limits.account_limiter import get_effective_limits_by_pool
     eff_rpm, eff_tpm, eff_rpd = await get_effective_limits_by_pool(account, pool_type)
@@ -136,8 +158,9 @@ async def _handle_gemini_native(
                 )
                 system_instruction = (system_instruction + context_block) if system_instruction else context_block.strip()
     from src.core.providers.custom_endpoint_manager import _custom_endpoint_manager
-    ep = _custom_endpoint_manager.get_endpoint_for_account(account)
-    if ep and ep.get("enabled", True):
+    for ep in _custom_endpoint_manager.get_endpoints_for_account(account):
+        if not ep.get("enabled", True):
+            continue
         model_to_use = model_alias
         pool_assignments = ep.get("pool_assignments", {})
         if model_alias in pool_assignments:
@@ -193,7 +216,7 @@ async def _handle_gemini_native(
                     )
                     return JSONResponse(content=resp_dict)
             except Exception as e:
-                logger_api.warning("[AccountEndpoint Pass-through] %s failed (%s), trying pool fallback", model_alias, e)
+                logger_api.warning("[AccountEndpoint Pass-through] %s failed (%s), trying next endpoint", model_alias, e)
     if stream:
         return StreamingResponse(stream_gemini_native(
             model_alias=model_alias,

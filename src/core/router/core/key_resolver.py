@@ -94,6 +94,18 @@ class KeyResolverMixin:
                     break
         rpm_limit = int(cfg.get("rpm", 5)) if cfg else 5
         tpm_limit = int(cfg.get("tpm", 250000)) if cfg else 250000
+
+        # Fix: when a pool member shares its alias with the pool name (e.g. "gemini-flash-lite"),
+        # _recompute_pool_aggregates overwrites cfg["rpm"] with the POOL aggregate,
+        # not the individual per-key limit. Subtract other members' contributions.
+        pool_cfg = MODEL_POOLS.get(model_alias)
+        if pool_cfg and model_alias in pool_cfg["members"]:
+            for m in pool_cfg["members"]:
+                if m != model_alias:
+                    m_cfg = AVAILABLE_MODELS.get(m, {})
+                    rpm_limit = max(1, rpm_limit - int(m_cfg.get("rpm", 0)))
+                    tpm_limit = max(1, tpm_limit - int(m_cfg.get("tpm", 0)))
+
         return rpm_limit, tpm_limit
 
     def _is_key_eligible(

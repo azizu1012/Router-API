@@ -26,4 +26,30 @@
 
 - Không commit `.env`, `usage.db`, `logs/`
 - DB dùng SQLite qua `src/backend/_db.py`
-- Dùng logger có sẵn: `from src.core.config import logger` hoặc `from src.core.logger import logger_system/logger_proxy/logger_keys/logger_api/logger_keepalive`
+- Dùng logger có sẵn: `from src.core.config_n_logg.logger import logger_system/logger_proxy/logger_keys/logger_api/logger_keepalive`
+
+## 5. Luồng request & file map (đọc trước khi planning)
+
+Một request đi qua các tầng theo thứ tự sau. Xác định task chạm vào tầng nào → chỉ đọc file tương ứng:
+
+```
+Client → src/server/ (routes)
+  → src/api/<proxy>/handler/proxy.py  (format converter, ko có logic pool/key)
+    → src/core/pool_manager.py         (retry loop, error classify, swap member)
+      → src/core/router/               (APIRouter, KeyResolver, ModelPool)
+        → src/core/limits/             (GeminiRateLimiter, RPM/TPM)
+          → src/core/providers/        (gemini_facade, custom_endpoint_manager)
+```
+
+| Task | File(s) chạm |
+|------|-------------|
+| Thêm/xoá model alias | `src/core/router/core/router.py`, `src/core/api_config.py` |
+| Sửa retry/backoff logic | `src/core/pool_manager.py` |
+| Sửa cách chọn key | `src/core/router/core/key_resolver.py` (Double Random) |
+| Sửa rate limit | `src/core/limits/gemini_rate_limiter.py` |
+| Thêm provider mới | `src/core/providers/`, `src/backend/endpoints.py` |
+| Sửa response format | `src/api/<proxy>/handler/` |
+| Sửa DB schema | `src/backend/_db.py` + file tương ứng trong `src/backend/` |
+| Dashboard FE | `frontend-src/` (React build → `src/frontend/`) |
+| Admin console CLI | `src/console/admin_console/` |
+**PoolManager (573 dòng)** là monolithic intentional (`docs/architecture_overview.md` mục 6). Không cần decompose — chỉ cần focus vào nhánh transient error vs hard error + pool vs standalone.

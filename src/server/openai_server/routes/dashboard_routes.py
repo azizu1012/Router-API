@@ -360,8 +360,11 @@ async def get_model_pools_api(request: Request):
                 model_id = item["model_id"]
                 # Avoid duplicates
                 if not any(m["model_id"] == model_id for m in members):
+                    ep_name = item["endpoint"].get("name", "?")
                     members.append({
                         "model_id": model_id,
+                        "endpoint_name": ep_name,
+                        "alias": model_id,
                         "rpm": 10, # Custom endpoints are rate-limited via _CUSTOM_POOL_RPM = 10
                         "tpm": 999999999, # Unlimited placeholder
                         "health_score": 100.0,
