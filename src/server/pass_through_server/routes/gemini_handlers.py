@@ -128,35 +128,6 @@ async def _handle_gemini_native(
     )
     native_grounding_active = can_native_ground
     hybrid_citations = []
-    if web_search and not can_native_ground:
-        from src.core.providers.search_manager import extract_search_queries, execute_hybrid_search
-        history_messages = []
-        for c in contents:
-            role = "assistant" if c.role == "model" else "user"
-            text = "".join([getattr(p, "text", "") or "" for p in getattr(c, "parts", []) or []])
-            history_messages.append({"role": role, "content": text})
-        try:
-            queries = await extract_search_queries(prompt_text, history_messages, auth_key_prefix, account=account)
-        except Exception as qerr:
-            logger_api.warning("[Grounding] extract_search_queries failed (%s), skipping grounding.", qerr)
-            queries = []
-        if queries:
-            try:
-                search_results, hybrid_citations = await execute_hybrid_search(queries, auth_key_prefix, account=account)
-            except Exception as serr:
-                logger_api.warning("[Grounding] execute_hybrid_search failed (%s), skipping grounding.", serr)
-                search_results, hybrid_citations = "", []
-            if search_results:
-                from datetime import datetime
-                current_time_str = datetime.now().strftime("%A, %B %d, %Y, %I:%M %p")
-                context_block = (
-                    "\n\n[Search Context from Google Search Grounding]\n"
-                    f"Current Time: {current_time_str}\n"
-                    "Use the following real-time web search results to answer the user request:\n"
-                    f"{search_results}\n"
-                    "[End of Search Context]"
-                )
-                system_instruction = (system_instruction + context_block) if system_instruction else context_block.strip()
     from src.core.providers.custom_endpoint_manager import _custom_endpoint_manager
     for ep in _custom_endpoint_manager.get_endpoints_for_account(account):
         if not ep.get("enabled", True):
@@ -228,7 +199,7 @@ async def _handle_gemini_native(
             tools=tools or None,
             image_count=image_count,
             account=account,
-            web_search=native_grounding_active,
+            web_search=web_search,
             hybrid_citations=hybrid_citations,
             auth_key_prefix=auth_key_prefix,
             thinking_level=thinking_level,
@@ -245,7 +216,7 @@ async def _handle_gemini_native(
         tools=tools or None,
         image_count=image_count,
         account=account,
-        web_search=native_grounding_active,
+        web_search=web_search,
         thinking_level=thinking_level,
         thinking_budget=thinking_budget,
         include_thoughts=include_thoughts,
