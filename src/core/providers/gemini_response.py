@@ -59,7 +59,6 @@ def parse_gemini_chunk(chunk: Dict[str, Any], state: Dict[str, Any]) -> List[Dic
         is_thought = part.get("thought") is True
         text = part.get("text", "")
         ts = part.get("thought_signature") or part.get("thoughtSignature")
-
         if text:
             delta = {}
             if is_thought:
