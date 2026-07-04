@@ -304,7 +304,11 @@ class ClaudeProxyNonstreamMixin:
         cache_usage = _get_simulated_cache_usage(body or {}, input_tokens)
         cc = cache_usage.get("cache_creation_input_tokens", 0) or 0
         cr = cache_usage.get("cache_read_input_tokens", 0) or 0
-        client_input_tokens = max(1, input_tokens - cc - cr)
+        system_text = body.get("system", "")
+        if isinstance(system_text, list):
+            system_text = "\n".join(str(item.get("text", "")) for item in system_text if isinstance(item, dict))
+        system_tokens = max(0, len(str(system_text)) // 4)
+        client_input_tokens = max(1, input_tokens - cc - cr - system_tokens)
         return {
             "id": "msg_" + uuid.uuid4().hex[:24],
             "type": "message",
