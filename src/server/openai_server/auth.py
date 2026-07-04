@@ -1,5 +1,4 @@
-from typing import Any, Dict
-
+from typing import Any, Dict, AsyncIterator
 from fastapi import HTTPException
 
 from src.core.config_n_logg import config
@@ -173,20 +172,8 @@ async def _apply_account_limit(account: Dict[str, Any], body: Dict[str, Any], is
             },
         )
 
-    if is_sub_agent:
-        target_model = None
-        if account:
-            target_model = account.get("subagent_model") or account.get("agent_model") or account.get("sub_agent_model")
-        if not target_model:
-            import os
-            target_model = os.getenv("OPENCODE_SUB_AGENT_MODEL") or os.getenv("SUB_AGENT_MODEL")
-        if not target_model:
-            target_model = "gemini-flash-lite"
-        model_alias = router.resolve_model_alias(target_model)
-        pool_type = "lite" if (model_alias and ("lite" in model_alias.lower() or "flash-lite" in model_alias.lower())) else "flash"
-    else:
-        model_alias = router.resolve_model_alias(model)
-        pool_type = "lite" if (model_alias and ("lite" in model_alias.lower() or "flash-lite" in model_alias.lower())) else "flash"
+    model_alias = router.resolve_model_alias(model)
+    pool_type = "lite" if (model_alias and ("lite" in model_alias.lower() or "flash-lite" in model_alias.lower())) else "flash"
 
     # Detect if the request goes to a custom endpoint
     from src.core.providers import _custom_endpoint_manager
@@ -418,3 +405,28 @@ def handle_sub_agent_error(body: Dict[str, Any], exc: Exception, format_type: st
             )
 
 
+async def _sub_agent_stream_error(body: dict, model_alias: str, exc: Exception) -> AsyncIterator[bytes]:
+    """Yield simulated SSE chunks for sub-agent stream error instead of empty response."""
+    import uuid, time, json
+    from src.api.claude_proxy.handler.helpers import get_system_status_summary
+    from src.api.opencode_proxy.handler.response import get_client_model_name
+    cid = f"chatcmpl-{uuid.uuid4().hex}"
+    created = int(time.time())
+    mapped_model = get_client_model_name(body.get("model") or model_alias or "gemini-flash-lite")
+    error_msg = str(exc)
+    reason = "pool_exhausted"
+    if "rate" in error_msg.lower() or "limit" in error_msg.lower() or "quota" in error_msg.lower() or "429" in error_msg:
+        reason = "rate_limit"
+    elif "503" in error_msg or "unavailable" in error_msg or "overloaded" in error_msg or "frozen" in error_msg:
+        reason = "unavailable"
+    warning_text = get_system_status_summary(mapped_model, reason)
+    for data in [
+        {"id": cid, "object": "chat.completion.chunk", "created": created, "model": mapped_model,
+         "choices": [{"index": 0, "delta": {"role": "assistant"}, "finish_reason": None}]},
+        {"id": cid, "object": "chat.completion.chunk", "created": created, "model": mapped_model,
+         "choices": [{"index": 0, "delta": {"content": warning_text}, "finish_reason": None}]},
+        {"id": cid, "object": "chat.completion.chunk", "created": created, "model": mapped_model,
+         "choices": [{"index": 0, "delta": {}, "finish_reason": "stop"}]},
+    ]:
+        yield f"data: {json.dumps(data, ensure_ascii=False)}\n\n".encode("utf-8")
+    yield b"data: [DONE]\n\n"

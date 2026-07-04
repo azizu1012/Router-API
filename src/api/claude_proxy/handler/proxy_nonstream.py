@@ -11,7 +11,7 @@ from src.core.config_n_logg import config
 from src.core.config_n_logg.logger import logger_proxy as logger
 from src.core.router import router
 from src.core.pool_manager import pool_manager
-from src.logical_HQ_translator import _convert_messages, _intercept_sub_agent, XMLThinkingExtractor, _get_simulated_cache_usage
+from src.logical_HQ_translator import _convert_messages, XMLThinkingExtractor, _get_simulated_cache_usage
 from .compaction import _pre_compact_and_truncate
 from .helpers import get_system_status_summary
 
@@ -71,8 +71,7 @@ class ClaudeProxyNonstreamMixin:
             openai_tools.append(_WEBSEARCH_TOOL_DEF)
             logger.info("[WebSearch] Injected WebSearch tool for Claude non-stream")
 
-        override_alias = _intercept_sub_agent(body, account=account)
-        model_alias = override_alias or router.resolve_model_alias(body.get("model", "")) or config.DEFAULT_MODEL_ALIAS
+        model_alias = router.resolve_model_alias(body.get("model", "")) or config.DEFAULT_MODEL_ALIAS
 
         await _pre_compact_and_truncate(body, openai_messages, openai_tools, model_alias)
 

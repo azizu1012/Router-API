@@ -103,16 +103,7 @@ Tạo file `opencode.json` trong project root:
 
 ---
 
-## Tùy chỉnh Model Agent (Sub-agent)
 
-Router API hỗ trợ cấu hình model riêng cho các Agent/Sub-agent. Bạn có thể tùy chỉnh model cho sub-agent thông qua các cách sau:
-1. **Qua cấu hình Account:** Thêm trường `subagent_model`, `agent_model`, hoặc `sub_agent_model` vào cấu hình tài khoản trong cơ sở dữ liệu/`accounts.json` (ví dụ: `"subagent_model": "gemini-flash-lite"`).
-2. **Qua biến môi trường:** Cấu hình trong file `.env`:
-   ```env
-   OPENCODE_SUB_AGENT_MODEL=gemini-flash-lite
-   SUB_AGENT_MODEL=gemini-flash-lite
-   ```
-Nếu không cấu hình, mặc định sub-agent của cả OpenCode và Claude Code sẽ tự động fallback về `gemini-flash-lite`.
 
 ---
 

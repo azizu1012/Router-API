@@ -222,8 +222,7 @@ Hiện tại, hệ thống được thiết kế để hoạt động ổn đị
 | `GEMINI_FLASH_35_MODEL` | `gemini-3.5-flash` | ID model backend cho flash-35 |
 | `GEMINI_FLASH_30_MODEL` | `gemini-3-flash-preview` | ID model backend cho flash-30 |
 | `GEMINI_FLASH_25_MODEL` | `gemini-2.5-flash` | ID model backend cho flash-25 |
-| `OPENCODE_SUB_AGENT_MODEL` | `gemini-flash-lite` | Ghi đè model cho Sub-agent của OpenCode |
-| `SUB_AGENT_MODEL` | `gemini-flash-lite` | Ghi đè model cho Sub-agent (fallback) |
+
 | `MODEL_CONTEXT_LENGTH` | `220000` | Độ dài context tối đa cho tính toán dung lượng pool |
 
 ## 10. Web Search Architecture (Cách A & Cách B)
