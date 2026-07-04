@@ -243,7 +243,7 @@ class ClaudeProxyStreamMixin:
                     accumulated_thought.append(reasoning)
                     if not thinking_started:
                         thinking_started = True
-                        thinking_index = start_block_index
+                        thinking_index = start_block_index + 1 if text_started else start_block_index
                         yield _sse("content_block_start", {
                             "type": "content_block_start",
                             "index": thinking_index,
@@ -262,7 +262,7 @@ class ClaudeProxyStreamMixin:
                         if ev_type == "start_thinking":
                             if not thinking_started:
                                 thinking_started = True
-                                thinking_index = start_block_index
+                                thinking_index = start_block_index + 1 if text_started else start_block_index
                                 yield _sse("content_block_start", {
                                     "type": "content_block_start",
                                     "index": thinking_index,
@@ -272,17 +272,18 @@ class ClaudeProxyStreamMixin:
                             accumulated_thought.append(ev_val)
                             if not thinking_started:
                                 thinking_started = True
-                                thinking_index = start_block_index
+                                thinking_index = start_block_index + 1 if text_started else start_block_index
                                 yield _sse("content_block_start", {
                                     "type": "content_block_start",
                                     "index": thinking_index,
                                     "content_block": {"type": "thinking", "thinking": "", "signature": ""},
                                 })
-                            yield _sse("content_block_delta", {
-                                "type": "content_block_delta",
-                                "index": thinking_index,
-                                "delta": {"type": "thinking_delta", "thinking": ev_val},
-                            })
+                            if not thinking_stopped:
+                                yield _sse("content_block_delta", {
+                                    "type": "content_block_delta",
+                                    "index": thinking_index,
+                                    "delta": {"type": "thinking_delta", "thinking": ev_val},
+                                })
                             output_chars += len(ev_val)
                         elif ev_type == "end_thinking":
                             if thinking_started and not thinking_stopped:
@@ -388,17 +389,18 @@ class ClaudeProxyStreamMixin:
                     accumulated_thought.append(ev_val)
                     if not thinking_started:
                         thinking_started = True
-                        thinking_index = start_block_index
+                        thinking_index = start_block_index + 1 if text_started else start_block_index
                         yield _sse("content_block_start", {
                             "type": "content_block_start",
                             "index": thinking_index,
                             "content_block": {"type": "thinking", "thinking": "", "signature": ""},
                         })
-                    yield _sse("content_block_delta", {
-                        "type": "content_block_delta",
-                        "index": thinking_index,
-                        "delta": {"type": "thinking_delta", "thinking": ev_val},
-                    })
+                    if not thinking_stopped:
+                        yield _sse("content_block_delta", {
+                            "type": "content_block_delta",
+                            "index": thinking_index,
+                            "delta": {"type": "thinking_delta", "thinking": ev_val},
+                        })
                     output_chars += len(ev_val)
                 elif ev_type == "text":
                     accumulated_text.append(ev_val)

@@ -13,7 +13,7 @@ import asyncio
 import json
 import uuid
 import time
-from typing import Any, Dict, List, AsyncIterator, Optional
+from typing import Any, Dict, List, AsyncIterator, Optional, cast
 
 from src.core.config_n_logg import config
 from src.core.config_n_logg.logger import logger_proxy as logger
@@ -296,6 +296,8 @@ async def execute_stream(
     _BUF_FLUSH_SIZE = 80
     stream_finish_reason = None
     has_tool_calls = False
+    thinking_enabled = bool(thinking_config)
+    reasoning_received = False
 
     last_api_key = ""
     last_model_id = ""
@@ -342,13 +344,14 @@ async def execute_stream(
     async def _process_content(content_val: str, has_reasoning: bool):
         if not content_val:
             return
+        ex = cast(XMLThinkingExtractor, extractor)
         if has_reasoning:
-            for _et, _ev in extractor.feed(content_val):
+            for _et, _ev in ex.feed(content_val):
                 if _et == "text" and _ev:
                     async for c in _yield_text(_ev):
                         yield c
         else:
-            for _et, _ev in extractor.feed(content_val):
+            for _et, _ev in ex.feed(content_val):
                 if _et == "thinking" and _ev:
                     if include_thoughts:
                         async for c in _yield_reasoning(_ev):
@@ -438,6 +441,7 @@ async def execute_stream(
                 stream_finish_reason = fr
 
             if reasoning:
+                reasoning_received = True
                 if is_sub_agent:
                     async for c in _yield_text(reasoning):
                         yield c
@@ -497,6 +501,12 @@ async def execute_stream(
             },
         }
         yield f"data: {json.dumps(usage_chunk, ensure_ascii=False)}\n\n".encode("utf-8")
+        if thinking_enabled and not reasoning_received:
+            logger.info(
+                "[OpenCode Stream] thinking enabled but no reasoning_content from SDK model=%s (API may not return thought parts in stream mode)",
+                model_alias,
+            )
+
         yield b"data: [DONE]\n\n"
 
     except asyncio.CancelledError:
