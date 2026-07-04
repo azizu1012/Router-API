@@ -8,7 +8,7 @@ from fastapi.responses import JSONResponse, StreamingResponse
 from src.core.config_n_logg.logger import logger_api
 from src.api.opencode_proxy import opencode_proxy
 
-from src.server.openai_server.auth import _resolve_auth, _check_auth, _apply_account_limit, is_sub_agent_request, handle_sub_agent_error
+from src.server.openai_server.auth import _resolve_auth, _check_auth, _apply_account_limit, is_sub_agent_request, handle_sub_agent_error, _sub_agent_stream_error
 from src.core.limits.account_limiter import get_effective_limits_by_pool
 from .app_init import app
 
@@ -76,7 +76,11 @@ async def opencode_chat_completions(
                         yield chunk
                 except Exception as e:
                     logger_api.warning("[OpenCode Route] Stream error caught: %s", e)
-                    yield "data: [DONE]\n\n".encode("utf-8")
+                    if is_sub_agent_request(body, is_opencode=True):
+                        async for chunk in _sub_agent_stream_error(body, model_alias, e):
+                            yield chunk
+                    else:
+                        yield "data: [DONE]\n\n".encode("utf-8")
 
             return StreamingResponse(
                 _safe_stream(),

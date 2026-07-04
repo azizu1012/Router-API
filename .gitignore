@@ -53,3 +53,5 @@ code_quality_audit.md
 # ─── Local OpenCode config ───
 opencode.json
 
+
+test_sse_raw.txt

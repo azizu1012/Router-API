@@ -219,7 +219,7 @@
   utils/sse_cache_agent.py
   ├── _sse() — SSE event formatting
   ├── _get_simulated_cache_usage() — Cache simulation
-  ├── _intercept_sub_agent() — Sub-agent interception
+
   ├── _estimate_msg_tokens() -- Token estimation
   └── is_claude_code_body() — Claude Code detection
 

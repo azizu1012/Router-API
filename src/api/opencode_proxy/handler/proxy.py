@@ -20,7 +20,6 @@ from src.logical_HQ_translator import (
 )
 from src.api.claude_proxy.handler.helpers import _reinforce_messages_for_retry
 
-from .detection import detect_sub_agent_override
 from .websearch import (
     should_enable_web_search,
     get_auth_key_prefix,
@@ -120,7 +119,6 @@ class OpenCodeProxy:
     ) -> str:
         """
         Giải quyết bí danh mô hình từ body yêu cầu hoặc từ cấu hình mặc định.
-        Nó cũng kiểm tra xem có sự ghi đè nào từ sub-agent hay không.
 
         Args:
             body (Dict[str, Any]): Body của yêu cầu API, chứa thông tin về mô hình được yêu cầu.
@@ -130,8 +128,7 @@ class OpenCodeProxy:
         Returns:
             str: Bí danh mô hình đã được giải quyết hoặc bí danh mô hình mặc định.
         """
-        override = detect_sub_agent_override(body, account=account, is_opencode=is_opencode)
-        model_alias = override or router.resolve_model_alias(body.get("model", ""))
+        model_alias = router.resolve_model_alias(body.get("model", ""))
         return model_alias or config.DEFAULT_MODEL_ALIAS
 
     # ── Entry Points ─────────────────────────────────────────────

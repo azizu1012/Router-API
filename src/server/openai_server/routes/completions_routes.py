@@ -10,7 +10,7 @@ from src.core.providers import _custom_endpoint_manager
 from src.api.claude_proxy import claude_proxy
 from src.core.usage_logger import log_usage
 
-from src.server.openai_server.auth import _resolve_auth, _check_auth, _apply_account_limit, _auth_key_prefix, is_sub_agent_request, handle_sub_agent_error
+from src.server.openai_server.auth import _resolve_auth, _check_auth, _apply_account_limit, _auth_key_prefix, is_sub_agent_request, handle_sub_agent_error, _sub_agent_stream_error
 from .app_init import app
 
 
@@ -86,8 +86,19 @@ async def chat_completions(
 
         from src.api.opencode_proxy import opencode_proxy
         if stream:
+            async def _safe_stream():
+                try:
+                    async for chunk in opencode_proxy.stream_chat_completion(body, account=account, is_opencode=False):
+                        yield chunk
+                except Exception as e:
+                    logger_api.warning("[Completion Route] Stream error caught: %s", e)
+                    if is_sub_agent_request(body, is_opencode=False):
+                        async for chunk in _sub_agent_stream_error(body, model_alias, e):
+                            yield chunk
+                    else:
+                        yield "data: [DONE]\n\n".encode("utf-8")
             return StreamingResponse(
-                opencode_proxy.stream_chat_completion(body, account=account, is_opencode=False),
+                _safe_stream(),
                 media_type="text/event-stream",
                 headers=response_headers,
             )

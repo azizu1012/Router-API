@@ -27,7 +27,6 @@ from .sse_cache_agent import (
     _get_simulated_cache_usage as _get_simulated_cache_usage,
     is_claude_code_body as is_claude_code_body,
     is_sub_agent_body as is_sub_agent_body,
-    _intercept_sub_agent as _intercept_sub_agent,
     _dict_to_sse_events as _dict_to_sse_events,
     _sse as _sse,
     save_resolved_model_for_cwd as save_resolved_model_for_cwd,
