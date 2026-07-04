@@ -109,16 +109,39 @@ class GeminiAPIManager:
                     await self.pool.throttle(api_key, self.pool.get_key_last_used(api_key))
                     self.pool.record_key_usage(api_key)
 
-                    use_grounding, request_tools = prepare_tools(
-                        tools, model_id, image_count, contents, web_search,
+                    target_model_id = model_id
+                    is_lite = "lite" in model_alias.lower() or "lite" in target_model_id.lower()
+                    has_media = image_count > 0 or self._has_media_or_files(contents)
+                    can_native_ground = (
+                        web_search
+                        and not has_media
+                        and is_lite
+                        and ("gemini" in target_model_id.lower())
                     )
-                    tc = resolve_thinking_config(model_id, thinking_level, thinking_budget, include_thoughts)
-                    tc_obj = types.ThinkingConfig(**tc) if tc else None
-                    response = await self._call_with_grounding_fallback(
-                        api_key, model_id, system_instruction, contents,
-                        max_tokens, temperature, top_p, request_tools,
-                        tier, use_grounding, thinking_config=tc_obj,
-                    )
+
+                    if web_search and not can_native_ground:
+                        from src.core.providers.adk_runner import run_adk_agent, MockGenerateContentResponse
+                        auth_key_prefix = account.get("api_key", "")[:12] if account else "sk-no-account"
+                        resp_dict = await run_adk_agent(
+                            model_id=model_id,
+                            api_key=api_key,
+                            system_instruction=system_instruction,
+                            contents=contents,
+                            auth_key_prefix=auth_key_prefix,
+                            account=account,
+                        )
+                        response = MockGenerateContentResponse(resp_dict)
+                    else:
+                        use_grounding, request_tools = prepare_tools(
+                            tools, model_id, image_count, contents, web_search,
+                        )
+                        tc = resolve_thinking_config(model_id, thinking_level, thinking_budget, include_thoughts)
+                        tc_obj = types.ThinkingConfig(**tc) if tc else None
+                        response = await self._call_with_grounding_fallback(
+                            api_key, model_id, system_instruction, contents,
+                            max_tokens, temperature, top_p, request_tools,
+                            tier, use_grounding, thinking_config=tc_obj,
+                        )
 
                     usage = getattr(response, "usage_metadata", None)
                     input_tokens = getattr(usage, "prompt_token_count", 0) or 0
@@ -265,33 +288,69 @@ class GeminiAPIManager:
                     await self.pool.throttle(api_key, self.pool.get_key_last_used(api_key))
                     self.pool.record_key_usage(api_key)
 
-                    use_grounding, request_tools = prepare_tools(
-                        tools, model_id, image_count, contents, web_search,
+                    target_model_id = model_id
+                    is_lite = "lite" in model_alias.lower() or "lite" in target_model_id.lower()
+                    has_media = image_count > 0 or self._has_media_or_files(contents)
+                    can_native_ground = (
+                        web_search
+                        and not has_media
+                        and is_lite
+                        and ("gemini" in target_model_id.lower())
                     )
-                    tc = resolve_thinking_config(model_id, thinking_level, thinking_budget, include_thoughts)
-                    tc_obj = types.ThinkingConfig(**tc) if tc else None
-                    try:
-                        stream_gen = caller.generate_content_stream(
-                            self.pool, api_key, model_id,
-                            system_instruction, contents,
-                            max_tokens, temperature, top_p,
-                            tools=request_tools or None, tier=tier,
-                            thinking_config=tc_obj,
+
+                    if web_search and not can_native_ground:
+                        from src.core.providers.adk_runner import run_adk_agent_stream, MockGenerateContentResponse
+                        auth_key_prefix = account.get("api_key", "")[:12] if account else "sk-no-account"
+                        adk_stream = run_adk_agent_stream(
+                            model_id=model_id,
+                            api_key=api_key,
+                            system_instruction=system_instruction,
+                            contents=contents,
+                            auth_key_prefix=auth_key_prefix,
+                            account=account,
                         )
-                    except Exception as ge_err:
-                        if use_grounding and gerror.is_grounding_suppression(str(ge_err)):
-                            logger.warning("Grounding stream failed on ...%s, retrying without.", api_key[-4:])
-                            non_grounding = [t for t in request_tools
-                                             if getattr(t, "google_search", None) is None]
+
+                        class ADKStreamWrapper:
+                            def __init__(self, generator):
+                                self.generator = generator
+                            def __aiter__(self):
+                                return self
+                            async def __anext__(self):
+                                try:
+                                    chunk_dict = await self.generator.__anext__()
+                                    return MockGenerateContentResponse(chunk_dict)
+                                except StopAsyncIteration:
+                                    raise StopAsyncIteration
+
+                        stream_gen = ADKStreamWrapper(adk_stream)
+                    else:
+                        use_grounding, request_tools = prepare_tools(
+                            tools, model_id, image_count, contents, web_search,
+                        )
+                        tc = resolve_thinking_config(model_id, thinking_level, thinking_budget, include_thoughts)
+                        tc_obj = types.ThinkingConfig(**tc) if tc else None
+                        try:
                             stream_gen = caller.generate_content_stream(
                                 self.pool, api_key, model_id,
                                 system_instruction, contents,
                                 max_tokens, temperature, top_p,
-                                tools=non_grounding or None, tier=tier,
+                                tools=request_tools or None, tier=tier,
                                 thinking_config=tc_obj,
                             )
-                        else:
-                            raise ge_err
+                        except Exception as ge_err:
+                            if use_grounding and gerror.is_grounding_suppression(str(ge_err)):
+                                logger.warning("Grounding stream failed on ...%s, retrying without.", api_key[-4:])
+                                non_grounding = [t for t in request_tools
+                                                 if getattr(t, "google_search", None) is None]
+                                stream_gen = caller.generate_content_stream(
+                                    self.pool, api_key, model_id,
+                                    system_instruction, contents,
+                                    max_tokens, temperature, top_p,
+                                    tools=non_grounding or None, tier=tier,
+                                    thinking_config=tc_obj,
+                                )
+                            else:
+                                raise ge_err
 
                     full_parts: List[str] = []
                     chunk = None
