@@ -62,18 +62,16 @@ Hệ thống sử dụng một cách tiếp cận hai tầng để phân loại 
 
 | Loại Lỗi (Text/Code Signature) | Lý Do Phân Loại | Mô Tả | Xử Lý |
 | :------------------------------ | :-------------- | :---- | :---- |
-| Mã HTTP 400, "invalid_argument", "bad_request" | `bad_request` | Yêu cầu không đúng định dạng hoặc tham số không hợp lệ. | Hard Freeze |
+| Mã HTTP 400, "invalid_argument", "bad_request" | `bad_request` | Yêu cầu không đúng định dạng hoặc tham số không hợp lệ. | Freeze Key + Thử Key Tiếp |
 | Mã HTTP 401, "api key invalid", "unauthorized" | `invalid_key` | API Key không hợp lệ hoặc thiếu. | Hard Freeze |
 | Mã HTTP 403, "permission denied" | `permission_denied` | Không có quyền truy cập chung. | Hard Freeze |
-| Mã HTTP 403, "denied access" | `project_denied` | Không có quyền truy cập vào dự án cụ thể. | Hard Freeze |
+| Mã HTTP 403, "denied access" | `project_denied` | Không có quyền truy cập vào dự án cụ thể. | Freeze Key + Thử Key Tiếp |
 | Mã HTTP 404, "not found" | `unavailable` | Tài nguyên không tìm thấy hoặc model không khả dụng. | Soft Handling |
 | Mã HTTP 429, "rate limit", "resource exhausted" | `rate_limit` | Vượt quá giới hạn yêu cầu hoặc token mỗi phút (RPM/TPM). | Soft Handling |
 | Mã HTTP 429, "quota exceeded", "daily" | `project_quota_429` | Vượt quá giới hạn yêu cầu mỗi ngày (RPD). | Soft Handling |
 | Mã HTTP 500, 503, 504, "unavailable", "overloaded", "timeout" | `unavailable` | Dịch vụ không khả dụng, lỗi máy chủ, hoặc timeout. | Soft Handling |
 | "grounding", "google_search", "tool is not allowed" | `grounding_fallback` | Lỗi liên quan đến công cụ tìm kiếm hoặc grounding. | Soft Handling |
 | Mọi lỗi khác                    | `unknown`       | Lỗi không xác định. | Soft Handling (mặc định) |
-
-### Sự khác biệt trong cách xử lý:
 
 ### Sự khác biệt trong cách xử lý:
 
@@ -180,4 +178,14 @@ Hàm `get_key_priority` kết hợp tất cả các yếu tố này để tạo 
 
 ---
 
-## 9. Các Biến Môi Trường Chính
+## 9. Lịch sử thay đổi
+
+### 2026-07-06 — `bad_request` & `project_denied` không còn là Hard Freeze
+- **File:** `src/core/providers/gemini/utils.py` — `handle_error()`
+- **Trước:** `bad_request` và `project_denied` raise `RuntimeError` ngay lập tức → FastAPI trả 500, không thử key khác.
+- **Sau:** Freeze key 3600s (`KEY_INVALID_COOLDOWN_SECONDS`), apply penalty, `return` → thử key tiếp theo trong pool.
+- **Lý do:** Một key invalid/denied không có nghĩa tất cả key đều invalid. Router nên thử key khác trước khi bỏ cuộc.
+
+---
+
+## 10. Các Biến Môi Trường Chính

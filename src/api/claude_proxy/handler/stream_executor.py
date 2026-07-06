@@ -245,7 +245,7 @@ async def _execute_stream(proxy_instance: Any, kwargs: Dict[str, Any], api_key: 
                         args = json.loads(tc["arguments"]) if isinstance(tc["arguments"], str) else tc["arguments"]
                     except Exception:
                         args = {}
-                    if tc["name"] == "Task":
+                    if tc["name"] in ("Agent", "Task"):
                         yield _sse("content_block_start", {
                             "type": "content_block_start", "index": block_idx,
                             "content_block": {"type": "agent_use", "id": tc["id"], "agent_type": "general-purpose", "prompt": args.get("prompt", "") or str(args)}

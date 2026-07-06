@@ -54,8 +54,7 @@ class KeyResolverMixin:
             from src.core.limits.gemini_rate_limiter import get_seconds_until_pacific_midnight
             return get_seconds_until_pacific_midnight()
         if reason == "rate_limit" or reason == "429":
-            base = config.KEY_429_COOLDOWN_SECONDS
-            return min(base * (3 ** (consecutive_failures - 1)), config.KEY_UNKNOWN_ERROR_COOLDOWN_SECONDS * 10)
+            return random.randint(config.KEY_429_COOLDOWN_SECONDS, config.KEY_429_COOLDOWN_SECONDS * 5)
         if reason in ("invalid", "invalid_key", "403", "401", "permission_denied"):
             return config.KEY_INVALID_COOLDOWN_SECONDS
         if reason == "timeout" or reason == "unavailable":

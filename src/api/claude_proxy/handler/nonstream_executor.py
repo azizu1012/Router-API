@@ -405,7 +405,7 @@ async def _execute_nonstream(proxy_instance: Any, kwargs: Dict[str, Any], api_ke
             args = json.loads(tc["arguments"]) if isinstance(tc["arguments"], str) else tc["arguments"]
         except Exception:
             args = {}
-        if tc["name"] == "Task":
+        if tc["name"] in ("Agent", "Task"):
             content_blocks.append({
                 "type": "agent_use",
                 "id": tc["id"],
