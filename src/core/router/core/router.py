@@ -541,7 +541,7 @@ class APIRouter(KeyResolverMixin):
                 if reason != "bad_request_spam_prevent":
                     cf += 1
                 adj_duration = self._adaptive_cooldown(reason, cf)
-                jitter = random.uniform(0, adj_duration * 0.15) + abs(random.gauss(0, adj_duration * 0.05))
+                jitter = random.uniform(adj_duration * -0.3, adj_duration * 0.3)
                 adj_duration = int(adj_duration + jitter)
                 until_ts = time.time() + adj_duration
                 self._key_status[key]["consecutive_failures"] = cf

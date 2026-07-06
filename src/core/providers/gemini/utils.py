@@ -92,9 +92,17 @@ async def handle_error(
     error_text = str(e)
     reason = gerror.classify(error_text)
     if reason == "bad_request":
-        raise RuntimeError(f"bad_request: {error_text[:500]}")
+        router.freeze_key(api_key, config.KEY_INVALID_COOLDOWN_SECONDS, model_id, "bad_request")
+        apply_error_penalty(api_key, "bad_request", model_id)
+        logger.warning("Key ...%s bad_request, frozen + penalty", api_key[-4:])
+        await asyncio.sleep(config.GEMINI_API_KEY_INTERVAL)
+        return
     if reason == "project_denied":
-        raise RuntimeError(f"project_denied: {error_text[:300]}")
+        router.freeze_key(api_key, config.KEY_INVALID_COOLDOWN_SECONDS, model_id, "project_denied")
+        apply_error_penalty(api_key, "project_denied", model_id)
+        logger.warning("Key ...%s project_denied, frozen + penalty", api_key[-4:])
+        await asyncio.sleep(config.GEMINI_API_KEY_INTERVAL)
+        return
     if reason == "unavailable":
         wait = config.GEMINI_UNAVAILABLE_DELAY_SEC * (attempt + 1)
         logger.warning("Key ...%s unavailable (attempt %d), wait %.1fs", api_key[-4:], attempt, wait)

@@ -76,90 +76,6 @@ async def _apply_account_limit(account: Dict[str, Any], body: Dict[str, Any], is
         return
     model = body.get("model") or ""
     from src.core.router import router
-    
-    # Detect if the request is a Claude Code sub-agent request (which gets overridden to gemini-flash-lite)
-    is_sub_agent = False
-    if not is_opencode:
-        system_instruction = body.get("system", "")
-        if isinstance(system_instruction, list):
-            system_prompt = "\n".join([str(item.get("text", "")) for item in system_instruction if isinstance(item, dict)])
-        else:
-            system_prompt = str(system_instruction or "")
-
-        # For OpenAI/OpenCode formats, system prompt can be in the messages list with role "system" or "developer"
-        if not system_prompt:
-            for msg in body.get("messages", []):
-                if msg.get("role") in ("system", "developer"):
-                    content = msg.get("content", "")
-                    if isinstance(content, str):
-                        system_prompt = content
-                    elif isinstance(content, list):
-                        system_prompt = "\n".join([str(item.get("text", "")) for item in content if isinstance(item, dict)])
-                    break
-
-        if system_prompt:
-            system_prompt_lower = system_prompt.lower()
-            if "you are an interactive agent" in system_prompt_lower:
-                pass
-            else:
-                sub_agent_keywords = [
-                    "general-purpose agent",
-                    "general-purpose assistant",
-                    "explore agent",
-                    "file search specialist",
-                    "exploration task",
-                    "read-only exploration",
-                    "claude-code-guide",
-                    "statusline-setup",
-                    "specialized agent",
-                    "subagent",
-                    "sub-agent",
-                    "security monitor",
-                    "you are the claude-code-guide",
-                    "you are the explore",
-                    "you are the general-purpose",
-                    "you are the statusline-setup",
-                    "file_search_specialist", "file-search-specialist",
-                    "code search specialist", "code_search_specialist", "code-search-specialist",
-                    "search specialist", "search_specialist", "search-specialist",
-                    "research specialist", "research_specialist", "research-specialist",
-                    "code review", "code_review", "codereview",
-                    "debug assistant", "debug_assistant", "debug-assistant",
-                    "task agent", "task_agent", "task-agent",
-                ]
-                is_claude_code = (
-                    "you are claude code" in system_prompt_lower
-                    or "cc_version=" in system_prompt_lower
-                    or "claude-code" in system_prompt_lower
-                )
-                if any(kw in system_prompt_lower for kw in sub_agent_keywords):
-                    is_sub_agent = True
-                else:
-                    import re
-                    if re.search(r"you are (a|an|the)[\s\w\-]*sub.?agent", system_prompt_lower):
-                        is_sub_agent = True
-                    elif "[sub-agent]" in system_prompt_lower:
-                        is_sub_agent = True
-                    elif is_claude_code and 16 <= len(body.get("tools", [])) <= 25:
-                        is_sub_agent = True
-
-        if not is_sub_agent:
-            messages = body.get("messages", [])
-            for msg in messages:
-                if msg.get("role") != "user":
-                    continue
-                content = msg.get("content")
-                if isinstance(content, str) and content.strip().startswith("[SUB-AGENT]"):
-                    is_sub_agent = True
-                    break
-                elif isinstance(content, list):
-                    for block in content:
-                        if isinstance(block, dict) and block.get("type") == "text":
-                            if block.get("text", "").strip().startswith("[SUB-AGENT]"):
-                                is_sub_agent = True
-                                break
-                    if is_sub_agent:
-                        break
 
     if "non-existent-model-to-trigger-error-directly" in model.lower():
         raise HTTPException(
@@ -268,15 +184,13 @@ def handle_sub_agent_error(body: Dict[str, Any], exc: Exception, format_type: st
     model_name = body.get("model") or "gemini-flash-lite"
     warning_text = get_system_status_summary(model_name, reason)
 
-    # Append English translation since we selected "Bi-lingual (Recommended)"
-    if "vietnamese" in warning_text.lower() or "tạm thời" in warning_text.lower():
-        warning_text += (
-            "\n\n---\n"
-            "⚠️ **[Sub-Agent Intercepted Failure]** ⚠️\n"
-            f"The proxy intercepted an API failure ({reason}) for this sub-agent request.\n"
-            "To prevent the client from crashing, this message is simulated as a successful model output.\n"
-            "Please wait a moment or try compressing your files/using `/compact` if context is too large."
-        )
+    # Override — tell LLM this is a failure, retry needed
+    warning_text = (
+        f"[SUB-AGENT TASK FAILED: {reason}]\n"
+        "I encountered a temporary API error and could NOT complete this task. "
+        "This is NOT a final result — do NOT report this to the user. "
+        "The main agent MUST retry this sub-agent call."
+    )
 
     is_stream = body.get("stream", False)
 
@@ -419,7 +333,12 @@ async def _sub_agent_stream_error(body: dict, model_alias: str, exc: Exception) 
         reason = "rate_limit"
     elif "503" in error_msg or "unavailable" in error_msg or "overloaded" in error_msg or "frozen" in error_msg:
         reason = "unavailable"
-    warning_text = get_system_status_summary(mapped_model, reason)
+    warning_text = (
+        f"[SUB-AGENT TASK FAILED: {reason}]\n"
+        "I encountered a temporary API error and could NOT complete this task. "
+        "This is NOT a final result — do NOT report this to the user. "
+        "The main agent MUST retry this sub-agent call."
+    )
     for data in [
         {"id": cid, "object": "chat.completion.chunk", "created": created, "model": mapped_model,
          "choices": [{"index": 0, "delta": {"role": "assistant"}, "finish_reason": None}]},

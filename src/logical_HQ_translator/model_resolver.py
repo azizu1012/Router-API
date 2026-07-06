@@ -1,4 +1,5 @@
 import asyncio
+import random
 import time
 from typing import Any, Dict, Optional, Tuple
 
@@ -18,12 +19,7 @@ def _has_account_endpoint(account: Optional[Dict[str, Any]]) -> bool:
     return any(ep.get("enabled", True) for ep in eps)
 
 def _retry_delay(attempt: int) -> float:
-    import random
-    if attempt >= config.POOL_SWAP_FAILURES * 2:
-        return random.uniform(0.3, 0.7)
-    base = min(config.GEMINI_API_KEY_INTERVAL * (2 ** attempt), config.KEY_429_COOLDOWN_SECONDS * 2)
-    jitter = random.uniform(-base * 0.2, base * 0.2)
-    return max(config.GEMINI_API_KEY_INTERVAL, base + jitter)
+    return random.uniform(0.5, 3.0)
 
 async def _resolve_model(body: Dict[str, Any], pool_alias_override: Optional[str] = None, account: Optional[Dict[str, Any]] = None, estimated_tokens: int = 0, retry_attempt: int = 0, pool_mode: bool = False, member_override: Optional[str] = None) -> Tuple[str, str, str, str, Dict[str, Any]]:
     if pool_alias_override:

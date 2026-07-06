@@ -291,7 +291,7 @@ async def _process_anthropic_stream(
                     name = tool_buffers[tc_idx]["name"]
                     if name and not tool_buffers[tc_idx]["started"]:
                         tool_buffers[tc_idx]["started"] = True
-                        if name != "Task":
+                        if name not in ("Agent", "Task"):
                             tool_to_cbidx[tc_idx] = next_block_idx
                             next_block_idx += 1
                             yield _sse("content_block_start", {
@@ -349,7 +349,7 @@ async def _process_anthropic_stream(
                 yield _sse("content_block_stop", {"type": "content_block_stop", "index": tool_to_cbidx[tc_idx]})
 
             for tc_idx, buf in tool_buffers.items():
-                if tc_idx not in tool_to_cbidx and buf["name"] != "Task":
+                if tc_idx not in tool_to_cbidx and buf["name"] not in ("Agent", "Task"):
                     fallback_idx = next_block_idx
                     next_block_idx += 1
                     yield _sse("content_block_start", {
@@ -360,7 +360,7 @@ async def _process_anthropic_stream(
                     yield _sse("content_block_stop", {"type": "content_block_stop", "index": fallback_idx})
 
             for tc_idx, buf in tool_buffers.items():
-                if buf["name"] == "Task":
+                if buf["name"] in ("Agent", "Task"):
                     try:
                         parsed_args = json.loads(buf["args"]) if buf["args"] else {}
                         prompt_str = parsed_args.get("prompt", "") or buf["args"]

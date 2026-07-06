@@ -562,7 +562,7 @@ class ClaudeProxyStreamMixin:
                     for tc_idx in sorted(tool_buffers.keys()):
                         buf = tool_buffers[tc_idx]
                         name = buf["name"]
-                        if name == "Task":
+                        if name in ("Agent", "Task"):
                             try:
                                 parsed_args = json.loads(buf["args"]) if buf["args"] else {}
                                 prompt_str = parsed_args.get("prompt", "") or buf["args"]

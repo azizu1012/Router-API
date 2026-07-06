@@ -278,7 +278,7 @@ class ClaudeProxyNonstreamMixin:
                             args = json.loads(args)
                         except (json.JSONDecodeError, TypeError):
                             pass
-                    if name == "Task":
+                    if name in ("Agent", "Task"):
                         prompt_str = args.get("prompt", "") if isinstance(args, dict) else str(args)
                         content_blocks.append({
                             "type": "agent_use",

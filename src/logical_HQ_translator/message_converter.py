@@ -432,7 +432,7 @@ def _convert_messages(body: Dict[str, Any]) -> Tuple[List[Dict[str, Any]], List[
                     text_parts.append(str(block.get("text", "")))
                 elif b_type in ("tool_use", "agent_use"):
                     t_id = block.get("id")
-                    t_name = block.get("name") or block.get("agent_type") or "Task"
+                    t_name = block.get("name") or ("Agent" if b_type == "agent_use" else "Task")
                     t_input = block.get("input") or {"prompt": block.get("prompt", "")}
                     if isinstance(t_input, dict):
                         t_input = {k: v for k, v in t_input.items() if v != "" and v is not None}
