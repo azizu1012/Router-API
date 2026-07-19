@@ -8,7 +8,6 @@ from src.core.providers.gemini_facade import token_counter
 from src.core.usage_logger import log_usage
 from src.logical_HQ_translator import (
     _sse,
-    _get_simulated_cache_usage,
     is_claude_code_body,
     is_sub_agent_body,
     StreamingTextNormalizer,
@@ -58,11 +57,16 @@ async def _process_anthropic_stream(
     msg_id = "msg_" + uuid.uuid4().hex
 
     include_thoughts = body.get("include_thoughts", True) if body else True
-    adjusted_input_tokens = input_tokens
-    cache_usage = _get_simulated_cache_usage(body or {}, adjusted_input_tokens)
-    cc = cache_usage.get("cache_creation_input_tokens", 0) or 0
-    cr = cache_usage.get("cache_read_input_tokens", 0) or 0
-    client_input_tokens = max(1, adjusted_input_tokens - cc - cr)
+    total_text = ""
+    for m in ((body or {}).get("messages") or []):
+        c = m.get("content", "")
+        if isinstance(c, str):
+            total_text += c
+        elif isinstance(c, list):
+            total_text += "".join(
+                b.get("text", "") for b in c if isinstance(b, dict) and b.get("type") == "text"
+            )
+    client_input_tokens = max(1, len(total_text) // 4)
     yield _sse("message_start", {
         "type": "message_start",
         "message": {
@@ -71,7 +75,6 @@ async def _process_anthropic_stream(
             "usage": {
                 "input_tokens": client_input_tokens,
                 "output_tokens": 0,
-                **cache_usage
             },
         },
     })
@@ -395,7 +398,5 @@ async def _process_anthropic_stream(
                 "usage": {"output_tokens": output_tokens},
             })
 
-    cc = cache_usage.get("cache_creation_input_tokens", 0) or 0
-    cr = cache_usage.get("cache_read_input_tokens", 0) or 0
-    await log_usage(model, key_prefix, input_tokens, output_tokens, auth_key_prefix, cc, cr)
+    await log_usage(model, key_prefix, input_tokens, output_tokens, auth_key_prefix, 0, 0)
     yield _sse("message_stop", {"type": "message_stop"})

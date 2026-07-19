@@ -11,7 +11,7 @@ from src.core.config_n_logg import config
 from src.core.config_n_logg.logger import logger_proxy as logger
 from src.core.router import router
 from src.core.pool_manager import pool_manager
-from src.logical_HQ_translator import _convert_messages, XMLThinkingExtractor, _get_simulated_cache_usage
+from src.logical_HQ_translator import _convert_messages, XMLThinkingExtractor
 from .compaction import _pre_compact_and_truncate
 from .helpers import get_system_status_summary
 
@@ -63,7 +63,7 @@ class ClaudeProxyNonstreamMixin:
         openai_messages, openai_tools = _convert_messages(body)
 
         from src.api.opencode_proxy.handler.websearch import should_enable_web_search
-        from src.api.opencode_proxy.handler.proxy import _WEBSEARCH_TOOL_DEF, _resolve_thinking_config
+        from src.api.opencode_proxy.handler.proxy import _WEBSEARCH_TOOL_DEF, _resolve_thinking_config, _extract_thinking_params
         from src.logical_HQ_translator.sse_cache_agent import is_sub_agent_body
         if not is_sub_agent_body(body) and should_enable_web_search(body, account) and not any(
             t.get("function", {}).get("name") in ("WebSearch", "web_search") for t in openai_tools
@@ -78,11 +78,7 @@ class ClaudeProxyNonstreamMixin:
         max_tokens = max(1, min(int(body.get("max_tokens", 4096)), config.MAX_OUTPUT_TOKENS))
         temperature = float(body.get("temperature", 0.7))
         thinking_config = _resolve_thinking_config(body, model_alias)
-        thinking_params = {
-            "thinking_level": body.get("thinking_level"),
-            "thinking_budget": body.get("thinking_budget"),
-            "include_thoughts": body.get("include_thoughts", True),
-        }
+        thinking_params = _extract_thinking_params(body)
 
         recursion_depth = 0
         input_tokens = 0
@@ -301,14 +297,16 @@ class ClaudeProxyNonstreamMixin:
         else:
             stop_reason = "end_turn"
 
-        cache_usage = _get_simulated_cache_usage(body or {}, input_tokens)
-        cc = cache_usage.get("cache_creation_input_tokens", 0) or 0
-        cr = cache_usage.get("cache_read_input_tokens", 0) or 0
-        system_text = body.get("system", "")
-        if isinstance(system_text, list):
-            system_text = "\n".join(str(item.get("text", "")) for item in system_text if isinstance(item, dict))
-        system_tokens = max(0, len(str(system_text)) // 4)
-        client_input_tokens = max(1, input_tokens - cc - cr - system_tokens)
+        total_text = ""
+        for m in (body.get("messages") or []):
+            c = m.get("content", "")
+            if isinstance(c, str):
+                total_text += c
+            elif isinstance(c, list):
+                total_text += "".join(
+                    b.get("text", "") for b in c if isinstance(b, dict) and b.get("type") == "text"
+                )
+        client_input_tokens = max(1, len(total_text) // 4)
         return {
             "id": "msg_" + uuid.uuid4().hex[:24],
             "type": "message",
@@ -320,6 +318,5 @@ class ClaudeProxyNonstreamMixin:
             "usage": {
                 "input_tokens": client_input_tokens,
                 "output_tokens": output_tokens,
-                **cache_usage
             },
         }

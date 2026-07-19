@@ -51,14 +51,67 @@ def _is_sub_agent_request(body: Dict[str, Any]) -> bool:
     return any(kw in sp_lower for kw in sub_keywords)
 
 
+def _extract_thinking_params(body: Dict[str, Any]) -> Dict[str, Any]:
+    """Extract thinking params from body supporting multiple formats.
+
+    Returns dict with keys: thinking_level, thinking_budget, include_thoughts.
+    Only 2 Gemini levels used: 'low' (default/fast) and 'medium' (max).
+    """
+    params = {}
+
+    # 1. Custom fields take precedence (existing behavior)
+    tl = body.get("thinking_level")
+    tb = body.get("thinking_budget")
+    inc = body.get("include_thoughts")
+    if tl is not None:
+        params["thinking_level"] = tl
+    if tb is not None:
+        params["thinking_budget"] = tb
+    if inc is not None:
+        params["include_thoughts"] = inc
+    if params:
+        return params
+
+    # 2. Anthropic thinking block (Claude Code)
+    tb = body.get("thinking")
+    if isinstance(tb, dict) and tb.get("type") == "enabled":
+        budget = tb.get("budget_tokens", 0)
+        if budget >= 4096:
+            params["thinking_level"] = "medium"
+        elif budget >= 1024:
+            params["thinking_level"] = "low"
+        params["include_thoughts"] = "thinking_level" in params
+        return params
+
+    # 3. OpenAI reasoning_effort (OpenCode)
+    re = body.get("reasoning_effort")
+    if re is not None:
+        re = str(re).lower().strip()
+        if re == "medium":
+            return {"include_thoughts": False}
+        elif re in ("maximum", "max"):
+            return {"thinking_level": "medium", "include_thoughts": True}
+        elif re == "high":
+            return {"thinking_level": "low", "include_thoughts": True}
+        else:
+            return {"thinking_level": "low", "include_thoughts": True}
+
+    # 4. Default: low thinking
+    return {"thinking_level": "low", "include_thoughts": True}
+
+
 def _resolve_thinking_config(body: Dict[str, Any], model_id: str) -> Dict[str, Any]:
     """Convert request thinking params → GenAI SDK thinking_config dict."""
     from src.core.providers.gemini_thinking import resolve_thinking_config
+
+    p = _extract_thinking_params(body)
+    if not p.get("thinking_level"):
+        return {}
     return resolve_thinking_config(
         model_id=model_id,
-        thinking_level=body.get("thinking_level"),
-        thinking_budget=body.get("thinking_budget"),
-        include_thoughts=body.get("include_thoughts"),
+        thinking_level=p.get("thinking_level"),
+        thinking_budget=p.get("thinking_budget"),
+        include_thoughts=p.get("include_thoughts", True),
         is_sub_agent=_is_sub_agent_request({"system": body.get("system", "")}),
     )
 

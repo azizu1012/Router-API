@@ -4,6 +4,7 @@ Handles building the final response dict, error responses,
 cost estimation, and client model name mapping.
 """
 
+import json
 import time
 import uuid
 from typing import Any, Dict
@@ -52,11 +53,28 @@ def build_response(
 
     choice = resp.choices[0] if resp.choices else None
     if not choice:
-        text, finish, thinking = "", "stop", ""
+        text, finish, thinking, tool_calls, ts = "", "stop", "", [], None
     else:
         text = _extract_text(choice)
         finish = getattr(choice, "finish_reason", "stop")
-        thinking = getattr(choice.message, "reasoning_content", "") or getattr(choice.message, "thinking", "") or ""
+        msg = choice.message
+        thinking = getattr(msg, "reasoning_content", "") or getattr(msg, "thinking", "") or ""
+        ts = getattr(msg, "thought_signature", None)
+        raw_tcs = getattr(msg, "tool_calls", None) or []
+        tool_calls = []
+        for tc in raw_tcs:
+            fn = getattr(tc, "function", None)
+            args = getattr(fn, "arguments", None) or "" if fn else ""
+            if isinstance(args, dict):
+                args = json.dumps(args)
+            tool_calls.append({
+                "id": getattr(tc, "id", f"call_{uuid.uuid4().hex}"),
+                "type": "function",
+                "function": {
+                    "name": getattr(fn, "name", "") if fn else "",
+                    "arguments": args,
+                },
+            })
 
     if is_sub_agent and thinking:
         text = f"<thinking>\n{thinking}\n</thinking>\n" + text
@@ -86,6 +104,10 @@ def build_response(
     msg: Dict[str, Any] = {"role": "assistant", "content": text}
     if thinking:
         msg["reasoning_content"] = thinking
+    if tool_calls:
+        msg["tool_calls"] = tool_calls
+    if ts:
+        msg["thought_signature"] = ts
     return {
         "id": f"chatcmpl-{uuid.uuid4().hex}",
         "object": "chat.completion",
