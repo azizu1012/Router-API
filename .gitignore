@@ -21,6 +21,7 @@ __pycache__/
 
 # ─── Secrets / keys ───
 banned-keys.txt
+invalid_keys.txt
 
 # ─── Test / experiment files ───
 tests/
