@@ -9,7 +9,6 @@ from src.core.config_n_logg.logger import logger_proxy as logger
 from src.core.router import router
 from src.core.usage_logger import log_usage
 from src.logical_HQ_translator import (
-    _get_simulated_cache_usage,
     is_sub_agent_body,
     is_claude_code_body,
     normalize_text,
@@ -426,13 +425,18 @@ async def _execute_nonstream(proxy_instance: Any, kwargs: Dict[str, Any], api_ke
     except Exception:
         out_tokens = max(1, len(text) // 4) if text else 1
 
-    adjusted_input_tokens = input_tokens
-    cache_usage = _get_simulated_cache_usage(body, adjusted_input_tokens)
-    cc = cache_usage.get("cache_creation_input_tokens", 0) or 0
-    cr = cache_usage.get("cache_read_input_tokens", 0) or 0
-    await log_usage(model_id, (api_key or "")[-8:], input_tokens, out_tokens, auth_key_prefix, cc, cr)
+    await log_usage(model_id, (api_key or "")[-8:], input_tokens, out_tokens, auth_key_prefix, 0, 0)
 
-    client_input_tokens = max(1, adjusted_input_tokens - cc - cr)
+    total_text = ""
+    for m in (body.get("messages") or []):
+        c = m.get("content", "")
+        if isinstance(c, str):
+            total_text += c
+        elif isinstance(c, list):
+            total_text += "".join(
+                b.get("text", "") for b in c if isinstance(b, dict) and b.get("type") == "text"
+            )
+    client_input_tokens = max(1, len(total_text) // 4)
 
     return {
         "id": "msg_" + uuid.uuid4().hex,
@@ -445,6 +449,5 @@ async def _execute_nonstream(proxy_instance: Any, kwargs: Dict[str, Any], api_ke
         "usage": {
             "input_tokens": client_input_tokens,
             "output_tokens": out_tokens,
-            **cache_usage
         },
     }

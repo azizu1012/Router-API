@@ -15,7 +15,6 @@ from src.logical_HQ_translator import (
     _convert_messages,
     _dict_to_sse_events,
     _sse,
-    _get_simulated_cache_usage,
     XMLThinkingExtractor,
 )
 from .compaction import _pre_compact_and_truncate
@@ -68,7 +67,7 @@ class ClaudeProxyStreamMixin:
         openai_messages, openai_tools = _convert_messages(body)
 
         from src.api.opencode_proxy.handler.websearch import should_enable_web_search
-        from src.api.opencode_proxy.handler.proxy import _WEBSEARCH_TOOL_DEF, _resolve_thinking_config
+        from src.api.opencode_proxy.handler.proxy import _WEBSEARCH_TOOL_DEF, _resolve_thinking_config, _extract_thinking_params
         from src.logical_HQ_translator.sse_cache_agent import is_sub_agent_body
         if not is_sub_agent_body(body) and should_enable_web_search(body, account) and not any(
             t.get("function", {}).get("name") in ("WebSearch", "web_search") for t in openai_tools
@@ -83,11 +82,7 @@ class ClaudeProxyStreamMixin:
             max_tokens = max(1, min(int(body.get("max_tokens", 4096)), config.MAX_OUTPUT_TOKENS))
             temperature = float(body.get("temperature", 0.7))
             thinking_config = _resolve_thinking_config(body, model_alias)
-            thinking_params = {
-                "thinking_level": body.get("thinking_level"),
-                "thinking_budget": body.get("thinking_budget"),
-                "include_thoughts": body.get("include_thoughts", True),
-            }
+            thinking_params = _extract_thinking_params(body)
 
             msg_id = "msg_" + uuid.uuid4().hex[:24]
 
@@ -127,54 +122,11 @@ class ClaudeProxyStreamMixin:
         recursion_depth: int,
         start_block_index: int,
     ) -> AsyncIterator[bytes]:
-        """
-        Triển khai logic streaming chính cho các yêu cầu hoàn thành chat Claude.
-        Phương thức này tương tác trực tiếp với `PoolManager` để nhận các chunk streaming
-        và xử lý chúng để tạo ra các sự kiện SSE phù hợp cho client.
-
-        **Các bước xử lý chính:**
-        1. Khởi tạo trạng thái cho việc streaming, bao gồm các cờ (flags) cho `text_started`,
-           `thinking_started`, `thinking_stopped`, các bộ đệm công cụ (`tool_buffers`),
-           và các biến để tích lũy nội dung văn bản và suy nghĩ.
-        2. Gọi `pool_manager.call_stream` để nhận một iterator bất đồng bộ của các chunk phản hồi từ mô hình.
-        3. Lặp qua từng `item` được trả về từ `pool_manager.call_stream`:
-           a. Xử lý các sự kiện `message_start` và `delta`.
-           b. Trích xuất suy nghĩ (thoughts) và văn bản từ các chunk phản hồi, đặc biệt là
-              khi mô hình trả về nội dung XML chứa các thẻ `<thinking>`.
-           c. Xử lý các cuộc gọi công cụ (tool calls) được mô hình tạo ra, đệm các đối số của chúng.
-           d. Kiểm tra xem có cuộc gọi công cụ bị chặn (WebSearch/WebFetch) nào không.
-              Nếu có, nó sẽ tạm dừng luồng hiện tại, thực thi công cụ bị chặn,
-              và sau đó gọi lại `_stream_message_impl` một cách đệ quy với kết quả của công cụ
-              được thêm vào `openai_messages`. Điều này cho phép mô hình tiếp tục suy luận
-              dựa trên kết quả của công cụ.
-        4. Tạo và gửi các sự kiện SSE (`content_block_start`, `content_block_delta`,
-           `content_block_stop`, `message_delta`, `message_stop`) cho client dựa trên
-           nội dung, suy nghĩ và các cuộc gọi công cụ được xử lý.
-        5. Xử lý các trường hợp lỗi, bao gồm việc trả về một thông báo tóm tắt trạng thái
-           hệ thống nếu yêu cầu đến từ sub-agent và có lỗi xảy ra ở độ sâu đệ quy bằng 0.
-
-        Args:
-            body (Dict[str, Any]): Body của yêu cầu API gốc.
-            openai_messages (List[Dict[str, Any]]): Danh sách các tin nhắn đã được chuyển đổi.
-            openai_tools (Optional[List[Dict[str, Any]]]): Danh sách các công cụ đã được chuyển đổi.
-            model_alias (str): Bí danh của mô hình được sử dụng.
-            temperature (float): Tham số nhiệt độ cho yêu cầu mô hình.
-            max_tokens (int): Số lượng token đầu ra tối đa.
-            thinking_config (Optional[Dict[str, Any]]): Cấu hình "thinking" của mô hình.
-            thinking_params (Dict[str, Any]): Các tham số "thinking" bổ sung.
-            account (Optional[Dict[str, Any]]): Thông tin tài khoản người dùng.
-            auth_key_prefix (str): Tiền tố khóa xác thực.
-            msg_id (str): ID của tin nhắn hiện tại.
-            recursion_depth (int): Độ sâu đệ quy hiện tại (để xử lý các cuộc gọi công cụ bị chặn).
-            start_block_index (int): Chỉ số khối nội dung bắt đầu.
-
-        Yields:
-            AsyncIterator[bytes]: Một iterator bất đồng bộ của các khối phản hồi streaming theo định dạng SSE.
-        """
         try:
             text_started = False
             thinking_started = False
             thinking_stopped = False
+            include_thoughts = thinking_params.get("include_thoughts", True)
             text_index = start_block_index
             thinking_index = start_block_index
             output_chars = 0
@@ -202,15 +154,16 @@ class ClaudeProxyStreamMixin:
                 if not started:
                     started = True
                     if recursion_depth == 0:
-                        resolved_input_tokens = input_tokens or 0
-                        cache_usage = _get_simulated_cache_usage(body or {}, resolved_input_tokens)
-                        cc = cache_usage.get("cache_creation_input_tokens", 0) or 0
-                        cr = cache_usage.get("cache_read_input_tokens", 0) or 0
-                        system_text = body.get("system", "")
-                        if isinstance(system_text, list):
-                            system_text = "\n".join(str(item.get("text", "")) for item in system_text if isinstance(item, dict))
-                        system_tokens = max(0, len(str(system_text)) // 4)
-                        client_input_tokens = max(1, resolved_input_tokens - cc - cr - system_tokens)
+                        total_text = ""
+                        for m in (body.get("messages") or []):
+                            c = m.get("content", "")
+                            if isinstance(c, str):
+                                total_text += c
+                            elif isinstance(c, list):
+                                total_text += "".join(
+                                    b.get("text", "") for b in c if isinstance(b, dict) and b.get("type") == "text"
+                                )
+                        client_input_tokens = max(1, len(total_text) // 4)
                         yield _sse("ping", {"type": "ping", "retry": 0, "reason": "initial"})
                         yield _sse("message_start", {
                             "type": "message_start",
@@ -225,7 +178,6 @@ class ClaudeProxyStreamMixin:
                                 "usage": {
                                     "input_tokens": client_input_tokens,
                                     "output_tokens": 0,
-                                    **cache_usage
                                 },
                             },
                         })
@@ -241,7 +193,7 @@ class ClaudeProxyStreamMixin:
                 if tsig:
                     accumulated_thought_signature.append(tsig)
 
-                if reasoning:
+                if reasoning and include_thoughts:
                     accumulated_thought.append(reasoning)
                     if not thinking_started:
                         thinking_started = True
@@ -261,6 +213,8 @@ class ClaudeProxyStreamMixin:
                 if content:
                     events = extractor.feed(content)
                     for ev_type, ev_val in events:
+                        if ev_type in ("start_thinking", "thinking", "end_thinking") and not include_thoughts:
+                            continue
                         if ev_type == "start_thinking":
                             if not thinking_started:
                                 thinking_started = True
@@ -387,6 +341,8 @@ class ClaudeProxyStreamMixin:
             # Flush extractor to handle any remaining tags or text
             events = extractor.flush()
             for ev_type, ev_val in events:
+                if ev_type in ("thinking", "start_thinking", "end_thinking") and not include_thoughts:
+                    continue
                 if ev_type == "thinking":
                     accumulated_thought.append(ev_val)
                     if not thinking_started:
@@ -559,9 +515,13 @@ class ClaudeProxyStreamMixin:
             else:
                 if tool_buffers:
                     finish_reason = "tool_use"
+                    logger.info("[ToolCallEmit] Emitting %d tool buffer(s) for model=%s depth=%d",
+                                len(tool_buffers), model_alias, recursion_depth)
                     for tc_idx in sorted(tool_buffers.keys()):
                         buf = tool_buffers[tc_idx]
                         name = buf["name"]
+                        logger.info("[ToolCallEmit]   idx=%d id=%s name=%s args_len=%d args_preview=%s",
+                                    tc_idx, buf["id"], name, len(buf["args"]), buf["args"][:120])
                         if name in ("Agent", "Task"):
                             try:
                                 parsed_args = json.loads(buf["args"]) if buf["args"] else {}

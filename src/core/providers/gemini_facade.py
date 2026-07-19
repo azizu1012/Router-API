@@ -233,6 +233,9 @@ def _build_gemini_inputs(
         body = _build(model_id=model_id, messages=messages, tools=tools)
         gemini_tools = body.get("tools")
 
+    if gemini_tools or any(m.get("tool_calls") for m in messages):
+        tc = {}
+
     return contents, system_instruction, gemini_tools, tc
 
 

@@ -33,6 +33,7 @@ def _openai_sse(
     finish_reason: Optional[str] = None,
     chunk_id: Optional[str] = None,
     reasoning_content: Optional[str] = None,
+    thought_signature: Optional[str] = None,
 ) -> bytes:
     if not chunk_id:
         chunk_id = f"chatcmpl-{uuid.uuid4().hex}"
@@ -57,6 +58,8 @@ def _openai_sse(
             }
             for idx, tc in enumerate(tool_calls)
         ]
+    if thought_signature is not None:
+        data["choices"][0]["delta"]["thought_signature"] = thought_signature
     return f"data: {json.dumps(data, ensure_ascii=False)}\n\n".encode("utf-8")
 
 
@@ -125,6 +128,22 @@ def _get_tool_calls(delta_obj) -> Optional[List[dict]]:
                 fn_args = getattr(tc.function, "arguments", "") if getattr(tc, "function", None) else ""
             res.append({"id": tc_id, "type": tc_type, "name": fn_name, "arguments": fn_args})
         return res
+    return None
+
+
+def _get_thought_signature(delta_obj) -> Optional[str]:
+    if not delta_obj:
+        return None
+    v = getattr(delta_obj, "thought_signature", None)
+    if v:
+        return v
+    if hasattr(delta_obj, "get"):
+        try:
+            v = delta_obj.get("thought_signature")
+            if v:
+                return v
+        except Exception:
+            pass
     return None
 
 
@@ -436,6 +455,7 @@ async def execute_stream(
             content = _get_content(delta)
             reasoning = _get_reasoning(delta)
             tool_calls = _get_tool_calls(delta)
+            ts = _get_thought_signature(delta)
             fr = chunk.choices[0].finish_reason if chunk.choices else None
             if fr:
                 stream_finish_reason = fr
@@ -457,7 +477,7 @@ async def execute_stream(
                         yield c
             if tool_calls:
                 has_tool_calls = True
-                yield _openai_sse(model_name, tool_calls=tool_calls, chunk_id=chunk_id)
+                yield _openai_sse(model_name, tool_calls=tool_calls, thought_signature=ts, chunk_id=chunk_id)
 
         if extractor:
             async for c in _flush_reasoning():
