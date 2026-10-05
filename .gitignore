@@ -43,6 +43,12 @@ tests/*
 !tests/test_anthropic_integration.py
 !tests/test_adk_runner.py
 !tests/test_account_auth.py
+!tests/test_secret_scanner.py
+
+# The CI scanner is tracked; the rest of scripts/ is local tooling.
+!scripts/
+scripts/*
+!scripts/scan_secrets.py
 
 # ─── Dev utilities ───
 clean_cache.bat

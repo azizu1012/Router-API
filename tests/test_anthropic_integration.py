@@ -60,7 +60,7 @@ class FakeResponse:
         self.usage = usage or {"prompt_tokens": 100, "completion_tokens": 25}
 
 
-def make_stream_item(chunk, api_key="key-abcdef123456", model_id="gemini-3-flash",
+def make_stream_item(chunk, api_key="k-abcd123456", model_id="gemini-3-flash",
                      input_tokens=1000):
     """Build a pool stream item.
 
