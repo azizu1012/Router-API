@@ -1,9 +1,9 @@
-from typing import Any, Dict, AsyncIterator
+from typing import Any, AsyncIterator, Dict, Optional
 from fastapi import HTTPException
 
-from src.core.config_n_logg import config
-from src.core.limits import account_limiter
+from src.core.limits import account_limiter, token_limiter
 from src.core.accounts import account_manager
+from src.backend.account_keys import get_key_db
 
 
 def _bearer_token(authorization: str | None) -> str:
@@ -39,25 +39,66 @@ def _check_auth(authorization: str | None) -> Dict[str, Any]:
     if account:
         return account
 
-    if not config.AUTH_TOKEN and (token.startswith("sk-ant-") or token.startswith("sk-")):
-        active_accounts = account_manager.list_accounts(include_disabled=False)
-        if active_accounts:
-            return active_accounts[0]
-        return {
-            "account_id": "auto-detected",
-            "name": "claude-auto-session",
-            "auth_key": token,
-            "enabled": True,
-            "tier": "free",
-            "rpm": 100,
-            "tpm": 1000000,
-            "rpd": 10000,
-        }
-
     raise HTTPException(
         status_code=401,
         detail={"error": {"message": "Unauthorized API Key", "type": "authentication_error"}},
     )
+
+
+_TOKEN_LIMIT_MESSAGES = {
+    "token_concurrency_limit": "Token concurrency limit reached",
+    "token_rpm_exceeded": "Token requests-per-minute limit reached",
+    "token_tpm_exceeded": "Token tokens-per-minute limit reached",
+    "token_rpd_exceeded": "Token daily request limit reached",
+}
+
+
+def _token_limit_message(reason: str, row: Optional[Dict[str, Any]]) -> str:
+    base = _TOKEN_LIMIT_MESSAGES.get(reason.split(":")[0])
+    if not base:
+        return "Token rate interval not elapsed"
+    lim = token_limiter.limits_for(row)
+    if reason.startswith("token_concurrency_limit"):
+        return f"{base} ({lim['max_concurrency']})"
+    if reason.startswith("token_rpm_exceeded"):
+        return f"{base} ({lim['rpm']}/min)"
+    if reason.startswith("token_tpm_exceeded"):
+        return f"{base} ({lim['tpm']} tok/min)"
+    if reason.startswith("token_rpd_exceeded"):
+        return f"{base} ({lim['rpd']}/day)"
+    return base
+
+
+async def _enforce_token_limits(
+    account: Dict[str, Any],
+    estimated_tokens: int = 0,
+) -> Any:
+    """Reserve this token's concurrency slot and rate budget.
+
+    Returns a release callable, or None when the caller used a legacy whole-key
+    account (the master key path), which is intentionally exempt.
+    """
+    key_id = account.get("token_key_id")
+    if not key_id:
+        return None
+
+    row = get_key_db(key_id)
+    ok, reason = await token_limiter.acquire(row, key_id, estimated_tokens=estimated_tokens)
+    if not ok:
+        raise HTTPException(
+            status_code=429,
+            detail={
+                "error": {
+                    "message": _token_limit_message(reason, row),
+                    "type": "rate_limit_error",
+                }
+            },
+        )
+
+    async def _release(actual_tokens: int = 0) -> None:
+        await token_limiter.release(row, key_id, actual_tokens=actual_tokens)
+
+    return _release
 
 
 def _count_openai_images(messages: list) -> int:
@@ -322,7 +363,6 @@ def handle_sub_agent_error(body: Dict[str, Any], exc: Exception, format_type: st
 async def _sub_agent_stream_error(body: dict, model_alias: str, exc: Exception) -> AsyncIterator[bytes]:
     """Yield simulated SSE chunks for sub-agent stream error instead of empty response."""
     import uuid, time, json
-    from src.api.claude_proxy.handler.helpers import get_system_status_summary
     from src.api.opencode_proxy.handler.response import get_client_model_name
     cid = f"chatcmpl-{uuid.uuid4().hex}"
     created = int(time.time())

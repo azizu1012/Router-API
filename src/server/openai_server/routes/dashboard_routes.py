@@ -5,9 +5,23 @@ from fastapi import Request
 from fastapi.responses import JSONResponse
 
 from src.core.config_n_logg import config
-from src.core.limits import account_limiter
+from src.core.limits import account_limiter, token_limiter
+from src.core.accounts import account_manager
 from src.backend.accounts import (
     find_account_by_key, find_account_by_name, list_accounts_db
+)
+from src.backend.account_keys import (
+    DEFAULT_MAX_CONCURRENCY,
+    DEFAULT_MIN_INTERVAL_SECONDS,
+    compose_token,
+    create_key_db,
+    delete_key_db,
+    get_credential_db,
+    get_key_db,
+    list_keys_db,
+    set_password_db,
+    verify_login_db,
+    verify_password,
 )
 from src.backend.key_status import (
     get_key_status_db, db_load_active_penalties
@@ -84,23 +98,186 @@ async def dashboard_login(request: Request):
     except Exception:
         return JSONResponse(status_code=400, content={"error": "Invalid JSON"})
     key = str(body.get("auth_key", "")).strip()
-    if not key:
-        return JSONResponse(status_code=400, content={"error": "auth_key required"})
-        
-    if config.AUTH_TOKEN and key == config.AUTH_TOKEN:
-        account = {
-            "account_id": "admin",
-            "name": "Administrator",
-            "auth_key": config.AUTH_TOKEN,
-            "tier": "admin"
-        }
+    username = str(body.get("username", "")).strip()
+    password = str(body.get("password", ""))
+
+    # Legacy path: a raw auth_key still logs in, so existing clients keep working.
+    if key and not username:
+        if config.AUTH_TOKEN and key == config.AUTH_TOKEN:
+            account = {
+                "account_id": "admin",
+                "name": "Administrator",
+                "auth_key": config.AUTH_TOKEN,
+                "tier": "admin",
+            }
+        else:
+            account = await asyncio.to_thread(find_account_by_key, key)
+    elif username:
+        account = await asyncio.to_thread(verify_login_db, username, password)
     else:
-        account = await asyncio.to_thread(find_account_by_key, key)
-        
+        return JSONResponse(
+            status_code=400,
+            content={"error": "username + password required"},
+        )
+
     if not account:
-        return JSONResponse(status_code=401, content={"error": "Invalid key"})
+        return JSONResponse(
+            status_code=401, content={"error": "Invalid username, password, or key"}
+        )
     token = _make_session_token(account)
     return {"token": token, "name": account.get("name"), "tier": account.get("tier", "free")}
+
+
+@app.post("/dashboard/password")
+async def dashboard_change_password(request: Request):
+    """Change the signed-in account's web password."""
+    payload = _require_dashboard(request)
+    try:
+        body = await request.json()
+    except Exception:
+        return JSONResponse(status_code=400, content={"error": "Invalid JSON"})
+
+    current = str(body.get("current_password", ""))
+    new = str(body.get("new_password", ""))
+    if not new:
+        return JSONResponse(status_code=400, content={"error": "new_password required"})
+    if len(new) < 4:
+        return JSONResponse(
+            status_code=400, content={"error": "Password must be at least 4 characters"}
+        )
+
+    account = await asyncio.to_thread(find_account_by_name, payload.get("name", ""))
+    if not account:
+        return JSONResponse(status_code=401, content={"error": "Account not found"})
+
+    cred = get_credential_db(account["account_id"])
+    if cred and not verify_password(current, cred["password_hash"], cred["password_salt"]):
+        return JSONResponse(status_code=401, content={"error": "Current password is incorrect"})
+
+    set_password_db(account["account_id"], new, must_change=0)
+    return {"ok": True, "name": account.get("name")}
+
+
+@app.get("/dashboard/my/keys")
+async def my_keys(request: Request):
+    """List the signed-in account's auth tokens, showing full wire tokens."""
+    payload = _require_dashboard(request)
+    account = await asyncio.to_thread(find_account_by_name, payload.get("name", ""))
+    if not account:
+        return JSONResponse(status_code=404, content={"error": "Account not found"})
+    rows = list_keys_db(account["account_id"])
+    return {
+        "keys": [
+            {
+                "key_id": r["key_id"],
+                "token": compose_token(r["name"], r["token_code"]),
+                "label": r.get("label", ""),
+                "enabled": bool(r["enabled"]),
+                "tier": r["tier"],
+                "rpm": r["rpm"],
+                "tpm": r["tpm"],
+                "rpd": r["rpd"],
+                "max_concurrency": r["max_concurrency"],
+                "min_interval_seconds": r["min_interval_seconds"],
+                "created_at": r["created_at"],
+            }
+            for r in rows
+        ]
+    }
+
+
+@app.post("/dashboard/my/keys/create")
+async def my_create_key(request: Request):
+    """Issue a new auth token for the signed-in account.
+
+    Concurrency and interval default to the platform defaults (6 / 3s); a user
+    may request lower. An admin account may raise the ceiling.
+    """
+    payload = _require_dashboard(request)
+    account = await asyncio.to_thread(find_account_by_name, payload.get("name", ""))
+    if not account:
+        return JSONResponse(status_code=404, content={"error": "Account not found"})
+    try:
+        body = await request.json()
+    except Exception:
+        body = {}
+
+    is_admin = payload.get("tier") == "admin"
+    from src.core.config_n_logg import config as _cfg
+
+    def _num(key: str, default: int, lo: int, hi: int) -> int:
+        try:
+            v = int(body.get(key, default))
+        except (TypeError, ValueError):
+            v = default
+        return max(lo, min(hi, v))
+
+    # Ceilings for a self-service user. An admin may exceed all of these.
+    if is_admin:
+        c_max_conc, c_rpm, c_tpm, c_rpd = 64, 100_000, 100_000_000, 100_000
+    else:
+        c_max_conc = DEFAULT_MAX_CONCURRENCY
+        c_rpm = max(1, int(_cfg.DEFAULT_ACCOUNT_RPM))
+        c_tpm = int(_cfg.DEFAULT_ACCOUNT_TPM)
+        c_rpd = int(_cfg.DEFAULT_ACCOUNT_RPD)
+
+    max_c = _num("max_concurrency", DEFAULT_MAX_CONCURRENCY, 1, c_max_conc)
+    rpm = _num("rpm", min(int(account.get("rpm", 30)), c_rpm), 1, c_rpm)
+    tpm = _num("tpm", min(int(account.get("tpm", 200000)), c_tpm), 1000, c_tpm)
+    rpd = _num("rpd", min(int(account.get("rpd", 1000)), c_rpd), 1, c_rpd)
+
+    try:
+        interval = float(body.get("min_interval_seconds", DEFAULT_MIN_INTERVAL_SECONDS))
+    except (TypeError, ValueError):
+        interval = DEFAULT_MIN_INTERVAL_SECONDS
+    if not is_admin:
+        interval = max(interval, DEFAULT_MIN_INTERVAL_SECONDS)
+
+    row = create_key_db(
+        account["account_id"],
+        name=account["name"],
+        tier=account.get("tier", "free"),
+        rpm=rpm,
+        tpm=tpm,
+        rpd=rpd,
+        max_concurrency=max_c,
+        min_interval_seconds=interval,
+        label=str(body.get("label", ""))[:64],
+    )
+    account_manager.invalidate_cache()
+    return {
+        "key_id": row["key_id"],
+        "token": compose_token(row["name"], row["token_code"]),
+        "max_concurrency": row["max_concurrency"],
+        "rpm": row["rpm"],
+        "tpm": row["tpm"],
+        "rpd": row["rpd"],
+        "min_interval_seconds": row["min_interval_seconds"],
+        "interval_effective": row["max_concurrency"] == 1,
+    }
+
+
+@app.post("/dashboard/my/keys/revoke")
+async def my_revoke_key(request: Request):
+    payload = _require_dashboard(request)
+    account = await asyncio.to_thread(find_account_by_name, payload.get("name", ""))
+    if not account:
+        return JSONResponse(status_code=404, content={"error": "Account not found"})
+    try:
+        body = await request.json()
+    except Exception:
+        return JSONResponse(status_code=400, content={"error": "Invalid JSON"})
+    key_id = str(body.get("key_id", "")).strip()
+    if not key_id:
+        return JSONResponse(status_code=400, content={"error": "key_id required"})
+
+    row = get_key_db(key_id)
+    if not row or row["account_id"] != account["account_id"]:
+        return JSONResponse(status_code=404, content={"error": "Key not found"})
+    delete_key_db(key_id)
+    account_manager.invalidate_cache()
+    token_limiter.reset(key_id)
+    return {"ok": True, "key_id": key_id}
 
 
 @app.get("/dashboard/me")

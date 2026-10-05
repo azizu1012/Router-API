@@ -24,8 +24,25 @@ banned-keys.txt
 invalid_keys.txt
 
 # ─── Test / experiment files ───
+# Only the pytest-registered suites are tracked (see pytest.ini python_files).
+# Everything else under tests/ stays local: it contains a 707 MB vendored SDK tree
+# and ad-hoc key-management scripts.
 tests/
 scripts/
+
+# …except the tracked suites. Re-include the directory first, then re-exclude.
+!tests/
+tests/*
+!tests/test_pool.py
+!tests/test_transient_penalties.py
+!tests/test_custom_pool_resolver.py
+!tests/test_rtk_filters.py
+!tests/test_message_converter_truncation.py
+!tests/test_search_endpoint.py
+!tests/test_anthropic_protocol.py
+!tests/test_anthropic_integration.py
+!tests/test_adk_runner.py
+!tests/test_account_auth.py
 
 # ─── Dev utilities ───
 clean_cache.bat

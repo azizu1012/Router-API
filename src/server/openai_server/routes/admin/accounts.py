@@ -4,6 +4,245 @@ from fastapi import Request, HTTPException
 from ..app_init import app
 from ..auth_session import _require_admin, _require_dashboard
 
+from src.backend.account_keys import (
+    DEFAULT_MAX_CONCURRENCY,
+    DEFAULT_MIN_INTERVAL_SECONDS,
+    compose_token,
+    consume_invite_db,
+    create_invite_db,
+    create_key_db,
+    delete_key_db,
+    get_key_db,
+    list_keys_db,
+    set_password_db,
+)
+from src.core.accounts import account_manager
+
+
+@app.post("/dashboard/admin/invites/issue")
+async def admin_issue_invite(request: Request):
+    """Mint a one-time enrollment code.
+
+    Valid for 3 minutes and single-use. Issuing supersedes any live code, so a
+    refresh always invalidates what the admin was previously shown.
+    """
+    actor = _require_admin(request)
+    try:
+        body = await request.json()
+    except Exception:
+        body = {}
+    try:
+        ttl = int(body.get("ttl_seconds", 180))
+    except (TypeError, ValueError):
+        ttl = 180
+    ttl = max(30, min(900, ttl))
+    invite = create_invite_db(actor.get("name", "admin"), ttl_seconds=ttl)
+    return {
+        "code": invite["code"],
+        "expires_at": invite["expires_at"],
+        "ttl_seconds": invite["ttl_seconds"],
+    }
+
+
+@app.post("/dashboard/admin/accounts/keys")
+async def admin_account_keys(request: Request):
+    """List one account's auth tokens (admin view)."""
+    _require_admin(request)
+    try:
+        body = await request.json()
+    except Exception:
+        return {"keys": []}
+    name = str(body.get("name", "")).strip()
+    from src.backend.accounts import find_account_by_name
+    acc = find_account_by_name(name)
+    if not acc:
+        raise HTTPException(status_code=404, detail="Account not found")
+    return {
+        "keys": [
+            {
+                "key_id": r["key_id"],
+                "token": compose_token(r["name"], r["token_code"]),
+                "label": r.get("label", ""),
+                "enabled": bool(r["enabled"]),
+                "tier": r["tier"],
+                "rpm": r["rpm"], "tpm": r["tpm"], "rpd": r["rpd"],
+                "max_concurrency": r["max_concurrency"],
+                "min_interval_seconds": r["min_interval_seconds"],
+                "created_at": r["created_at"],
+            }
+            for r in list_keys_db(acc["account_id"])
+        ]
+    }
+
+
+@app.post("/dashboard/admin/accounts/keys/issue")
+async def admin_issue_key(request: Request):
+    """Issue an auth token for any account. Admin may raise concurrency ceilings."""
+    _require_admin(request)
+    try:
+        body = await request.json()
+    except Exception:
+        raise HTTPException(status_code=400, detail="Invalid JSON")
+    name = str(body.get("name", "")).strip()
+    from src.backend.accounts import find_account_by_name
+    acc = find_account_by_name(name)
+    if not acc:
+        raise HTTPException(status_code=404, detail="Account not found")
+
+    def _int(key: str, default: int, lo: int = 1, hi: int = 1000) -> int:
+        try:
+            val = int(body.get(key, default))
+        except (TypeError, ValueError):
+            val = default
+        return max(lo, min(hi, val))
+
+    try:
+        interval = float(body.get("min_interval_seconds", DEFAULT_MIN_INTERVAL_SECONDS))
+    except (TypeError, ValueError):
+        interval = DEFAULT_MIN_INTERVAL_SECONDS
+
+    row = create_key_db(
+        acc["account_id"],
+        name=acc["name"],
+        tier=str(body.get("tier") or acc.get("tier", "free")),
+        rpm=_int("rpm", int(acc.get("rpm", 30))),
+        tpm=_int("tpm", int(acc.get("tpm", 200000)), 1, 100_000_000),
+        rpd=_int("rpd", int(acc.get("rpd", 1000))),
+        max_concurrency=_int("max_concurrency", DEFAULT_MAX_CONCURRENCY, 1, 64),
+        min_interval_seconds=max(0.0, interval),
+        label=str(body.get("label", ""))[:64],
+    )
+    account_manager.invalidate_cache()
+    return {
+        "key_id": row["key_id"],
+        "token": compose_token(row["name"], row["token_code"]),
+        "max_concurrency": row["max_concurrency"],
+        "rpm": row["rpm"],
+        "tpm": row["tpm"],
+        "rpd": row["rpd"],
+        "min_interval_seconds": row["min_interval_seconds"],
+        "interval_effective": row["max_concurrency"] == 1,
+    }
+
+
+@app.post("/dashboard/admin/accounts/keys/update")
+async def admin_update_key(request: Request):
+    _require_admin(request)
+    try:
+        body = await request.json()
+    except Exception:
+        raise HTTPException(status_code=400, detail="Invalid JSON")
+    key_id = str(body.get("key_id", "")).strip()
+    if not key_id or not get_key_db(key_id):
+        raise HTTPException(status_code=404, detail="Key not found")
+
+    updates = {}
+    for field in ("tier", "label"):
+        if field in body:
+            updates[field] = body[field]
+    for field in ("rpm", "tpm", "rpd", "max_concurrency"):
+        if field in body:
+            try:
+                updates[field] = int(body[field])
+            except (TypeError, ValueError):
+                pass
+    if "min_interval_seconds" in body:
+        try:
+            updates["min_interval_seconds"] = max(0.0, float(body["min_interval_seconds"]))
+        except (TypeError, ValueError):
+            pass
+    if "enabled" in body:
+        updates["enabled"] = 1 if body["enabled"] else 0
+
+    row = account_manager.update_key(key_id, **updates)
+    return {"key_id": key_id, "max_concurrency": (row or {}).get("max_concurrency")}
+
+
+@app.post("/dashboard/admin/accounts/keys/revoke")
+async def admin_revoke_key(request: Request):
+    _require_admin(request)
+    try:
+        body = await request.json()
+    except Exception:
+        raise HTTPException(status_code=400, detail="Invalid JSON")
+    key_id = str(body.get("key_id", "")).strip()
+    if not key_id or not get_key_db(key_id):
+        raise HTTPException(status_code=404, detail="Key not found")
+    delete_key_db(key_id)
+    account_manager.invalidate_cache()
+    from src.core.limits import token_limiter
+    token_limiter.reset(key_id)
+    return {"ok": True, "key_id": key_id}
+
+
+@app.post("/dashboard/register")
+async def public_register(request: Request):
+    """Self-service enrollment, gated on a one-time admin-issued code.
+
+    A fresh account lands with a single auth token so the user can start calling
+    immediately. The web password defaults to 1234 and the account is flagged
+    must_change so the dashboard can prompt for it.
+    """
+    try:
+        body = await request.json()
+    except Exception:
+        raise HTTPException(status_code=400, detail="Invalid JSON")
+
+    code = str(body.get("invite_code", "")).strip()
+    name = str(body.get("name", "")).strip()
+    password = str(body.get("password", "")).strip() or "1234"
+
+    if not code:
+        raise HTTPException(status_code=400, detail="invite_code is required")
+    if not name:
+        raise HTTPException(status_code=400, detail="name is required")
+    if len(name) < 2 or len(name) > 32:
+        raise HTTPException(status_code=400, detail="name must be 2-32 characters")
+    # Hyphens are fine (names like "azure-yena" already exist); only whitespace and
+    # path separators are rejected, since the name is embedded in the auth token.
+    if any(ch.isspace() or ch in "/\\" for ch in name):
+        raise HTTPException(
+            status_code=400, detail="name cannot contain spaces or slashes"
+        )
+
+    from src.backend.accounts import find_account_by_name
+    if find_account_by_name(name):
+        raise HTTPException(status_code=409, detail="Account already exists")
+
+    invite = consume_invite_db(code)
+    if not invite:
+        raise HTTPException(
+            status_code=403, detail="Invite code is invalid, expired, or already used"
+        )
+
+    acc = account_manager.create_account(
+        name=name,
+        tier="free",
+        search_engine="auto",
+        web_search_enabled=True,
+    )
+    set_password_db(acc["account_id"], password, must_change=(password == "1234"))
+    key = create_key_db(
+        acc["account_id"],
+        name=acc["name"],
+        tier=acc.get("tier", "free"),
+        rpm=int(acc.get("rpm", 30)),
+        tpm=int(acc.get("tpm", 200000)),
+        rpd=int(acc.get("rpd", 1000)),
+        max_concurrency=DEFAULT_MAX_CONCURRENCY,
+        min_interval_seconds=DEFAULT_MIN_INTERVAL_SECONDS,
+        label="initial",
+    )
+    account_manager.invalidate_cache()
+    return {
+        "ok": True,
+        "name": acc["name"],
+        "token": compose_token(key["name"], key["token_code"]),
+        "max_concurrency": key["max_concurrency"],
+        "min_interval_seconds": key["min_interval_seconds"],
+        "must_change_password": password == "1234",
+    }
+
 
 @app.post("/dashboard/admin/accounts/create")
 async def admin_create_account(request: Request):

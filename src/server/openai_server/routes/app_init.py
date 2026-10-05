@@ -1,5 +1,5 @@
 import asyncio
-from fastapi import FastAPI, Request
+from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import JSONResponse
 from src.core.config_n_logg import config
 from ..security import (
@@ -14,6 +14,78 @@ from ...log_watcher import log_watcher
 from ...stats_pusher import stats_pusher
 
 app = FastAPI(title="Router API v2", version="2.0.0")
+
+
+@app.middleware("http")
+async def token_limit_middleware(request: Request, call_next):
+    """Apply per-token concurrency / RPM / TPM / RPD to authenticated API routes.
+
+    Done as middleware so every endpoint is covered uniformly, including routes
+    added later. Two deliberate choices:
+
+    - A failed authentication here is **not** turned into a response. The route's
+      own ``_check_auth`` remains the single authority on whether a request is
+      authorised, so a 401 is still produced exactly where it always was.
+    - The resolved account is cached on ``request.state`` so the route's own
+      ``_check_auth`` does not repeat the lookup.
+    """
+    from ..auth import _resolve_auth, _check_auth, _enforce_token_limits
+
+    release = None
+    token = _resolve_auth(
+        request.headers.get("authorization"),
+        request.headers.get("x-api-key"),
+    )
+    if token:
+        try:
+            account = _check_auth(token)
+        except HTTPException:
+            account = None  # let the route produce the 401 as before
+        except Exception:
+            account = None
+        if account:
+            request.state.auth_account = account
+            try:
+                release = await _enforce_token_limits(
+                    account, _estimate_request_tokens(request)
+                )
+            except HTTPException as e:
+                return JSONResponse(
+                    status_code=e.status_code,
+                    content=e.detail if isinstance(e.detail, dict)
+                    else {"error": str(e.detail)},
+                )
+
+    try:
+        return await call_next(request)
+    finally:
+        if release:
+            await release()
+
+
+def _estimate_request_tokens(request: Request) -> int:
+    """Rough input-token estimate for the per-token TPM budget.
+
+    Read from the cached body if the route already parsed it, otherwise fall back
+    to the header sizes. Approximate on purpose: TPM here is the operator's own
+    allowance, and being slightly generous at admission is preferable to reading
+    the body twice.
+    """
+    try:
+        cached = getattr(request, "_cached_body", None)
+        if cached:
+            return max(1, len(str(cached)) // 4)
+    except Exception:
+        pass
+    try:
+        n = sum(
+            len(v or "")
+            for v in (request.headers.get("x-api-key", ""), request.headers.get("authorization", ""))
+        )
+        return max(1, n // 4)
+    except Exception:
+        return 1
+
 
 @app.middleware("http")
 async def cors_middleware(request: Request, call_next):

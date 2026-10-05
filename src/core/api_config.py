@@ -11,6 +11,41 @@ def is_sunset_25() -> bool:
 MODEL_CONTEXT_LENGTH: int = int(os.getenv("MODEL_CONTEXT_LENGTH", "220000"))
 
 AVAILABLE_MODELS: Dict[str, Dict[str, Any]] = {
+    "gemini-flash-38": {
+        "display": "Gemini Flash 3.8",
+        "priority": 1,
+        "model_id": os.getenv("GEMINI_FLASH_38_MODEL", "gemini-3.8-flash"),
+        "rpm": int(os.getenv("GEMINI_FLASH_38_RPM", "2")),
+        "tpm": int(os.getenv("GEMINI_FLASH_38_TPM", "250000")),
+        "rpd": int(os.getenv("GEMINI_FLASH_38_RPD", "50")),
+        "context_length": MODEL_CONTEXT_LENGTH,
+        "hidden": True,
+    },
+    # 3.7 is capacity-constrained upstream: measured ~1/3 successful calls with
+    # 503 "high demand" on the rest (2026-10-05). Token budget is left at the
+    # standard ceiling so a single large request is not artificially truncated;
+    # request rate is what gets throttled, since bursts are what the model drops.
+    # Raise GEMINI_FLASH_37_RPM once the model stabilises.
+    "gemini-flash-37": {
+        "display": "Gemini Flash 3.7",
+        "priority": 1,
+        "model_id": os.getenv("GEMINI_FLASH_37_MODEL", "gemini-3.7-flash"),
+        "rpm": int(os.getenv("GEMINI_FLASH_37_RPM", "1")),
+        "tpm": int(os.getenv("GEMINI_FLASH_37_TPM", "250000")),
+        "rpd": int(os.getenv("GEMINI_FLASH_37_RPD", "15")),
+        "context_length": MODEL_CONTEXT_LENGTH,
+        "hidden": True,
+    },
+    "gemini-flash-36": {
+        "display": "Gemini Flash 3.6",
+        "priority": 1,
+        "model_id": os.getenv("GEMINI_FLASH_36_MODEL", "gemini-3.6-flash"),
+        "rpm": int(os.getenv("GEMINI_FLASH_36_RPM", "2")),
+        "tpm": int(os.getenv("GEMINI_FLASH_36_TPM", "250000")),
+        "rpd": int(os.getenv("GEMINI_FLASH_36_RPD", "50")),
+        "context_length": MODEL_CONTEXT_LENGTH,
+        "hidden": True,
+    },
     "gemini-flash-35": {
         "display": "Gemini Flash Latest",
         "priority": 1,
@@ -32,22 +67,32 @@ AVAILABLE_MODELS: Dict[str, Dict[str, Any]] = {
         "hidden": True,
     },
     "gemini-flash": {
-        "display": "Gemini Flash Pool (35↔30↔25)",
+        "display": "Gemini Flash Pool (38↔37↔36↔35↔30↔25)",
         "priority": 1,
         "model_id": "gemini-flash-pool",
-        "rpm": int(os.getenv("GEMINI_FLASH_35_RPM", "2")) + int(os.getenv("GEMINI_FLASH_30_RPM", "2")) + int(os.getenv("GEMINI_FLASH_25_RPM", "5")),
-        "tpm": int(os.getenv("GEMINI_FLASH_35_TPM", "250000")) + int(os.getenv("GEMINI_FLASH_30_TPM", "250000")) + int(os.getenv("GEMINI_FLASH_25_TPM", "250000")),
-        "rpd": int(os.getenv("GEMINI_FLASH_35_RPD", "50")) + int(os.getenv("GEMINI_FLASH_30_RPD", "50")) + int(os.getenv("GEMINI_FLASH_25_RPD", "20")),
+        "rpm": int(os.getenv("GEMINI_FLASH_38_RPM", "2")) + int(os.getenv("GEMINI_FLASH_37_RPM", "1")) + int(os.getenv("GEMINI_FLASH_36_RPM", "2")) + int(os.getenv("GEMINI_FLASH_35_RPM", "2")) + int(os.getenv("GEMINI_FLASH_30_RPM", "2")) + int(os.getenv("GEMINI_FLASH_25_RPM", "5")),
+        "tpm": int(os.getenv("GEMINI_FLASH_38_TPM", "250000")) + int(os.getenv("GEMINI_FLASH_37_TPM", "250000")) + int(os.getenv("GEMINI_FLASH_36_TPM", "250000")) + int(os.getenv("GEMINI_FLASH_35_TPM", "250000")) + int(os.getenv("GEMINI_FLASH_30_TPM", "250000")) + int(os.getenv("GEMINI_FLASH_25_TPM", "250000")),
+        "rpd": int(os.getenv("GEMINI_FLASH_38_RPD", "50")) + int(os.getenv("GEMINI_FLASH_37_RPD", "15")) + int(os.getenv("GEMINI_FLASH_36_RPD", "50")) + int(os.getenv("GEMINI_FLASH_35_RPD", "50")) + int(os.getenv("GEMINI_FLASH_30_RPD", "50")) + int(os.getenv("GEMINI_FLASH_25_RPD", "20")),
         "context_length": MODEL_CONTEXT_LENGTH,
     },
     "gemini-flash-lite": {
-        "display": "Gemini Flash Lite Pool (1.0↔2.5)",
+        "display": "Gemini Flash Lite Pool (3.1↔2.5)",
         "priority": 2,
         "model_id": os.getenv("GEMINI_FLASH_LITE_MODEL", "gemini-3.1-flash-lite"),
         "rpm": int(os.getenv("GEMINI_FLASH_LITE_RPM", "3")),
         "tpm": int(os.getenv("GEMINI_FLASH_LITE_TPM", "250000")),
         "rpd": int(os.getenv("GEMINI_FLASH_LITE_RPD", "500")),
         "context_length": MODEL_CONTEXT_LENGTH,
+    },
+    "gemini-flash-35-lite": {
+        "display": "Gemini Flash Lite 3.5",
+        "priority": 2,
+        "model_id": os.getenv("GEMINI_FLASH_35_LITE_MODEL", "gemini-3.5-flash-lite"),
+        "rpm": int(os.getenv("GEMINI_FLASH_35_LITE_RPM", "2")),
+        "tpm": int(os.getenv("GEMINI_FLASH_35_LITE_TPM", "250000")),
+        "rpd": int(os.getenv("GEMINI_FLASH_35_LITE_RPD", "20")),
+        "context_length": MODEL_CONTEXT_LENGTH,
+        "hidden": True,
     },
     "gemini-flash-25": {
         "display": "Gemini Flash 2.5",
@@ -87,13 +132,14 @@ def resolve_model_alias(model_id: str) -> str:
 MODEL_POOLS: Dict[str, Dict[str, Any]] = {
     "gemini-flash": {
         "pool_name": "gemini-flash",
-        "members": ["gemini-flash-35", "gemini-flash-30", "gemini-flash-25"],
+        "members": ["gemini-flash-38", "gemini-flash-37", "gemini-flash-36",
+                    "gemini-flash-35", "gemini-flash-30", "gemini-flash-25"],
         "swap_failures": int(os.getenv("POOL_SWAP_FAILURES", "5")),
         "max_attempts": int(os.getenv("POOL_MAX_ATTEMPTS", "15")),
     },
     "gemini-flash-lite": {
         "pool_name": "gemini-flash-lite",
-        "members": ["gemini-flash-lite", "gemini-flash-25-lite"],
+        "members": ["gemini-flash-35-lite", "gemini-flash-lite", "gemini-flash-25-lite"],
         "swap_failures": int(os.getenv("POOL_SWAP_FAILURES", "5")),
         "max_attempts": int(os.getenv("POOL_MAX_ATTEMPTS", "15")),
     },

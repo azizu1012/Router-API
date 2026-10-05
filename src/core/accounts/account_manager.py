@@ -7,10 +7,19 @@ from typing import Any, Dict, List, Optional
 from src.core.config_n_logg import config
 from src.backend.accounts import (
     find_account_by_key as _find_by_key,
+    find_account_by_name,
     list_accounts_db as _list_accounts,
     create_account_db as _create_account,
     update_account_db as _update_account,
     delete_account_db as _delete_account,
+)
+from src.backend.account_keys import (
+    all_keys_db as _all_keys_db,
+    compose_token,
+    create_key_db,
+    delete_key_db,
+    list_keys_db,
+    update_key_db,
 )
 from src.backend.key_status import get_key_usage_db, update_key_usage_batch_db
 
@@ -30,12 +39,35 @@ class AccountManager:
         return "sk-" + secrets.token_urlsafe(32)
 
     def _refresh_cache(self) -> None:
+        """Cache both legacy whole-key accounts and sk-<name>-<code> tokens.
+
+        The cache key is always the wire token string, so find_by_key stays a
+        single dict lookup regardless of which storage form backs the account.
+        """
         now = time.time()
         if now - self._cache_ts > self._cache_ttl:
             with self._cache_lock:
                 if now - self._cache_ts > self._cache_ttl:
-                    accs = _list_accounts(include_disabled=False)
-                    self._cache = {acc["auth_key"]: acc for acc in accs if acc.get("auth_key")}
+                    cache: Dict[str, Dict[str, Any]] = {}
+                    for acc in _list_accounts(include_disabled=False):
+                        legacy = acc.get("auth_key")
+                        if legacy:
+                            cache[legacy] = acc
+                    for key in _all_keys_db():
+                        acc = find_account_by_name(key["name"])
+                        if acc and acc.get("enabled"):
+                            cache[compose_token(key["name"], key["token_code"])] = {
+                                **acc,
+                                # token-level quota overrides the account default
+                                "tier": key.get("tier") or acc.get("tier", "free"),
+                                "rpm": key.get("rpm", acc.get("rpm", 0)),
+                                "tpm": key.get("tpm", acc.get("tpm", 0)),
+                                "rpd": key.get("rpd", acc.get("rpd", 0)),
+                                "token_key_id": key["key_id"],
+                                "token_code": key["token_code"],
+                                "auth_key": compose_token(key["name"], key["token_code"]),
+                            }
+                    self._cache = cache
                     self._cache_ts = now
 
     def invalidate_cache(self) -> None:
@@ -77,7 +109,33 @@ class AccountManager:
         return result
 
     def delete_account(self, name: str) -> Dict[str, Any]:
+        # Drop the account's tokens too, otherwise they would keep resolving to a
+        # deleted account once the name is reused.
+        existing = find_account_by_name(name)
+        if existing:
+            for key in list_keys_db(existing["account_id"]):
+                delete_key_db(key["key_id"])
         result = _delete_account(name)
+        self.invalidate_cache()
+        return result
+
+    # ── auth tokens (account_keys) ───────────────────────────────────────
+
+    def list_keys(self, account_id: str, include_disabled: bool = True) -> List[Dict[str, Any]]:
+        return list_keys_db(account_id, include_disabled=include_disabled)
+
+    def create_key(self, account_id: str, **kwargs: Any) -> Dict[str, Any]:
+        result = create_key_db(account_id, **kwargs)
+        self.invalidate_cache()
+        return result
+
+    def update_key(self, key_id: str, **updates: Any) -> Optional[Dict[str, Any]]:
+        result = update_key_db(key_id, **updates)
+        self.invalidate_cache()
+        return result
+
+    def delete_key(self, key_id: str) -> Optional[Dict[str, Any]]:
+        result = delete_key_db(key_id)
         self.invalidate_cache()
         return result
 
