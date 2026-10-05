@@ -21,6 +21,12 @@ from src.core.config_n_logg import config, logger
 from src.core.config_n_logg.logger import CONSOLE_LOG_SYSTEM, CONSOLE_LOG_WEB, _ensure_log_dir
 from src.core.api_config import AVAILABLE_MODELS, is_sunset_25
 
+# Migrate before binding the port, so a schema problem fails at launch rather
+# than on the first request. src/backend/_db.py already creates the two tables
+# that get read during import; this runs the full schema, seed and ALTERs.
+from src.backend.schema import init_config_tables as _init_config_tables
+
+_init_config_tables()
 
 
 def _free_port(host: str, port: int) -> None:

@@ -44,6 +44,7 @@ tests/*
 !tests/test_adk_runner.py
 !tests/test_account_auth.py
 !tests/test_secret_scanner.py
+!tests/test_schema_bootstrap.py
 
 # The CI scanner is tracked; the rest of scripts/ is local tooling.
 !scripts/

@@ -1,241 +1,289 @@
-import time
+"""ModelPool — slot-based concurrency.
+
+ModelPool used to be a rotation pool with start/reset/record_failure/next and
+time-based exhaustion. It is now slot-based: every member holds one asyncio.Lock
+and a member is busy exactly while a request is in flight. Swapping on failure
+and retry budgets live in PoolManager, not here.
+
+These tests target the invariants that actually matter for availability:
+
+  - a member serves one request at a time
+  - N concurrent requests spread over N members, and the N+1 waits
+  - a busy member is never handed out
+  - custom endpoints are preferred over Gemini members when free
+  - skipping works so PoolManager can exclude a member it just saw fail
+  - acquire gives up rather than hanging forever
+
+Every acquire goes through `_acquire`, which wraps the call in asyncio.wait_for.
+ModelPool.acquire only checks its `timeout` at the top of the poll loop, so a
+pool that hands out an already-busy member — or whose release() stopped freeing
+slots — would block on lock.acquire() forever. That failure shows up here as a
+fast TimeoutError instead of a suite that hangs until CI kills it.
+"""
+
+import asyncio
+import os
+import sys
+
 import pytest
+
+sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 
 from src.core.router.pool import ModelPool
 
-
-def make_pool(max_retry_seconds=120, swap_failures=5):
-    return ModelPool({
-        "members": ["gemini-flash-35", "gemini-flash-30", "gemini-flash-25"],
-        "swap_failures": swap_failures,
-        "max_retry_seconds": max_retry_seconds,
-    })
+# Outer guard, deliberately larger than the inner timeouts so a genuinely slow
+# machine does not produce a spurious failure.
+_GUARD = 10.0
 
 
-class TestPoolInit:
-    def test_defaults(self):
-        p = make_pool()
-        assert p.members == ["gemini-flash-35", "gemini-flash-30", "gemini-flash-25"]
-        assert p.swap_failures == 5
-        assert p.max_retry_seconds == 120
-        assert p.current_model == "gemini-flash-35"
-        assert p.total_attempts == 0
-        assert p._first_attempt_time == 0.0
-
-    def test_not_exhausted_before_start(self):
-        p = make_pool()
-        assert not p.exhausted
-
-    def test_elapsed_zero_before_start(self):
-        p = make_pool()
-        assert p.elapsed == 0.0
-        assert p.remaining_time() == 120.0
+def make_pool(members=("m1", "m2", "m3"), custom=None, max_retry_seconds=120,
+              swap_failures=5):
+    return ModelPool(
+        {
+            "members": list(members),
+            "swap_failures": swap_failures,
+            "max_retry_seconds": max_retry_seconds,
+        },
+        set(custom or ()),
+    )
 
 
-class TestStart:
-    def test_start_sets_time(self):
-        p = make_pool()
-        p.start()
-        assert p._first_attempt_time > 0
-        assert not p.exhausted
-        assert p.elapsed < 1.0
-
-    def test_remaining_time_after_start(self):
-        p = make_pool(max_retry_seconds=10)
-        p.start()
-        time.sleep(0.5)
-        assert 9.0 < p.remaining_time() <= 10.0
+async def _acquire(pool, skip=None, timeout=1.0):
+    """acquire() with a hard outer deadline. See module docstring."""
+    return await asyncio.wait_for(pool.acquire(skip=skip, timeout=timeout),
+                                  timeout=_GUARD)
 
 
-class TestRecordFailure:
-    def test_record_failure_increments_attempts(self):
-        p = make_pool()
-        p.start()
-        p.record_failure("gemini-flash-35", "rate_limit")
-        assert p.total_attempts == 1
-        assert p.model_failures["gemini-flash-35"] == 1
+# ── construction ────────────────────────────────────────────────────────────
 
-    def test_swap_threshold_not_reached(self):
-        p = make_pool(swap_failures=5)
-        p.start()
-        for _ in range(4):
-            p.record_failure("gemini-flash-35", "rate_limit")
-        assert "gemini-flash-35" not in p._exhausted_models
+class TestInit:
+    def test_members_copied(self):
+        src = ["a", "b"]
+        pool = make_pool(src)
+        assert pool.members == ["a", "b"]
+        src.append("c")
+        assert pool.members == ["a", "b"], "must not alias the caller's list"
 
-    def test_swap_threshold_reached_at_5(self):
-        p = make_pool(swap_failures=5)
-        p.start()
+    def test_one_lock_per_member(self):
+        pool = make_pool(["a", "b", "c"])
+        assert set(pool._locks) == {"a", "b", "c"}
+        assert all(not lk.locked() for lk in pool._locks.values())
+
+    def test_custom_members_split_out(self):
+        pool = make_pool(["gem", "ep1", "ep2"], custom=["ep1", "ep2"])
+        assert pool._custom_members == {"ep1", "ep2"}
+        assert pool._gemini_members == {"gem"}
+
+    def test_limits_parsed(self):
+        pool = make_pool(max_retry_seconds=42, swap_failures=3)
+        assert pool.max_retry_seconds == 42
+        assert pool.swap_failures == 3
+
+    def test_get_or_create_is_a_singleton_per_name(self):
+        ModelPool._instances.clear()
+        try:
+            cfg = {"members": ["x"], "swap_failures": 5, "max_retry_seconds": 10}
+            a = ModelPool.get_or_create("p", cfg)
+            b = ModelPool.get_or_create("p", cfg)
+            assert a is b
+            c = ModelPool.get_or_create("other", cfg)
+            assert c is not a
+        finally:
+            ModelPool._instances.clear()
+
+    def test_get_or_create_ignores_config_on_second_call(self):
+        """A later config change must not silently reconfigure a live pool."""
+        ModelPool._instances.clear()
+        try:
+            ModelPool.get_or_create("p", {"members": ["a"], "swap_failures": 5,
+                                          "max_retry_seconds": 10})
+            again = ModelPool.get_or_create("p", {"members": ["a", "b"],
+                                                 "swap_failures": 5,
+                                                 "max_retry_seconds": 99})
+            assert again.members == ["a"], "existing instance must be reused as-is"
+        finally:
+            ModelPool._instances.clear()
+
+
+# ── acquire / release ───────────────────────────────────────────────────────
+
+class TestAcquireRelease:
+    @pytest.mark.anyio
+    async def test_returns_a_member(self):
+        pool = make_pool()
+        m = await _acquire(pool)
+        assert m in pool.members
+        pool.release(m)
+
+    @pytest.mark.anyio
+    async def test_releases_free_the_slot(self):
+        pool = make_pool(["only"])
+        m = await _acquire(pool)
+        assert pool._locks[m].locked()
+        pool.release(m)
+        assert not pool._locks[m].locked()
+
+    @pytest.mark.anyio
+    async def test_skip_excludes_members(self):
+        pool = make_pool(["a", "b"])
+        m = await _acquire(pool, skip={"a"})
+        assert m == "b"
+        pool.release(m)
+
+    @pytest.mark.anyio
+    async def test_concurrent_acquires_get_distinct_members(self):
+        """The core invariant: one request per member at a time."""
+        pool = make_pool(["a", "b", "c"])
+        got = await asyncio.gather(*[_acquire(pool) for _ in range(3)])
+        assert sorted(got) == ["a", "b", "c"], f"expected 3 distinct, got {got}"
+        for m in got:
+            pool.release(m)
+
+    @pytest.mark.anyio
+    async def test_fourth_waits_for_a_slot(self):
+        pool = make_pool(["a", "b"])
+        first = await _acquire(pool)
+        second = await _acquire(pool)
+
+        pending = asyncio.create_task(_acquire(pool, timeout=1.0))
+        await asyncio.sleep(0.15)
+        assert not pending.done(), "a third acquire must not succeed with 2 members"
+
+        pool.release(first)
+        got = await pending
+        assert got == first, "the waiter should take the slot that just freed"
+        pool.release(got)
+        pool.release(second)
+
+    @pytest.mark.anyio
+    async def test_busy_member_is_not_handed_out(self):
+        pool = make_pool(["a"])
+        held = await _acquire(pool)
+        with pytest.raises(TimeoutError):
+            await _acquire(pool, timeout=0.2)
+        pool.release(held)
+
+    @pytest.mark.anyio
+    async def test_timeout_raises_with_a_useful_message(self):
+        pool = make_pool(["a"])
+        held = await _acquire(pool)
+        with pytest.raises(TimeoutError) as exc:
+            await _acquire(pool, timeout=0.1)
+        assert "a" in str(exc.value)
+        pool.release(held)
+
+    @pytest.mark.anyio
+    async def test_all_skipped_times_out(self):
+        pool = make_pool(["a", "b"])
+        with pytest.raises(TimeoutError):
+            await _acquire(pool, skip={"a", "b"}, timeout=0.1)
+
+    @pytest.mark.anyio
+    async def test_release_then_acquire_returns_a_freed_member(self):
+        pool = make_pool(["a", "b"])
+        first = await _acquire(pool)
+        second = await _acquire(pool)
+        pool.release(first)
+        third = await _acquire(pool)
+        assert third == first
+        pool.release(second)
+        pool.release(third)
+
+
+# ── custom endpoint priority ────────────────────────────────────────────────
+
+class TestCustomEndpointPriority:
+    @pytest.mark.anyio
+    async def test_custom_member_preferred_while_free(self):
+        pool = make_pool(["gem", "ep"], custom=["ep"])
+        got = [await _acquire(pool) for _ in range(2)]
+        assert got[0] == "ep", "custom endpoint must be tried first"
+        pool.release(got[0])
+        pool.release(got[1])
+
+    @pytest.mark.anyio
+    async def test_falls_back_to_gemini_when_custom_busy(self):
+        pool = make_pool(["gem", "ep"], custom=["ep"])
+        first = await _acquire(pool)
+        assert first == "ep"
+        second = await _acquire(pool)
+        assert second == "gem", "must fall back rather than wait on a busy endpoint"
+        pool.release(first)
+        pool.release(second)
+
+    @pytest.mark.anyio
+    async def test_custom_priority_survives_when_custom_is_wedged(self):
+        """The exact production failure: an endpoint that never releases."""
+        pool = make_pool(["gem", "ep"], custom=["ep"])
+        wedged = await _acquire(pool)
+        assert wedged == "ep"
+        served = await _acquire(pool)
+        assert served == "gem", "a stuck endpoint must not block Gemini traffic"
+        pool.release(served)
+        pool.release(wedged)
+
+
+# ── sync_custom_members ─────────────────────────────────────────────────────
+
+class TestSyncCustomMembers:
+    def test_adds_new_endpoint_with_a_lock(self):
+        pool = make_pool(["gem"])
+        pool.sync_custom_members({"ep1"})
+        assert "ep1" in pool.members
+        assert pool._custom_members == {"ep1"}
+        assert "ep1" in pool._locks
+        assert pool._gemini_members == {"gem"}
+
+    def test_idempotent(self):
+        pool = make_pool(["gem"])
+        pool.sync_custom_members({"ep1"})
+        pool.sync_custom_members({"ep1"})
+        assert pool.members.count("ep1") == 1
+        assert len(pool._locks) == len(set(pool._locks))
+
+    def test_moves_existing_member_from_gemini_to_custom(self):
+        pool = make_pool(["gem", "ep1"])
+        assert pool._gemini_members == {"gem", "ep1"}
+        pool.sync_custom_members({"ep1"})
+        assert pool._gemini_members == {"gem"}
+        assert pool._custom_members == {"ep1"}
+
+    @pytest.mark.anyio
+    async def test_synced_member_is_usable(self):
+        pool = make_pool(["gem"])
+        pool.sync_custom_members({"ep1"})
+        got = await _acquire(pool)
+        assert got == "ep1"
+        pool.release(got)
+
+
+# ── the property that keeps the router alive ────────────────────────────────
+
+class TestRecovery:
+    @pytest.mark.anyio
+    async def test_one_bad_member_does_not_take_down_the_pool(self):
+        """A member left holding a lock must not starve the rest.
+
+        Members are held in a set, so which one comes back first is not
+        defined — take whatever arrives and wedge it.
+        """
+        pool = make_pool(["bad", "good"])
+        stuck = await _acquire(pool)
+        other = [m for m in pool.members if m != stuck][0]
+
+        got = await _acquire(pool)
+        assert got == other, "the other member must still serve"
+        pool.release(got)
+
+        # and the pool is usable again once the wedged member is released
+        pool.release(stuck)
+        again = await _acquire(pool)
+        pool.release(again)
+
+    @pytest.mark.anyio
+    async def test_slot_returns_after_churn(self):
+        pool = make_pool(["a"])
         for _ in range(5):
-            p.record_failure("gemini-flash-35", "rate_limit")
-        assert "gemini-flash-35" in p._exhausted_models
-
-    def test_hard_failure_swaps_immediately(self):
-        p = make_pool()
-        p.start()
-        p.record_failure("gemini-flash-35", "billing_error")
-        assert "gemini-flash-35" in p._exhausted_models
-
-    @pytest.mark.parametrize("reason", ["rate_limit", "server_error", "unavailable", "timeout", "unknown_error"])
-    def test_transient_failure_uses_swap_failures(self, reason):
-        p = make_pool(swap_failures=3)
-        p.start()
-        for _ in range(2):
-            p.record_failure("gemini-flash-35", reason)
-        assert "gemini-flash-35" not in p._exhausted_models
-        p.record_failure("gemini-flash-35", reason)
-        assert "gemini-flash-35" in p._exhausted_models
-
-
-class TestSwap:
-    def test_swap_to_next_model(self):
-        p = make_pool()
-        p.start()
-        p._exhausted_models.add("gemini-flash-35")
-        assert p.swap()
-        assert p.current_model == "gemini-flash-30"
-
-    def test_swap_skips_exhausted(self):
-        p = make_pool()
-        p.start()
-        p._exhausted_models.update(["gemini-flash-35", "gemini-flash-30"])
-        assert p.swap()
-        assert p.current_model == "gemini-flash-25"
-
-    def test_swap_returns_false_all_exhausted(self):
-        p = make_pool()
-        p.start()
-        p._exhausted_models.update(p.members)
-        assert not p.swap()
-
-    def test_swap_returns_false_no_members(self):
-        p = ModelPool({
-            "members": ["only-one"],
-            "swap_failures": 5,
-            "max_retry_seconds": 120,
-        })
-        p.start()
-        p._exhausted_models.add("only-one")
-        assert not p.swap()
-
-
-class TestResetCycle:
-    def test_clears_exhausted(self):
-        p = make_pool()
-        p.start()
-        p._exhausted_models.update(p.members)
-        p.reset_cycle()
-        assert len(p._exhausted_models) == 0
-        assert p.model_failures == {m: 0 for m in p.members}
-
-    def test_after_reset_swap_works(self):
-        p = make_pool()
-        p.start()
-        p._exhausted_models.update(p.members)
-        p.reset_cycle()
-        assert p.swap()  # finds gemini-flash-30
-
-
-class TestExhaustedTimeBased:
-    def test_not_exhausted_within_time(self):
-        p = make_pool(max_retry_seconds=5)
-        p.start()
-        assert not p.exhausted
-
-    def test_exhausted_after_timeout(self):
-        p = make_pool(max_retry_seconds=0.1)
-        p.start()
-        time.sleep(0.2)
-        assert p.exhausted
-
-    def test_exhausted_after_max_retry_seconds(self):
-        p = make_pool(max_retry_seconds=0.05)
-        p.start()
-        time.sleep(0.1)
-        assert p.exhausted
-
-
-class TestRecordSuccess:
-    def test_resets_all_counters(self):
-        p = make_pool()
-        p.start()
-        p.record_failure("gemini-flash-35", "rate_limit")
-        p.record_failure("gemini-flash-35", "rate_limit")
-        p._exhausted_models.add("gemini-flash-35")
-        p.record_success()
-        assert p.total_attempts == 0
-        assert p.model_failures["gemini-flash-35"] == 0
-        assert len(p._exhausted_models) == 0
-        assert p._first_attempt_time == 0.0
-
-    def test_not_exhausted_after_success(self):
-        p = make_pool(max_retry_seconds=0.05)
-        p.start()
-        time.sleep(0.1)
-        p.record_success()
-        assert not p.exhausted
-
-
-class TestFailureStateAfterNext:
-    def test_failure_state_swap_after_threshold(self):
-        p = make_pool(swap_failures=3)
-        p.start()
-        p.record_failure("gemini-flash-35", "rate_limit")
-        state = p.failure_state_after_next("gemini-flash-35", "rate_limit")
-        assert state["failures_after"] == 2
-        assert state["threshold"] == 3
-        assert not state["will_swap"]
-
-        p.record_failure("gemini-flash-35", "rate_limit")
-        state = p.failure_state_after_next("gemini-flash-35", "rate_limit")
-        assert state["failures_after"] == 3
-        assert state["will_swap"]
-
-    def test_failure_state_hard_failure(self):
-        p = make_pool()
-        p.start()
-        state = p.failure_state_after_next("gemini-flash-35", "billing_error")
-        assert state["threshold"] == 1
-        assert state["will_swap"]
-
-
-class TestEndToEnd:
-    def test_full_cycle_with_5_failures_per_model(self):
-        p = make_pool(swap_failures=5, max_retry_seconds=10)
-        p.start()
-        models_tried = []
-
-        while not p.exhausted:
-            alias = p.current_model
-            models_tried.append(alias)
-            p.record_failure(alias, "rate_limit")
-            if alias in p._exhausted_models:
-                if not p.swap():
-                    # all exhausted, backoff
-                    p.reset_cycle()
-                    break
-
-        assert models_tried[:10] == ["gemini-flash-35"] * 5 + ["gemini-flash-30"] * 5
-        assert not p.exhausted
-
-    def test_swap_returns_false_and_exhausted(self):
-        p = make_pool(max_retry_seconds=0.05, swap_failures=2)
-        p.start()
-        for m in p.members:
-            p.record_failure(m, "rate_limit")
-            p.record_failure(m, "rate_limit")
-        assert not p.swap()
-        time.sleep(0.1)
-        assert p.exhausted
-
-    def test_reset_after_all_exhausted_lifecycle(self):
-        p = make_pool(max_retry_seconds=60, swap_failures=2)
-        p.start()
-        # Exhaust all 3 models
-        for m in p.members:
-            for _ in range(2):
-                p.record_failure(m, "rate_limit")
-        assert not p.swap()
-        # Reset and continue
-        p.reset_cycle()
-        assert p.swap()
-        assert p.current_model != "gemini-flash-35"
+            m = await _acquire(pool)
+            pool.release(m)
+        assert not pool._locks["a"].locked()

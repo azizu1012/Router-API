@@ -7,16 +7,27 @@ directions — real secrets are caught, and ordinary source is not.
 Run: pytest tests/test_secret_scanner.py -v
 """
 
+import importlib.util
 import os
 import sys
+from pathlib import Path
 
 import pytest
 
-sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
-sys.path.insert(0, os.path.abspath(
-    os.path.join(os.path.dirname(__file__), "..", "scripts")))
-
-from scan_secrets import scan_text
+# The scanner lives in scripts/ rather than the package because the CI workflow
+# invokes it as a standalone script. Loading it by path keeps that arrangement
+# and still gives the language server a symbol it can resolve — a bare
+# sys.path.insert plus `from scan_secrets import ...` is invisible to static
+# analysis and shows up as an unresolved-import error.
+_SCAN_PATH = Path(__file__).resolve().parent.parent / "scripts" / "scan_secrets.py"
+_spec = importlib.util.spec_from_file_location("scan_secrets", _SCAN_PATH)
+assert _spec is not None and _spec.loader is not None, f"cannot load {_SCAN_PATH}"
+scan_secrets = importlib.util.module_from_spec(_spec)
+# Must be registered before exec_module: @dataclass resolves its own module via
+# sys.modules[cls.__module__], and a module built by hand is not there yet.
+sys.modules[_spec.name] = scan_secrets
+_spec.loader.exec_module(scan_secrets)
+scan_text = scan_secrets.scan_text
 
 
 def rules_found(text: str) -> set[str]:

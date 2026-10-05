@@ -74,6 +74,52 @@ def init_config_tables() -> None:
                     output_rate_per_1k REAL NOT NULL DEFAULT 0.01,
                     response_model_name TEXT DEFAULT ''
                 );
+
+                -- ── Account auth: structured tokens, web credentials, enrollment ──
+                -- Auth tokens are stored decomposed (name + 6-char code) rather
+                -- than as the literal wire string "sk-<name>-<code>". Splitting
+                -- them keeps "which tokens does this account own" an indexed
+                -- lookup instead of a LIKE scan, and lets each token carry its
+                -- own quota.
+                CREATE TABLE IF NOT EXISTS account_keys (
+                    key_id TEXT PRIMARY KEY,
+                    account_id TEXT NOT NULL,
+                    name TEXT NOT NULL,
+                    token_code TEXT NOT NULL,
+                    enabled INTEGER DEFAULT 1,
+                    tier TEXT DEFAULT 'free',
+                    rpm INTEGER DEFAULT 30,
+                    tpm INTEGER DEFAULT 200000,
+                    rpd INTEGER DEFAULT 1000,
+                    max_concurrency INTEGER DEFAULT 6,
+                    min_interval_seconds REAL DEFAULT 3.0,
+                    label TEXT DEFAULT '',
+                    created_at INTEGER,
+                    updated_at INTEGER
+                );
+                CREATE UNIQUE INDEX IF NOT EXISTS idx_account_keys_name_code
+                    ON account_keys(name, token_code);
+                CREATE INDEX IF NOT EXISTS idx_account_keys_account
+                    ON account_keys(account_id);
+
+                CREATE TABLE IF NOT EXISTS account_credentials (
+                    account_id TEXT PRIMARY KEY,
+                    password_hash TEXT NOT NULL,
+                    password_salt TEXT NOT NULL,
+                    must_change INTEGER DEFAULT 0,
+                    updated_at INTEGER
+                );
+
+                -- One-time enrollment codes. used_at IS NULL means still live.
+                CREATE TABLE IF NOT EXISTS invite_codes (
+                    code TEXT PRIMARY KEY,
+                    created_by TEXT,
+                    created_at INTEGER,
+                    expires_at INTEGER,
+                    used_at INTEGER,
+                    used_by TEXT
+                );
+                CREATE INDEX IF NOT EXISTS idx_invite_expiry ON invite_codes(expires_at);
             """)
             c.commit()
 
