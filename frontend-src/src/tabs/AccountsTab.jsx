@@ -1,11 +1,12 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useCallback } from 'react';
 import { useApp } from '../context/AppContext';
 import { t } from '../utils/i18n';
 import { fmt, fmtD } from '../utils/format';
 import { api } from '../utils/api';
 import EditAccountModal from '../components/EditAccountModal';
 import Loading from '../components/Loading';
-import { Search, Plus, Trash2, ShieldCheck, ShieldAlert, Key, Edit, RefreshCw, Eye, Copy } from 'lucide-react';
+import TokenTable, { InvitePanel } from '../components/TokenTable';
+import { Search, Plus, Trash2, ShieldCheck, ShieldAlert, KeyRound, Edit } from 'lucide-react';
 
 export default function AccountsTab() {
   const { tabData, token, lang, refreshTab } = useApp();
@@ -33,6 +34,72 @@ export default function AccountsTab() {
   // Edit account modal state
   const [editingAccount, setEditingAccount] = useState(null);
   const [isEditOpen, setIsEditOpen] = useState(false);
+
+  // ── auth tokens per account ──
+  // An account no longer has one auth_key: it owns zero or more structured
+  // tokens, each with its own quota. Tokens are fetched per account on demand
+  // rather than bundled into /dashboard/accounts, which would multiply the
+  // payload by the number of accounts.
+  const [tokenAccount, setTokenAccount] = useState(null);
+  const [tokens, setTokens] = useState([]);
+  const [tokensLoading, setTokensLoading] = useState(false);
+  const [tokenCounts, setTokenCounts] = useState({});
+
+  const loadTokens = useCallback(async (name) => {
+    setTokensLoading(true);
+    try {
+      const res = await api('/dashboard/admin/accounts/keys', {
+        method: 'POST',
+        body: JSON.stringify({ name })
+      }, token);
+      setTokens(res?.keys || []);
+      setTokenCounts((c) => ({ ...c, [name]: (res?.keys || []).length }));
+    } catch (e) {
+      setTokens([]);
+      alert('Error load tokens: ' + e.message);
+    } finally {
+      setTokensLoading(false);
+    }
+  }, [token]);
+
+  const openTokens = (account) => {
+    setTokenAccount(account);
+    loadTokens(account.name);
+  };
+
+  const closeTokens = () => { setTokenAccount(null); setTokens([]); };
+
+  const issueToken = async (name, payload) => {
+    const res = await api('/dashboard/admin/accounts/keys/issue', {
+      method: 'POST',
+      body: JSON.stringify({ name, ...payload })
+    }, token);
+    await loadTokens(name);
+    refreshTab();
+    if (res?.token) {
+      window.prompt(
+        `Token mới cho ${name} — copy ngay, chỉ hiện một lần:`,
+        res.token
+      );
+    }
+  };
+
+  const updateToken = async (name, keyId, payload) => {
+    await api('/dashboard/admin/accounts/keys/update', {
+      method: 'POST',
+      body: JSON.stringify({ key_id: keyId, ...payload })
+    }, token);
+    await loadTokens(name);
+  };
+
+  const revokeToken = async (name, keyId) => {
+    await api('/dashboard/admin/accounts/keys/revoke', {
+      method: 'POST',
+      body: JSON.stringify({ key_id: keyId })
+    }, token);
+    await loadTokens(name);
+    refreshTab();
+  };
 
   const handleSort = (field) => {
     if (sortBy === field) {
@@ -173,23 +240,6 @@ export default function AccountsTab() {
     }
   };
 
-  // Handle Rotate Account Key
-  const handleRotateKey = async (accountName) => {
-    if (!confirm(`Rotate Auth Key for account "${accountName}"? This will invalidate the old key immediately.`)) return;
-    try {
-      const res = await api('/dashboard/admin/accounts/rotate-key', {
-        method: 'POST',
-        body: JSON.stringify({ name: accountName })
-      }, token);
-      if (res && res.account) {
-        alert(`Xoay Auth Key thành công!\nKey mới: ${res.account.auth_key}\n\n(Hãy lưu lại khóa này!)`);
-      }
-      refreshTab();
-    } catch (err) {
-      alert('Error: ' + err.message);
-    }
-  };
-
   // Handle Delete Account
   const handleDeleteAccount = async (accountName) => {
     if (!confirm(`Delete account "${accountName}" permanently? All usage statistics and key settings for this account will be lost.`)) return;
@@ -202,13 +252,6 @@ export default function AccountsTab() {
     } catch (err) {
       alert('Error: ' + err.message);
     }
-  };
-
-  // Copy key helper
-  const handleCopyKey = (authKey) => {
-    if (!authKey) return;
-    navigator.clipboard.writeText(authKey);
-    alert(t('lbl_refreshed', lang) + ' (Copied)');
   };
 
   return (
@@ -353,6 +396,11 @@ export default function AccountsTab() {
         </div>
       </div>
 
+      {/* Invite codes — enrollment for self-registered users */}
+      <div className="animate-fade-in-up cascade-1">
+        <InvitePanel token={token} />
+      </div>
+
       {/* Accounts Table — full width */}
       <div className="card glass-card rounded-2xl overflow-hidden text-left border border-base-content/5 animate-fade-in-up cascade-3">
         <div className="p-5 border-b border-base-content/5 flex justify-between items-center bg-base-200/10">
@@ -363,9 +411,9 @@ export default function AccountsTab() {
           <table className="table table-zebra table-fixed w-full text-xs">
             <thead>
               <tr className="border-b border-base-content/5 text-base-content/60 bg-base-200/35 select-none">
-                <th onClick={() => handleSort('name')} className="font-bold cursor-pointer hover:bg-base-200/50 hover:text-base-content transition-all w-[16%] whitespace-nowrap">{t('th_account_name', lang) || 'Tên tài khoản'}{sortBy === 'name' ? (sortOrder === 'asc' ? ' ▲' : ' ▼') : ''}</th>
-                <th onClick={() => handleSort('auth_key')} className="font-bold cursor-pointer hover:bg-base-200/50 hover:text-base-content transition-all w-[24%] whitespace-nowrap">{t('th_key_code', lang)}{sortBy === 'auth_key' ? (sortOrder === 'asc' ? ' ▲' : ' ▼') : ''}</th>
-                <th onClick={() => handleSort('tier')} className="font-bold cursor-pointer hover:bg-base-200/50 hover:text-base-content transition-all w-[9%] whitespace-nowrap">{t('th_tier', lang)}{sortBy === 'tier' ? (sortOrder === 'asc' ? ' ▲' : ' ▼') : ''}</th>
+                <th onClick={() => handleSort('name')} className="font-bold cursor-pointer hover:bg-base-200/50 hover:text-base-content transition-all w-[18%] whitespace-nowrap">{t('th_account_name', lang) || 'Tên tài khoản'}{sortBy === 'name' ? (sortOrder === 'asc' ? ' ▲' : ' ▼') : ''}</th>
+                <th className="font-bold whitespace-nowrap w-[13%]">Auth tokens</th>
+                <th onClick={() => handleSort('tier')} className="font-bold cursor-pointer hover:bg-base-200/50 hover:text-base-content transition-all w-[8%] whitespace-nowrap">{t('th_tier', lang)}{sortBy === 'tier' ? (sortOrder === 'asc' ? ' ▲' : ' ▼') : ''}</th>
                 <th onClick={() => handleSort('status')} className="font-bold cursor-pointer hover:bg-base-200/50 hover:text-base-content transition-all w-[10%] whitespace-nowrap">{t('th_status', lang)}{sortBy === 'status' ? (sortOrder === 'asc' ? ' ▲' : ' ▼') : ''}</th>
                 <th onClick={() => handleSort('rpm')} className="font-bold cursor-pointer hover:bg-base-200/50 hover:text-base-content transition-all w-[7%] whitespace-nowrap">RPM{sortBy === 'rpm' ? (sortOrder === 'asc' ? ' ▲' : ' ▼') : ''}</th>
                 <th onClick={() => handleSort('tpm')} className="font-bold cursor-pointer hover:bg-base-200/50 hover:text-base-content transition-all w-[8%] whitespace-nowrap">TPM{sortBy === 'tpm' ? (sortOrder === 'asc' ? ' ▲' : ' ▼') : ''}</th>
@@ -378,18 +426,21 @@ export default function AccountsTab() {
               {sortedAccounts.length > 0 ? (
                 sortedAccounts.map((a, i) => (
                   <tr key={i} className="border-b border-base-content/5 hover:bg-base-200/50">
-                    <td><span className="font-bold text-base-content/90 truncate block" title={a.name}>{a.name}</span></td>
-                    <td className="max-w-0">
-                      {a.auth_key ? (
-                        <div className="flex items-center gap-1.5">
-                          <code className="font-mono text-primary text-[10px] block overflow-hidden text-ellipsis whitespace-nowrap" title={a.auth_key}>{a.auth_key}</code>
-                          <button onClick={() => handleCopyKey(a.auth_key)} className="btn btn-ghost btn-xs btn-square text-base-content/60 hover:text-primary shrink-0" title="Copy Auth Key">
-                            <Copy className="w-3 h-3" />
-                          </button>
-                        </div>
-                      ) : (
-                        <span className="text-base-content/40">— (Hidden)</span>
-                      )}
+                    <td>
+                      <span className="font-bold text-base-content/90 truncate block" title={a.name}>{a.name}</span>
+                      <span className="text-[10px] text-base-content/40 font-mono truncate block" title={a.account_id}>
+                        {a.account_id}
+                      </span>
+                    </td>
+                    <td>
+                      <button
+                        onClick={() => openTokens(a)}
+                        className="btn btn-ghost btn-xs gap-1.5 font-bold text-primary hover:bg-primary/15 whitespace-nowrap"
+                        title="Quản lý auth tokens"
+                      >
+                        <KeyRound className="w-3.5 h-3.5" />
+                        {tokenCounts[a.name] !== undefined ? tokenCounts[a.name] : '—'}
+                      </button>
                     </td>
                     <td>
                       <span className={`badge badge-xs text-[9px] font-extrabold uppercase ${
@@ -416,9 +467,9 @@ export default function AccountsTab() {
                           className="btn btn-ghost btn-xs btn-square text-primary hover:bg-primary/15" title="Edit Limits">
                           <Edit className="w-3.5 h-3.5" />
                         </button>
-                        <button onClick={() => handleRotateKey(a.name)}
-                          className="btn btn-ghost btn-xs btn-square text-warning hover:bg-warning/15" title="Rotate Auth Key">
-                          <RefreshCw className="w-3.5 h-3.5" />
+                        <button onClick={() => openTokens(a)}
+                          className="btn btn-ghost btn-xs btn-square text-warning hover:bg-warning/15" title="Quản lý auth tokens">
+                          <KeyRound className="w-3.5 h-3.5" />
                         </button>
                         <button onClick={() => handleDeleteAccount(a.name)}
                           className="btn btn-ghost btn-xs btn-square text-error hover:bg-error/15" title="Delete Account">
@@ -439,6 +490,36 @@ export default function AccountsTab() {
           </table>
         </div>
       </div>
+
+      {/* Token manager for the selected account */}
+      {tokenAccount && (
+        <div className="card glass-card rounded-2xl border border-primary/25 p-5 animate-fade-in-up">
+          <div className="flex items-center justify-between gap-3 mb-4 pb-3 border-b border-base-content/5">
+            <div>
+              <h3 className="font-extrabold text-sm flex items-center gap-2">
+                <KeyRound className="w-4 h-4 text-primary" />
+                Auth tokens — {tokenAccount.name}
+              </h3>
+              <p className="text-[11px] text-base-content/55 mt-0.5">
+                Mỗi token có hạn mức riêng. Admin có thể nới trần; user chỉ
+                được siết chặt hơn hạn mức tài khoản.
+              </p>
+            </div>
+            <button onClick={closeTokens}
+                    className="btn btn-ghost btn-sm font-bold w-20">Đóng</button>
+          </div>
+
+          <TokenTable
+            tokens={tokens}
+            loading={tokensLoading}
+            scope="admin"
+            accountName={tokenAccount.name}
+            onIssue={(payload) => issueToken(tokenAccount.name, payload)}
+            onUpdate={(keyId, payload) => updateToken(tokenAccount.name, keyId, payload)}
+            onRevoke={(keyId) => revokeToken(tokenAccount.name, keyId)}
+          />
+        </div>
+      )}
 
       {/* Edit Account Modal */}
       <EditAccountModal

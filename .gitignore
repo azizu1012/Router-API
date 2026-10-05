@@ -45,6 +45,9 @@ tests/*
 !tests/test_account_auth.py
 !tests/test_secret_scanner.py
 !tests/test_schema_bootstrap.py
+!tests/test_effort_mapping.py
+!tests/test_invite_codes.py
+!tests/test_dashboard_tokens.py
 
 # The CI scanner is tracked; the rest of scripts/ is local tooling.
 !scripts/

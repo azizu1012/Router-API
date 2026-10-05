@@ -17,7 +17,14 @@ export async function api(endpoint, options = {}, token = null) {
 
   if (!response.ok) {
     const errorData = await response.json().catch(() => ({}));
-    throw new Error(errorData.error || `HTTP error! status: ${response.status}`);
+    // Admin endpoints raise HTTPException(detail=...), account routes return
+    // {error: ...}. Reading only one of them turned every failure into a bare
+    // "HTTP error! status: 404" with the actual reason discarded.
+    const message = errorData.error
+      || errorData.detail
+      || (typeof errorData.detail === 'string' ? JSON.parse(errorData.detail) : null)
+      || `HTTP error! status: ${response.status}`;
+    throw new Error(message);
   }
 
   return response.json();

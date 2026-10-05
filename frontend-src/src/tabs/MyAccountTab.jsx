@@ -1,18 +1,89 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useCallback } from 'react';
 import { useApp } from '../context/AppContext';
 import { t } from '../utils/i18n';
 import { fmt } from '../utils/format';
 import { api } from '../utils/api';
-import { Wifi, WifiOff, User, Shield, Search, Zap, Calendar, Activity, Info, HelpCircle } from 'lucide-react';
+import { Wifi, Zap, Activity, HelpCircle, KeyRound, Plus } from 'lucide-react';
 import Card from '../components/Card';
 import Badge from '../components/Badge';
 import Select from '../components/Select';
 import Loading from '../components/Loading';
+import TokenTable from '../components/TokenTable';
 
 export default function MyAccountTab() {
   const { tabData, token, lang, refreshTab, wsHook } = useApp();
   const data = tabData.myacc;
   const [liveActivity, setLiveActivity] = useState(null);
+
+  // ── auth tokens ──
+  const [tokens, setTokens] = useState([]);
+  const [tokensLoading, setTokensLoading] = useState(true);
+  const [tokenMsg, setTokenMsg] = useState(null);
+
+  const loadTokens = useCallback(async () => {
+    setTokensLoading(true);
+    try {
+      const res = await api('/dashboard/my/keys', {}, token);
+      setTokens(res?.keys || []);
+    } catch (e) {
+      setTokens([]);
+      setTokenMsg({ text: '❌ ' + e.message, type: 'error' });
+    } finally {
+      setTokensLoading(false);
+    }
+  }, [token]);
+
+  useEffect(() => { loadTokens(); }, [loadTokens]);
+
+  const handleIssueToken = async (payload) => {
+    setTokenMsg(null);
+    try {
+      const res = await api('/dashboard/my/keys/create', {
+        method: 'POST',
+        body: JSON.stringify(payload)
+      }, token);
+      await loadTokens();
+      refreshTab();
+      if (res?.token) {
+        window.prompt('Token mới — copy ngay, chỉ hiện một lần:', res.token);
+      }
+      setTokenMsg({ text: '✅ Đã tạo token mới.', type: 'success' });
+    } catch (e) {
+      setTokenMsg({ text: '❌ ' + e.message, type: 'error' });
+      throw e;
+    }
+  };
+
+  const handleUpdateToken = async (keyId, payload) => {
+    setTokenMsg(null);
+    try {
+      await api('/dashboard/my/keys/update', {
+        method: 'POST',
+        body: JSON.stringify({ key_id: keyId, ...payload })
+      }, token);
+      await loadTokens();
+      setTokenMsg({ text: '✅ Đã cập nhật giới hạn token.', type: 'success' });
+    } catch (e) {
+      setTokenMsg({ text: '❌ ' + e.message, type: 'error' });
+      throw e;
+    }
+  };
+
+  const handleRevokeToken = async (keyId) => {
+    setTokenMsg(null);
+    try {
+      await api('/dashboard/my/keys/revoke', {
+        method: 'POST',
+        body: JSON.stringify({ key_id: keyId })
+      }, token);
+      await loadTokens();
+      refreshTab();
+      setTokenMsg({ text: '🗑 Đã thu hồi token.', type: 'success' });
+    } catch (e) {
+      setTokenMsg({ text: '❌ ' + e.message, type: 'error' });
+      throw e;
+    }
+  };
 
   useEffect(() => {
     if (!wsHook || !wsHook.connected) return;
@@ -199,6 +270,48 @@ export default function MyAccountTab() {
             </p>
           </div>
         </div>
+      </Card>
+
+      {/* Auth tokens — the user-facing half of the token refactor */}
+      <Card variant="glass" padding="lg">
+        <div className="flex items-center justify-between gap-3 mb-3">
+          <div>
+            <h3 className="font-extrabold text-sm flex items-center gap-2">
+              <KeyRound className="w-4 h-4 text-primary" /> Auth tokens của tôi
+            </h3>
+            <p className="text-[11px] text-base-content/55 mt-0.5">
+              Mỗi token có hạn mức riêng (concurrency, RPM, TPM, RPD). Bạn được
+              tạo token và siết chặt hạn mức; không thể nới rộng hơn hạn mức
+              tài khoản.
+            </p>
+          </div>
+          <button
+            onClick={() => setTokenMsg(null)}
+            className="btn btn-primary btn-sm gap-1.5 font-bold shrink-0"
+          >
+            <Plus className="w-3.5 h-3.5" /> Tạo token
+          </button>
+        </div>
+
+        {tokenMsg && (
+          <div className={`text-xs font-semibold p-2.5 rounded-lg border mb-3 ${
+            tokenMsg.type === 'success'
+              ? 'bg-success/10 text-success border-success/20'
+              : 'bg-error/10 text-error border-error/20'
+          }`}>
+            {tokenMsg.text}
+          </div>
+        )}
+
+        <TokenTable
+          tokens={tokens}
+          loading={tokensLoading}
+          scope="user"
+          accountName={data.name}
+          onIssue={handleIssueToken}
+          onUpdate={handleUpdateToken}
+          onRevoke={handleRevokeToken}
+        />
       </Card>
 
       {wsHook.connected && liveActivity && (

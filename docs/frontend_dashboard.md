@@ -35,8 +35,8 @@ Toàn bộ trạng thái của dashboard được quản lý tập trung thông 
 Dashboard có khả năng hiển thị tối ưu trên các dải màn hình khác nhau (từ Mobile, Tablet đến Desktop rộng) thông qua các lớp CSS thích ứng trong [App.jsx](file:///d:/AI_Projects/router_api/frontend-src/src/App.jsx):
 
 * **Sidebar Động (Adaptive Sidebar)**:
-  * Trên Desktop (`lg` trở lên): Sidebar hiển thị dạng cột đứng ở cạnh trái màn hình, hiển thị đầy đủ menu điều hướng và thông tin phiên.
-  * Trên Mobile/Tablet (dưới `lg`): Sidebar tự động gập lại và biến thành một thanh điều hướng ngang (`navbar`) nằm ở trên cùng của trang, hỗ trợ cuộn ngang (`overflow-x-auto whitespace-nowrap`) để người dùng dễ dàng chuyển đổi giữa các tab bằng một tay.
+  * Trên Desktop (`lg` trở lên): Sidebar hiển thị dạng cột đứng tại cạnh trái màn hình, hiển thị đầy đủ menu điều hướng và thông tin phiên.
+  * Trên Mobile/Tablet (dưới `lg`): Sidebar tự động gập lại và biến thành một thanh điều hướng ngang (`navbar`) nằm trên cùng của trang, hỗ trợ cuộn ngang (`overflow-x-auto whitespace-nowrap`) để người dùng dễ dàng chuyển đổi giữa các tab bằng một tay.
 * **Header Thích Ứng (Fluid Header)**:
   * Các nút thông tin hệ thống (như Eggs Tracker, User Profile) sẽ tự động ẩn bớt nhãn chữ trên màn hình nhỏ và chỉ giữ lại icon để tránh việc các nút dính vào nhau hoặc tràn viền màn hình.
 
@@ -53,7 +53,41 @@ Dashboard có khả năng hiển thị tối ưu trên các dải màn hình kh�
 
 ---
 
-## 5. Bảng Dữ Liệu Keys & Cơ Chế Khôi Phục Lỗi Tự Động
+## 5. Quản lý Auth Token (AccountsTab & MyAccountTab)
+
+Sau đợt refactor token, một account **không còn mang một `auth_key` duy nhất** mà sở hữu nhiều token có hạn mức riêng. UI được xây lại theo đúng mô hình đó:
+
+| Tầng | Thành phần | Phạm vi |
+|---|---|---|
+| Quản lý account | `AccountsTab.jsx` → `TokenTable` (`scope="admin"`) | Admin cấu / sửa / khoá / thu hồi token của bất kỳ account nào |
+| Tự phục vụ | `MyAccountTab.jsx` → `TokenTable` (`scope="user"`) | User tạo và siết chặt token của chính mình |
+| Cấp mã | `InvitePanel` trong `AccountsTab` | Admin phát mã 4 số cho đăng ký tự do |
+
+### Vì sao có `scope`
+
+Hai phía **cố ý bất đối xứng** — đây là ranh giới quyền, không phải chi tiết UI:
+
+| | Admin | User |
+|---|---|---|
+| `max_concurrency` | ≤ 64 | ≤ 6 |
+| `rpm` / `tpm` / `rpd` | tuỳ ý trong trần | ≤ hạn mức account |
+| Token của account khác | được | 404 |
+
+Form hiển thị khoảng cho phép ngay dưới ô nhập và validate lần nữa trước khi gửi — nhưng **server vẫn clamp lại**, vì một client tự viết có thể gửi con số bất kỳ. `test_dashboard_tokens.py` kiểm chứng đúng điều đó.
+
+### `min_interval_seconds` không phải lúc nào cũng chạy
+
+Field này **chỉ có tác dụng khi `max_concurrency = 1`**. Chạy 6 slot song song thì khoảng cách giữa các lần bắt đầu luôn nhỏ hơn interval, nên nó bị bỏ qua.
+
+UI disable ô nhập và giải thích ngay tại chỗ thay vì im lặng bỏ qua — một field trông có tác dụng nhưng không có là cách nhanh nhất để khiến admin tốn công chỉnh hiệu suất. Backend trả `interval_effective` để client không phải tự suy luận.
+
+### Token được tải theo yêu cầu
+
+`/dashboard/accounts` không nhúng token của mọi account — payload sẽ nhân lên theo số account. Thay vào đó `TokenTable` chỉ gọi `/dashboard/admin/accounts/keys` khi admin bấm vào một account.
+
+---
+
+## 6. Bảng Dữ liệu Keys & Cơ Chế Khôi Phục Lỗi Tự Động
 Tab quản lý API Keys ([KeysTab.jsx](file:///d:/AI_Projects/router_api/frontend-src/src/tabs/KeysTab.jsx)) được thiết kế lại để giải quyết triệt để lỗi chồng chéo chữ trên màn hình nhỏ:
 
 ### Thiết kế bảng không cố định (Flexible Table Layout):
@@ -64,7 +98,7 @@ Tab quản lý API Keys ([KeysTab.jsx](file:///d:/AI_Projects/router_api/fronten
 ### Quản lý trạng thái Suy giảm & Cơ chế Tự động Hồi phục (Failure Decay):
 * **Trạng thái Suy giảm (Degraded)**: Xảy ra khi một key dính lỗi liên tiếp từ 3 lần trở lên (`consecutive_failures >= 3`). Key bị dính lỗi nhiều thường do đụng hạn mức rate limit (HTTP 429) của gói miễn phí dưới tải cao.
 * **Nút Reset thủ công**: Tích hợp nút `RefreshCw` kế bên mỗi key trên giao diện để quản trị viên có thể bấm xóa lỗi liên tiếp và giải phóng trạng thái cooldown của key đó ngay lập tức.
-* **Cơ chế Hồi phục tự động (Starvation Prevention)**: 
+* **Cơ chế Hồi phục tự động (Starvation Prevention)**:
   * Do thuật toán chọn key của router (`Double Random`) chỉ bốc key từ Top 50% khỏe mạnh nhất, các key có chỉ số lỗi cao sẽ nằm ở Bottom 50% và bị "đói" yêu cầu (không bao giờ được gọi lại để chạy thành công và tự reset bộ đếm lỗi).
   * Backend đã bổ sung cơ chế tự động quét hồi phục: Nếu một key (hoặc một model của key đó) đã hết thời gian đóng băng và ở trạng thái rảnh rỗi (idle) trong **5 phút (300 giây)**, bộ đếm chỉ số lỗi liên tiếp sẽ tự động được reset về `0` cả trong bộ nhớ đệm lẫn database `usage.db`.
   * Cơ chế này đảm bảo các key gặp lỗi tạm thời sẽ luôn tự động quay trở lại hoạt động bình thường sau thời gian nghỉ ngơi mà không cần quản trị viên can thiệp.

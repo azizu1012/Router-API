@@ -16,6 +16,7 @@ others.
 
 import hashlib
 import secrets
+import sqlite3
 import string
 import time
 from typing import Any, Dict, List, Optional, Tuple
@@ -34,6 +35,9 @@ DEFAULT_PASSWORD = "1234"
 
 INVITE_TTL_SECONDS = 180  # 3 minutes
 INVITE_CODE_LEN = 4
+# 4 digits = 10_000 codes, and spent codes are never deleted. Retrying turns an
+# eventual-inevitable collision into an invisible detail.
+INVITE_CODE_MAX_TRIES = 8
 
 
 # ── token composition ───────────────────────────────────────────────────────
@@ -286,20 +290,43 @@ def verify_login_db(name: str, password: str) -> Optional[Dict[str, Any]]:
 # ── invite codes ────────────────────────────────────────────────────────────
 
 def create_invite_db(created_by: str, ttl_seconds: int = INVITE_TTL_SECONDS) -> Dict[str, Any]:
-    """Issue a one-time enrollment code. Re-issuing supersedes the previous one."""
+    """Issue a one-time enrollment code. Re-issuing supersedes the previous one.
+
+    Codes are 4 digits (10_000 possibilities) but spent codes are kept as the
+    audit trail, so a collision with one is inevitable once the table is
+    populated — roughly 1 in 10_000 per issue. Retrying on IntegrityError keeps
+    that a non-event; raising a bare sqlite3 error to the admin is not an
+    acceptable outcome for a button they press by hand.
+    """
     now = int(time.time())
     with _LOCK:
         c = _conn()
         try:
             # A creator holds at most one live code; issuing a new one voids the old.
             c.execute("DELETE FROM invite_codes WHERE used_at IS NULL")
-            code = "".join(secrets.choice(string.digits) for _ in range(INVITE_CODE_LEN))
-            c.execute(
-                "INSERT INTO invite_codes (code, created_by, created_at, expires_at) "
-                "VALUES (?,?,?,?)",
-                (code, created_by, now, now + int(ttl_seconds)),
-            )
-            c.commit()
+            last_error: Optional[Exception] = None
+            for _ in range(INVITE_CODE_MAX_TRIES):
+                code = "".join(
+                    secrets.choice(string.digits) for _ in range(INVITE_CODE_LEN)
+                )
+                try:
+                    c.execute(
+                        "INSERT INTO invite_codes "
+                        "(code, created_by, created_at, expires_at) "
+                        "VALUES (?,?,?,?)",
+                        (code, created_by, now, now + int(ttl_seconds)),
+                    )
+                    c.commit()
+                    break
+                except sqlite3.IntegrityError as e:
+                    last_error = e
+            else:
+                c.rollback()
+                raise RuntimeError(
+                    f"could not issue invite code after "
+                    f"{INVITE_CODE_MAX_TRIES} attempts (table may be full): "
+                    f"{last_error}"
+                )
         finally:
             c.close()
     return {

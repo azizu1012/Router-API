@@ -261,8 +261,11 @@ Admin cũng có thể tạo thẳng account qua `POST /dashboard/admin/accounts/
 |---|---|---|
 | `GET` | `/dashboard/my/keys` | Liệt kê token (hiện dạng đầy đủ) |
 | `POST` | `/dashboard/my/keys/create` | Cấp token mới, tự set giới hạn trong trần |
+| `POST` | `/dashboard/my/keys/update` | Sửa giới hạn / khoá token của chính mình |
 | `POST` | `/dashboard/my/keys/revoke` | Thu hồi token |
 | `POST` | `/dashboard/password` | Đổi password web |
+
+`my/keys/update` tính lại trần ở server thay vì tin giá trị client gửi lên — user gửi `max_concurrency: 60` vẫn bị chặn về 6.
 
 ### Admin
 

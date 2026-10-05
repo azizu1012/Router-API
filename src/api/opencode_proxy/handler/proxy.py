@@ -51,15 +51,53 @@ def _is_sub_agent_request(body: Dict[str, Any]) -> bool:
     return any(kw in sp_lower for kw in sub_keywords)
 
 
+def _effort_to_level(effort: Any) -> Optional[str]:
+    """Normalise an effort word from any client onto Gemini's vocabulary.
+
+    Gemini 3 accepts minimal/low/medium/high. Anthropic and OpenAI both spell
+    the top of the range "max", which Gemini has no word for — it is the same
+    intent as "high", so it maps there rather than being rejected.
+    """
+    e = str(effort).lower().strip()
+    if e in ("max", "maximum", "highest", "xhigh"):
+        return "high"
+    if e in ("minimal", "min", "none", "off", "false"):
+        return "minimal"
+    if e in ("low", "medium", "high"):
+        return e
+    return None
+
+
+# Anthropic expresses thinking depth as a token budget; these are the
+# thresholds used to bucket it into a Gemini thinking level. Claude Code sends
+# the top of its range (31999) when the user asks for maximum effort.
+_BUDGET_TO_LEVEL = (
+    (8192, "high"),
+    (4096, "medium"),
+    (1024, "low"),
+)
+
+
+def _budget_to_level(budget: int) -> Optional[str]:
+    for threshold, level in _BUDGET_TO_LEVEL:
+        if budget >= threshold:
+            return level
+    return "low"
+
+
 def _extract_thinking_params(body: Dict[str, Any]) -> Dict[str, Any]:
     """Extract thinking params from body supporting multiple formats.
 
     Returns dict with keys: thinking_level, thinking_budget, include_thoughts.
-    Only 2 Gemini levels used: 'low' (default/fast) and 'medium' (max).
-    """
-    params = {}
 
-    # 1. Custom fields take precedence (existing behavior)
+    Clients spell "how hard should the model think" four different ways. All of
+    them mean the same thing to a user, so they are normalised to one Gemini
+    level here and never silently discarded — an effort that arrives as "low"
+    when the user asked for "high" costs latency and tokens on every turn.
+    """
+    params: Dict[str, Any] = {}
+
+    # 1. Explicit router fields always win.
     tl = body.get("thinking_level")
     tb = body.get("thinking_budget")
     inc = body.get("include_thoughts")
@@ -72,31 +110,35 @@ def _extract_thinking_params(body: Dict[str, Any]) -> Dict[str, Any]:
     if params:
         return params
 
-    # 2. Anthropic thinking block (Claude Code)
-    tb = body.get("thinking")
-    if isinstance(tb, dict) and tb.get("type") == "enabled":
-        budget = tb.get("budget_tokens", 0)
-        if budget >= 4096:
-            params["thinking_level"] = "medium"
-        elif budget >= 1024:
-            params["thinking_level"] = "low"
-        params["include_thoughts"] = "thinking_level" in params
-        return params
+    # 2. Anthropic output_config.effort — the field Claude Code uses for
+    #    /effort and the thinking-effort setting. Newer and more specific than
+    #    a token budget, so it is preferred over reasoning_effort below.
+    output_config = body.get("output_config")
+    if isinstance(output_config, dict):
+        level = _effort_to_level(output_config.get("effort"))
+        if level:
+            return {"thinking_level": level,
+                    "include_thoughts": level != "minimal"}
 
-    # 3. OpenAI reasoning_effort (OpenCode)
+    # 3. Anthropic thinking block: an explicit "disabled" must switch thinking
+    #    off, otherwise keep it on and use the budget to pick a level.
+    thinking = body.get("thinking")
+    if isinstance(thinking, dict):
+        if thinking.get("type") == "disabled":
+            return {"include_thoughts": False}
+        budget = thinking.get("budget_tokens")
+        if budget:
+            level = _budget_to_level(int(budget))
+            return {"thinking_level": level, "include_thoughts": True}
+
+    # 4. OpenAI reasoning_effort.
     re = body.get("reasoning_effort")
     if re is not None:
-        re = str(re).lower().strip()
-        if re == "medium":
-            return {"include_thoughts": False}
-        elif re in ("maximum", "max"):
-            return {"thinking_level": "medium", "include_thoughts": True}
-        elif re == "high":
-            return {"thinking_level": "low", "include_thoughts": True}
-        else:
-            return {"thinking_level": "low", "include_thoughts": True}
+        level = _effort_to_level(re) or "low"
+        return {"thinking_level": level,
+                "include_thoughts": level != "minimal"}
 
-    # 4. Default: low thinking
+    # 5. Default: low thinking.
     return {"thinking_level": "low", "include_thoughts": True}
 
 
@@ -106,6 +148,11 @@ def _resolve_thinking_config(body: Dict[str, Any], model_id: str) -> Dict[str, A
 
     p = _extract_thinking_params(body)
     if not p.get("thinking_level"):
+        # An explicit "disabled" arrives here as include_thoughts=False with no
+        # level. Returning {} would fall back to the model default, which turns
+        # thinking back on for the user who just asked to turn it off.
+        if p.get("include_thoughts") is False:
+            return {"include_thoughts": False}
         return {}
     return resolve_thinking_config(
         model_id=model_id,

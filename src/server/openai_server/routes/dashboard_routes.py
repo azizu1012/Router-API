@@ -1,5 +1,6 @@
 import asyncio
 import time
+from typing import Any, Dict, Optional
 
 from fastapi import Request
 from fastapi.responses import JSONResponse
@@ -254,6 +255,92 @@ async def my_create_key(request: Request):
         "rpd": row["rpd"],
         "min_interval_seconds": row["min_interval_seconds"],
         "interval_effective": row["max_concurrency"] == 1,
+    }
+
+
+@app.post("/dashboard/my/keys/update")
+async def my_update_key(request: Request):
+    """Adjust one of the signed-in account's tokens.
+
+    Same rule as create: a user may tighten a limit but never widen one. The
+    ceilings are recomputed here rather than trusted from the request, so a
+    hand-rolled client cannot raise its own budget by sending a large number.
+    """
+    payload = _require_dashboard(request)
+    account = await asyncio.to_thread(find_account_by_name, payload.get("name", ""))
+    if not account:
+        return JSONResponse(status_code=404, content={"error": "Account not found"})
+    try:
+        body = await request.json()
+    except Exception:
+        return JSONResponse(status_code=400, content={"error": "Invalid JSON"})
+
+    key_id = str(body.get("key_id", "")).strip()
+    if not key_id:
+        return JSONResponse(status_code=400, content={"error": "key_id required"})
+
+    row = get_key_db(key_id)
+    if not row or row["account_id"] != account["account_id"]:
+        return JSONResponse(status_code=404, content={"error": "Key not found"})
+
+    is_admin = payload.get("tier") == "admin"
+    from src.core.config_n_logg import config as _cfg
+
+    def _clamp(key: str, floor: int, hi: int) -> Optional[int]:
+        if key not in body:
+            return None
+        try:
+            v = int(body[key])
+        except (TypeError, ValueError):
+            return None
+        return max(floor, min(hi, v))
+
+    if is_admin:
+        c_max_conc, c_rpm, c_tpm, c_rpd = 64, 100_000, 100_000_000, 100_000
+    else:
+        c_max_conc = DEFAULT_MAX_CONCURRENCY
+        c_rpm = max(1, int(_cfg.DEFAULT_ACCOUNT_RPM))
+        c_tpm = int(_cfg.DEFAULT_ACCOUNT_TPM)
+        c_rpd = int(_cfg.DEFAULT_ACCOUNT_RPD)
+
+    updates: Dict[str, Any] = {}
+    for field, floor, hi in (
+        ("max_concurrency", 1, c_max_conc),
+        ("rpm", 1, c_rpm),
+        ("tpm", 1000, c_tpm),
+        ("rpd", 1, c_rpd),
+    ):
+        clamped = _clamp(field, floor, hi)
+        if clamped is not None:
+            updates[field] = clamped
+
+    if "label" in body:
+        updates["label"] = str(body["label"])[:64]
+    if "enabled" in body:
+        updates["enabled"] = 1 if body["enabled"] else 0
+
+    if "min_interval_seconds" in body:
+        try:
+            interval = max(0.0, float(body["min_interval_seconds"]))
+        except (TypeError, ValueError):
+            interval = DEFAULT_MIN_INTERVAL_SECONDS
+        if not is_admin:
+            interval = max(interval, DEFAULT_MIN_INTERVAL_SECONDS)
+        updates["min_interval_seconds"] = interval
+
+    if not updates:
+        return JSONResponse(status_code=400, content={"error": "nothing to update"})
+
+    updated = account_manager.update_key(key_id, **updates)
+    account_manager.invalidate_cache()
+    return {
+        "ok": True,
+        "key_id": key_id,
+        "max_concurrency": (updated or {}).get("max_concurrency"),
+        "rpm": (updated or {}).get("rpm"),
+        "tpm": (updated or {}).get("tpm"),
+        "rpd": (updated or {}).get("rpd"),
+        "interval_effective": (updated or {}).get("max_concurrency") == 1,
     }
 
 

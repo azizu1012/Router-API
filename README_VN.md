@@ -2,7 +2,7 @@
 
 **Anthropic · OpenAI · Gemini → một cổng duy nhất.** Xoay vòng key, giới hạn tốc độ, circuit breaker và dashboard trực tiếp. Cắm vào Claude Code, OpenCode, hay bất kỳ thứ nào nói được Anthropic Messages API.
 
-**[English](README.md)** · [Tiếng Việt](README.md.vi)
+**[English](README.md)** · [Tiếng Việt](README_VN.md)
 
 [![Trustabl Agent Scanner](https://github.com/azizu1012/Router-API/actions/workflows/trustabl.yml/badge.svg)](https://github.com/azizu1012/Router-API/actions/workflows/trustabl.yml)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)

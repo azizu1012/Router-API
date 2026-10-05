@@ -24,6 +24,11 @@ pytest
 | `test_anthropic_integration.py` | proxy Claude end-to-end (PoolManager mock) |
 | `test_adk_runner.py` | ADK safety parity + optional dependency |
 | `test_account_auth.py` | token format, giới hạn 4 lớp, invite code |
+| `test_secret_scanner.py` | scanner bắt secret thật, không báo động giả |
+| `test_schema_bootstrap.py` | DDL lúc import khớp `schema.py` |
+| `test_effort_mapping.py` | effort Anthropic/OpenAI → thinking level của Gemini |
+| `test_invite_codes.py` | va chạm mã 4 số không làm hỏng nút admin |
+| `test_dashboard_tokens.py` | API quản lý token qua app thật, có DB thật |
 
 Chạy nhanh một file:
 

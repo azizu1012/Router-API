@@ -2,7 +2,7 @@
 
 **Anthropic · OpenAI · Gemini → one gateway.** Key rotation, rate limiting, circuit breaking and a live dashboard. Drop-in for Claude Code, OpenCode, or anything speaking the Anthropic Messages API.
 
-[English](README.md) · **[Tiếng Việt](README.md.vi)**
+[English](README.md) · **[Tiếng Việt](README_VN.md)**
 
 [![Trustabl Agent Scanner](https://github.com/azizu1012/Router-API/actions/workflows/trustabl.yml/badge.svg)](https://github.com/azizu1012/Router-API/actions/workflows/trustabl.yml)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
