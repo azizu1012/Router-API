@@ -5,9 +5,9 @@ from fastapi.responses import JSONResponse, StreamingResponse
 
 from src.core.config_n_logg import config
 from src.core.config_n_logg.logger import logger_api
-from src.core.limits import account_limiter
 from src.core.providers import _custom_endpoint_manager
 from src.api.claude_proxy import claude_proxy
+from src.api.claude_proxy.handler.anthropic_spec import estimate_input_tokens
 from src.core.usage_logger import log_usage
 
 from src.server.openai_server.auth import _resolve_auth, _check_auth, _apply_account_limit, _auth_key_prefix, is_sub_agent_request, handle_sub_agent_error, _sub_agent_stream_error
@@ -358,6 +358,7 @@ async def anthropic_messages(
     akp = _auth_key_prefix(account)
     response_headers = {
         "anthropic-version": "2023-06-01",
+        "request-id": "req_" + uuid.uuid4().hex[:24],
         "Cache-Control": "no-cache",
         "Connection": "keep-alive",
         "X-Accel-Buffering": "no",
@@ -490,9 +491,7 @@ async def anthropic_count_tokens(
     auth = _resolve_auth(authorization, x_api_key)
     _check_auth(auth)
     body = await request.json()
-    messages = [
-        {"role": msg.get("role", "user"), "content": msg.get("content", "")}
-        for msg in body.get("messages", []) if isinstance(msg, dict)
-    ]
-    max_tokens = int(body.get("max_tokens") or 0)
-    return {"input_tokens": account_limiter.estimate_messages_tokens(messages, max_tokens)}
+    # Anthropic count_tokens reports INPUT tokens only — max_tokens (the output
+    # budget) must not be folded in. Claude Code renders this as the context bar,
+    # so including it inflated the reading by thousands of tokens.
+    return {"input_tokens": estimate_input_tokens(body)}

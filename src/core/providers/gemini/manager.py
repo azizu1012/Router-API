@@ -19,6 +19,24 @@ from .utils import (
 )
 
 
+class ADKUnavailableError(RuntimeError):
+    """google-adk is not installed, so the ADK web-search path cannot run.
+
+    Raised before the retry loop so the caller sees an actionable message instead
+    of the import failure being caught, retried across every key, and finally
+    reported as a generic API error.
+    """
+
+
+def _load_adk_runner():
+    """Import the ADK runner, converting a missing dependency into a clear error."""
+    try:
+        from src.core.providers import adk_runner
+    except RuntimeError as e:
+        raise ADKUnavailableError(str(e)) from e
+    return adk_runner
+
+
 class GeminiAPIManager:
     """Orchestrates Gemini API calls with key rotation and error handling.
 
@@ -120,9 +138,9 @@ class GeminiAPIManager:
                     )
 
                     if web_search and not can_native_ground:
-                        from src.core.providers.adk_runner import run_adk_agent, MockGenerateContentResponse
+                        adk = _load_adk_runner()
                         auth_key_prefix = account.get("api_key", "")[:12] if account else "sk-no-account"
-                        resp_dict = await run_adk_agent(
+                        resp_dict = await adk.run_adk_agent(
                             model_id=model_id,
                             api_key=api_key,
                             system_instruction=system_instruction,
@@ -130,7 +148,7 @@ class GeminiAPIManager:
                             auth_key_prefix=auth_key_prefix,
                             account=account,
                         )
-                        response = MockGenerateContentResponse(resp_dict)
+                        response = adk.MockGenerateContentResponse(resp_dict)
                     else:
                         use_grounding, request_tools = prepare_tools(
                             tools, model_id, image_count, contents, web_search,
@@ -299,9 +317,9 @@ class GeminiAPIManager:
                     )
 
                     if web_search and not can_native_ground:
-                        from src.core.providers.adk_runner import run_adk_agent_stream, MockGenerateContentResponse
+                        adk = _load_adk_runner()
                         auth_key_prefix = account.get("api_key", "")[:12] if account else "sk-no-account"
-                        adk_stream = run_adk_agent_stream(
+                        adk_stream = adk.run_adk_agent_stream(
                             model_id=model_id,
                             api_key=api_key,
                             system_instruction=system_instruction,
@@ -318,7 +336,7 @@ class GeminiAPIManager:
                             async def __anext__(self):
                                 try:
                                     chunk_dict = await self.generator.__anext__()
-                                    return MockGenerateContentResponse(chunk_dict)
+                                    return adk.MockGenerateContentResponse(chunk_dict)
                                 except StopAsyncIteration:
                                     raise StopAsyncIteration
 

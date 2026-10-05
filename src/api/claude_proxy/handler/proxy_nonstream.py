@@ -11,9 +11,18 @@ from src.core.config_n_logg import config
 from src.core.config_n_logg.logger import logger_proxy as logger
 from src.core.router import router
 from src.core.pool_manager import pool_manager
+from src.core.usage_logger import log_usage
 from src.logical_HQ_translator import _convert_messages, XMLThinkingExtractor
+from .anthropic_spec import (
+    apply_tool_choice_to_tools,
+    compute_usage,
+    estimate_input_tokens,
+    extract_sampling_params,
+    extract_tool_choice,
+    map_stop_reason,
+    thinking_signature,
+)
 from .compaction import _pre_compact_and_truncate
-from .helpers import get_system_status_summary
 
 
 class ClaudeProxyNonstreamMixin:
@@ -80,13 +89,22 @@ class ClaudeProxyNonstreamMixin:
         thinking_config = _resolve_thinking_config(body, model_alias)
         thinking_params = _extract_thinking_params(body)
 
+        # tool_choice: "none" removes tools entirely; anything else is passed down.
+        tool_choice = extract_tool_choice(body)
+        if tool_choice:
+            openai_tools = apply_tool_choice_to_tools(tool_choice, openai_tools)
+
+        sampling_params = extract_sampling_params(body)
+        stop_sequences = sampling_params.get("stop_sequences")
+
         recursion_depth = 0
-        input_tokens = 0
         output_tokens = 0
         text = ""
         thought = None
         finish_reason = "stop"
         msg = None
+        used_api_key = ""
+        used_model_id = ""
         while recursion_depth < 5:
             result = await pool_manager.call_nonstream(
                 model_alias=model_alias,
@@ -98,10 +116,12 @@ class ClaudeProxyNonstreamMixin:
                 account=account,
                 extra_body=None,
                 thinking_params=thinking_params,
+                sampling_params=sampling_params,
             )
 
             resp = result["response"]
-            input_tokens = result.get("input_tokens", 0) or 0
+            used_api_key = result.get("api_key", "") or ""
+            used_model_id = result.get("model_id", "") or model_alias
             usage = getattr(resp, "usage", None) or {}
             output_tokens = 0
             if isinstance(usage, dict):
@@ -247,8 +267,13 @@ class ClaudeProxyNonstreamMixin:
 
         content_blocks = []
         if thought:
-            content_blocks.append({"type": "thinking", "thinking": thought, "signature": ""})
-        content_blocks.append({"type": "text", "text": text or ""})
+            content_blocks.append({
+                "type": "thinking",
+                "thinking": thought,
+                "signature": thinking_signature(thought),
+            })
+        if text:
+            content_blocks.append({"type": "text", "text": text})
 
         if isinstance(msg, dict):
             raw_tool_calls = msg.get("tool_calls")
@@ -290,23 +315,30 @@ class ClaudeProxyNonstreamMixin:
                             "input": args if isinstance(args, dict) else {},
                         })
 
-        if has_tool_calls:
-            stop_reason = "tool_use"
-        elif finish_reason and "max" in str(finish_reason).lower():
-            stop_reason = "max_tokens"
-        else:
-            stop_reason = "end_turn"
+        stop_reason, stop_sequence = map_stop_reason(
+            finish_reason,
+            has_tool_calls=has_tool_calls,
+            stop_sequences=stop_sequences,
+            emitted_text=text or "",
+        )
 
-        total_text = ""
-        for m in (body.get("messages") or []):
-            c = m.get("content", "")
-            if isinstance(c, str):
-                total_text += c
-            elif isinstance(c, list):
-                total_text += "".join(
-                    b.get("text", "") for b in c if isinstance(b, dict) and b.get("type") == "text"
-                )
-        client_input_tokens = max(1, len(total_text) // 4)
+        client_input_tokens = estimate_input_tokens(body)
+        usage = compute_usage(body, client_input_tokens, output_tokens)
+
+        # Persist usage so Claude Code traffic shows up in the dashboard.
+        try:
+            await log_usage(
+                used_model_id or model_alias,
+                (used_api_key or "")[-8:],
+                usage["input_tokens"],
+                usage["output_tokens"],
+                auth_key_prefix,
+                usage["cache_creation_input_tokens"],
+                usage["cache_read_input_tokens"],
+            )
+        except Exception as e:
+            logger.warning("[Claude NonStream] log_usage failed: %s", e)
+
         return {
             "id": "msg_" + uuid.uuid4().hex[:24],
             "type": "message",
@@ -314,9 +346,6 @@ class ClaudeProxyNonstreamMixin:
             "model": body.get("model") or model_alias,
             "content": content_blocks,
             "stop_reason": stop_reason,
-            "stop_sequence": None,
-            "usage": {
-                "input_tokens": client_input_tokens,
-                "output_tokens": output_tokens,
-            },
+            "stop_sequence": stop_sequence,
+            "usage": usage,
         }

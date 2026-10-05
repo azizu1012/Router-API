@@ -57,6 +57,29 @@ async def mcp_discovery():
     }
 
 
+# Anthropic and OpenAI disagree on the model-list schema: Anthropic wants
+# `type`/`display_name`/`created_at`, OpenAI wants `object`/`created`. Both
+# client families hit this one endpoint, so emit a superset that satisfies each
+# validator instead of registering two conflicting routes on the same path.
+_ANTHROPIC_EPOCH = "2025-01-01T00:00:00Z"
+
+
+def _model_entry(m: Dict[str, Any]) -> Dict[str, Any]:
+    model_id = m.get("id")
+    return {
+        "id": model_id,
+        "object": "model",
+        "type": "model",
+        "created": 0,
+        "created_at": _ANTHROPIC_EPOCH,
+        "owned_by": m.get("owned_by", "router_api"),
+        "display_name": m.get("display") or model_id,
+        "display": m.get("display") or model_id,
+        "root": m.get("root"),
+        "context_length": m.get("context_length"),
+    }
+
+
 @app.get("/v1/models")
 async def list_models(
     authorization: str | None = Header(default=None),
@@ -64,7 +87,14 @@ async def list_models(
 ) -> Dict[str, Any]:
     auth = _resolve_auth(authorization, x_api_key)
     _check_auth(auth)
-    return {"object": "list", "data": router.list_models()}
+    entries = [_model_entry(m) for m in router.list_models()]
+    return {
+        "object": "list",
+        "data": entries,
+        "has_more": False,
+        "first_id": entries[0]["id"] if entries else None,
+        "last_id": entries[-1]["id"] if entries else None,
+    }
 
 
 @app.get("/v1/models/{model_id:path}")
@@ -77,7 +107,7 @@ async def retrieve_model(
     _check_auth(auth)
     for m in router.list_models():
         if m["id"] == model_id or m.get("root") == model_id:
-            return m
+            return _model_entry(m)
     raise HTTPException(
         status_code=404,
         detail={"error": {"message": "Model not found", "type": "invalid_request_error"}},

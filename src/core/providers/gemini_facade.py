@@ -395,12 +395,22 @@ async def acompletion(**kwargs: Any) -> Any:
     reasoning_effort: Optional[str] = kwargs.get("reasoning_effort")
     thinking_config: Optional[dict] = kwargs.get("thinking_config")
     extra_body: Optional[dict] = kwargs.get("extra_body", {})
+    stop_sequences: Optional[list] = kwargs.get("stop_sequences")
+    top_p: Optional[float] = kwargs.get("top_p")
+    top_k: Optional[int] = kwargs.get("top_k")
 
     model_id = model.split("/")[-1] if "/" in model else model
 
     # ── PATH 2: Custom endpoint (OpenAI SDK format) ──────────────────────────
     if api_base:
         from .custom_endpoint_client import CustomEndpointStreamGen, call_custom_nonstream
+        # OpenAI-compatible endpoints spell it "stop" (string or list).
+        if stop_sequences and not isinstance(extra_body, dict):
+            extra_body = {}
+        if stop_sequences:
+            merged = dict(extra_body or {})
+            merged.setdefault("stop", stop_sequences[0] if len(stop_sequences) == 1 else list(stop_sequences))
+            extra_body = merged
         if stream:
             return CustomEndpointStreamGen(
                 api_base=api_base, api_key=api_key, model=model_id,
@@ -417,8 +427,16 @@ async def acompletion(**kwargs: Any) -> Any:
     contents, system_instruction, gemini_tools, processed_tc = _build_gemini_inputs(
         model_id, messages, tools, temperature, max_tokens, reasoning_effort, thinking_config
     )
+    generation_config: Dict[str, Any] = {}
+    if stop_sequences:
+        generation_config["stop_sequences"] = list(stop_sequences)
+    if top_p is not None:
+        generation_config["top_p"] = top_p
+    if top_k is not None:
+        generation_config["top_k"] = top_k
     sdk_config = _build_sdk_config(
-        system_instruction, temperature, max_tokens, gemini_tools, processed_tc
+        system_instruction, temperature, max_tokens, gemini_tools, processed_tc,
+        generation_config=generation_config or None,
     )
 
     if stream:

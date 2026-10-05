@@ -1,12 +1,23 @@
 import asyncio
 import json
 from typing import Any, AsyncIterator, Dict, List, Optional
-from google.adk import Agent, Event
-from google.adk.models.google_llm import Gemini
-from google.adk.runners import Runner
-from google.adk.sessions import InMemorySessionService
-from google.genai import types, Client
 
+try:
+    from google.adk import Agent, Event
+    from google.adk.models.google_llm import Gemini
+    from google.adk.runners import Runner
+    from google.adk.sessions import InMemorySessionService
+    from google.genai import types, Client
+except ModuleNotFoundError as _adk_import_error:  # pragma: no cover
+    # google-adk is an optional dependency: it is only needed for the ADK web-search
+    # path. Raising here (instead of at first use) lets callers detect the missing
+    # package explicitly rather than it collapsing into a generic retry loop.
+    raise RuntimeError(
+        "google-adk is required for the ADK web-search path but is not installed. "
+        "Install it with: pip install google-adk"
+    ) from _adk_import_error
+
+from src.core.config_n_logg import config
 from src.core.config_n_logg.logger import logger_api
 from src.core.providers.search_manager import execute_hybrid_search
 
@@ -95,6 +106,16 @@ async def run_adk_agent_stream(
     
     # 1. Define model with client injection
     model_obj = Gemini(model=model_id)
+    # Mirror the native path's safety config (see gemini/caller.py:_build_config).
+    # Without this the ADK path inherits the Gemini API defaults, where HARASSMENT
+    # and HATE_SPEECH default to BLOCK_MEDIUM_AND_ABOVE, so the same query could
+    # return content natively but come back blocked here.
+    safety = [
+        types.SafetySetting(category=s["category"], threshold=s["threshold"])
+        for s in (config.SAFETY_SETTINGS or [])
+    ]
+    if safety:
+        model_obj.generate_content_config = types.GenerateContentConfig(safety_settings=safety)
     client = Client(api_key=api_key)
     model_obj.api_client = client
     model_obj._live_api_client = Client(

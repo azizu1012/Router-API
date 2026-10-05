@@ -3,7 +3,9 @@
 Pool/key/custom management is centralized in PoolManager.
 """
 
+import asyncio
 import json
+import time
 import uuid
 from typing import Any, Dict, List, Optional, AsyncIterator
 
@@ -11,14 +13,33 @@ from src.core.config_n_logg import config
 from src.core.config_n_logg.logger import logger_proxy as logger
 from src.core.router import router
 from src.core.pool_manager import pool_manager
+from src.core.usage_logger import log_usage
 from src.logical_HQ_translator import (
     _convert_messages,
     _dict_to_sse_events,
     _sse,
+    StreamingTextNormalizer,
     XMLThinkingExtractor,
+)
+from .anthropic_spec import (
+    apply_tool_choice_to_tools,
+    build_error_event,
+    compute_usage,
+    estimate_input_tokens,
+    extract_sampling_params,
+    extract_tool_choice,
+    map_stop_reason,
+    thinking_signature,
 )
 from .compaction import _pre_compact_and_truncate
 from .helpers import get_system_status_summary
+
+# How often to emit a `ping` while waiting on the model, so proxies and clients
+# do not time out during long Gemini thinking phases.
+KEEPALIVE_INTERVAL = 4.0
+
+# Sentinel yielded by the keepalive wrapper; distinct from any real pool item.
+_KEEPALIVE = object()
 
 
 class ClaudeProxyStreamMixin:
@@ -84,6 +105,13 @@ class ClaudeProxyStreamMixin:
             thinking_config = _resolve_thinking_config(body, model_alias)
             thinking_params = _extract_thinking_params(body)
 
+            # tool_choice: "none" removes tools entirely; anything else is passed down.
+            tool_choice = extract_tool_choice(body)
+            if tool_choice:
+                openai_tools = apply_tool_choice_to_tools(tool_choice, openai_tools)
+
+            sampling_params = extract_sampling_params(body)
+
             msg_id = "msg_" + uuid.uuid4().hex[:24]
 
             async for chunk in self._stream_message_impl(
@@ -100,6 +128,7 @@ class ClaudeProxyStreamMixin:
                 msg_id=msg_id,
                 recursion_depth=0,
                 start_block_index=0,
+                sampling_params=sampling_params,
             ):
                 yield chunk
         except Exception as e:
@@ -121,6 +150,7 @@ class ClaudeProxyStreamMixin:
         msg_id: str,
         recursion_depth: int,
         start_block_index: int,
+        sampling_params: Optional[Dict[str, Any]] = None,
     ) -> AsyncIterator[bytes]:
         try:
             text_started = False
@@ -137,10 +167,15 @@ class ClaudeProxyStreamMixin:
             accumulated_thought = []
             accumulated_thought_signature = []
             extractor = XMLThinkingExtractor()
+            normalizer = StreamingTextNormalizer()
+            used_api_key = ""
+            used_model_id = ""
 
             started = False
 
-            async for item in pool_manager.call_stream(
+            stop_sequences = (sampling_params or {}).get("stop_sequences")
+
+            stream = pool_manager.call_stream(
                 model_alias=model_alias,
                 messages=openai_messages,
                 tools=openai_tools or None,
@@ -149,21 +184,81 @@ class ClaudeProxyStreamMixin:
                 thinking_config=thinking_config,
                 account=account,
                 thinking_params=thinking_params,
-            ):
+                sampling_params=sampling_params,
+            )
+
+            # Wrap the pool iterator so a `ping` is emitted whenever the model is
+            # slow, not just once at the start. Without this, long Gemini thinking
+            # phases leave the connection silent and intermediaries drop it.
+            last_emit = time.monotonic()
+
+            async def _iter_with_keepalive() -> AsyncIterator[Any]:
+                nonlocal last_emit
+                aiter_ = stream.__aiter__()
+                while True:
+                    try:
+                        item = await asyncio.wait_for(
+                            asyncio.shield(aiter_.__anext__()), timeout=1.0
+                        )
+                        yield item
+                        last_emit = time.monotonic()
+                    except asyncio.TimeoutError:
+                        if time.monotonic() - last_emit >= KEEPALIVE_INTERVAL:
+                            last_emit = time.monotonic()
+                            yield _KEEPALIVE
+                        continue
+                    except StopAsyncIteration:
+                        return
+
+            async for item in _iter_with_keepalive():
+                if item is _KEEPALIVE:
+                    yield _sse("ping", {"type": "ping", "retry": 0, "reason": "keepalive"})
+                    continue
+
+                if not isinstance(item, dict):
+                    # Defensive: PoolManager yields dicts, but a malformed item must
+                    # not be read with .get() and blow up mid-stream.
+                    logger.warning("[Claude Stream] unexpected stream item type=%s, skipping",
+                                   type(item).__name__)
+                    continue
+
                 input_tokens = item.get("input_tokens", input_tokens)
+                used_api_key = item.get("api_key", used_api_key)
+                used_model_id = item.get("model_id", used_model_id)
                 if not started:
                     started = True
                     if recursion_depth == 0:
-                        total_text = ""
-                        for m in (body.get("messages") or []):
-                            c = m.get("content", "")
-                            if isinstance(c, str):
-                                total_text += c
-                            elif isinstance(c, list):
-                                total_text += "".join(
-                                    b.get("text", "") for b in c if isinstance(b, dict) and b.get("type") == "text"
-                                )
-                        client_input_tokens = max(1, len(total_text) // 4)
+                        # Warn before the model starts when the context is near the
+                        # TPM ceiling, so the user can /compact instead of hitting 429.
+                        from src.logical_HQ_translator.sse_cache_agent import (
+                            is_claude_code_body,
+                            is_sub_agent_body,
+                        )
+                        if input_tokens > (178000 if is_claude_code_body(body) else 170000) \
+                                and not is_sub_agent_body(body):
+                            ctx_warn = (
+                                "\n⚠️  [ROUTER-API WARNING] Context is extremely large (%.1fk tokens). "
+                                "Please run '/compact' in your terminal immediately to avoid 250k TPM rate limits! ⚠️\n"
+                                "⚠️  [CẢNH BÁO] Context hiện tại cực kỳ lớn (%.1fk tokens). "
+                                "Vui lòng chạy lệnh '/compact' ngay lập tức để tránh bị lỗi giới hạn 250k TPM! ⚠️\n\n"
+                            ) % (input_tokens / 1000.0, input_tokens / 1000.0)
+                            text_index = start_block_index
+                            text_started = True
+                            yield _sse("content_block_start", {
+                                "type": "content_block_start",
+                                "index": text_index,
+                                "content_block": {"type": "text", "text": ""},
+                            })
+                            yield _sse("content_block_delta", {
+                                "type": "content_block_delta",
+                                "index": text_index,
+                                "delta": {"type": "text_delta", "text": ctx_warn},
+                            })
+                            accumulated_text.append(ctx_warn)
+                            output_chars += len(ctx_warn)
+
+                        client_input_tokens = estimate_input_tokens(body)
+                        client_usage = compute_usage(body, client_input_tokens, 0)
                         yield _sse("ping", {"type": "ping", "retry": 0, "reason": "initial"})
                         yield _sse("message_start", {
                             "type": "message_start",
@@ -175,10 +270,7 @@ class ClaudeProxyStreamMixin:
                                 "content": [],
                                 "stop_reason": None,
                                 "stop_sequence": None,
-                                "usage": {
-                                    "input_tokens": client_input_tokens,
-                                    "output_tokens": 0,
-                                },
+                                "usage": client_usage,
                             },
                         })
 
@@ -247,7 +339,7 @@ class ClaudeProxyStreamMixin:
                                 yield _sse("content_block_delta", {
                                     "type": "content_block_delta",
                                     "index": thinking_index,
-                                    "delta": {"type": "signature_delta", "signature": ""},
+                                    "delta": {"type": "signature_delta", "signature": thinking_signature("".join(accumulated_thought))},
                                 })
                                 yield _sse("content_block_stop", {"type": "content_block_stop", "index": thinking_index})
                         elif ev_type == "text":
@@ -260,7 +352,7 @@ class ClaudeProxyStreamMixin:
                                     yield _sse("content_block_delta", {
                                         "type": "content_block_delta",
                                         "index": thinking_index,
-                                        "delta": {"type": "signature_delta", "signature": ""},
+                                        "delta": {"type": "signature_delta", "signature": thinking_signature("".join(accumulated_thought))},
                                     })
                                     yield _sse("content_block_stop", {"type": "content_block_stop", "index": thinking_index})
                                 yield _sse("content_block_start", {
@@ -268,12 +360,17 @@ class ClaudeProxyStreamMixin:
                                     "index": text_index,
                                     "content_block": {"type": "text", "text": ""},
                                 })
-                            yield _sse("content_block_delta", {
-                                "type": "content_block_delta",
-                                "index": text_index,
-                                "delta": {"type": "text_delta", "text": ev_val},
-                            })
-                            output_chars += len(ev_val)
+                            # Normalize LaTeX/arrow escapes, but only outside code
+                            # fences — StreamingTextNormalizer buffers partial
+                            # tokens so a chunk boundary cannot split an escape.
+                            norm_val = normalizer.feed(ev_val)
+                            if norm_val:
+                                yield _sse("content_block_delta", {
+                                    "type": "content_block_delta",
+                                    "index": text_index,
+                                    "delta": {"type": "text_delta", "text": norm_val},
+                                })
+                                output_chars += len(norm_val)
 
                 tool_calls_val = getattr(delta, "tool_calls", None) or delta.get("tool_calls") if hasattr(delta, "get") else None
                 if tool_calls_val:
@@ -336,7 +433,10 @@ class ClaudeProxyStreamMixin:
                                     tool_buffers[tc_idx]["args"] += args_str
 
                 if fr:
-                    finish_reason = "tool_use" if str(fr).lower() == "tool_calls" else ("max_tokens" if "max" in str(fr).lower() else "end_turn")
+                    # Keep the provider's raw reason here. Mapping it to the
+                    # Anthropic enum now loses information — "length" contains no
+                    # "max" substring, so it silently became end_turn.
+                    finish_reason = str(fr)
 
             # Flush extractor to handle any remaining tags or text
             events = extractor.flush()
@@ -370,7 +470,7 @@ class ClaudeProxyStreamMixin:
                             yield _sse("content_block_delta", {
                                 "type": "content_block_delta",
                                 "index": thinking_index,
-                                "delta": {"type": "signature_delta", "signature": ""},
+                                "delta": {"type": "signature_delta", "signature": thinking_signature("".join(accumulated_thought))},
                             })
                             yield _sse("content_block_stop", {"type": "content_block_stop", "index": thinking_index})
                         yield _sse("content_block_start", {
@@ -378,19 +478,32 @@ class ClaudeProxyStreamMixin:
                             "index": text_index,
                             "content_block": {"type": "text", "text": ""},
                         })
-                    yield _sse("content_block_delta", {
-                        "type": "content_block_delta",
-                        "index": text_index,
-                        "delta": {"type": "text_delta", "text": ev_val},
-                    })
-                    output_chars += len(ev_val)
+                    norm_val = normalizer.feed(ev_val)
+                    if norm_val:
+                        yield _sse("content_block_delta", {
+                            "type": "content_block_delta",
+                            "index": text_index,
+                            "delta": {"type": "text_delta", "text": norm_val},
+                        })
+                        output_chars += len(norm_val)
+
+            # Flush the normalizer so any trailing partial escape is not dropped.
+            tail = normalizer.flush()
+            if tail and text_started:
+                yield _sse("content_block_delta", {
+                    "type": "content_block_delta",
+                    "index": text_index,
+                    "delta": {"type": "text_delta", "text": tail},
+                })
+                accumulated_text.append(tail)
+                output_chars += len(tail)
 
             if thinking_started and not thinking_stopped:
                 thinking_stopped = True
                 yield _sse("content_block_delta", {
                     "type": "content_block_delta",
                     "index": thinking_index,
-                    "delta": {"type": "signature_delta", "signature": ""},
+                    "delta": {"type": "signature_delta", "signature": thinking_signature("".join(accumulated_thought))},
                 })
                 yield _sse("content_block_stop", {"type": "content_block_stop", "index": thinking_index})
             if text_started:
@@ -509,12 +622,12 @@ class ClaudeProxyStreamMixin:
                     msg_id=msg_id,
                     recursion_depth=recursion_depth + 1,
                     start_block_index=next_block_idx,
+                    sampling_params=sampling_params,
                 ):
                     yield chunk
 
             else:
                 if tool_buffers:
-                    finish_reason = "tool_use"
                     logger.info("[ToolCallEmit] Emitting %d tool buffer(s) for model=%s depth=%d",
                                 len(tool_buffers), model_alias, recursion_depth)
                     for tc_idx in sorted(tool_buffers.keys()):
@@ -550,10 +663,35 @@ class ClaudeProxyStreamMixin:
                         next_block_idx += 1
 
                 output_tokens = max(1, output_chars // 4) + len(tool_buffers) * 50
+                final_stop_reason, final_stop_sequence = map_stop_reason(
+                    finish_reason if finish_reason != "tool_use" else "tool_calls",
+                    has_tool_calls=bool(tool_buffers),
+                    stop_sequences=stop_sequences,
+                    emitted_text="".join(accumulated_text),
+                )
+                client_input_tokens = estimate_input_tokens(body)
+                final_usage = compute_usage(body, client_input_tokens, output_tokens)
+
+                # Persist usage so Claude Code traffic shows up in the dashboard.
+                try:
+                    await log_usage(
+                        used_model_id or model_alias,
+                        (used_api_key or "")[-8:],
+                        final_usage["input_tokens"],
+                        final_usage["output_tokens"],
+                        auth_key_prefix,
+                        final_usage["cache_creation_input_tokens"],
+                        final_usage["cache_read_input_tokens"],
+                    )
+                except Exception as e:
+                    logger.warning("[Claude Stream] log_usage failed: %s", e)
+
+                # message_delta carries cumulative usage, so input_tokens must be
+                # repeated here — Anthropic clients read the final totals from it.
                 yield _sse("message_delta", {
                     "type": "message_delta",
-                    "delta": {"stop_reason": finish_reason, "stop_sequence": None},
-                    "usage": {"output_tokens": output_tokens},
+                    "delta": {"stop_reason": final_stop_reason, "stop_sequence": final_stop_sequence},
+                    "usage": final_usage,
                 })
                 yield _sse("message_stop", {"type": "message_stop"})
 
@@ -576,6 +714,11 @@ class ClaudeProxyStreamMixin:
                     for chunk in _dict_to_sse_events(fake_result):
                         yield chunk
                 else:
-                    raise e
+                    # Headers are already committed at this point, so a bare raise
+                    # leaves the client with a truncated stream. Emit a proper
+                    # Anthropic `error` event instead, then close the message.
+                    logger.error("[Claude Stream] emitting SSE error event: %s", e)
+                    yield _sse("error", build_error_event(e, "api_error"))
+                    yield _sse("message_stop", {"type": "message_stop"})
             else:
                 raise e

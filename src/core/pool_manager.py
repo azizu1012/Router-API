@@ -131,6 +131,7 @@ class PoolManager:
         account: Optional[Dict[str, Any]] = None,
         extra_body: Optional[Dict[str, Any]] = None,
         thinking_params: Optional[Dict[str, Any]] = None,
+        sampling_params: Optional[Dict[str, Any]] = None,
     ) -> Dict[str, Any]:
         """
         Handles unified pool calls for non-streaming completions.
@@ -182,7 +183,7 @@ class PoolManager:
                             model_alias, messages, tools, temperature, max_tokens, thinking_config,
                             account, extra_body, pool_mode=True, pool=pool, is_stream=False,
                             attempt=pool_try, thinking_params=thinking_params,
-                            member_override=member,
+                            member_override=member, sampling_params=sampling_params,
                         )
                         member_used = reservation.get("model_alias", member)
                         is_custom = reservation.get("provider") == "custom"
@@ -262,7 +263,7 @@ class PoolManager:
                     resp, api_key_val, model_id_val, input_tokens, reservation = await self._resolve_and_call(
                         model_alias, messages, tools, temperature, max_tokens, thinking_config,
                         account, extra_body, pool_mode=False, is_stream=False, attempt=attempt,
-                        thinking_params=thinking_params,
+                        thinking_params=thinking_params, sampling_params=sampling_params,
                     )
                     return {
                         "response": resp,
@@ -303,6 +304,7 @@ class PoolManager:
         account: Optional[Dict[str, Any]] = None,
         extra_body: Optional[Dict[str, Any]] = None,
         thinking_params: Optional[Dict[str, Any]] = None,
+        sampling_params: Optional[Dict[str, Any]] = None,
     ) -> AsyncIterator[Dict[str, Any]]:
         """
         Handles unified pool calls for streaming completions.
@@ -384,6 +386,8 @@ class PoolManager:
                                 "tools": tools,
                                 "thinking_config": member_tc if not is_custom else None,
                             }
+                            if sampling_params:
+                                kwargs.update(sampling_params)
                             if is_custom:
                                 kwargs["api_base"] = reservation["api_base"]
                                 if extra_body:
@@ -498,6 +502,8 @@ class PoolManager:
                             "tools": tools,
                             "thinking_config": member_tc,
                         }
+                        if sampling_params:
+                            kwargs.update(sampling_params)
 
                         gen = await acompletion(**kwargs)
                         async for chunk in gen:
@@ -544,6 +550,7 @@ class PoolManager:
         attempt: int = 0,
         thinking_params: Optional[Dict[str, Any]] = None,
         member_override: Optional[str] = None,
+        sampling_params: Optional[Dict[str, Any]] = None,
     ) -> Tuple[Any, str, str, int, dict]:
         """
         Internal helper method to resolve the optimal API key and model, check quotas,
@@ -616,6 +623,8 @@ class PoolManager:
                     "tools": tools,
                     "thinking_config": member_tc if not is_custom else None,
                 }
+                if sampling_params:
+                    kwargs.update(sampling_params)
                 if is_custom:
                     kwargs["api_base"] = reservation["api_base"]
                     if extra_body:

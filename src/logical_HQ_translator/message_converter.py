@@ -430,6 +430,23 @@ def _convert_messages(body: Dict[str, Any]) -> Tuple[List[Dict[str, Any]], List[
                 b_type = block.get("type")
                 if b_type == "text":
                     text_parts.append(str(block.get("text", "")))
+                elif b_type == "document":
+                    # Claude Code sends PDFs as document blocks. We have no PDF
+                    # pipeline, but silently dropping the block loses the user's
+                    # content with no signal — surface it as an explicit marker.
+                    src = block.get("source") or {}
+                    title = block.get("title") or src.get("media_type") or "document"
+                    text_parts.append(f"\n[Document attached: {title} — content extraction is not supported by this proxy]\n")
+                elif b_type == "search_result":
+                    # Server-side web search results echoed back by the client.
+                    chunks = block.get("content") or []
+                    if isinstance(chunks, list):
+                        sr_text = "\n".join(
+                            str(c.get("text", "")) for c in chunks if isinstance(c, dict)
+                        )
+                    else:
+                        sr_text = str(chunks)
+                    text_parts.append(sr_text)
                 elif b_type in ("tool_use", "agent_use"):
                     t_id = block.get("id")
                     t_name = block.get("name") or ("Agent" if b_type == "agent_use" else "Task")
