@@ -453,14 +453,6 @@ export default function App() {
                 <span>{t('nav_help', lang) || 'API Reference'}</span>
               </button>
 
-              <button
-                onClick={() => setShowLogsModal(true)}
-                className="btn btn-xs lg:btn-sm btn-ghost justify-start gap-2 lg:gap-3 normal-case font-medium w-auto lg:w-full text-left rounded-xl text-base-content/75 hover:bg-primary/15 hover:text-primary transition-all duration-200 shrink-0 whitespace-nowrap"
-              >
-                <Terminal className="w-4 h-4 text-green-400" />
-                <span>Log Stream (Live)</span>
-              </button>
-              
               <div className="divider hidden lg:flex opacity-20 my-2"></div>
             </>
           )}
@@ -480,6 +472,14 @@ export default function App() {
           >
             <BarChart3 className="w-4 h-4" />
             <span>{t('nav_myuse', lang)}</span>
+          </button>
+
+          <button
+            onClick={() => setShowLogsModal(true)}
+            className="btn btn-xs lg:btn-sm btn-ghost justify-start gap-2 lg:gap-3 normal-case font-medium w-auto lg:w-full text-left rounded-xl text-base-content/75 hover:bg-primary/15 hover:text-primary transition-all duration-200 shrink-0 whitespace-nowrap"
+          >
+            <Terminal className="w-4 h-4 text-green-400" />
+            <span>Log Stream (Live)</span>
           </button>
         </aside>
 

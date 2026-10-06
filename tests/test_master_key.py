@@ -101,11 +101,31 @@ class TestValidator:
 class TestMasterKeyIsNotAToken:
     def test_parser_rejects_a_master_key(self):
         from src.core.accounts import account_manager
-        key = account_manager.generate_key()
-        assert parse_token(key) is None, (
-            "a master key must not parse as a structured token, or the rate "
-            "limits would apply to an account that is meant to bypass them"
-        )
+        for _ in range(500):
+            key = account_manager.generate_key()
+            assert parse_token(key) is None, (
+                "a master key must not parse as a structured token, or the rate "
+                "limits would apply to an account that is meant to bypass them"
+            )
+
+    def test_parser_rejects_crafted_master_key_with_collision_shape(self):
+        """A master key whose 7th-from-last char is '-' must never parse as a token."""
+        # 46 chars total: sk- (3) + 36 chars + '-' (1) + 6 chars (TOKEN_CODE_LEN)
+        crafted = "sk-" + "A" * 36 + "-ABCDEF"
+        assert is_valid_master_key(crafted)
+        assert parse_token(crafted) is None
+
+    def test_account_creation_rejects_collision_length_name(self, temp_db):
+        """Account names of exactly 36 chars must be rejected to prevent token collision."""
+        from src.backend.accounts import create_account_db
+        with pytest.raises(ValueError, match="Account name must not be exactly 36"):
+            create_account_db(name="A" * 36)
+
+        # 35 and 37 chars must be accepted normally
+        acc_35 = create_account_db(name="A" * 35)
+        assert acc_35["name"] == "A" * 35
+        acc_37 = create_account_db(name="A" * 37)
+        assert acc_37["name"] == "A" * 37
 
     def test_both_shapes_coexist(self, temp_db):
         """temp_db, not the real database.

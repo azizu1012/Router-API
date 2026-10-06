@@ -40,14 +40,31 @@ async def dashboard_websocket(websocket: WebSocket):
             channels = data.get("channels", [])
 
             if msg_type == "subscribe":
+                subscribed = []
+                rejected = []
+                user_tier = account.get("tier", "free")
                 for ch in channels:
+                    if ch.startswith("log:"):
+                        logical = ch.split("log:", 1)[1].split(":", 1)[0]
+                        if logical in ("keys", "system", "web") and user_tier != "admin":
+                            rejected.append(ch)
+                            continue
                     await ws_manager.subscribe(websocket, ch)
+                    subscribed.append(ch)
                     logger.debug("[WS] %s subscribed to %s", account.get("name"), ch)
-                await ws_manager.send_to(websocket, {
-                    "type": "subscribed",
-                    "channel": "system",
-                    "channels": channels
-                })
+
+                if rejected:
+                    await ws_manager.send_to(websocket, {
+                        "type": "error",
+                        "channel": "system",
+                        "message": f"Permission denied for log channels: {', '.join(rejected)}"
+                    })
+                if subscribed:
+                    await ws_manager.send_to(websocket, {
+                        "type": "subscribed",
+                        "channel": "system",
+                        "channels": subscribed
+                    })
 
             elif msg_type == "unsubscribe":
                 for ch in channels:

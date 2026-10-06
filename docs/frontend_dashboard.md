@@ -102,3 +102,39 @@ Tab quản lý API Keys ([KeysTab.jsx](file:///d:/AI_Projects/router_api/fronten
   * Do thuật toán chọn key của router (`Double Random`) chỉ bốc key từ Top 50% khỏe mạnh nhất, các key có chỉ số lỗi cao sẽ nằm ở Bottom 50% và bị "đói" yêu cầu (không bao giờ được gọi lại để chạy thành công và tự reset bộ đếm lỗi).
   * Backend đã bổ sung cơ chế tự động quét hồi phục: Nếu một key (hoặc một model của key đó) đã hết thời gian đóng băng và ở trạng thái rảnh rỗi (idle) trong **5 phút (300 giây)**, bộ đếm chỉ số lỗi liên tiếp sẽ tự động được reset về `0` cả trong bộ nhớ đệm lẫn database `usage.db`.
   * Cơ chế này đảm bảo các key gặp lỗi tạm thời sẽ luôn tự động quay trở lại hoạt động bình thường sau thời gian nghỉ ngơi mà không cần quản trị viên can thiệp.
+
+---
+
+## 7. Hệ thống Log Stream (Live Terminal) & Phân quyền Kênh Log theo Tier
+
+Hệ thống Log Stream thời gian thực được xây dựng bằng xterm.js và WebSocket, cho phép theo dõi hoạt động của hệ thống ngay trên giao diện web.
+
+### 7.1. Cấu trúc Component
+* [LogTerminal.jsx](file:///d:/AI_Projects/router_api/frontend-src/src/components/LogTerminal.jsx): Khởi tạo instance terminal của `@xterm/xterm`, hỗ trợ auto-resize thông qua `@xterm/addon-fit`, syntax highlighting ANSI cho các cấp độ log (`ERROR`, `WARN`, `INFO`, `DEBUG`). Khi mount, component tự động gọi `/dashboard/logs/history` với header `X-Dashboard-Token` để lấy 200 dòng lịch sử gần nhất, đồng thời lắng nghe sự kiện WebSocket qua channel `log:<channel>`.
+* [LogHistoryModal.jsx](file:///d:/AI_Projects/router_api/frontend-src/src/components/LogHistoryModal.jsx): Hộp thoại điều khiển stream, cho phép tạm dừng (Pause), xóa màn hình (Clear), tải file log về máy (Download), chọn kênh log và lọc theo endpoint cụ thể.
+
+### 7.2. 5 Kênh Log & Phân quyền Phục vụ (Role-Based Access Control - RBAC)
+
+| Kênh | File tương ứng | Nội dung | Quyền truy cập |
+|---|---|---|---|
+| `proxy` | `logs/proxy.log` | Chuyển đổi giao thức client (Anthropic / OpenAI), routing, response streams | **Tất cả (Admin, Free, Premium)** |
+| `api` | `logs/api_calls.log` | Lịch sử gọi ra downstream API, latency, HTTP status | **Tất cả (Admin, Free, Premium)** |
+| `system` | `logs/system.log` | Vận hành server FastAPI, lifecycle worker, memory, stats | **Chỉ Admin (`tier == "admin"`)** |
+| `keys` | `logs/keys.log` | Xoay vòng key Gemini, trạng thái cooldown, rate limiter, masking | **Chỉ Admin (`tier == "admin"`)** |
+| `web` | `logs/web.log` | Hoạt động đăng nhập, đổi mật khẩu, phân quyền dashboard | **Chỉ Admin (`tier == "admin"`)** |
+
+### 7.3. Bảo mật Hai Tầng (Two-Tier Enforcement)
+1. **Tầng HTTP API (`/dashboard/logs/history`)**:
+   * Kiểm tra session qua `_require_dashboard`.
+   * Nếu user thường truy vấn `keys`, `system`, hoặc `web` → trả về `403 Forbidden` (`Kênh log '...' chỉ dành cho Quản trị viên (Admin)`).
+2. **Tầng WebSocket (`/dashboard/ws`)**:
+   * Khi client gửi bản tin subscribe (`{"type": "subscribe", "channels": ["log:keys", ...]}`), server giải mã token kết nối và kiểm tra tier.
+   * Nếu không phải admin, các kênh nhạy cảm bị từ chối đăng ký và server gửi lại bản tin `{ "type": "error", "message": "Permission denied for log channels: ..." }`.
+3. **Phía Giao diện (Client-Side UX)**:
+   * Dropdown chọn kênh trong [LogHistoryModal.jsx](file:///d:/AI_Projects/router_api/frontend-src/src/components/LogHistoryModal.jsx) tự động lọc bỏ các kênh quản trị khi người dùng không phải là admin, ngăn chặn việc hiển thị nhầm lẫn.
+
+### 7.4. Cơ chế Buffer & Fallback Chống Mất Dữ Liệu
+* **Pre-population**: Khi [LogWatcher.py](file:///d:/AI_Projects/router_api/src/server/log_watcher.py) khởi động, nó tự động đọc 1000 dòng đuôi file gần nhất từ đĩa để nạp vào buffer trong RAM. Khi user vừa mở modal, log lập tức hiển thị thay vì chờ phát sinh request mới.
+* **Disk Tail Fallback**: Khi client yêu cầu số lượng dòng lớn hơn buffer hiện có trong RAM, server tự động đọc phần còn thiếu trực tiếp từ đĩa.
+* **Kênh Chuẩn Hóa (`normalize_channel`)**: Hỗ trợ linh hoạt mọi định dạng channel như `proxy`, `log:proxy`, `proxy.log`, hoặc `log:proxy:endpoint` đảm bảo client và backend luôn đồng bộ.
+

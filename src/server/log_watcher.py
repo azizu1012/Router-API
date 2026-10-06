@@ -19,25 +19,58 @@ _DEFAULT_FILES = {
 }
 
 
+def normalize_channel(channel: str) -> str:
+    """Normalize 'log:proxy', 'proxy.log', or 'proxy' into 'proxy'."""
+    raw = str(channel or "").strip().lower()
+    if raw.startswith("log:"):
+        raw = raw[4:]
+    if raw.endswith(".log"):
+        raw = raw[:-4]
+    if ":" in raw:
+        prefix = raw.split(":", 1)[0]
+        if prefix in _DEFAULT_FILES:
+            return prefix
+    return raw.strip()
+
+
+def _read_tail(filepath: Path, max_lines: int = 1000) -> List[str]:
+    """Read the last N lines from a log file on disk."""
+    if not filepath.exists() or not filepath.is_file():
+        return []
+    try:
+        with open(filepath, "r", encoding="utf-8", errors="replace") as f:
+            lines = f.readlines()
+            return [line.rstrip("\r\n") for line in lines[-max_lines:]]
+    except Exception as e:
+        logger.warning("[LogWatcher] Failed to read tail of %s: %s", filepath, e)
+        return []
+
+
 class LogWatcher:
-    def __init__(self, buffer_size: int = 10000):
+    def __init__(self, buffer_size: int = 10000, log_dir: Path = _LOG_DIR):
         self._tasks: Dict[str, asyncio.Task] = {}
         self._buffers: Dict[str, deque] = {}
         self._buffer_size = buffer_size
+        self._log_dir = log_dir
 
     async def watch_file(self, logical_name: str, filename: str) -> None:
-        filepath = _LOG_DIR / filename
+        filepath = self._log_dir / filename
         if not filepath.exists():
             logger.warning("[LogWatcher] File not found: %s, skipping", filepath)
             return
 
         channel = f"log:{logical_name}"
         buffer = deque(maxlen=self._buffer_size)
+        # Pre-populate history from disk so recent logs are immediately available
+        initial_lines = _read_tail(filepath, max_lines=min(self._buffer_size, 1000))
+        buffer.extend(initial_lines)
         self._buffers[channel] = buffer
+        self._buffers[logical_name] = buffer
 
-        logger.info("[LogWatcher] Watching %s → channel %s", filepath, channel)
+        logger.info("[LogWatcher] Watching %s (pre-loaded %d lines) → channel %s",
+                    filepath, len(initial_lines), channel)
 
-        with open(filepath, "r", encoding="utf-8") as f:
+        with open(filepath, "r", encoding="utf-8", errors="replace") as f:
             f.seek(0, 2)
             while True:
                 line = f.readline()
@@ -65,10 +98,18 @@ class LogWatcher:
         self._tasks.clear()
 
     def get_history(self, channel: str, lines: int = 200) -> List[str]:
-        buffer = self._buffers.get(channel)
-        if not buffer:
-            return []
-        return list(buffer)[-lines:]
+        norm = normalize_channel(channel)
+        buffer = self._buffers.get(f"log:{norm}") or self._buffers.get(norm)
+        if buffer and len(buffer) >= lines:
+            return list(buffer)[-lines:]
+        # Fallback to reading disk if buffer has fewer lines or watcher not yet started
+        fname = _DEFAULT_FILES.get(norm)
+        if fname:
+            tail = _read_tail(self._log_dir / fname, lines)
+            if tail:
+                return tail
+        return list(buffer)[-lines:] if buffer else []
 
 
 log_watcher = LogWatcher()
+

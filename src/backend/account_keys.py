@@ -82,9 +82,12 @@ def parse_token(raw: str) -> Optional[Tuple[str, str]]:
 
     Accepts the exact ``sk-<name>-<6 chars>`` shape only. A code length other
     than TOKEN_CODE_LEN is rejected rather than padded, so a truncated token
-    cannot accidentally match.
+    cannot accidentally match. Master keys are unconditionally rejected so a
+    base64url body containing '-' at index -7 cannot be parsed as a token.
     """
     s = str(raw or "").strip()
+    if is_valid_master_key(s):
+        return None
     if not s.startswith(TOKEN_PREFIX):
         return None
     body = s[len(TOKEN_PREFIX):]

@@ -323,3 +323,46 @@ bien, mat mot model hon la dung hon la lam mat tat ca.
 `tests/test_error_visibility.py` — pin co log khi endpoint list that, khong log
 khi khoe, va phan Gemini van tra ve duoc khi endpoint that. Mutation: revert
 ve `pass` thi test do.
+
+---
+
+## Bug #10: Master Key Va Chạm ~1.1% Bị Parse Nhầm Thành Structured Token (2026-10-06)
+
+### Mô tả
+Khi chạy test suite lớn (`test_master_key.py`), có ~1.1% xác suất test fail ngẫu nhiên: master key bị nhận nhầm thành structured token.
+
+### Root cause
+Master key có format `sk-<43 ký tự urlsafe>`. Do base64url bao gồm cả ký tự `-`, nếu một master key ngẫu nhiên có dấu `-` rơi trúng vị trí cách đuôi 6 ký tự (ví dụ `sk-Vm3BpOw...-ab12cd`), hàm `parse_token()` cũ thực hiện `rsplit("-", 1)` và khớp được `token_code` 6 ký tự. Khi đó master key bị nhận diện nhầm thành structured token của một account rác, dẫn đến tra cứu DB thất bại hoặc bị kẹp rate limit sai.
+
+### Fix
+Trong `src/backend/account_keys.py`:
+1. Master key chuẩn có độ dài đúng 46 ký tự (`sk-` + 43 ký tự urlsafe). Thêm guard kiểm tra độ dài và tiền tố để loại trừ ngay lập tức trước khi parse.
+2. Kiểm tra tính hợp lệ của token code và name: phải là alphanumeric thuần túy, không chứa ký tự đặc biệt hoặc cấu trúc master key.
+
+### Test
+`tests/test_master_key.py` — sinh 5000 master key ngẫu nhiên liên tiếp để chứng minh 0% va chạm.
+
+---
+
+## Bug #11: Hệ Thống Log Stream & Web Dashboard Log Không Hoạt Động (2026-10-06)
+
+### Mô tả
+Giao diện Log Stream trên WebUI không xem được log, terminal trắng trơn, không nhận websocket message và không tải được log history.
+
+### Root cause
+1. `LogWatcher.get_history()` tra cứu key `proxy`, trong khi bộ nhớ đệm lưu key dạng `log:proxy`, dẫn đến kết quả tra cứu rỗng 100%.
+2. `LogWatcher.watch_file()` khi khởi động seek thẳng đến EOF (`f.seek(0, 2)`) mà không đọc tail trước đó, dẫn đến buffer trong RAM ban đầu luôn rỗng.
+3. `LogTerminal.jsx` gọi `/dashboard/logs/history?file=proxy.log`, nhưng backend route chỉ chấp nhận param `channel`.
+4. Frontend gọi `data.lines.forEach(...)`, nhưng backend lại trả về `lines: len(history)` (kiểu số nguyên đếm dòng), khiến client văng TypeError crash app.
+5. Frontend fetch log thiếu header `X-Dashboard-Token`, bị backend chặn 401 Unauthorized.
+6. Thiếu cơ chế phân quyền RBAC: user thường có thể xem lén log nhạy cảm chứa key API và cấu hình hệ thống.
+
+### Fix
+1. Thêm hàm `normalize_channel()` xử lý mọi biến thể (`proxy`, `log:proxy`, `proxy.log`, `keys:endpoint`).
+2. Bổ sung `_read_tail()` nạp trước 1000 dòng từ đĩa vào RAM buffer ngay lúc server khởi động; đồng thời cung cấp fallback đọc disk tail khi buffer RAM chưa đủ.
+3. Sửa `/dashboard/logs/history` nhận cả `channel` lẫn `file`, trả về đồng thời `history: [...]` và `lines: [...]`.
+4. Gửi đầy đủ `X-Dashboard-Token` và `Authorization: Bearer` từ frontend.
+5. Phân quyền RBAC nghiêm ngặt: Kênh `proxy` và `api` cho mọi tier; kênh `system`, `keys`, `web` chỉ dành cho Admin (trả về 403 Forbidden trên HTTP và từ chối subscription trên WebSocket). Dropdown trên frontend tự động ẩn các kênh này đối với user thường.
+
+### Test
+`tests/test_log_permissions.py` (9 tests pass 100%), AST layering test `tests/test_layering.py`.

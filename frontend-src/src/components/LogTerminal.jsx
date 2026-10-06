@@ -114,20 +114,33 @@ export default function LogTerminal({
         // If filtering by endpoint, check the line contains our endpoint
         if (endpoint && !msg.line.toLowerCase().includes(endpoint.toLowerCase())) return;
         writeLine(msg.line);
+      } else if (msg.type === 'error') {
+        writeLine(`\x1b[31m[Error] ${msg.message || 'Subscription failed'}\x1b[0m`);
       }
     });
 
     // Load history
-    const params = new URLSearchParams({ file: `${logFile}.log`, lines: '200' });
+    const params = new URLSearchParams({ channel: logFile, lines: '200' });
     if (endpoint) params.set('endpoint', endpoint);
-    fetch(`/dashboard/logs/history?${params}`)
-      .then(r => r.json())
-      .then(data => {
-        if (data.lines) {
-          data.lines.forEach(line => writeLine(line));
+    fetch(`/dashboard/logs/history?${params}`, {
+      headers: {
+        'X-Dashboard-Token': token,
+        'Authorization': `Bearer ${token}`
+      }
+    })
+      .then(r => {
+        if (!r.ok) {
+          throw new Error(`HTTP ${r.status}`);
         }
+        return r.json();
       })
-      .catch(() => {});
+      .then(data => {
+        const historyList = Array.isArray(data.history) ? data.history : (Array.isArray(data.lines) ? data.lines : []);
+        historyList.forEach(line => writeLine(line));
+      })
+      .catch(err => {
+        writeLine(`\x1b[33m[Notice] Could not load log history: ${err.message}\x1b[0m`);
+      });
 
     return unsub;
   }, [connected, token, endpoint, logFile, writeLine, subscribe]);

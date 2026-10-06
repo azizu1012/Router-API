@@ -3,24 +3,36 @@ import { Terminal, X, Download, Pause, Play, Trash2 } from 'lucide-react';
 import { useApp } from '../context/AppContext';
 import LogTerminal from './LogTerminal';
 
-const LOG_FILES = [
-  { id: 'proxy', label: 'Proxy' },
-  { id: 'system', label: 'System' },
-  { id: 'api', label: 'API Calls' },
-  { id: 'keys', label: 'Keys' },
-  { id: 'web', label: 'Web' },
+const LOG_CHANNELS = [
+  { id: 'proxy', label: 'Proxy', adminOnly: false },
+  { id: 'api', label: 'API Calls', adminOnly: false },
+  { id: 'system', label: 'System', adminOnly: true },
+  { id: 'keys', label: 'Keys', adminOnly: true },
+  { id: 'web', label: 'Web', adminOnly: true },
 ];
 
 export default function LogHistoryModal({ endpoint: initialEndpoint, onClose }) {
-  const { token, lang } = useApp();
+  const { token, lang, user } = useApp();
+  const isAdmin = user?.tier === 'admin';
+  const availableChannels = LOG_CHANNELS.filter(c => isAdmin || !c.adminOnly);
+
   const [activeFile, setActiveFile] = useState('proxy');
   const [paused, setPaused] = useState(false);
   const [activeEndpoint, setActiveEndpoint] = useState(initialEndpoint || '');
   const [endpoints, setEndpoints] = useState([]);
 
   useEffect(() => {
+    if (!isAdmin && ['system', 'keys', 'web'].includes(activeFile)) {
+      setActiveFile('proxy');
+    }
+  }, [isAdmin, activeFile]);
+
+  useEffect(() => {
     fetch('/dashboard/endpoints', {
-      headers: { Authorization: `Bearer ${token}` }
+      headers: {
+        'X-Dashboard-Token': token,
+        'Authorization': `Bearer ${token}`
+      }
     })
       .then(r => r.json())
       .then(data => setEndpoints(data.endpoints || []))
@@ -47,7 +59,7 @@ export default function LogHistoryModal({ endpoint: initialEndpoint, onClose }) 
               onChange={(e) => setActiveFile(e.target.value)}
               className="select select-ghost select-xs text-[10px] font-bold bg-base-200/30 rounded-lg"
             >
-              {LOG_FILES.map(f => (
+              {availableChannels.map(f => (
                 <option key={f.id} value={f.id}>{f.label}</option>
               ))}
             </select>

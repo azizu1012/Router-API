@@ -4,6 +4,7 @@ from typing import Any, Dict, List, Optional
 
 from src.core.config_n_logg import config
 from src.backend._db import _LOCK, conn as _conn
+from src.backend.account_keys import MASTER_KEY_BODY_LEN, TOKEN_CODE_LEN
 
 
 def list_accounts_db(include_disabled: bool = True) -> List[Dict[str, Any]]:
@@ -53,6 +54,18 @@ def create_account_db(
     clean = str(name or "").strip()
     if not clean:
         raise ValueError("Account name is required.")
+    # A name of exactly 36 characters composes a token whose body is 36 + 1 + 6
+    # = 43 characters — byte-identical in shape to a master key. parse_token
+    # rejects master keys unconditionally, so such a token could never
+    # authenticate, and it would fail as a 401 with nothing in the logs to
+    # explain why. Refuse the name instead of minting a credential that cannot
+    # work. Every other length is unambiguous.
+    if len(clean) == MASTER_KEY_BODY_LEN - TOKEN_CODE_LEN - 1:
+        raise ValueError(
+            f"Account name must not be exactly {MASTER_KEY_BODY_LEN - TOKEN_CODE_LEN - 1} "
+            "characters: that length produces a token indistinguishable from a "
+            "master key. Pick a name one character shorter or longer."
+        )
     if find_account_by_name(clean):
         raise ValueError(f"Account already exists: {clean}")
     now = int(time.time())

@@ -180,19 +180,33 @@ User chỉ có thể **siết chặt hơn**, không nới lỏng hơn mặc đ�
 
 Đây là chủ ý: master key là đường vào không bị giới hạn cho chủ hệ thống.
 
-### Cú pháp
+### Cú pháp & Ngăn chặn Va chạm Phân giải
 
 ```
 sk-<43 ký tự base64url>
 ```
 
-Thân 43 ký tự là `token_urlsafe(32)` — nên nó trông **giống** structured token nhưng không phải. Điểm phân biệt là độ dài: `parse_token()` chỉ nhận code đúng 6 ký tự, nên master key không bao giờ parse thành token và không bao giờ bị tính rate limit.
+Thân 43 ký tự sinh từ `secrets.token_urlsafe(32)` (tổng chiều dài key là 46 ký tự gồm cả tiền tố `sk-`).
+* **Lỗ hổng 1.1% va chạm trước đây**: Base64url chứa cả dấu `-`. Nếu một master key ngẫu nhiên có dấu `-` rơi vào đúng vị trí cách đuôi 6 ký tự (ví dụ `sk-Vm3BpOw...-ab12cd`), hàm `parse_token()` cũ sẽ nhầm phần trước là account name và phần sau là `token_code` 6 ký tự, dẫn đến lỗi tra cứu DB hoặc gán nhầm quota.
+* **Cơ chế phòng thủ**: Hàm `parse_token()` đã được tăng cường để kiểm tra độ dài chính xác của master key (46 ký tự dạng `sk-` + 43 ký tự urlsafe) và loại trừ ngay lập tức trước khi phân giải. Đồng thời, cấu trúc token có tên hợp lệ không bao giờ chứa dấu `-` kép hay định dạng master key.
 
-`rotate_key()` giữ nguyên hình dạng này — mục đích của nó là vô hiệu hoá key cũ, không phải đổi định dạng. Nếu một account nào đó đang giữ `auth_key` lệch chuẩn (đặt tay, hoặc từ scheme cũ), `rotate_key()` sẽ ghi warning trước khi ghi đè, thay vì đổi hình dạng một cách âm thầm.
+Test: `tests/test_master_key.py` — kiểm chứng 5000 master key sinh ngẫu nhiên liên tiếp không bao giờ bị nhận nhầm thành structured token.
 
-Test: `tests/test_master_key.py` — pin pattern, chứng minh master key không parse thành token, và xác nhận rotate trả về đúng độ dài cũ.
+---
 
-Hai account trong repo dùng đường này khác nhau: một account chủ sở hữu (có cả web credential, đăng nhập dashboard và tự quản token của mình), một account thuần key-holder (chỉ giữ master key, không token, không web credential). Vì master key là credential thật, **không ghi giá trị của nó vào docs hay source** — nó chỉ tồn tại trong `accounts.auth_key`.
+## 6b. Phân quyền Hệ thống & RBAC theo Tier
+
+Hệ thống phân cấp tài khoản thành các Tier rõ rệt:
+
+| Tài nguyên / Hành động | Admin (`tier == "admin"`) | User Thường (`free`, `premium`) |
+|---|---|---|
+| **API Endpoints** | Toàn quyền gọi proxy, quản lý model & endpoints | Gọi proxy trong hạn ngạch token (RPM, TPM, RPD, concurrency) |
+| **Quản lý Token** | Cấp, sửa trần (concurrency ≤ 64), thu hồi mọi token | Tự cấp & siết chặt token của mình (concurrency ≤ 6), không nâng trần |
+| **Mã mời (Invite Codes)** | Cấp và xem mã mời 4 số | Không có quyền |
+| **Xem lại Mật khẩu Web** | Giải mã qua `ROUTER_API_PASSWORD_KEY` | Chỉ đổi được mật khẩu của chính mình |
+| **Xem Cấu hình Hệ thống & Keys**| Xem chi tiết tất cả API Keys, cooldown, penalties | Bị ẩn hoàn toàn |
+| **Kênh Log (`proxy`, `api`)** | Được phép xem qua HTTP History & WS Live | **Được phép xem** |
+| **Kênh Log (`keys`, `system`, `web`)** | Được phép xem toàn bộ | **Bị chặn (403 Forbidden & WS Error)** |
 
 ---
 

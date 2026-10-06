@@ -2,7 +2,7 @@ import asyncio
 import time
 from typing import Any, Dict, Optional
 
-from fastapi import Request
+from fastapi import Request, HTTPException
 from fastapi.responses import JSONResponse
 
 from src.core.config_n_logg import config
@@ -600,12 +600,35 @@ async def dashboard_endpoints(request: Request):
     return {"endpoints": safe}
 
 
+ALLOWED_USER_LOG_CHANNELS = {"proxy", "api"}
+
+
 @app.get("/dashboard/logs/history")
-async def dashboard_logs_history(request: Request, channel: str = "proxy", lines: int = 200):
-    _require_dashboard(request)
-    from ...log_watcher import log_watcher
-    history = log_watcher.get_history(channel, max(1, min(5000, lines)))
-    return {"channel": channel, "lines": len(history), "history": history}
+async def dashboard_logs_history(
+    request: Request,
+    channel: Optional[str] = None,
+    file: Optional[str] = None,
+    lines: int = 200,
+):
+    payload = _require_dashboard(request)
+    raw_target = channel or file or "proxy"
+    from ...log_watcher import log_watcher, normalize_channel
+    logical_name = normalize_channel(raw_target) or "proxy"
+
+    is_admin = payload.get("tier") == "admin"
+    if not is_admin and logical_name not in ALLOWED_USER_LOG_CHANNELS:
+        raise HTTPException(
+            status_code=403,
+            detail=f"Kênh log '{logical_name}' chỉ dành cho Quản trị viên (Admin). User thường chỉ có quyền xem 'proxy' và 'api'."
+        )
+
+    history = log_watcher.get_history(logical_name, max(1, min(5000, lines)))
+    return {
+        "channel": logical_name,
+        "count": len(history),
+        "history": history,
+        "lines": history,
+    }
 
 
 @app.get("/dashboard/my-stats")
