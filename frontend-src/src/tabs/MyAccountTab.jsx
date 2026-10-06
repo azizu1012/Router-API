@@ -3,7 +3,7 @@ import { useApp } from '../context/AppContext';
 import { t } from '../utils/i18n';
 import { fmt } from '../utils/format';
 import { api } from '../utils/api';
-import { Wifi, Zap, Activity, HelpCircle, KeyRound, Plus } from 'lucide-react';
+import { Wifi, Zap, Activity, HelpCircle, KeyRound } from 'lucide-react';
 import Card from '../components/Card';
 import Badge from '../components/Badge';
 import Loading from '../components/Loading';
@@ -13,6 +13,9 @@ export default function MyAccountTab() {
   const { tabData, token, lang, refreshTab, wsHook, user, logout } = useApp();
   const data = tabData.myacc;
   const [liveActivity, setLiveActivity] = useState(null);
+  // Declared here (not next to the effect that sets it) so it can never be
+  // dropped again by someone deleting an unrelated block nearby.
+  const [resetCountdown, setResetCountdown] = useState('');
 
   // ── Change Password ──
   const [isChangingPassword, setIsChangingPassword] = useState(false);
@@ -316,23 +319,15 @@ export default function MyAccountTab() {
 
       {/* Auth tokens — the user-facing half of the token refactor */}
       <Card variant="glass" padding="lg">
-        <div className="flex items-center justify-between gap-3 mb-3">
-          <div>
-            <h3 className="font-extrabold text-sm flex items-center gap-2">
-              <KeyRound className="w-4 h-4 text-primary" /> Auth tokens của tôi
-            </h3>
-            <p className="text-[11px] text-base-content/55 mt-0.5">
-              Mỗi token có hạn mức riêng (concurrency, RPM, TPM, RPD). Bạn được
-              tạo token và siết chặt hạn mức; không thể nới rộng hơn hạn mức
-              tài khoản.
-            </p>
-          </div>
-          <button
-            onClick={() => setTokenMsg(null)}
-            className="btn btn-primary btn-sm gap-1.5 font-bold shrink-0"
-          >
-            <Plus className="w-3.5 h-3.5" /> Tạo token
-          </button>
+        <div className="mb-3">
+          <h3 className="font-extrabold text-sm flex items-center gap-2">
+            <KeyRound className="w-4 h-4 text-primary" /> Auth tokens của tôi
+          </h3>
+          <p className="text-[11px] text-base-content/55 mt-0.5">
+            Mỗi token có hạn mức riêng (concurrency, RPM, TPM, RPD). Bạn được
+            tạo token và siết chặt hạn mức; không thể nới rộng hơn hạn mức
+            tài khoản.
+          </p>
         </div>
 
         {tokenMsg && (
@@ -349,6 +344,7 @@ export default function MyAccountTab() {
           tokens={tokens}
           loading={tokensLoading}
           scope="user"
+          accountTier={data?.tier || 'free'}
           accountName={data.name}
           onIssue={handleIssueToken}
           onUpdate={handleUpdateToken}

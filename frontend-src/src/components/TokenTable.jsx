@@ -6,7 +6,8 @@ import {
 import { fmt } from '../utils/format';
 import { api } from '../utils/api';
 
-const TIERS = ['free', 'premium', 'admin'];
+const ALL_TIERS = ['free', 'premium', 'admin'];
+const TIER_RANKS = { free: 0, premium: 1, admin: 2 };
 
 const LIMITS = {
   user: {
@@ -61,13 +62,21 @@ function Field({ label, value, min, max, onChange, disabled, hint }) {
  * is already smaller than the interval — so it is disabled and annotated
  * rather than silently ignored.
  */
-function TokenForm({ initial, isAdmin, submitLabel, onSubmit, onCancel, busy }) {
+function TokenForm({ initial, isAdmin, accountTier = 'free', submitLabel, onSubmit, onCancel, busy }) {
   const caps = isAdmin ? LIMITS.admin : LIMITS.user;
   const d = isAdmin ? DEFAULTS.admin : DEFAULTS.user;
 
+  const maxRank = isAdmin ? 2 : (TIER_RANKS[accountTier] ?? 0);
+  const availableTiers = ALL_TIERS.filter((t) => TIER_RANKS[t] <= maxRank);
+
+  const initialTier = initial?.tier;
+  const defaultTier = initialTier
+    ? (TIER_RANKS[initialTier] <= maxRank ? initialTier : (availableTiers[availableTiers.length - 1] || 'free'))
+    : (availableTiers[availableTiers.length - 1] || 'free');
+
   const [form, setForm] = useState(() => ({
     label: initial?.label || '',
-    tier: initial?.tier || 'free',
+    tier: defaultTier,
     max_concurrency: initial?.max_concurrency ?? d.max_concurrency,
     rpm: initial?.rpm ?? d.rpm,
     tpm: initial?.tpm ?? d.tpm,
@@ -120,12 +129,14 @@ function TokenForm({ initial, isAdmin, submitLabel, onSubmit, onCancel, busy }) 
         <label className="form-control w-full">
           <span className="label-text font-bold text-[11px] uppercase text-base-content/60 mb-1">Tier</span>
           <select className="select select-bordered select-sm text-xs"
-                  value={form.tier} disabled={busy}
+                  value={form.tier} disabled={busy || availableTiers.length <= 1}
                   onChange={(e) => set('tier')(e.target.value)}>
-            {TIERS.map((t) => <option key={t} value={t}>{t}</option>)}
+            {availableTiers.map((t) => <option key={t} value={t}>{t}</option>)}
           </select>
           <span className="text-[10px] text-base-content/40 mt-0.5">
-            Quyết định pool key nào token được dùng
+            {availableTiers.length <= 1
+              ? `Cố định theo gói ${accountTier} của tài khoản`
+              : 'Quyết định pool key nào token được dùng'}
           </span>
         </label>
       </div>
@@ -318,7 +329,7 @@ export function InvitePanel({ token, onIssued }) {
  * to the account's own budget so a token can only be tightened, never widened.
  */
 export default function TokenTable({
-  tokens, loading, scope = 'user', accountName,
+  tokens, loading, scope = 'user', accountTier = 'free', accountName,
   onIssue, onUpdate, onRevoke,
 }) {
   const [mode, setMode] = useState(null);       // {type:'issue'} | {type:'edit', token}
@@ -377,13 +388,13 @@ export default function TokenTable({
 
   return (
     <div className="space-y-3">
-      {isAdmin && mode?.type !== 'issue' && (
+      {onIssue && mode?.type !== 'issue' && (
         <div className="flex justify-end">
           <button
             onClick={() => { setMsg(null); setMode({ type: 'issue' }); }}
             className="btn btn-primary btn-sm gap-1.5 font-bold"
           >
-            <Plus className="w-3.5 h-3.5" /> Cấu token
+            <Plus className="w-3.5 h-3.5" /> Tạo token mới
           </button>
         </div>
       )}
@@ -395,6 +406,7 @@ export default function TokenTable({
           </h4>
           <TokenForm
             isAdmin={isAdmin}
+            accountTier={accountTier}
             busy={busy}
             submitLabel="Tạo token"
             onSubmit={handleIssue}
@@ -547,6 +559,7 @@ export default function TokenTable({
           <TokenForm
             initial={mode.token}
             isAdmin={isAdmin}
+            accountTier={accountTier}
             busy={busy}
             submitLabel="Lưu"
             onSubmit={handleUpdate}

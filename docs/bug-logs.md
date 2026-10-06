@@ -366,3 +366,39 @@ Giao diện Log Stream trên WebUI không xem được log, terminal trắng tr�
 
 ### Test
 `tests/test_log_permissions.py` (9 tests pass 100%), AST layering test `tests/test_layering.py`.
+
+---
+
+## Bug #12: Tab My Account Bị Crash Khi Mount & Bố Cục Accounts Quá Tải (2026-10-06)
+
+### Mô tả
+1. Người dùng truy cập trang My Account (`/stats/my-account`) bị trắng trang, không mở lên được hoặc tưởng bị trùng với trang quản trị accounts.
+2. Giao diện quản lý tài khoản admin (`/stats/accounts`) cũ là bảng 10 cột co cụm `table-fixed`, cột thao tác chỉ rộng 8% nhưng nhồi nhét tới 7 nút icon không nhãn; danh sách token bật ở tận đáy trang xa tầm mắt; các thông báo token/mật khẩu dùng `alert()` dễ bị mất.
+
+### Root cause
+1. **My Account Crash (`ReferenceError`)**: Trong commit `1b0a62a` (gỡ bỏ dropdown search-engine thừa), việc xoá khối state `wsLoading` đã vô tình xoá mất dòng khai báo `const [resetCountdown, setResetCountdown] = useState('');`. Trong khi đó, `useEffect` vẫn gọi `setResetCountdown(...)` và thẻ hiển thị hạn mức RPD vẫn đọc `resetCountdown`. Khi mount component, trình duyệt văng lỗi `ReferenceError: resetCountdown is not defined`, làm React crash toàn bộ cây component của tab My Account.
+2. **Lỗi Đồng Bộ URL & Quyền Truy Cập Tab**:
+   - `AppContext.jsx` thiếu mapping cho tab `/stats/help` (`ApiHelpTab`), khiến việc chuyển tab hoặc reload trang bị rơi về `/stats`.
+   - Tab Models (`md`) bị sót khỏi danh sách `isAdminTab`, dẫn đến user thường có thể vào được bằng URL trực tiếp.
+   - Quá trình silent poll 1.5s của My Account gán lại `setUser({ name, tier })` thiếu trường `must_change_password`, làm mất banner cảnh báo đổi mật khẩu sau 1.5s.
+3. **Bố cục AccountsTab cũ không tối ưu**: Bảng dữ liệu quá nhiều cột ngang, không phân cấp thông tin; token table hiển thị tách rời dưới đáy bảng; thiếu cơ chế copy master key an toàn.
+
+### Fix
+1. **Khôi phục State trong [MyAccountTab.jsx](file:///d:/AI_Projects/router_api/frontend-src/src/tabs/MyAccountTab.jsx)**: Khai báo lại `const [resetCountdown, setResetCountdown] = useState('');` độc lập, ngăn ngừa lỗi ReferenceError khi mount.
+2. **Chuẩn hóa Routing trong [AppContext.jsx](file:///d:/AI_Projects/router_api/frontend-src/src/context/AppContext.jsx)**:
+   - Bổ sung URL mapping 2 chiều cho `/stats/help`.
+   - Bổ sung tab `md` vào danh sách `isAdminTab` cả lúc validate URL lẫn lúc login.
+   - Đồng bộ đầy đủ `must_change_password` trong chu kỳ poll profile.
+3. **Refactor Bố cục [AccountsTab.jsx](file:///d:/AI_Projects/router_api/frontend-src/src/tabs/AccountsTab.jsx) theo mô hình Master–Detail**:
+   - Tách component chi tiết độc lập [AccountDetailPanel.jsx](file:///d:/AI_Projects/router_api/frontend-src/src/components/AccountDetailPanel.jsx).
+   - Cột trái (Master): Danh sách tài khoản có avatar, tier badge, trạng thái kết nối, RPM/TPM/RPD vắn tắt, thanh tìm kiếm thông minh, bộ lọc Tier/Status và nút sắp xếp theo trường.
+   - Cột phải (Detail): Chi tiết tài khoản được chọn, chia thành 4 phân vùng rõ rệt:
+     + Thẻ định danh & Nút bật/tắt (Enable/Disable), Sửa hạn mức.
+     + Hạn mức tài khoản (RPM / TPM / RPD).
+     + Quản lý Auth Tokens riêng của tài khoản đó (Tạo, Sửa, Thu hồi).
+     + Bảo mật & Đăng nhập (Mật khẩu web với 2-step reveal, cờ yêu cầu đổi MK, copy & cấp mới Master Key).
+     + Vùng nguy hiểm (Xóa tài khoản vĩnh viễn với xác nhận).
+   - Banner hiển thị Secret độc lập, không tự biến mất để tránh mất token/key.
+
+### Test
+Build Vite bundle thành công (`npm run build`), kiểm tra `no-undef` bằng ESLint, toàn bộ 579 tests pytest pass 100%.

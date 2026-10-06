@@ -8,9 +8,12 @@ from fastapi.responses import JSONResponse
 from src.core.config_n_logg import config
 from src.core.limits import account_limiter, token_limiter
 from src.core.accounts import account_manager
+from src.core.tier_limits import normalise_tier
 from src.backend.accounts import (
     find_account_by_key, find_account_by_name, list_accounts_db
 )
+
+TIER_RANK = {"free": 0, "premium": 1, "admin": 2}
 from src.backend.account_keys import (
     DEFAULT_MAX_CONCURRENCY,
     DEFAULT_MIN_INTERVAL_SECONDS,
@@ -241,10 +244,15 @@ async def my_create_key(request: Request):
     if not is_admin:
         interval = max(interval, DEFAULT_MIN_INTERVAL_SECONDS)
 
+    account_tier = normalise_tier(account.get("tier", "free"))
+    requested_tier = normalise_tier(body.get("tier") or account_tier)
+    if not is_admin and TIER_RANK.get(requested_tier, 0) > TIER_RANK.get(account_tier, 0):
+        requested_tier = account_tier
+
     row = create_key_db(
         account["account_id"],
         name=account["name"],
-        tier=account.get("tier", "free"),
+        tier=requested_tier,
         rpm=rpm,
         tpm=tpm,
         rpd=rpd,
@@ -256,6 +264,7 @@ async def my_create_key(request: Request):
     return {
         "key_id": row["key_id"],
         "token": compose_token(row["name"], row["token_code"]),
+        "tier": row["tier"],
         "max_concurrency": row["max_concurrency"],
         "rpm": row["rpm"],
         "tpm": row["tpm"],
@@ -321,6 +330,17 @@ async def my_update_key(request: Request):
         if clamped is not None:
             updates[field] = clamped
 
+    if "tier" in body:
+        account_tier = normalise_tier(account.get("tier", "free"))
+        new_tier = normalise_tier(body["tier"])
+        if is_admin or TIER_RANK.get(new_tier, 0) <= TIER_RANK.get(account_tier, 0):
+            updates["tier"] = new_tier
+        else:
+            return JSONResponse(
+                status_code=400,
+                content={"error": f"Token tier cannot exceed account tier ({account_tier})"}
+            )
+
     if "label" in body:
         updates["label"] = str(body["label"])[:64]
     if "enabled" in body:
@@ -343,6 +363,7 @@ async def my_update_key(request: Request):
     return {
         "ok": True,
         "key_id": key_id,
+        "tier": (updated or {}).get("tier"),
         "max_concurrency": (updated or {}).get("max_concurrency"),
         "rpm": (updated or {}).get("rpm"),
         "tpm": (updated or {}).get("tpm"),

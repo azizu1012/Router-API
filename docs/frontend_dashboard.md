@@ -83,9 +83,44 @@ UI disable ô nhập và giải thích ngay tại chỗ thay vì im lặng bỏ 
 
 ### Token được tải theo yêu cầu
 
-`/dashboard/accounts` không nhúng token của mọi account — payload sẽ nhân lên theo số account. Thay vào đó `TokenTable` chỉ gọi `/dashboard/admin/accounts/keys` khi admin bấm vào một account.
+`/dashboard/accounts` không nhúng token của mọi account — payload sẽ nhân lên theo số account. Thay vào đó `AccountDetailPanel` chỉ gọi `/dashboard/admin/accounts/keys` cho **account đang được chọn**.
+
+### Bố cục tab Accounts (master–detail)
+
+Bản cũ là một bảng 10 cột `table-fixed`: cột "Hành động" chỉ rộng 8% mà chứa 7 nút icon không nhãn, token mở ra ở **dưới cùng** trang (xa chỗ bấm), và mọi kết quả đều là `alert()`. Bản mới tách theo ý định của admin:
+
+| Vùng | File | Nội dung |
+|---|---|---|
+| Header | `AccountsTab.jsx` | Nút **Mã mời** và **Thêm** (cả hai là panel gập, không chiếm chỗ khi không dùng) |
+| Danh sách (trái) | `AccountsTab.jsx` | Chip lọc tier kèm số đếm, tìm kiếm, lọc trạng thái, sắp xếp; mỗi dòng: avatar, tên, tier, chấm trạng thái, biểu tượng "đang yêu cầu đổi MK" |
+| Chi tiết (phải) | `components/AccountDetailPanel.jsx` | Hạn mức → Auth tokens → Bảo mật & đăng nhập → Vùng nguy hiểm |
+
+- Từ `lg` trở lên là 2 cột; dưới `lg` danh sách xếp trên chi tiết và chọn một dòng sẽ tự cuộn tới phần chi tiết.
+- Lựa chọn được giữ qua các lần poll; nếu account đang chọn bị xoá hoặc bị lọc mất, panel rơi về dòng đầu tiên đang hiển thị.
+- Kết quả thao tác hiện ở banner trong trang. **Secret (master key mới, token mới) hiện ở banner riêng không tự tắt** — trước đây chúng nằm trong `alert()` nên bấm nhầm là mất.
+- Xoá và cấp mới master key vẫn qua `window.confirm` vì là thao tác không hoàn tác được.
 
 ---
+
+## 5b. Tab My Account và routing URL
+
+| Tab | URL |
+|---|---|
+| Accounts (admin) | `/stats/accounts` |
+| My Account | `/stats/my-account` |
+| API Reference | `/stats/help` |
+
+Hai tab Accounts và My Account là **hai trang khác nhau**: một là quản lý toàn bộ account (admin), một là hồ sơ + token + hạn mức của chính người đăng nhập. Chúng dùng chung một route server (`/stats/{path}` luôn trả `index.html`) và phân biệt hoàn toàn ở phía client qua `getTabFromPath` / `getPathFromTab` trong `AppContext.jsx`.
+
+### Vì sao My Account từng không mở được
+
+`MyAccountTab.jsx` gọi `setResetCountdown(...)` trong một `useEffect` và đọc `resetCountdown` trong thẻ hạn mức, nhưng **`useState` của nó không còn tồn tại**. Commit `1b0a62a` (gỡ UI search-engine) xoá khối `wsLoading` và xoá luôn dòng `resetCountdown` nằm ngay cạnh. Build vẫn thành công vì thiếu khai báo chỉ là lỗi lúc chạy: tab ném `ReferenceError` khi mount, React gỡ cả cây component và người dùng thấy trang trống. Xem Bug #12 trong [bug-logs.md](bug-logs.md).
+
+Các lỗi routing đi kèm đã sửa cùng lúc:
+- `help` không có trong bản đồ URL nên bấm API Reference đẩy `/stats` và reload rơi về Overview.
+- `md` (Models) không nằm trong danh sách tab chỉ-admin nên user thường vào được bằng URL.
+- Poll 1.5s của My Account ghi đè `user` bằng `{name, tier}` và làm mất cờ `must_change_password`, khiến banner đổi mật khẩu biến mất sau lần poll đầu.
+
 
 ## 6. Bảng Dữ liệu Keys & Cơ Chế Khôi Phục Lỗi Tự Động
 Tab quản lý API Keys ([KeysTab.jsx](file:///d:/AI_Projects/router_api/frontend-src/src/tabs/KeysTab.jsx)) được thiết kế lại để giải quyết triệt để lỗi chồng chéo chữ trên màn hình nhỏ:

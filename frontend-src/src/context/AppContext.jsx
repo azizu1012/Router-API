@@ -18,6 +18,7 @@ const getTabFromPath = (path) => {
   if (normalized === '/stats/my-usage') return 'myuse';
   if (normalized === '/stats/model-config') return 'md';
   if (normalized === '/stats/settings') return 'st';
+  if (normalized === '/stats/help') return 'help';
   return null;
 };
 
@@ -34,6 +35,7 @@ const getPathFromTab = (tab) => {
     case 'myuse': return '/stats/my-usage';
     case 'md': return '/stats/model-config';
     case 'st': return '/stats/settings';
+    case 'help': return '/stats/help';
     default: return '/stats';
   }
 };
@@ -181,7 +183,7 @@ export function AppProvider({ children }) {
   // Validate activeTab accessibility when user/tier loads or changes
   useEffect(() => {
     if (user) {
-      const isAdminTab = ['ov', 'ks', 'ac', 'us', 'ep', 'pe', 'mu', 'st'].includes(activeTab);
+      const isAdminTab = ['ov', 'ks', 'ac', 'us', 'ep', 'pe', 'mu', 'md', 'st'].includes(activeTab);
       if (isAdminTab && user.tier !== 'admin') {
         setActiveTab('myacc');
       }
@@ -240,7 +242,7 @@ export function AppProvider({ children }) {
           data = await api('/dashboard/me', {}, token);
           setTabData(prev => ({ ...prev, myacc: data }));
           // If we loaded current user profile, sync it to context user state too
-          setUser({ name: data.name, tier: data.tier });
+          setUser({ name: data.name, tier: data.tier, must_change_password: data.must_change_password });
           break;
         case 'myuse':
           data = await api('/dashboard/my-stats?days=30', {}, token);
@@ -317,9 +319,9 @@ export function AppProvider({ children }) {
     setToken(data.token);
     setUser({ name: data.name, tier: data.tier, must_change_password: data.must_change_password });
     // Default routing: preserve requested tab if authorized, otherwise redirect
-    const isAdminTab = ['ov', 'ks', 'ac', 'us', 'ep', 'pe', 'mu', 'st'].includes(activeTab);
+    const isAdminTab = ['ov', 'ks', 'ac', 'us', 'ep', 'pe', 'mu', 'md', 'st'].includes(activeTab);
     if (data.tier === 'admin') {
-      if (!activeTab || !['ov', 'ks', 'ac', 'us', 'ep', 'pe', 'mu', 'myacc', 'myuse', 'st'].includes(activeTab)) {
+      if (!activeTab || !['ov', 'ks', 'ac', 'us', 'ep', 'pe', 'mu', 'md', 'myacc', 'myuse', 'st', 'help'].includes(activeTab)) {
         setActiveTab('ov');
       }
     } else {

@@ -58,12 +58,12 @@ def _admin(client):
     return acc, _make_session_token(acc)
 
 
-def _user(client, name="dev"):
+def _user(client, name="dev", tier="free"):
     from src.core.accounts import account_manager
     from src.backend.account_keys import set_password_db
     from src.server.openai_server.routes.auth_session import _make_session_token
 
-    acc = account_manager.create_account(name=name, tier="free")
+    acc = account_manager.create_account(name=name, tier=tier)
     set_password_db(acc["account_id"], "userpw")
     return acc, _make_session_token(acc)
 
@@ -97,6 +97,26 @@ class TestIssueToken:
         r = client.post("/dashboard/my/keys/create", json={}, headers=_h(user))
         assert r.status_code == 200, r.text
         assert r.json()["token"].startswith("sk-dev-")
+
+    def test_free_user_cannot_create_admin_tier_token(self, client):
+        _, user = _user(client)
+        r = client.post("/dashboard/my/keys/create", json={"tier": "admin"}, headers=_h(user))
+        assert r.status_code == 200, r.text
+        assert r.json()["tier"] == "free"
+        ks = client.get("/dashboard/my/keys", headers=_h(user)).json()["keys"]
+        assert ks[0]["tier"] == "free"
+
+    def test_premium_user_can_create_free_or_premium_token(self, client):
+        _, user = _user(client, "vip", tier="premium")
+        r1 = client.post("/dashboard/my/keys/create", json={"tier": "free"}, headers=_h(user))
+        assert r1.status_code == 200
+        assert r1.json()["tier"] == "free"
+        r2 = client.post("/dashboard/my/keys/create", json={"tier": "premium"}, headers=_h(user))
+        assert r2.status_code == 200
+        assert r2.json()["tier"] == "premium"
+        r3 = client.post("/dashboard/my/keys/create", json={"tier": "admin"}, headers=_h(user))
+        assert r3.status_code == 200
+        assert r3.json()["tier"] == "premium"
 
     def test_unknown_account_404(self, client):
         _, admin = _admin(client)
@@ -258,6 +278,30 @@ class TestUpdateToken:
                     json={"key_id": kid, "enabled": False}, headers=_h(user))
         ks = client.get("/dashboard/my/keys", headers=_h(user)).json()["keys"]
         assert ks[0]["enabled"] is False
+
+    def test_user_cannot_raise_token_tier_above_account_tier(self, client):
+        _, user = _user(client)
+        kid = client.post("/dashboard/my/keys/create", json={}, headers=_h(user)).json()["key_id"]
+        r = client.post("/dashboard/my/keys/update", json={"key_id": kid, "tier": "admin"}, headers=_h(user))
+        assert r.status_code == 400
+        assert "cannot exceed account tier" in r.json()["error"].lower()
+
+    def test_premium_user_can_switch_token_tier_between_free_and_premium(self, client):
+        _, user = _user(client, "vip", tier="premium")
+        kid = client.post("/dashboard/my/keys/create", json={"tier": "premium"}, headers=_h(user)).json()["key_id"]
+        # Lower to free
+        r = client.post("/dashboard/my/keys/update", json={"key_id": kid, "tier": "free"}, headers=_h(user))
+        assert r.status_code == 200
+        ks = client.get("/dashboard/my/keys", headers=_h(user)).json()["keys"]
+        assert ks[0]["tier"] == "free"
+        # Raise back to premium
+        r2 = client.post("/dashboard/my/keys/update", json={"key_id": kid, "tier": "premium"}, headers=_h(user))
+        assert r2.status_code == 200
+        ks = client.get("/dashboard/my/keys", headers=_h(user)).json()["keys"]
+        assert ks[0]["tier"] == "premium"
+        # Attempt to raise to admin fails
+        r3 = client.post("/dashboard/my/keys/update", json={"key_id": kid, "tier": "admin"}, headers=_h(user))
+        assert r3.status_code == 400
 
 
 # ── revoke ─────────────────────────────────────────────────────────────────
