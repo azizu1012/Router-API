@@ -49,6 +49,7 @@ tests/*
 !tests/test_invite_codes.py
 !tests/test_dashboard_tokens.py
 !tests/test_master_key.py
+!tests/test_retry_counter.py
 
 # The CI scanner is tracked; the rest of scripts/ is local tooling.
 !scripts/

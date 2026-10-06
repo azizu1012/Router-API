@@ -341,13 +341,13 @@ class PoolManager:
             member: str
             member = await pool.acquire(timeout=pool.max_retry_seconds)
             committed = False
+            pool_try = -1
 
             try:
                 while time.time() - start_time < pool.max_retry_seconds:
                     if member in exhausted_members:
                         member = await pool.acquire(skip=exhausted_members, timeout=max(1.0, pool.max_retry_seconds - (time.time() - start_time)))
 
-                    pool_try = -1
                     pool_try += 1
                     api_key_val = None
                     model_id_val = None

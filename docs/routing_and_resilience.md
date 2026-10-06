@@ -221,6 +221,13 @@ Test: `tests/test_effort_mapping.py` — pin cả hai chiều, kể cả việc 
 - **Sau:** cả bốn nguồn quy về một level; `max` → `high`; `disabled` giữ nguyên.
 - **Lý do:** effort là tín hiệu người dùng đưa ra, và map sai nó không tạo lỗi nào để báo — model vẫn trả lời, chỉ là nghĩ sai mức.
 
+### 2026-10-06 — `retry_attempt` luôn bằng 0 trong luồng stream
+- **File:** `src/core/pool_manager.py` — `call_stream()`
+- **Trước:** `pool_try = -1` nằm **trong** vòng `while`, ngay trên `pool_try += 1` → biến thành 0 mỗi vòng. `retry_attempt` truyền vào `_resolve_model()` và `reserve_key()` luôn bằng 0. Trong `call_nonstream()` cùng biến đó nằm **ngoài** vòng lặp nên tăng đúng.
+- **Sau:** đặt `pool_try = -1` trước vòng `while`, khớp với `call_nonstream`.
+- **Hệ quả:** `retry_attempt` là tham số bật **Extreme Checking** ở attempt ≥ 10 (mục 5). Luồng stream lặp quá 10 lần vẫn không bao giờ bật van an toàn đó, trong đúng lúc tải nặng nhất — trong khi non-stream thì có. Hai nhánh là bản sao của nhau nên lệch nhau là sai.
+- **Test:** `tests/test_retry_counter.py` pin bất biến `seen == list(range(len(seen)))` cho cả hai đường. Đưa lại lỗi thì 4 test đỏ.
+
 ---
 
 ## 11. Các Biến Môi Trường Chính
