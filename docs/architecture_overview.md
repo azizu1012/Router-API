@@ -13,28 +13,15 @@ router_api/
 ├── .env                          # Gemini keys + model config
 ├── .env.example                  # Template for env file config
 ├── README.md                     # Quick start + client config
-├── README_VN.md                  # Bản tiếng Việt
-├── LICENSE                       # MIT
-├── docs/                         # Tài liệu kiến trúc và vận hành
+├── docs/                         # Thư mục chứa tài liệu kiến trúc
 │   ├── architecture_overview.md  # File kiến trúc này
-│   ├── routing_and_resilience.md # Chi tiết cơ chế chống lỗi
-│   ├── account_auth.md           # Lớp auth, multi-token, bốn lớp giới hạn
-│   ├── frontend_dashboard.md     # Kiến trúc dashboard và state
-│   ├── ci_workflow.md            # Hai workflow advisory + cách chạy test
-│   └── bug-logs.md               # Các bug đã chẩn đoán và lý do sửa
+│   └── routing_and_resilience.md # Chi tiết cơ chế chống lỗi
 ├── DEPLOY_DOMAIN.md              # Caddy và Nginx reverse proxy deployment guide
 ├── AGENTS.md                     # OpenCode agent task management instructions
 ├── CLAUDE.md                     # Claude Code developer instructions
 ├── requirements.txt              # Project Python dependencies
 ├── main.py                       # Uvicorn startup script với auto port-freeing
-├── pytest.ini                    # Danh sách test được collect
-├── scripts/
-│   └── scan_secrets.py           # Secret scanner cho CI
-├── tests/                        # 15 file test đăng ký trong pytest.ini
-├── .github/workflows/            # secret_scan.yml, trustabl.yml (cả hai advisory)
-├── frontend-src/                 # Nguồn React + Vite của dashboard
-├── src/frontend/                 # Output build (không sửa tay)
-├── usage.db                      # SQLite config DB (accounts, account_keys, endpoints, key_status)
+├── usage.db                      # SQLite config DB (accounts, endpoints, key_status, key_penalties)
 ├── usage_logs.db                 # SQLite telemetry DB for token tracking
 ├── logs/                         # Rotating file logs (daily auto-clean)
 └── src/                          # Mã nguồn Python chính
