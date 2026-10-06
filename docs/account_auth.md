@@ -180,7 +180,7 @@ User chỉ có thể **siết chặt hơn**, không nới lỏng hơn mặc đ�
 
 Đây là chủ ý: master key là đường vào không bị giới hạn cho chủ hệ thống.
 
-Hiện tại `azuree-admin` giữ master key `azure-dotcom-absolutecinema`, không có structured token và không có web credential — nó thuần túy là key-holder. Account chính là `azure-yena`.
+Hai account trong repo dùng đường này khác nhau: một account chủ sở hữu (có cả web credential, đăng nhập dashboard và tự quản token của mình), một account thuần key-holder (chỉ giữ master key, không token, không web credential). Vì master key là credential thật, **không ghi giá trị của nó vào docs hay source** — nó chỉ tồn tại trong `accounts.auth_key`.
 
 ---
 
@@ -238,6 +238,7 @@ Admin bấm "cấp token" → `POST /dashboard/admin/invites/issue`:
 - Hạn **3 phút** (`ttl_seconds`, giới hạn 30–900)
 - **Dùng 1 lần**: `consume_invite_db()` chạy `UPDATE ... WHERE used_at IS NULL AND expires_at > ?` và kiểm tra `rowcount == 1`, nên hai request đồng thời không thể dùng cùng một mã
 - **Cấp lại sẽ vô hiệu mã cũ** — mỗi admin giữ tối đa một mã đang sống
+- **Va chạm được retry**: mã 4 số chỉ có 10 000 giá trị nhưng mã đã dùng được giữ lại làm audit trail, nên xung đột với mã cũ là chuyện chắc chắn xảy ra khi bảng đầy. `create_invite_db()` thử tối đa 8 lần trước khi báo lỗi, thay vì để `IntegrityError` nổi lên thành 500.
 
 ### Tự đăng ký
 

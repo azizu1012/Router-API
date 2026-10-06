@@ -225,10 +225,9 @@ Single-worker only. The SQLite locking is process-local, so multiple Uvicorn wor
 ```bash
 pytest                                    # full suite
 pytest tests/test_anthropic_protocol.py   # protocol conformance
-pytest -q --ignore=tests/gcloud_sdk       # skip the vendored SDK tree
 ```
 
-CI runs two workflows: a GitHub Actions test job, and the [Trustabl agent scanner](https://github.com/azizu1012/Router-API/actions/workflows/trustabl.yml) (advisory, never blocks).
+CI runs two advisory workflows: the [secret scanner](https://github.com/azizu1012/Router-API/actions/workflows/secret_scan.yml) and the [Trustabl agent scanner](https://github.com/azizu1012/Router-API/actions/workflows/trustabl.yml). Neither blocks a build, and the test suite runs locally — see `docs/ci_workflow.md`.
 
 Further reading in `docs/`:
 

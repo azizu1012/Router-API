@@ -225,10 +225,9 @@ Chỉ chạy **một worker**. SQLite locking là process-local, nhiều Uvicorn
 ```bash
 pytest                                    # toàn bộ suite
 pytest tests/test_anthropic_protocol.py   # tuân thủ giao thức
-pytest -q --ignore=tests/gcloud_sdk       # bỏ qua cây SDK vendor
 ```
 
-CI chạy hai workflow: một job test của GitHub Actions, và [Trustabl agent scanner](https://github.com/azizu1012/Router-API/actions/workflows/trustabl.yml) (chỉ báo cáo, không chặn build).
+CI chạy hai workflow advisory: [secret scanner](https://github.com/azizu1012/Router-API/actions/workflows/secret_scan.yml) và [Trustabl agent scanner](https://github.com/azizu1012/Router-API/actions/workflows/trustabl.yml). Cả hai không chặn build; test suite chạy local — xem `docs/ci_workflow.md`.
 
 Tài liệu chi tiết trong `docs/`:
 

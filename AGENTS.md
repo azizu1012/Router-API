@@ -37,7 +37,7 @@ Client → src/server/ (routes)
   → src/api/<proxy>/handler/proxy.py  (format converter, ko có logic pool/key)
     → src/core/pool_manager.py         (retry loop, error classify, swap member)
       → src/core/router/               (APIRouter, KeyResolver, ModelPool)
-        → src/core/limits/             (GeminiRateLimiter, RPM/TPM)
+        → src/core/limits/             (GeminiRateLimiter, TokenRateLimiter, RPM/TPM)
           → src/core/providers/        (gemini_facade, custom_endpoint_manager)
 ```
 
@@ -49,7 +49,7 @@ Client → src/server/ (routes)
 | Sửa rate limit | `src/core/limits/gemini_rate_limiter.py` |
 | Thêm provider mới | `src/core/providers/`, `src/backend/endpoints.py` |
 | Sửa response format | `src/api/<proxy>/handler/` |
-| Sửa DB schema | `src/backend/_db.py` + file tương ứng trong `src/backend/` |
+| Sửa DB schema | `src/backend/schema.py` + `_db.py` nếu bảng đọc lúc import |
 | Dashboard FE | `frontend-src/` (React build → `src/frontend/`) |
 | Admin console CLI | `src/console/admin_console/` |
-**PoolManager (573 dòng)** là monolithic intentional (`docs/architecture_overview.md` mục 6). Không cần decompose — chỉ cần focus vào nhánh transient error vs hard error + pool vs standalone.
+**PoolManager (581 dòng)** là monolithic intentional (`docs/architecture_overview.md` mục 6). Không cần decompose — chỉ cần focus vào nhánh transient error vs hard error + pool vs standalone.

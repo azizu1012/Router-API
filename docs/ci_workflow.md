@@ -1,20 +1,29 @@
 # CI Workflows
 
-Hai workflow chạy trên mỗi push lên `main` và mỗi pull request.
+Hai workflow, cả hai chạy trên mỗi push lên `main`, mỗi pull request, và theo yêu cầu tay:
 
-## 1. Test job
+| Workflow | Job | Tính chất |
+|---|---|---|
+| `secret_scan.yml` | `scan` | advisory — phát hiện credential trong file đã track |
+| `trustabl.yml` | `scan` | advisory — độ tin cậy agent runtime |
 
-Chạy `pytest` trên toàn bộ suite được đăng ký trong `pytest.ini`.
+Cả hai `continue-on-error: true`: có finding thì vẫn report nhưng **không làm CI đỏ**.
+
+> Test suite **không** chạy trong CI — xem mục dưới.
+
+## 1. Test suite
+
+Chạy local:
 
 ```bash
 pytest
 ```
 
-`pytest.ini` dùng `python_files` để chỉ định đúng danh sách test — repo có một `tests/` lớn chứa cả SDK vendor 707 MB và các script thử nghiệm, nên collection mặc định sẽ quét nhầm. Danh sách hiện tại:
+`pytest.ini` dùng `python_files` để chỉ định đúng danh sách test, thay vì để pytest quét mọi `test_*.py`. Danh sách hiện tại:
 
 | File | Phủ |
 |---|---|
-| `test_pool.py` | pool concurrency, swap, exhausted |
+| `test_pool.py` | slot concurrency, ưu tiên custom endpoint, member kẹt không chặn cả pool |
 | `test_transient_penalties.py` | penalty & cooldown |
 | `test_custom_pool_resolver.py` | custom endpoint trong pool |
 | `test_rtk_filters.py` | lọc output tool |
@@ -36,49 +45,15 @@ Chạy nhanh một file:
 pytest tests/test_anthropic_protocol.py -v
 ```
 
-Bỏ qua cây SDK vendor (nếu bạn tự un-ignore nó):
+Ba test dưới đây không dùng mock DB nên đáng chạy trước khi động vào tầng DB:
 
-```bash
-pytest -q --ignore=tests/gcloud_sdk
-```
+- `test_schema_bootstrap.py` — so DDL của `_db.py` với khai báo trong `schema.py`
+- `test_dashboard_tokens.py` — chạy app thật trên một `usage.db` tạm
+- `test_pool.py` — có mutation test, mọi acquire đều bọc `asyncio.wait_for` nên hỏng sẽ fail chứ không treo
 
-### `tests/` chỉ track một phần
+## 2. Thêm test mới
 
-`.gitignore` re-include đúng 10 file đăng ký trong `pytest.ini`, mọi thứ khác trong `tests/` vẫn local:
-
-```
-!tests/
-tests/*
-!tests/test_pool.py
-...
-```
-
-Lý do: `tests/` chứa 48 000 file của SDK Google vendor (707 MB) cùng các script quản lý key. Thêm file mới vào suite thì thêm một dòng vào `pytest.ini` **và** một dòng `!tests/...` vào `.gitignore`.
-
-## 2. Trustabl Agent Scanner
-
-Công cụ quét độ tin cậy agent runtime, chạy advisory.
-
-```yaml
-permissions:
-  contents: read          # mặc định
-jobs:
-  scan:
-    permissions:
-      security-events: write
-      pull-requests: write
-    continue-on-error: true
-```
-
-Đặc điểm đáng chú ý:
-- `continue-on-error: true` → có finding thì vẫn report nhưng **không làm CI đỏ**, không chặn việc khác
-- Action được pin theo commit SHA (`trustabl/trustabl-action@973f666…` tương ứng `v0.4.1`), không phải tag
-- `persist-credentials: false` → checkout không giữ credential để step sau dùng lại
-- Quyền write chỉ cấp cho job scan, không ở top level
-- `concurrency` + `cancel-in-progress` → push mới huỷ run cũ
-- `timeout-minutes: 15` → không để scanner treo
-
-## Thêm test mới
+`tests/` chỉ chứa suite. Thêm file mới thì cần **cả hai** bước:
 
 ```bash
 # 1. viết test
@@ -92,4 +67,38 @@ python_files = … test_my_new_thing.py
 pytest tests/test_my_new_thing.py -v
 ```
 
-Bỏ qua bước 3 thì test chạy được local nhưng không lên GitHub, và CI sẽ báo "no tests ran" cho file đó.
+Bỏ bước 3 thì test chạy được local nhưng không lên GitHub, và CI báo "no tests ran" cho file đó.
+
+## 3. Secret Scan
+
+`scripts/scan_secrets.py` quét file đã được git track (dùng `git ls-files`), nên file local chưa commit không xuất hiện.
+
+```bash
+python scripts/scan_secrets.py --git --warn-only    # như CI
+python scripts/scan_secrets.py                      # quét cả file chưa track
+```
+
+Hai quy tắc đáng chú ý trong workflow:
+
+- Action được pin theo commit SHA, không phải tag
+- `persist-credentials: false` → checkout không giữ credential cho step sau
+- Quyền write chỉ cấp cho job scan, không ở top level
+- `concurrency` + `cancel-in-progress` → push mới huỷ run cũ
+- `timeout-minutes: 15` → không để scanner treo
+
+Scanner **không** tự sửa file. Một rewrite tự động là commit bạn chưa review — nên nó chỉ báo cáo, việc sửa là thủ công.
+
+## 4. Trustabl Agent Scanner
+
+```yaml
+permissions:
+  contents: read          # mặc định
+jobs:
+  scan:
+    permissions:
+      security-events: write
+      pull-requests: write
+    continue-on-error: true
+```
+
+Cùng nguyên tắc với Secret Scan: advisory, action pin theo SHA, không block build.

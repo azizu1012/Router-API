@@ -79,3 +79,60 @@ src/api/claude_proxy/handler/stream_executor.py          | 2 +-
 src/api/claude_proxy/handler/nonstream_executor.py       | 2 +-
 src/api/claude_proxy/stream.py                           | 6 +++---
 ```
+
+---
+
+## Bug #2: Máy Mới Không Khởi Động Được Vì DB Rỗng (2026-10-06)
+
+### Mô tả
+Deploy trên một máy chưa từng chạy Router API: app chết ngay lúc khởi động với `sqlite3.OperationalError: no such table: key_status`.
+
+### Root cause
+`src/core/router/__init__.py` tạo `APIRouter()` ở **module level**, và constructor đó gọi `get_key_status_db()`. `custom_endpoint_manager` cũng dựng cache ở module level. Cả hai đọc DB **trong lúc import** — trước mọi startup hook của FastAPI. Trên máy có `usage.db` sẵn thì không sao vì bảng đã tồn tại; máy mới thì không có gì để đọc.
+
+Không phải mọi entrypoint đều qua `main.py`, nên sửa ở `main.py` là chưa đủ: bất kỳ `import app` nào cũng phải crash.
+
+### Fix
+`src/backend/_db.py` — `conn()` tạo hai bảng đọc lúc import ngay lần mở connection đầu tiên. `main.py` gọi `init_config_tables()` trước khi bind port để lỗi schema nổi ra lúc khởi động chứ không phải trên request đầu tiên.
+
+### Ranh giới dễ vỡ
+`CREATE TABLE IF NOT EXISTS` **không** sửa được bảng đã có sai shape. Nên nếu DDL ở `_db.py` lệch với `schema.py`, bản bootstrap chạy trước và thắng; `CREATE` của `schema.py` thành no-op; bất kỳ cột nào không có `ALTER` migration sẽ không bao giờ được tạo. Lần đầu viết sai cột cho `custom_endpoints` và `key_usage` đã đúng vào loại lỗi này. `tests/test_schema_bootstrap.py` so DDL của hai bên để chặn.
+
+---
+
+## Bug #3: Mã Đăng Ký Va Chạm Thành Lỗi 500 (2026-10-06)
+
+### Mô tả
+Nút "Cấp mã" của admin thỉnh thoảng trả 500: `sqlite3.IntegrityError: UNIQUE constraint failed: invite_codes.code`.
+
+### Root cause
+Mã chỉ 4 chữ số → 10 000 giá trị. `create_invite_db()` xoá mã chưa dùng rồi sinh mã ngẫu nhiên — nhưng mã **đã dùng** được giữ lại làm audit trail. Khi bảng có đủ mã cũ, xác suất trùng là 1/10 000 mỗi lần cấp, và sẽ tăng dần theo thời gian.
+
+Bug này không xuất hiện trên database mới nên không thấy cho tới khi săn flake — nó hiện ra thành một lần build đỏ ngẫu nhiên trong `test_account_auth.py`.
+
+### Fix
+Thử tối đa 8 lần trước khi báo lỗi, và lỗi cuối cùng nói rõ nguyên nhân thay vì để `IntegrityError` lọt lên làm 500.
+
+### Test
+`tests/test_invite_codes.py` — ép va chạm bằng `patch("secrets.choice")`, kiểm tra retry hoạt động và giới hạn 8 lần.
+
+---
+
+## Bug #4: Dashboard Nuốt Mất Lý Do Lỗi (2026-10-06)
+
+### Mô tả
+Mọi lỗi từ endpoint admin hiện thành `HTTP error! status: 404` thay vì thông báo thật.
+
+### Root cause
+`frontend-src/src/utils/api.js` đọc `errorData.error`. Nhưng các route admin raise `HTTPException(detail="Account not found")` — FastAPI đặt chuỗi vào `detail`, không phải `error`. Nên nguyên nhân thật bị vứt đi.
+
+### Fix
+Đọc cả `error` lẫn `detail`, và parse `detail` dạng JSON string mà FastAPI dùng khi detail là object.
+
+---
+
+## Bug #5: Effort Bị Đảo Ngược Hoặc Bỏ Qua (2026-10-06)
+
+Chi tiết ở [`routing_and_resilience.md`](routing_and_resilience.md) mục 9 và 10. Tóm tắt: `output_config.effort` — field Claude Code thật sự gửi — không được đọc, nên mọi effort đều rơi về `low`; `reasoning_effort: medium` lại tắt thinking; `thinking: disabled` bị `return {}` nuốt mất.
+
+Điểm chung của bug #2–#5: **không cái nào sinh ra lỗi để báo cáo**. Response vẫn hợp lệ, request vẫn 200. Chỉ có hành vi sai. Vì vậy chúng không tự lộ ra ngoài đời thực — cần test so sánh đầu/cuối mới thấy được.

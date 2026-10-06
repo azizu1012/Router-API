@@ -9,20 +9,32 @@ Hệ thống được phát triển với sự hỗ trợ của AI và tái sử
 ## 2. Cấu Trúc Dự Án
 
 ```text
-d:\AI_Projects\router_api/
+router_api/
 ├── .env                          # Gemini keys + model config
 ├── .env.example                  # Template for env file config
 ├── README.md                     # Quick start + client config
-├── docs/                         # Thư mục chứa tài liệu kiến trúc
-│   └── architecture_overview.md  # File kiến trúc này
-│   └── routing_and_resilience.md # Chi tiết cơ chế chống lỗi
+├── README_VN.md                  # Bản tiếng Việt
+├── LICENSE                       # MIT
+├── docs/                         # Tài liệu kiến trúc và vận hành
+│   ├── architecture_overview.md  # File kiến trúc này
+│   ├── routing_and_resilience.md # Chi tiết cơ chế chống lỗi
+│   ├── account_auth.md           # Lớp auth, multi-token, bốn lớp giới hạn
+│   ├── frontend_dashboard.md     # Kiến trúc dashboard và state
+│   ├── ci_workflow.md            # Hai workflow advisory + cách chạy test
+│   └── bug-logs.md               # Các bug đã chẩn đoán và lý do sửa
 ├── DEPLOY_DOMAIN.md              # Caddy và Nginx reverse proxy deployment guide
 ├── AGENTS.md                     # OpenCode agent task management instructions
 ├── CLAUDE.md                     # Claude Code developer instructions
-├── opencode.json                 # OpenCode configuration
 ├── requirements.txt              # Project Python dependencies
 ├── main.py                       # Uvicorn startup script với auto port-freeing
-├── usage.db                      # SQLite config DB (accounts, endpoints, key_status, key_penalties)
+├── pytest.ini                    # Danh sách test được collect
+├── scripts/
+│   └── scan_secrets.py           # Secret scanner cho CI
+├── tests/                        # 15 file test đăng ký trong pytest.ini
+├── .github/workflows/            # secret_scan.yml, trustabl.yml (cả hai advisory)
+├── frontend-src/                 # Nguồn React + Vite của dashboard
+├── src/frontend/                 # Output build (không sửa tay)
+├── usage.db                      # SQLite config DB (accounts, account_keys, endpoints, key_status)
 ├── usage_logs.db                 # SQLite telemetry DB for token tracking
 ├── logs/                         # Rotating file logs (daily auto-clean)
 └── src/                          # Mã nguồn Python chính
@@ -35,12 +47,12 @@ d:\AI_Projects\router_api/
     │   ├── pool_manager.py       # TRUNG TÂM: pool loop, key rotation, quota, retry
     │   ├── config_n_logg/        # Cấu hình & Ghi nhật ký
     │   ├── accounts/             # Quản lý tài khoản
-    │   ├── limits/               # Giới hạn Rate Limit & Account Limiter
-    │   ├── providers/            # Gemini Facade, Custom Endpoints, Search Manager
+    │   ├── limits/               # Giới hạn Rate Limit, Account, Token
+    │   ├── providers/            # Gemini Facade, Custom Endpoints, Search, Thinking
     │   └── router/               # APIRouter, ModelPool, KeyResolver
     ├── backend/                  # Tầng DB SQLite
     ├── console/                  # CLI admin
-    └── server/                   # FastAPI Server, WebSocket Manager
+    └── server/                   # FastAPI Server, routes, WebSocket Manager
 ```
 
 ## 3. Các Thành Phần Chính & Vai Trò
@@ -78,9 +90,19 @@ d:\AI_Projects\router_api/
 ### 3.5. Backend (`src/backend/`)
 *   **Vai trò**: Lớp truy cập cơ sở dữ liệu SQLite.
 *   **Chức năng chính**:
-    *   **`_db.py`**: Quản lý kết nối DB dùng chung.
-    *   **`key_status.py`**: Các thao tác nguyên tử (atomic operations) để cập nhật trạng thái key (reserve, release, freeze, disable).
+    *   **`_db.py`**: Quản lý kết nối DB dùng chung, **và tạo các bảng đọc lúc import**.
+    *   **`schema.py`**: Schema đầy đủ + các `ALTER TABLE` migration, chạy trong startup hook.
+    *   **`key_status.py`**: Các thao tác nguyên tất (atomic) để cập nhật trạng thái key (reserve, release, freeze, disable).
     *   **`accounts.py`, `endpoints.py`, `model_prices.py`**: CRUD cho tài khoản, custom endpoints và giá model.
+    *   **`account_keys.py`**: Auth token theo `sk-<name>-<6 ký tự>`, web credential, invite code.
+
+#### Vì sao `_db.py` cũng phải tạo bảng
+
+`APIRouter` query `key_status` **ngay lúc nó được khởi tạo**, và `custom_endpoint_manager` dựng cache ở module level — cả hai đều xảy ra trong lúc import, trước mọi startup hook. Một máy chưa có `usage.db` sẽ fail `no such table: key_status` trước khi app kịp tồn tại.
+
+Vì vậy `_db.conn()` tạo sẵn hai bảng đó ngay lần mở connection đầu tiên. Ranh giới này **có thật** và dễ vỡ: `CREATE TABLE IF NOT EXISTS` không sửa được bảng đã có sai shape, nên nếu định nghĩa ở `_db.py` lệch với `schema.py` thì bản bootstrap thắng, `CREATE` của `schema.py` thành no-op, và bất kỳ cột nào không có `ALTER` migration sẽ không bao giờ được tạo. `tests/test_schema_bootstrap.py` so DDL của hai bên để chặn điều đó.
+
+`main.py` gọi `init_config_tables()` trước khi bind port, nên lỗi schema nổi ra lúc khởi động chứ không phải trên request đầu tiên.
 
 ### 3.6. Logical HQ Translator (`src/logical_HQ_translator/`)
 *   **Vai trò**: Chứa các bộ chuyển đổi và tiện ích dùng chung giữa các proxy, đặc biệt là liên quan đến việc xử lý message, định dạng và các công cụ hỗ trợ AI Agent.
@@ -206,7 +228,7 @@ Cơ chế khóa hiện tại **chưa đủ** để ngăn chặn lỗi `database 
 **Khuyến nghị:**
 Hiện tại, hệ thống được thiết kế để hoạt động ổn định nhất trong môi trường **đơn worker**. Nếu yêu cầu triển khai đa worker, cần bổ sung cơ chế khóa liên tiến trình (ví dụ: sử dụng thư viện `filelock` hoặc các khóa tư vấn cấp hệ điều hành) hoặc chuyển sang một hệ quản trị cơ sở dữ liệu hỗ trợ đồng thời cao hơn.
 
-""" + """## 9. Các Biến Môi Trường Chính
+## 9. Các Biến Môi Trường Chính
 
 | Variable | Default | Mô tả |
 |----------|---------|-------|

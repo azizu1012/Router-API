@@ -178,7 +178,36 @@ Hàm `get_key_priority` kết hợp tất cả các yếu tố này để tạo 
 
 ---
 
-## 9. Lịch sử thay đổi
+## 9. Effort → Thinking Level
+
+Client gõ "suy nghĩ kỹ tới mức nào" bằng bốn cách khác nhau, nhưng tất cả đều có một ý nghĩa. Tầng proxy gộp cả bốn về một `thinking_level` duy nhất thay vì bỏ qua cái nào.
+
+| Client gửi | Nguồn | → Gemini 3 | → Gemini 2.5 |
+|---|---|---|---|
+| `output_config.effort` | Anthropic Messages API (Claude Code) | `thinking_level` | `thinking_budget` |
+| `thinking.budget_tokens` | Anthropic thinking block | xem bảng ngưỡng | `thinking_budget` |
+| `reasoning_effort` | OpenAI Chat Completions | `thinking_level` | `thinking_budget` |
+| `thinking_level` | field riêng của router | trực tiếp | `thinking_budget` |
+
+Gemini 3 nhận enum `minimal/low/medium/high`; Gemini 2.5 chỉ có `thinking_budget` nên level được quy đổi qua `low=1024`, `medium=2048`, `high=4096`.
+
+**Vì sao phải gộp.** `max` không phải từ nào Gemini có, nhưng cả Anthropic lẫn OpenAI đều dùng nó cho đỉnh của thang đo — nên nó hợp nhất về `high`. Một effort bị bỏ qua không phải chuyện vô hại: `low` đến nơi như `high` tốn latency và token ở **mọi** lượt gọi, và người dùng không có cách nào biết vì response vẫn hợp lệ.
+
+Thứ tự ưu tiên: `thinking_level` riêng → `output_config.effort` → `thinking.budget_tokens` → `reasoning_effort`. `thinking: {"type": "disabled"}` là ngoại lệ duy nhất được giữ nguyên — nó tắt thinking thay vì hạ mức.
+
+Ngưỡng `budget_tokens`:
+
+| Ngưỡng | Level |
+|---|---|
+| ≥ 8192 | `high` |
+| ≥ 4096 | `medium` |
+| < 4096 | `low` |
+
+Test: `tests/test_effort_mapping.py` — pin cả hai chiều, kể cả việc effort cao hơn không bao giờ cho ra thinking ít hơn.
+
+---
+
+## 10. Lịch sử thay đổi
 
 ### 2026-07-06 — `bad_request` & `project_denied` không còn là Hard Freeze
 - **File:** `src/core/providers/gemini/utils.py` — `handle_error()`
@@ -186,6 +215,12 @@ Hàm `get_key_priority` kết hợp tất cả các yếu tố này để tạo 
 - **Sau:** Freeze key 3600s (`KEY_INVALID_COOLDOWN_SECONDS`), apply penalty, `return` → thử key tiếp theo trong pool.
 - **Lý do:** Một key invalid/denied không có nghĩa tất cả key đều invalid. Router nên thử key khác trước khi bỏ cuộc.
 
+### 2026-10-06 — `output_config.effort` được map, effort cũ không còn bị đảo ngược
+- **File:** `src/api/opencode_proxy/handler/proxy.py` — `_extract_thinking_params()`
+- **Trước:** `output_config` không được đọc (mọi effort của Claude Code rơi về `low`); `reasoning_effort: high` → `low`; `reasoning_effort: medium` → `include_thoughts: False` tức **tắt** thinking; `budget_tokens` cao nhất chỉ lên `medium`; `thinking: disabled` bị `return {}` nuốt mất.
+- **Sau:** cả bốn nguồn quy về một level; `max` → `high`; `disabled` giữ nguyên.
+- **Lý do:** effort là tín hiệu người dùng đưa ra, và map sai nó không tạo lỗi nào để báo — model vẫn trả lời, chỉ là nghĩ sai mức.
+
 ---
 
-## 10. Các Biến Môi Trường Chính
+## 11. Các Biến Môi Trường Chính
