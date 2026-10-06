@@ -154,10 +154,21 @@ Ba cách, tất cả đều tuỳ chọn:
 | Cách | Endpoint | Dùng quota Gemini? |
 |---|---|---|
 | Client-side search | `POST /v1/search` | không |
-| Server-side tool loop | `web_search: true` trong completion | có |
-| Scraper DuckDuckGo | `search_engine: "duckduckgo"` | **không** |
+| Server-side tool loop | `web_search: true` trong completion | không |
+| Hosted tool của Responses | `tools: [{"type": "web_search"}]` trên `/v1/responses` | có |
 
 Đường DuckDuckGo không chạm vào Gemini key nào, nên agent loop nhiều search gần như không tốn hạn mức key.
+
+Engine nào phục vụ một lần search **do dialect quyết định, không phải do toggle trên dashboard**:
+
+- **Client Responses** gửi `tools: [{"type": "web_search"}]` đang hỏi đúng năng lực hosted,
+  nên nó nhận Google grounding trước, DuckDuckGo phía sau — tức `auto`.
+- **Mọi thứ khác** trên các đường chat vẫn nằm ở DuckDuckGo.
+- `search_engine` ghi rõ trong body ghi đè cả hai.
+
+App tự điều phối vòng lặt riêng thì nên dùng `POST /v1/search`: không tốn quota Gemini, và
+không phải tốn thêm một lượt gọi model để đọc lại toàn bộ conversation. Tool trong chat tồn
+tại cho client không tự điều phối được.
 
 ---
 
@@ -169,13 +180,14 @@ Ba cách, tất cả đều tuỳ chọn:
 | `POST` | `/v1/messages/count_tokens` | Anthropic |
 | `POST` | `/v1/chat/completions` | OpenAI |
 | `POST` | `/opencode/v1/chat/completions` | OpenAI |
-| `POST` | `/v1/responses` | OpenAI Responses |
+| `POST` | `/v1/responses` | OpenAI Responses — `tools`, `instructions`, `stream` đều được map |
 | `POST` | `/v1/models/{id}:generateContent` | Gemini native (pass-through) |
 | `GET` | `/v1/models` | OpenAI **và** Anthropic schema superset |
 | `POST` | `/v1/search`, `/search` | Router |
 | `GET` | `/dashboard/*` | Dashboard API |
 | `WS` | `/dashboard/ws` | Live dashboard stream |
 | `GET` | `/health`, `/preflight` | Ops |
+| `GET` | `/api/help` | API reference — endpoint + curl thật, cũng là 1 tab trên dashboard |
 
 ---
 

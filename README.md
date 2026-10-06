@@ -154,10 +154,21 @@ Three ways in, all optional:
 | Mode | Endpoint | Uses Gemini quota? |
 |---|---|---|
 | Client-side search | `POST /v1/search` | no |
-| Server-side tool loop | `web_search: true` on a completion | yes |
-| DuckDuckGo scraper | `search_engine: "duckduckgo"` | **no** |
+| Server-side tool loop | `web_search: true` on a completion | no |
+| Responses hosted tool | `tools: [{"type": "web_search"}]` on `/v1/responses` | yes |
 
 The DuckDuckGo path never touches a Gemini key, so search-heavy agent loops cost nothing against your key budget.
+
+Which engine a search uses follows from the dialect, not from a dashboard toggle:
+
+- **Responses client** passing `tools: [{"type": "web_search"}]` is asking for the hosted
+  capability, so it gets Google grounding first with DuckDuckGo behind it — `auto`.
+- **Everything else** on the chat paths stays on DuckDuckGo.
+- An explicit `search_engine` in the request body overrides both.
+
+An app that drives its own loop should prefer `POST /v1/search`: it costs no Gemini
+quota and does not spend a second model call re-reading the conversation. The
+in-chat tool exists for clients that cannot drive their own loop.
 
 ---
 
@@ -169,13 +180,14 @@ The DuckDuckGo path never touches a Gemini key, so search-heavy agent loops cost
 | `POST` | `/v1/messages/count_tokens` | Anthropic |
 | `POST` | `/v1/chat/completions` | OpenAI |
 | `POST` | `/opencode/v1/chat/completions` | OpenAI |
-| `POST` | `/v1/responses` | OpenAI Responses |
+| `POST` | `/v1/responses` | OpenAI Responses — `tools`, `instructions`, `stream` all mapped |
 | `POST` | `/v1/models/{id}:generateContent` | Gemini native (pass-through) |
 | `GET` | `/v1/models` | OpenAI **and** Anthropic schema superset |
 | `POST` | `/v1/search`, `/search` | Router |
 | `GET` | `/dashboard/*` | Dashboard API |
 | `WS` | `/dashboard/ws` | Live dashboard stream |
 | `GET` | `/health`, `/preflight` | Ops |
+| `GET` | `/api/help` | API reference — endpoint + curl thật, cũng là 1 tab trên dashboard |
 
 ---
 

@@ -164,6 +164,10 @@ CATALOG: List[Dict[str, Any]] = [
         "endpoints": [
             {"method": "GET", "path": "/health", "note": "Không cần token.",
              "curl": "curl -X GET http://127.0.0.1:58100/health"},
+            {"method": "GET", "path": "/api/help", "note": "Chính trang này, dạng JSON. "
+                                                              "Cần session token của dashboard, "
+                                                              "không dùng token API thường.",
+             "curl": _curl("GET", "/api/help")},
             {"method": "GET", "path": "/preflight", "note": "Kiểm tra key và model trước khi chạy.",
              "curl": _curl("GET", "/preflight")},
         ],
