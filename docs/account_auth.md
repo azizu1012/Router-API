@@ -180,6 +180,18 @@ User chỉ có thể **siết chặt hơn**, không nới lỏng hơn mặc đ�
 
 Đây là chủ ý: master key là đường vào không bị giới hạn cho chủ hệ thống.
 
+### Cú pháp
+
+```
+sk-<43 ký tự base64url>
+```
+
+Thân 43 ký tự là `token_urlsafe(32)` — nên nó trông **giống** structured token nhưng không phải. Điểm phân biệt là độ dài: `parse_token()` chỉ nhận code đúng 6 ký tự, nên master key không bao giờ parse thành token và không bao giờ bị tính rate limit.
+
+`rotate_key()` giữ nguyên hình dạng này — mục đích của nó là vô hiệu hoá key cũ, không phải đổi định dạng. Nếu một account nào đó đang giữ `auth_key` lệch chuẩn (đặt tay, hoặc từ scheme cũ), `rotate_key()` sẽ ghi warning trước khi ghi đè, thay vì đổi hình dạng một cách âm thầm.
+
+Test: `tests/test_master_key.py` — pin pattern, chứng minh master key không parse thành token, và xác nhận rotate trả về đúng độ dài cũ.
+
 Hai account trong repo dùng đường này khác nhau: một account chủ sở hữu (có cả web credential, đăng nhập dashboard và tự quản token của mình), một account thuần key-holder (chỉ giữ master key, không token, không web credential). Vì master key là credential thật, **không ghi giá trị của nó vào docs hay source** — nó chỉ tồn tại trong `accounts.auth_key`.
 
 ---

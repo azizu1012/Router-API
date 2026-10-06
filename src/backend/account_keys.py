@@ -15,6 +15,7 @@ others.
 """
 
 import hashlib
+import re
 import secrets
 import sqlite3
 import string
@@ -28,6 +29,32 @@ from src.backend._db import _LOCK, conn as _conn
 TOKEN_ALPHABET = string.ascii_letters + string.digits
 TOKEN_CODE_LEN = 6
 TOKEN_PREFIX = "sk-"
+
+# The legacy master key on `accounts.auth_key`: `sk-` plus a 32-byte
+# urlsafe-b64 body, which is always 43 characters from the base64url alphabet.
+# It looks like a structured token to the eye but is not one — a master key is
+# exempt from the concurrency and RPM/TPM/RPD gates, and parse_token rejects it
+# because the code is not TOKEN_CODE_LEN long. Anything matching this shape is
+# therefore safe to rotate in place: the replacement is indistinguishable.
+MASTER_KEY_BYTES = 32
+MASTER_KEY_BODY_LEN = 43
+MASTER_KEY_PATTERN = re.compile(
+    rf"^{re.escape(TOKEN_PREFIX)}[A-Za-z0-9_-]{{{MASTER_KEY_BODY_LEN}}}$"
+)
+
+
+def is_valid_master_key(key: Any) -> bool:
+    """True when key has the canonical master-key shape.
+
+    Tolerates None and non-string input: auth_key comes out of a database row,
+    where it is nullable, and a validator that raised on the unexpected value
+    would be useless exactly when there is something to report.
+
+    Used to catch an account whose auth_key was set by hand or by an older
+    scheme: rotating one would silently change its format, so it should be
+    noticed before it happens rather than after.
+    """
+    return bool(MASTER_KEY_PATTERN.match(str(key or "")))
 
 DEFAULT_MAX_CONCURRENCY = 6
 DEFAULT_MIN_INTERVAL_SECONDS = 3.0

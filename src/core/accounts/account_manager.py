@@ -18,8 +18,10 @@ from src.backend.account_keys import (
     compose_token,
     create_key_db,
     delete_key_db,
+    is_valid_master_key,
     list_keys_db,
     update_key_db,
+    MASTER_KEY_BYTES,
 )
 from src.backend.key_status import get_key_usage_db, update_key_usage_batch_db
 
@@ -36,7 +38,7 @@ class AccountManager:
 
     @staticmethod
     def generate_key() -> str:
-        return "sk-" + secrets.token_urlsafe(32)
+        return "sk-" + secrets.token_urlsafe(MASTER_KEY_BYTES)
 
     def _refresh_cache(self) -> None:
         """Cache both legacy whole-key accounts and sk-<name>-<code> tokens.
@@ -140,6 +142,19 @@ class AccountManager:
         return result
 
     def rotate_key(self, name: str) -> Dict[str, Any]:
+        # The replacement must be indistinguishable from what it replaces. If
+        # the current key does not match the canonical master-key shape it was
+        # set by hand or by an older scheme, and swapping it would silently
+        # change its format — so say so instead of quietly rewriting it.
+        from src.backend.accounts import find_account_by_name as _find
+        current = _find(name)
+        if current and not is_valid_master_key(str(current.get("auth_key") or "")):
+            from src.core.config_n_logg.logger import logger_system as _log
+            _log.warning(
+                "[Account] rotating %r: existing auth_key does not match the "
+                "canonical master-key format, so the new key will look different",
+                name,
+            )
         result = _update_account(name, auth_key=self.generate_key())
         self.invalidate_cache()
         return result
