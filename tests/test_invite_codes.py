@@ -22,9 +22,14 @@ sys.path.insert(0, ".")
 from src.backend.account_keys import consume_invite_db, create_invite_db
 
 
-def _spent(codes):
-    """Put codes in the table as already-used rows (the audit trail)."""
-    db = sqlite3.connect("usage.db")
+def _spent(codes, db_path):
+    """Put codes in the table as already-used rows (the audit trail).
+
+    db_path comes from the temp_db fixture. This used to open "usage.db"
+    directly, which meant every run deleted the real invite table and left its
+    own rows behind — 51 of them before it was caught.
+    """
+    db = sqlite3.connect(db_path)
     try:
         db.execute("DELETE FROM invite_codes")
         for i, code in enumerate(codes):
@@ -40,9 +45,9 @@ def _spent(codes):
 
 
 class TestInviteCodeCollision:
-    def test_retry_when_random_code_already_used(self):
+    def test_retry_when_random_code_already_used(self, temp_db):
         """A code that exists as spent must not abort the insert."""
-        _spent(["1234"])
+        _spent(["1234"], temp_db)
 
         # Force three collisions, then let the fourth attempt through.
         # secrets.choice is called once per digit, so the script is a flat
@@ -55,18 +60,18 @@ class TestInviteCodeCollision:
         assert inv["code"] == "5678"
         assert not script, "should have consumed all sixteen digits"
 
-    def test_exhausted_retries_raises_clear_error(self):
+    def test_exhausted_retries_raises_clear_error(self, temp_db):
         """Randomness that never escapes must not hang or throw raw sqlite."""
-        _spent(["9999"])
+        _spent(["9999"], temp_db)
 
         with patch("secrets.choice", return_value="9"):
             with pytest.raises(RuntimeError) as exc:
                 create_invite_db("admin")
         assert "invite" in str(exc.value).lower()
 
-    def test_retry_gives_up_quickly(self):
+    def test_retry_gives_up_quickly(self, temp_db):
         """8 attempts, not an unbounded loop."""
-        _spent(["9999"])
+        _spent(["9999"], temp_db)
         calls = []
 
         def count(_seq):
@@ -78,9 +83,9 @@ class TestInviteCodeCollision:
                 create_invite_db("admin")
         assert len(calls) == 8 * 4, f"expected 32 digit draws, got {len(calls)}"
 
-    def test_issue_works_against_a_crowded_table(self):
+    def test_issue_works_against_a_crowded_table(self, temp_db):
         """With retries, a table full of spent codes must still issue."""
-        _spent([f"{n:04d}" for n in range(50)])
+        _spent([f"{n:04d}" for n in range(50)], temp_db)
 
         issued = []
         for _ in range(50):

@@ -107,7 +107,14 @@ class TestMasterKeyIsNotAToken:
             "limits would apply to an account that is meant to bypass them"
         )
 
-    def test_both_shapes_coexist(self):
+    def test_both_shapes_coexist(self, temp_db):
+        """temp_db, not the real database.
+
+        This test calls create_key_db, which takes no db_path and so always
+        writes wherever src.backend._db points. Without the fixture it appended
+        a row to usage.db on every run; 59 of them are still there under an
+        account name that does not exist.
+        """
         from src.core.accounts import account_manager
         master = account_manager.generate_key()
         row = create_key_db("acct-x", name="acct-x")

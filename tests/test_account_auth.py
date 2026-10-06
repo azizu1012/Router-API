@@ -324,23 +324,26 @@ class TestTokenRateLimits:
 # ── invite codes ────────────────────────────────────────────────────────────
 
 class TestInviteCodes:
-    def test_single_use(self):
+    def test_single_use(self, temp_db):
         inv = create_invite_db("admin")
         assert consume_invite_db(inv["code"]) is not None
         assert consume_invite_db(inv["code"]) is None, "code must not be reusable"
 
-    def test_reissue_supersedes(self):
+    def test_reissue_supersedes(self, temp_db):
         first = create_invite_db("admin")
         second = create_invite_db("admin")
         assert first["code"] != second["code"]
         assert consume_invite_db(first["code"]) is None, "old code must be void"
 
-    def test_expired_rejected(self):
+    def test_expired_rejected(self, temp_db):
         import sqlite3
         import time
 
         inv = create_invite_db("admin", ttl_seconds=60)
-        db = sqlite3.connect("usage.db")
+        # temp_db, not "usage.db": create_invite_db just wrote to the temp file,
+        # so an UPDATE against the real database would touch a different row and
+        # the assertion below would pass or fail for the wrong reason.
+        db = sqlite3.connect(temp_db)
         try:
             db.execute("UPDATE invite_codes SET expires_at = ? WHERE code = ?",
                        (int(time.time()) - 1, inv["code"]))
@@ -349,15 +352,15 @@ class TestInviteCodes:
             db.close()
         assert consume_invite_db(inv["code"]) is None
 
-    def test_unknown_code_rejected(self):
+    def test_unknown_code_rejected(self, temp_db):
         assert consume_invite_db("0000-nonexistent") is None
 
-    def test_code_is_four_digits(self):
+    def test_code_is_four_digits(self, temp_db):
         inv = create_invite_db("admin")
         assert len(inv["code"]) == 4
         assert inv["code"].isdigit()
 
-    def test_default_ttl_is_three_minutes(self):
+    def test_default_ttl_is_three_minutes(self, temp_db):
         inv = create_invite_db("admin")
         assert inv["ttl_seconds"] == 180
 

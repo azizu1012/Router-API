@@ -57,6 +57,7 @@ tests/*
 !tests/test_stream_impl_seams.py
 !tests/test_responses_mapping.py
 !tests/test_api_help.py
+!tests/conftest.py
 
 # The CI scanner is tracked; the rest of scripts/ is local tooling.
 !scripts/
