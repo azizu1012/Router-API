@@ -25,8 +25,6 @@ export default function AccountsTab() {
   const [newRpm, setNewRpm] = useState('');
   const [newTpm, setNewTpm] = useState('');
   const [newRpd, setNewRpd] = useState('');
-  const [newWebSearchEnabled, setNewWebSearchEnabled] = useState(false);
-  const [newSearchEngine, setNewSearchEngine] = useState('auto');
   const [showCreateForm, setShowCreateForm] = useState(false);
   const [isCreating, setIsCreating] = useState(false);
   const [createMsg, setCreateMsg] = useState({ text: '', type: '' });
@@ -190,8 +188,6 @@ export default function AccountsTab() {
     const body = { 
       name: newName.trim(), 
       tier: newTier,
-      web_search_enabled: newWebSearchEnabled,
-      search_engine: newSearchEngine
     };
     if (newRpm.trim() !== '') body.rpm = parseInt(newRpm, 10);
     if (newTpm.trim() !== '') body.tpm = parseInt(newTpm, 10);
@@ -208,8 +204,6 @@ export default function AccountsTab() {
       setNewTpm('');
       setNewRpd('');
       setNewTier('free');
-      setNewWebSearchEnabled(false);
-      setNewSearchEngine('auto');
       
       if (res && res.account) {
         alert(`Tạo tài khoản ${res.account.name} thành công!\nKey truy cập: ${res.account.auth_key}\n\n(Hãy copy và lưu lại khóa này!)`);
@@ -328,28 +322,6 @@ export default function AccountsTab() {
             </div>
             
             <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4 items-end pt-2 border-t border-base-content/5">
-              <div className="form-control flex flex-row items-center gap-2 h-9">
-                <input 
-                  type="checkbox" 
-                  checked={newWebSearchEnabled} 
-                  onChange={(e) => setNewWebSearchEnabled(e.target.checked)} 
-                  disabled={isCreating}
-                  className="checkbox checkbox-primary checkbox-xs"
-                  id="new-web-search-enabled-checkbox"
-                />
-                <label htmlFor="new-web-search-enabled-checkbox" className="label cursor-pointer py-0">
-                  <span className="label-text font-bold text-xs uppercase text-base-content/70 select-none">Bật tìm kiếm Web</span>
-                </label>
-              </div>
-              <div className="form-control">
-                <label className="label py-1"><span className="label-text text-[11px] font-bold text-base-content/60 uppercase">Công cụ tìm kiếm mặc định</span></label>
-                <select disabled={isCreating} value={newSearchEngine} onChange={(e) => setNewSearchEngine(e.target.value)} className="select select-bordered select-sm text-xs w-full">
-                  <option value="auto">Tự động (Auto)</option>
-                  <option value="google_grounding">Google Grounding</option>
-                  <option value="duckduckgo">DuckDuckGo</option>
-                  <option value="disabled">Tắt tìm kiếm (Disabled)</option>
-                </select>
-              </div>
               <div className="flex gap-2 justify-end">
                 <button type="button" disabled={isCreating} onClick={() => setShowCreateForm(false)} className="btn btn-ghost btn-sm font-bold w-24">Hủy</button>
                 <button type="submit" disabled={isCreating} className="btn btn-primary btn-sm font-bold w-24">

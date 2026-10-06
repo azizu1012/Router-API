@@ -242,27 +242,36 @@ async def responses(
     auth = _resolve_auth(authorization, x_api_key)
     account = _check_auth(auth)
     body = await request.json()
-    input_value = body.get("input", "")
-    if isinstance(input_value, list):
-        messages = []
-        for item in input_value:
-            if isinstance(item, dict) and item.get("role"):
-                messages.append({"role": item.get("role"), "content": item.get("content", "")})
-            else:
-                messages.append({"role": "user", "content": str(item)})
-    else:
-        messages = [{"role": "user", "content": str(input_value)}]
 
-    chat_body = {
-        "model": body.get("model"),
-        "messages": messages,
-        "temperature": body.get("temperature", 0.7),
-        "top_p": body.get("top_p", 0.95),
-        "max_tokens": body.get("max_output_tokens") or body.get("max_tokens"),
-    }
+    from src.api.opencode_proxy.handler.responses_mapping import (
+        hosted_tool_names,
+        responses_to_chat_body,
+    )
+
+    chat_body = responses_to_chat_body(body)
+    hosted = hosted_tool_names(body)
+    if hosted:
+        logger_api.info(
+            "[Responses Route] hosted tools=%s -> router-native, engine=%s",
+            ",".join(hosted), chat_body.get("search_engine", "duckduckgo"),
+        )
+
+    is_stream = bool(chat_body.get("stream"))
     try:
         await _apply_account_limit(account, chat_body)
         from src.api.opencode_proxy import opencode_proxy
+        if is_stream:
+            async def _gen():
+                async for chunk in opencode_proxy.stream_chat_completion(
+                    chat_body, account=account, is_opencode=False
+                ):
+                    yield chunk
+
+            return StreamingResponse(
+                _gen(),
+                media_type="text/event-stream",
+                headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+            )
         result = await opencode_proxy.chat_completion(chat_body, account=account, is_opencode=False)
     except HTTPException:
         raise

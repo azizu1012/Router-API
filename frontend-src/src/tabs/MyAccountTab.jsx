@@ -6,7 +6,6 @@ import { api } from '../utils/api';
 import { Wifi, Zap, Activity, HelpCircle, KeyRound, Plus } from 'lucide-react';
 import Card from '../components/Card';
 import Badge from '../components/Badge';
-import Select from '../components/Select';
 import Loading from '../components/Loading';
 import TokenTable from '../components/TokenTable';
 
@@ -121,8 +120,6 @@ export default function MyAccountTab() {
     return unsub;
   }, [wsHook, wsHook?.connected]);
 
-  const [wsLoading, setWsLoading] = useState(false);
-  const [resetCountdown, setResetCountdown] = useState('');
 
   useEffect(() => {
     const updateCountdown = () => {
@@ -142,7 +139,6 @@ export default function MyAccountTab() {
   if (!data) return <Loading message={t('loading', lang)} />;
 
   const tier = data.tier || 'free';
-  const searchEngine = data.search_engine || 'auto';
   const flash = data.flash || { rpm: 0, tpm: 0, rpd: 0, rpm_used: 0, tpm_used: 0, rpd_used: 0, rpm_left: 0, tpm_left: 0, rpd_left: 0 };
   const lite = data.lite || { rpm: 0, tpm: 0, rpd: 0, rpm_used: 0, tpm_used: 0, rpd_used: 0, rpm_left: 0, tpm_left: 0, rpd_left: 0 };
 
@@ -157,28 +153,6 @@ export default function MyAccountTab() {
   const lRpm = pct(lite.rpm_used, lite.rpm);
   const lTpm = pct(lite.tpm_used, lite.tpm);
   const lRpd = pct(lite.rpd_used, lite.rpd);
-
-  const handleSearchEngineChange = async (engine) => {
-    setWsLoading(true);
-    try {
-      await api('/dashboard/my/search-engine', {
-        method: 'POST',
-        body: JSON.stringify({ search_engine: engine })
-      }, token);
-      refreshTab();
-    } catch (err) {
-      alert('Error set search engine: ' + err.message);
-    } finally {
-      setWsLoading(false);
-    }
-  };
-
-  const engineOptions = [
-    { value: 'auto', label: t('se_auto', lang) },
-    { value: 'google_grounding', label: t('se_google', lang) },
-    { value: 'duckduckgo', label: t('se_ddg', lang) },
-    { value: 'disabled', label: t('se_disabled', lang) },
-  ];
 
   const limitCard = (title, val, used, percent, leftText, showReset, icon) => {
     const colorClass = barCol(percent);
@@ -405,31 +379,6 @@ export default function MyAccountTab() {
       )}
 
       {livePools}
-
-      <Card variant="glass" padding="md">
-        <Card.Header
-          title={t('ws_toggle_label', lang)}
-          subtitle={t('ws_toggle_sub', lang)}
-          action={
-            <div className="dropdown dropdown-left dropdown-hover">
-              <label tabIndex={0} className="btn btn-circle btn-ghost btn-xs text-base-content/50">
-                <HelpCircle className="w-4 h-4" />
-              </label>
-              <div tabIndex={0} className="dropdown-content card card-compact p-3 shadow bg-base-100 border border-base-content/10 text-xs w-64 z-20">
-                {t('ws_toggle_tip', lang)}
-              </div>
-            </div>
-          }
-        />
-        <Select
-          options={engineOptions}
-          value={searchEngine}
-          onChange={(e) => handleSearchEngineChange(e.target.value)}
-          disabled={wsLoading}
-          size="md"
-          className="max-w-xs"
-        />
-      </Card>
 
       <div className="text-left space-y-1">
         <h3 className="font-extrabold text-sm text-base-content/85">Gemini Flash Pool — {t('lbl_usage_limits', lang)}</h3>
