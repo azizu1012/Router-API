@@ -711,3 +711,22 @@ async def usage_stats(days: int = 30):
     from src.core.usage_logger import get_recent_requests
     recent_reqs = await get_recent_requests(20)
     return {**stats, "top_keys": top_keys, "savings": savings_data, "recent_requests": recent_reqs}
+
+
+@app.get("/api/help")
+async def api_help(request: Request):
+    """Hand-written API catalog, grouped by the dialect each endpoint speaks.
+
+    The generated /openapi.json lists all 75 routes but carries no request
+    bodies, because the handlers parse `request: Request` instead of declaring
+    Pydantic models. This is the shape a reader actually needs: which protocol
+    an endpoint speaks, what to send, and a curl that runs.
+
+    Session-gated like the rest of the dashboard — it names routes and the auth
+    model, which is not something to hand to an unauthenticated caller.
+    """
+    payload = _require_dashboard(request)
+    if isinstance(payload, JSONResponse):
+        return payload
+    from src.server.openai_server.api_help import help_payload
+    return help_payload()

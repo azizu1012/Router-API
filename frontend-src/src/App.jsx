@@ -5,7 +5,7 @@ import CanvasParticles from './components/CanvasParticles';
 import ThemeLanguageSelector from './components/ThemeLanguageSelector';
 import { 
   LayoutDashboard, Key, Users, PieChart, Network, 
-  AlertTriangle,   ShieldCheck, User, BarChart3, LogOut, Lock, Eye, EyeOff, Settings, Terminal, Layers
+  AlertTriangle,   ShieldCheck, User, BarChart3, LogOut, Lock, Eye, EyeOff, Settings, Terminal, Layers, BookOpen
 } from 'lucide-react';
 import LogHistoryModal from './components/LogHistoryModal';
 
@@ -20,6 +20,7 @@ import PoolStructureTab from './tabs/PoolStructureTab';
 import MyAccountTab from './tabs/MyAccountTab';
 import MyUsageTab from './tabs/MyUsageTab';
 import SettingsTab from './tabs/SettingsTab';
+import ApiHelpTab from './tabs/ApiHelpTab';
 import ModelsTab from './tabs/ModelsTab';
 
 export default function App() {
@@ -444,8 +445,16 @@ export default function App() {
                 <span>{t('nav_st', lang) || 'Cấu hình Hệ thống'}</span>
               </button>
 
-              <button 
-                onClick={() => setShowLogsModal(true)} 
+              <button
+                onClick={() => setActiveTab('help')}
+                className={`btn btn-xs lg:btn-sm btn-ghost justify-start gap-2 lg:gap-3 normal-case font-medium w-auto lg:w-full text-left rounded-xl shrink-0 whitespace-nowrap ${activeTab === 'help' ? 'bg-primary/15 text-primary font-bold border border-primary/20' : 'text-base-content/75'}`}
+              >
+                <BookOpen className="w-4 h-4" />
+                <span>{t('nav_help', lang) || 'API Reference'}</span>
+              </button>
+
+              <button
+                onClick={() => setShowLogsModal(true)}
                 className="btn btn-xs lg:btn-sm btn-ghost justify-start gap-2 lg:gap-3 normal-case font-medium w-auto lg:w-full text-left rounded-xl text-base-content/75 hover:bg-primary/15 hover:text-primary transition-all duration-200 shrink-0 whitespace-nowrap"
               >
                 <Terminal className="w-4 h-4 text-green-400" />
@@ -509,6 +518,7 @@ export default function App() {
             {activeTab === 'myacc' && <MyAccountTab />}
             {activeTab === 'myuse' && <MyUsageTab />}
             {activeTab === 'st' && <SettingsTab />}
+      {activeTab === 'help' && <ApiHelpTab />}
           </div>
         </main>
       </div>
