@@ -295,6 +295,53 @@ def set_password_db(account_id: str, password: str, must_change: int = 0) -> Non
             c.close()
 
 
+def list_password_flags_db() -> Dict[str, int]:
+    """account_id -> must_change, for the admin account listing.
+
+    A separate query rather than a column on list_accounts_db, which sits on the
+    auth path and does not need this and should not pay for it. Accounts with no
+    credential row are simply absent from the map, which the caller reads as
+    "no password, so no flag to set".
+    """
+    with _LOCK:
+        c = _conn()
+        try:
+            rows = c.execute(
+                "SELECT account_id, must_change FROM account_credentials"
+            ).fetchall()
+            return {r["account_id"]: int(r["must_change"] or 0) for r in rows}
+        finally:
+            c.close()
+
+
+def set_password_flag(account_id: str, must_change: int) -> None:
+    """Update only the must_change flag, leaving the stored password alone.
+
+    Deliberately not routed through set_password_db. That function re-hashes and
+    takes a plaintext password, so using it to raise a flag would require the
+    caller to already hold the password — which is the one thing an admin marking
+    an account for reset does not have. It would also clear password_enc, since a
+    blank password encrypts to None.
+
+    Raises if there is no credential row rather than inserting one: a row with a
+    NULL hash is not a credential, and creating it here would look like a login
+    had been set up when none was.
+    """
+    with _LOCK:
+        c = _conn()
+        try:
+            cur = c.execute(
+                "UPDATE account_credentials SET must_change = ?, updated_at = ? "
+                "WHERE account_id = ?",
+                (int(must_change), int(time.time()), account_id),
+            )
+            if cur.rowcount == 0:
+                raise ValueError("account has no web credential")
+            c.commit()
+        finally:
+            c.close()
+
+
 def get_recoverable_password_db(account_id: str) -> Optional[str]:
     """The plaintext password for an account, or None.
 

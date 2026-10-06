@@ -457,9 +457,23 @@ async def dashboard_me(request: Request):
             "rpd_left": p_rpd_left,
         }
         
+    # must_change_password is read by the security banner in App.jsx. Without it
+    # in this payload that banner could never render — the flag was written and
+    # stored correctly, it just never left the database.
+    must_change_password = False
+    try:
+        cred = await asyncio.to_thread(get_credential_db, account["account_id"])
+        if cred:
+            must_change_password = bool(cred.get("must_change"))
+    except Exception:
+        # A missing or unreadable credential row is not a reason to fail /me —
+        # the account still has working token auth, and the banner is advisory.
+        pass
+
     return {
         **payload,
         "account_id": account.get("account_id"),
+        "must_change_password": must_change_password,
         "web_search_enabled": bool(account.get("web_search_enabled", 0)),
         "search_engine": account.get("search_engine", "auto"),
         "flash": res_pools["flash"],
@@ -475,7 +489,17 @@ async def dashboard_accounts(request: Request):
     is_admin = payload.get("tier") == "admin"
     accs = await asyncio.to_thread(list_accounts_db, True)
     if is_admin:
-        return {"accounts": [dict(a) for a in accs]}
+        # Admin only. Whether somebody still owes a password change is not
+        # something one account should learn about another's, so the flag is
+        # merged in here rather than exposed on list_accounts_db for everyone.
+        from src.backend.account_keys import list_password_flags_db
+        flags = await asyncio.to_thread(list_password_flags_db)
+        return {
+            "accounts": [
+                {**dict(a), "must_change_password": bool(flags.get(a["account_id"], 0))}
+                for a in accs
+            ]
+        }
     else:
         safe = [{k: v for k, v in a.items() if k != "auth_key"} for a in accs]
         return {"accounts": safe}

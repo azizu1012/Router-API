@@ -41,6 +41,8 @@ pytest
 | `test_tier_limits.py` | trần RPM/TPM/RPD theo tier, clamp xuống không nâng |
 | `test_password_recovery.py` | bản mã hoá mật khẩu cho admin, hash vẫn là thứ xác thực |
 | `test_admin_password_recovery.py` | route admin xem mật khẩu, chỉ admin, nói rõ khi không đọc được |
+| `test_must_change_password.py` | cờ `must_change` từ DB tới banner; admin bật/tắt được |
+| `test_search_engine_precedence.py` | engine theo dialect; override ở tầng account đã bị bỏ |
 | `test_layering.py` | tầng dưới không import tầng trên (AST, cần chạy sạch) |
 
 Chạy nhanh một file:

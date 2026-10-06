@@ -13,8 +13,10 @@ from src.backend.account_keys import (
     create_key_db,
     delete_key_db,
     get_key_db,
+    get_credential_db,
     list_keys_db,
     set_password_db,
+    set_password_flag,
 )
 from src.core.accounts import account_manager
 
@@ -299,7 +301,10 @@ async def admin_create_account(request: Request):
             account_manager.create_account,
             name=name, rpm=rpm_val, tpm=tpm_val, rpd=rpd_val, tier=tier, search_engine=search_engine, web_search_enabled=web_search_enabled
         )
-        await asyncio.to_thread(set_password_db, acct["account_id"], password)
+        await asyncio.to_thread(
+            set_password_db, acct["account_id"], password,
+            must_change=1 if password == DEFAULT_PASSWORD else 0,
+        )
         return {
             "status": "success",
             "account": acct,
@@ -487,45 +492,45 @@ async def admin_account_recovery(request: Request, name: str):
     return {"name": clean, "password": plain, "available": True}
 
 
-@app.post("/dashboard/admin/accounts/search-engine")
-async def admin_set_search_engine(request: Request):
+@app.post("/dashboard/admin/accounts/require-password-change")
+async def admin_require_password_change(request: Request):
+    """Mark an account as owing a password change, or clear the mark.
+
+    This writes a flag; it does not touch the password. The distinction matters
+    because the two things get confused: an admin asking for a password reset
+    wants a new secret, while this wants the account told to choose one itself on
+    next login. The dashboard reads the flag as a persistent banner, not as a lock.
+
+    Refuses an account with no credential row rather than creating one. Writing a
+    credential here would fabricate a password hash for an account that never had
+    a web login, and the value chosen would have to be one nobody knows.
+    """
     _require_admin(request)
     try:
         body = await request.json()
         name = str(body.get("name", "")).strip()
-        search_engine = str(body.get("search_engine", "auto")).strip().lower()
+        required = bool(body.get("required"))
     except Exception:
         raise HTTPException(status_code=400, detail="Invalid JSON")
     if not name:
         raise HTTPException(status_code=400, detail="name is required")
-    if search_engine not in ("auto", "google_grounding", "duckduckgo", "disabled"):
-        raise HTTPException(status_code=400, detail="search_engine must be auto/google_grounding/duckduckgo/disabled")
 
     import asyncio
-    from src.core.accounts import account_manager
+    from src.backend.accounts import find_account_by_name
+
+    acct = await asyncio.to_thread(find_account_by_name, name)
+    if not acct:
+        raise HTTPException(status_code=404, detail="Account not found")
+    if not await asyncio.to_thread(get_credential_db, acct["account_id"]):
+        raise HTTPException(
+            status_code=400,
+            detail="Tài khoản này chưa có mật khẩu web. Cấp mật khẩu trước rồi đánh dấu bắt đổi.",
+        )
+
     try:
-        acct = await asyncio.to_thread(account_manager.update_account, name, search_engine=search_engine)
-        return {"status": "success", "search_engine": acct.get("search_engine", "auto")}
+        await asyncio.to_thread(
+            set_password_flag, acct["account_id"], 1 if required else 0
+        )
     except Exception as e:
         raise HTTPException(status_code=400, detail=str(e))
-
-
-@app.post("/dashboard/my/search-engine")
-async def my_search_engine(request: Request):
-    payload = _require_dashboard(request)
-    try:
-        body = await request.json()
-        search_engine = str(body.get("search_engine", "auto")).strip().lower()
-    except Exception:
-        raise HTTPException(status_code=400, detail="Invalid JSON")
-
-    if search_engine not in ("auto", "google_grounding", "duckduckgo", "disabled"):
-        raise HTTPException(status_code=400, detail="search_engine must be auto/google_grounding/duckduckgo/disabled")
-
-    import asyncio
-    from src.core.accounts import account_manager
-    try:
-        acct = await asyncio.to_thread(account_manager.update_account, payload.get("name", ""), search_engine=search_engine)
-        return {"status": "success", "search_engine": acct.get("search_engine", "auto")}
-    except Exception as e:
-        raise HTTPException(status_code=400, detail=str(e))
+    return {"status": "success", "name": name, "must_change_password": required}

@@ -32,18 +32,21 @@ def resolve_search_engine(body: Dict[str, Any], account: Optional[Dict[str, Any]
     key, so it is now the floor and the Responses route opts up to grounding
     explicitly.
 
-    The account setting is still read so an existing row keeps its meaning, but
-    nothing in the dashboard writes it any more.
+    The account's own search_engine used to sit at step 2.5, between the request
+    and the dialect rule, and it was the only input nobody could see: no
+    dashboard wrote it any more, so a row left at 'disabled' silently overrode a
+    client that had explicitly asked for web search. A fourth precedence level
+    that only configuration can move is a trap, so it is gone — the account
+    argument is still taken to keep every caller unchanged, but nothing reads it.
+
+    The Gemini native path is unaffected either way: :generateContent is a
+    pass-through and Google decides what grounding it does on its own.
     """
     body_engine = (body.get("search_engine") or "").strip().lower()
     if body_engine in VALID_ENGINES:
         return body_engine
     if body.get("web_search") is True and body.get("_hosted_search"):
         return "auto"
-    if account:
-        acct_engine = (account.get("search_engine") or "").strip().lower()
-        if acct_engine in VALID_ENGINES:
-            return acct_engine
     return "duckduckgo"
 
 def should_enable_web_search(body: Dict[str, Any], account: Optional[Dict[str, Any]]) -> bool:

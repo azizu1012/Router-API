@@ -317,6 +317,35 @@ Mọi `password_enc` cũ **hỏng**. Không phải hỏng một cách âm thầm
 
 ---
 
+## 8c. Cờ `must_change` — bắt user đổi mật khẩu
+
+Cột `account_credentials.must_change` đã tồn tại từ lâu và **chưa từng hiện
+trên UI lần nào**. Nguyên nhân: cờ được ghi đúng vào DB, nhưng `/dashboard/me`
+không đưa nó vào payload, nên `App.jsx` đọc `data.must_change_password` và luôn
+nhận `undefined`. Không có lỗi nào, không có request nào fail — chỉ là tính
+năng không bao giờ xuất hiện. `test_must_change_password.py` chạy toàn bộ chuỗi
+(`/dashboard/me` → flag) chính vì lý do đó.
+
+| Ai | Làm gì |
+|---|---|
+| Admin | Nút **"Yêu cầu đổi MK"** trong tab Accounts, cạnh nút xem MK |
+| User | Banner đỏ ở đầu trang + nút "Đổi ngay" nhảy sang My Account |
+| User | Đổi xong là cờ tự về 0 |
+
+**Đây là banner, không phải khoá.** Đăng nhập vẫn chạy bình thường khi cờ bật —
+`test_raising_the_flag_leaves_the_password_working` giữ đúng điều đó.
+
+Route là `POST /dashboard/admin/accounts/require-password-change`, admin-only,
+chỉ ghi cờ chứ **không đụng mật khẩu**. Đó là điểm cố ý: admin bấm "yêu cầu đổi"
+thì không có mật khẩu hiện tại để truyền vào, và `set_password_db` sẽ băm lại
+từ một mật khẩu trắng rồi xoá mất `password_enc`. Nên có `set_password_flag()`
+riêng — `UPDATE` một cột, không đụng hash.
+
+Account chưa có mật khẩu web thì route trả 400 thay vì tự tạo credential row,
+vì tạo row nghĩa là bịa ra một hash với mật khẩu không ai biết.
+
+---
+
 ## 9. Endpoints
 
 ### User tự quản lý

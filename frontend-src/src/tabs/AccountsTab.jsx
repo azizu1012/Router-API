@@ -7,7 +7,7 @@ import EditAccountModal from '../components/EditAccountModal';
 import Loading from '../components/Loading';
 import TokenTable, { InvitePanel } from '../components/TokenTable';
 import PasswordReveal from '../components/PasswordReveal';
-import { Search, Plus, Trash2, ShieldCheck, ShieldAlert, KeyRound, Edit, Copy, RefreshCw } from 'lucide-react';
+import { Search, Plus, Trash2, ShieldCheck, ShieldAlert, KeyRound, KeySquare, Edit, Copy, RefreshCw } from 'lucide-react';
 
 export default function AccountsTab() {
   const { tabData, token, lang, refreshTab } = useApp();
@@ -19,6 +19,11 @@ export default function AccountsTab() {
 
   const [sortBy, setSortBy] = useState('name');
   const [sortOrder, setSortOrder] = useState('asc');
+
+  // Which account's must-change toggle is mid-flight. One name, not a set:
+  // two toggles cannot be in flight at once from a single row of buttons, and a
+  // boolean keeps the per-row disabled state honest.
+  const [mustChangeBusy, setMustChangeBusy] = useState(null);
 
   // New account form state
   const [newName, setNewName] = useState('');
@@ -252,6 +257,25 @@ export default function AccountsTab() {
       refreshTab();
     } catch (err) {
       alert('Error: ' + err.message);
+    }
+  };
+
+  // Mark an account as owing a password change, or clear the mark. Writes a
+  // flag only — the stored password is untouched, so this is not a reset and the
+  // admin does not need to know the current password to press it.
+  const handleToggleMustChange = async (account) => {
+    const required = !account.must_change_password;
+    setMustChangeBusy(account.name);
+    try {
+      await api('/dashboard/admin/accounts/require-password-change', {
+        method: 'POST',
+        body: JSON.stringify({ name: account.name, required: required })
+      }, token);
+      refreshTab();
+    } catch (err) {
+      alert('Error: ' + err.message);
+    } finally {
+      setMustChangeBusy(null);
     }
   };
 
@@ -497,7 +521,26 @@ export default function AccountsTab() {
                     <td>{(a.rpd || 0).toLocaleString()}</td>
                     <td className="text-base-content/50 font-medium whitespace-nowrap">{fmtD(a.created_at)}</td>
                     <td>
-                      <PasswordReveal token={token} accountName={a.name} />
+                      <div className="flex flex-col gap-1 items-start">
+                        <PasswordReveal token={token} accountName={a.name} />
+                        <button
+                          onClick={() => handleToggleMustChange(a)}
+                          disabled={mustChangeBusy === a.name}
+                          className={`btn btn-xs gap-1 font-bold normal-case ${
+                            a.must_change_password
+                              ? 'btn-warning'
+                              : 'btn-ghost text-base-content/50'
+                          }`}
+                          title={
+                            a.must_change_password
+                              ? 'Đang yêu cầu đổi MK — bấm để bỏ yêu cầu'
+                              : 'Yêu cầu tài khoản này đổi mật khẩu ở lần đăng nhập tới'
+                          }
+                        >
+                          <KeySquare className="w-3 h-3" />
+                          {a.must_change_password ? 'Cần đổi MK' : 'Yêu cầu đổi MK'}
+                        </button>
+                      </div>
                     </td>
                     <td>
                       <div className="flex items-center gap-0.5">
