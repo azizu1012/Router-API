@@ -7,16 +7,15 @@ Proxies (OpenCodeProxy, ClaudeProxy) delegate pool/retry logic to this class.
 
 import asyncio
 import time
-import random
-from typing import Any, AsyncIterator, Dict, List, Optional, Set, Tuple, Union
+from typing import Any, AsyncIterator, Dict, List, Optional, Set, Tuple
 
 from src.core.config_n_logg import config
 from src.core.config_n_logg.logger import logger_system as logger
 from src.core.router import router
-from src.core.limits import get_rate_limiter, apply_error_penalty, count_transient_error
+from src.core.limits import apply_error_penalty, count_transient_error
 from src.core.providers import _custom_endpoint_manager as endpoint_manager
 from src.core.providers.custom_endpoint_client import check_custom_pool_rate
-from src.core.providers.gemini_facade import acompletion, token_counter
+from src.core.providers.gemini_facade import acompletion
 from src.logical_HQ_translator import _resolve_model, _retry_delay
 from src.core.providers.gemini.error import classify as classify_gemini_error
 
@@ -60,6 +59,19 @@ def _compute_thinking_for_model(
         is_sub_agent=False,
     )
     return res if res else None
+
+
+def _retire_member(pool: Any, exhausted_members: Set[str], member: str) -> None:
+    """Give up on a member for the remainder of this request.
+
+    Every swap path needs the same two steps — hand the slot back, and stop
+    handing this member out again — and getting them out of order or dropping
+    the second step leaves a request retrying a member it already decided was
+    dead. They were spelled out seven times across call_stream and
+    call_nonstream.
+    """
+    pool.release(member)
+    exhausted_members.add(member)
 
 
 def _classify_error(e: Exception) -> str:
@@ -209,8 +221,7 @@ class PoolManager:
                         if is_custom:
                             logger.warning("[PoolManager] Custom endpoint failed: %s, swapping...", e)
                             endpoint_manager.mark_endpoint_failure(reservation.get("name", member_used))
-                            pool.release(member)
-                            exhausted_members.add(member)
+                            _retire_member(pool, exhausted_members, member)
                             continue
 
                         reason = _classify_error(e)
@@ -226,8 +237,7 @@ class PoolManager:
                             consecutive_transient += 1
                             if consecutive_transient >= config.POOL_SWAP_FAILURES:
                                 logger.warning("[PoolManager] Transient error %s on member %s, too many retries - swapping...", reason, member_used)
-                                pool.release(member)
-                                exhausted_members.add(member)
+                                _retire_member(pool, exhausted_members, member)
                                 consecutive_transient = 0
                             else:
                                 delay = _retry_delay(consecutive_transient)
@@ -241,18 +251,12 @@ class PoolManager:
                                 cooldown = config.KEY_INVALID_COOLDOWN_SECONDS if reason == "invalid_key" else config.KEY_429_COOLDOWN_SECONDS
                                 router.freeze_key(api_key_val, cooldown, model_id_val, reason)
                                 apply_error_penalty(api_key_val, reason, model_id_val)
-                            pool.release(member)
-                            exhausted_members.add(member)
+                            _retire_member(pool, exhausted_members, member)
 
                 raise RuntimeError("Pool max_retry_seconds exhausted")
-            except:
-                raise
             finally:
                 if member:
-                    try:
-                        pool.release(member)
-                    except RuntimeError:
-                        pass
+                    pool.release(member)
         else:
             # --- STANDALONE MODE ---
             # Directly calls the model without pool rotation.
@@ -423,8 +427,7 @@ class PoolManager:
                         if is_custom:
                             logger.warning("[PoolManager] Custom endpoint stream failed: %s, swapping...", e)
                             endpoint_manager.mark_endpoint_failure(reservation.get("name", member_used))
-                            pool.release(member)
-                            exhausted_members.add(member)
+                            _retire_member(pool, exhausted_members, member)
                             continue
 
                         reason = _classify_error(e)
@@ -439,15 +442,13 @@ class PoolManager:
 
                             if not reservation:
                                 logger.warning("[PoolManager] Transient stream error %s on member %s, no key available - swapping...", reason, member_used)
-                                pool.release(member)
-                                exhausted_members.add(member)
+                                _retire_member(pool, exhausted_members, member)
                                 consecutive_transient = 0
                             else:
                                 consecutive_transient += 1
                                 if consecutive_transient >= config.POOL_SWAP_FAILURES:
                                     logger.warning("[PoolManager] Transient stream error %s on member %s, too many retries - swapping...", reason, member_used)
-                                    pool.release(member)
-                                    exhausted_members.add(member)
+                                    _retire_member(pool, exhausted_members, member)
                                     consecutive_transient = 0
                                 else:
                                     delay = _retry_delay(consecutive_transient)
@@ -461,15 +462,11 @@ class PoolManager:
                                 cooldown = config.KEY_INVALID_COOLDOWN_SECONDS if reason == "invalid_key" else config.KEY_429_COOLDOWN_SECONDS
                                 router.freeze_key(api_key_val, cooldown, model_id_val, reason)
                                 apply_error_penalty(api_key_val, reason, model_id_val)
-                            pool.release(member)
-                            exhausted_members.add(member)
+                            _retire_member(pool, exhausted_members, member)
 
                 raise RuntimeError("Pool stream max_retry_seconds exhausted")
             finally:
-                try:
-                    pool.release(member)
-                except RuntimeError:
-                    pass
+                pool.release(member)
         else:
             # --- CHẾ ĐỘ ĐƠN LẺ STREAM (STANDALONE STREAM MODE) ---
             for attempt in range(config.MAX_RETRIES):
@@ -590,7 +587,6 @@ class PoolManager:
         )
 
         is_custom = reservation.get("provider") == "custom"
-        member_used = reservation.get("model_alias", member_override) if (pool_mode and pool and member_override) else model_alias_val
 
         # Per-member thinking config
         member_tc = _compute_thinking_for_model(thinking_params, model_full_val) if not is_custom else None

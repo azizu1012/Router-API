@@ -114,6 +114,50 @@ def _run(path, members=("m1", "m2", "m3", "m4")):
     return asyncio.run(_drive(path, members, _FakePool(list(members))))
 
 
+class TestRetireMember:
+    """_retire_member replaced seven identical copies of the same two steps.
+
+    It has to do both, in that order: releasing without recording leaves the
+    request retrying a member it already decided was dead, and recording
+    without releasing would leak the slot.
+    """
+
+    def test_releases_the_slot_and_records_the_member(self):
+        from src.core.pool_manager import _retire_member
+
+        released = []
+
+        class FakePool:
+            def release(self, member):
+                released.append(member)
+
+        pool = FakePool()
+        exhausted = set()
+        _retire_member(pool, exhausted, "m1")
+
+        assert released == ["m1"], "slot was not handed back"
+        assert exhausted == {"m1"}, "member will be handed out again"
+
+    def test_is_safe_to_call_twice(self):
+        from src.core.pool_manager import _retire_member
+        from src.core.router.pool import ModelPool
+
+        pool = ModelPool({"members": ["m1"], "swap_failures": 5,
+                          "max_retry_seconds": 5})
+        member = await_pool_acquire(pool)
+        exhausted = set()
+        _retire_member(pool, exhausted, member)
+        _retire_member(pool, exhausted, member)
+        assert not pool._locks[member].locked()
+        assert exhausted == {member}
+
+
+def await_pool_acquire(pool):
+    """Small shim so the test above reads top to bottom."""
+    import asyncio
+    return asyncio.new_event_loop().run_until_complete(pool.acquire())
+
+
 class TestRetryCounterAdvances:
     @pytest.mark.parametrize("path", ["nonstream", "stream"])
     def test_counter_increments(self, path):
