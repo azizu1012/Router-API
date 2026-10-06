@@ -233,6 +233,7 @@ Hiện tại, hệ thống được thiết kế để hoạt động ổn đị
 | `GEMINI_FLASH_25_MODEL` | `gemini-2.5-flash` | ID model backend cho flash-25 |
 
 | `MODEL_CONTEXT_LENGTH` | `220000` | Độ dài context tối đa cho tính toán dung lượng pool |
+| `ROUTER_API_PASSWORD_KEY` | — | Khóa bí mật dùng để mã hóa hai chiều mật khẩu web trong DB (AES-GCM/Fernet) |
 
 ## 10. Web Search Architecture (Cách A & Cách B)
 
@@ -281,4 +282,35 @@ Hệ thống hỗ trợ công cụ tìm kiếm `"duckduckgo"`. Khi cấu hình g
 * Router chỉ gọi trực tiếp scraper DuckDuckGo ở local (`src/tools/duckduckgo.py`).
 * Không chạy qua sub-agent Gemini Flash Lite và không gọi Google Grounding API.
 * Giúp **tiết kiệm 100% hạn ngạch (quota) API Key của Gemini** và tối ưu hóa chi phí vận hành.
+
+---
+
+## 11. Kiến Trúc Log Streaming & Quản Trị Phân Quyền (RBAC)
+
+Hệ thống cung cấp giải pháp streaming nhật ký thời gian thực kết hợp lưu trữ và kiểm soát truy cập nghiêm ngặt:
+
+```text
+Logger (Python standard / RotatingFileHandler)
+    │
+    ▼ Ghi vào file đĩa (logs/*.log)
+LogWatcher (async file watcher + RAM deque buffer)
+    │
+    ├─ Preload 1000 dòng đuôi khi khởi động
+    ├─ Broadcast dòng mới qua WebSocketManager
+    │
+    ▼
+WebSocket /dashboard/ws & HTTP /dashboard/logs/history
+    │
+    ├─ Kiểm tra Quyền (RBAC Policy):
+    │   ├─ Admin: Toàn quyền xem 5 kênh (proxy, api, system, keys, web)
+    │   └─ User (free/premium): Chỉ được xem proxy và api; chặn keys, system, web
+    │
+    ▼
+Frontend WebUI (LogTerminal.jsx + xterm.js)
+```
+
+1. **Chuẩn hóa kênh (`normalize_channel`)**: Hỗ trợ đầy đủ các biến thể từ client: `proxy`, `log:proxy`, `proxy.log`, `keys:endpoint`.
+2. **Khả năng phục hồi dữ liệu**: Kết hợp buffer trong bộ nhớ RAM (truy xuất siêu tốc) và fallback đọc từ đĩa cứng khi client yêu cầu lịch sử lớn hoặc khi ứng dụng vừa mới khởi động.
+3. **Tuân thủ phân tầng kiến trúc**: `LogWatcher` và `WebSocketManager` nằm ở tầng server transport (`src/server/`), không phụ thuộc ngược hoặc vi phạm quy tắc tầng dưới (`tests/test_layering.py`).
+
 
