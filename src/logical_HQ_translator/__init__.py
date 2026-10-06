@@ -9,11 +9,14 @@ from .model_resolver import (
     _retry_delay as _retry_delay,
 )
 
+from src.core.providers.gemini.schema_sanitizer import (
+    _sanitize_schema_for_gemini as _sanitize_schema_for_gemini,
+)
+
 from .message_converter import (
     _convert_messages as _convert_messages,
     _clean_system_prompt as _clean_system_prompt,
     _tool_call_names as _tool_call_names,
-    _sanitize_schema_for_gemini as _sanitize_schema_for_gemini,
     UNSUPPORTED_OR_HEAVY_TOOLS as UNSUPPORTED_OR_HEAVY_TOOLS,
 )
 
@@ -21,12 +24,15 @@ from .truncation import (
     emergency_truncate_to_limit as _emergency_truncate_to_limit,
 )
 
+from src.core.sub_agent_detect import (
+    is_sub_agent_body as is_sub_agent_body,
+)
+
 from .sse_cache_agent import (
     _estimate_msg_tokens as _estimate_msg_tokens,
     _truncate_huge_message as _truncate_huge_message,
     _get_simulated_cache_usage as _get_simulated_cache_usage,
     is_claude_code_body as is_claude_code_body,
-    is_sub_agent_body as is_sub_agent_body,
     _dict_to_sse_events as _dict_to_sse_events,
     _sse as _sse,
     save_resolved_model_for_cwd as save_resolved_model_for_cwd,

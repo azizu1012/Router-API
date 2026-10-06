@@ -28,27 +28,9 @@ from .response import build_response, error_response
 from .stream_executor import execute_stream
 
 
-def _is_sub_agent_request(body: Dict[str, Any]) -> bool:
-    """Detect if request is from a sub-agent."""
-    from src.logical_HQ_translator.sse_cache_agent import is_sub_agent_body
-    if is_sub_agent_body(body):
-        return True
-    system_prompt = ""
-    sys_val = body.get("system", "")
-    if isinstance(sys_val, list):
-        system_prompt = "\n".join([str(item.get("text", "")) for item in sys_val if isinstance(item, dict)])
-    elif isinstance(sys_val, str):
-        system_prompt = sys_val
-    if not system_prompt:
-        return False
-    sp_lower = system_prompt.lower()
-    if "opencode" not in sp_lower:
-        return False
-    main_indicators = ["interactive agent", "main agent", "primary agent", "you are the main", "you are the primary", "lead agent"]
-    if any(ind in sp_lower for ind in main_indicators):
-        return False
-    sub_keywords = ["explore", "read file", "search", "find", "glob", "grep", "task agent", "subagent", "sub-agent", "read files", "browse"]
-    return any(kw in sp_lower for kw in sub_keywords)
+from src.core.sub_agent_detect import (
+    is_sub_agent_request_openai as _is_sub_agent_request,
+)
 
 
 def _effort_to_level(effort: Any) -> Optional[str]:

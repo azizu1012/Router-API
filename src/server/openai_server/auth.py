@@ -3,6 +3,8 @@ from fastapi import HTTPException
 
 from src.core.limits import account_limiter, token_limiter
 from src.core.accounts import account_manager
+from src.core.sse_format import sse_event as _sse
+from src.core.sub_agent_detect import is_sub_agent_body, is_sub_agent_request_openai
 from src.backend.account_keys import get_key_db
 
 
@@ -193,10 +195,8 @@ def _auth_key_prefix(account: Dict[str, Any]) -> str:
 def is_sub_agent_request(body: Dict[str, Any], is_opencode: bool = False) -> bool:
     """Helper to detect sub-agent request using both prompt and structure indicators."""
     if is_opencode:
-        from src.api.opencode_proxy.handler.proxy import _is_sub_agent_request
-        return _is_sub_agent_request(body)
+        return is_sub_agent_request_openai(body)
     else:
-        from src.logical_HQ_translator.sse_cache_agent import is_sub_agent_body
         return is_sub_agent_body(body)
 
 
@@ -293,7 +293,6 @@ def handle_sub_agent_error(body: Dict[str, Any], exc: Exception, format_type: st
         if is_stream:
             async def stream_generator():
                 msg_id = "msg_" + uuid.uuid4().hex
-                from src.logical_HQ_translator.sse_cache_agent import _sse
 
                 # 1. message_start
                 yield _sse("message_start", {

@@ -588,6 +588,13 @@ The test suite runs via `pytest` and verifies security, routing resilience, prot
 
 ## 10. IMPORTANT DEPENDENCY GRAPH
 
+Layering rule: `src/api/` (client protocol) and `src/server/` (transport) sit at
+the top, `src/core/` below them, `src/logical_HQ_translator/` is a peer of
+`src/core/` rather than a layer, and nothing inside `src/core/providers/` may
+import `src/logical_HQ_translator/` or `src/api/`. Shared leaf helpers that both
+sides need live in `src/core/` directly (`sub_agent_detect`, `sse_format`,
+`tool_name_cache`).
+
 ```
 src.server.openai_server.routes.app_init
   |
@@ -596,6 +603,8 @@ src.server.openai_server.routes.app_init
   |       +---> src.api.claude_proxy.claude_proxy
   |       |       |
   |       |       +---> src.logical_HQ_translator
+  |       |       +---> src.core.sub_agent_detect        (no longer via translator)
+  |       |       +---> src.core.sse_format
   |       |       |
   |       |       +---> src.core.pool_manager.pool_manager
   |       |
@@ -609,6 +618,11 @@ src.server.openai_server.routes.app_init
   |       +---> src.backend.accounts
   |       +---> src.core.accounts.account_manager
   |
+  +---> src.server.openai_server.auth
+  |       |
+  |       +---> src.core.sub_agent_detect               (no longer imports src.api/)
+  |       +---> src.core.sse_format                     (no longer imports translator)
+  |
   +---> src.core.pool_manager.pool_manager
           |
           +---> src.core.router.core.router (APIRouter)
@@ -620,7 +634,10 @@ src.server.openai_server.routes.app_init
           +---> src.core.providers.gemini_facade
           |       |
           |       +---> src.core.providers.gemini (GeminiAPIManager)
+          |       +---> src.core.providers.gemini.schema_sanitizer
           |       +---> src.core.providers.custom_endpoint_client
+          |       |
+          |       +---> src.core.tool_name_cache          (via gemini_format)
           |
           +---> src.core.limits (token_limiter, account_limiter, gemini_rate_limiter)
 ```

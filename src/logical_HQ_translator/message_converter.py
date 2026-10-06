@@ -1,72 +1,11 @@
 import re
 import json
-import threading
 from datetime import datetime
 from typing import Any, Dict, List, Optional, Tuple
 
 from src.core.config_n_logg import config
-
-class ToolNameCache:
-    """
-    `ToolNameCache` là một cache LRU (Least Recently Used) để lưu trữ ánh xạ từ ID cuộc gọi công cụ
-    (tool call ID) sang tên công cụ (tool name). Điều này rất hữu ích trong quá trình chuyển đổi
-    tin nhắn để nhanh chóng tra cứu tên công cụ cho các phản hồi công cụ.
-
-    Cache này có kích thước tối đa cố định (`max_size`) và sử dụng một `threading.Lock`
-    để đảm bảo an toàn luồng khi truy cập và sửa đổi cache.
-
-    Attributes:
-        max_size (int): Kích thước tối đa của cache. Mặc định là 5000.
-        cache (Dict[str, str]): Dictionary lưu trữ các cặp key-value (tool_call_id: tool_name).
-        keys_list (List[str]): Danh sách các key theo thứ tự được thêm vào/truy cập để quản lý LRU.
-        lock (threading.Lock): Khóa để đồng bộ hóa truy cập cache.
-    """
-    def __init__(self, max_size=5000):
-        self.max_size = max_size
-        self.cache = {}
-        self.keys_list = []
-        self.lock = threading.Lock()
-
-    def set(self, key: str, value: str):
-        """
-        Thêm hoặc cập nhật một cặp key-value vào cache.
-        Nếu cache đạt đến `max_size`, mục cũ nhất sẽ bị loại bỏ.
-
-        Args:
-            key (str): ID của cuộc gọi công cụ.
-            value (str): Tên của công cụ.
-        """
-        if not key:
-            return
-        with self.lock:
-            if key in self.cache:
-                self.cache[key] = value
-                return
-            if len(self.cache) >= self.max_size:
-                oldest = self.keys_list.pop(0)
-                self.cache.pop(oldest, None)
-            self.cache[key] = value
-            self.keys_list.append(key)
-
-    def get(self, key: str) -> str:
-        """
-        Lấy tên công cụ từ cache dựa trên ID cuộc gọi công cụ.
-
-        Args:
-            key (str): ID của cuộc gọi công cụ.
-
-        Returns:
-            str: Tên công cụ nếu tìm thấy, ngược lại là chuỗi rỗng.
-        """
-        with self.lock:
-            return self.cache.get(key) or ""
-
-_GLOBAL_TOOL_NAME_CACHE = ToolNameCache()
-"""
-Instance toàn cục của `ToolNameCache` được sử dụng để duy trì ánh xạ
-tên công cụ trên toàn bộ ứng dụng. Điều này cho phép các phần khác nhau của code
-tra cứu tên công cụ một cách nhất quán và hiệu quả.
-"""
+from src.core.providers.gemini.schema_sanitizer import _sanitize_schema_for_gemini
+from src.core.tool_name_cache import _GLOBAL_TOOL_NAME_CACHE
 
 SCIENCE_TOOLS_TO_STRIP = set(config.TOOLS_TO_STRIP)
 
@@ -200,95 +139,6 @@ def _deep_merge_schemas(dict1: dict, dict2: dict) -> dict:
             res[k] = v
     return res
 
-
-# JSON Schema keywords NOT supported by google-genai SDK Schema model
-# Always remove these before passing to SDK to avoid Pydantic extra_forbidden
-UNSUPPORTED_SCHEMA_FIELDS = frozenset({
-    "$schema", "$id", "$anchor", "$dynamicRef",
-    "definitions", "additionalProperties",
-    "propertyNames", "contains", "uniqueItems", "const",
-    "if", "then", "else", "not",
-    "dependentRequired", "dependentSchemas", "prefixItems",
-    "contentMediaType", "contentEncoding",
-    "readOnly", "writeOnly", "deprecated",
-    "examples",  # plural — SDK chỉ supports singular "example"
-    "exclusiveMinimum", "exclusiveMaximum",
-    "$comment",
-    "allOf",
-})
-OPENAI_EXTRA_SCHEMA_FIELDS = UNSUPPORTED_SCHEMA_FIELDS
-
-
-def _convert_const_to_enum(obj: dict) -> None:
-    """Convert const to enum (Gemini doesn't support const)."""
-    if obj.get("const") is not None and "enum" not in obj:
-        obj["enum"] = [obj.pop("const")]
-
-
-def _convert_enum_values_to_strings(obj: dict) -> None:
-    """Gemini requires string enum values + explicit type:string."""
-    if "enum" in obj and isinstance(obj["enum"], list):
-        obj["enum"] = [str(v) for v in obj["enum"]]
-        if "type" not in obj:
-            obj["type"] = "string"
-
-
-def _flatten_type_array(obj: dict) -> None:
-    """Flatten e.g. ['string', 'null'] → 'string'."""
-    if isinstance(obj.get("type"), list):
-        non_null = [t for t in obj["type"] if t != "null"]
-        obj["type"] = non_null[0] if non_null else "string"
-
-
-def _ensure_object_type(obj: dict) -> None:
-    """Infer type=object when properties exists (Gemini requirement)."""
-    if "properties" in obj and "type" not in obj:
-        obj["type"] = "object"
-
-
-def _clean_required(obj: dict) -> None:
-    """Remove required fields not in properties; delete if empty."""
-    if "required" in obj and isinstance(obj.get("required"), list) and "properties" in obj:
-        valid = [f for f in obj["required"] if f in obj["properties"]]
-        if valid:
-            obj["required"] = valid
-        else:
-            del obj["required"]
-
-
-def _strip_unsupported(obj: dict) -> None:
-    """Recursively remove unsupported JSON Schema keywords (mutates in-place)."""
-    if not isinstance(obj, dict):
-        return
-    for k in list(obj.keys()):
-        if k in OPENAI_EXTRA_SCHEMA_FIELDS:
-            del obj[k]
-        elif k.startswith("x-"):
-            del obj[k]
-        elif isinstance(obj[k], dict):
-            _strip_unsupported(obj[k])
-        elif isinstance(obj[k], list):
-            for item in obj[k]:
-                if isinstance(item, dict):
-                    _strip_unsupported(item)
-
-
-def _sanitize_schema_for_gemini(schema: dict) -> dict:
-    """Clean JSON Schema for Gemini API compatibility. Returns new dict, does NOT mutate input."""
-    if not isinstance(schema, dict):
-        return schema
-
-    import copy
-    cleaned = copy.deepcopy(schema)
-
-    _convert_const_to_enum(cleaned)
-    _convert_enum_values_to_strings(cleaned)
-    _flatten_type_array(cleaned)
-    _ensure_object_type(cleaned)
-    _strip_unsupported(cleaned)
-    _clean_required(cleaned)
-
-    return cleaned
 
 def _tool_call_names(tool_calls: List[Dict[str, Any]]) -> str:
     names = [str(tc.get("name", "")).strip() for tc in tool_calls if tc.get("name")]

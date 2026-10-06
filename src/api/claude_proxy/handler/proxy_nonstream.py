@@ -73,7 +73,7 @@ class ClaudeProxyNonstreamMixin:
 
         from src.api.opencode_proxy.handler.websearch import should_enable_web_search
         from src.api.opencode_proxy.handler.proxy import _WEBSEARCH_TOOL_DEF, _resolve_thinking_config, _extract_thinking_params
-        from src.logical_HQ_translator.sse_cache_agent import is_sub_agent_body
+        from src.core.sub_agent_detect import is_sub_agent_body
         if not is_sub_agent_body(body) and should_enable_web_search(body, account) and not any(
             t.get("function", {}).get("name") in ("WebSearch", "web_search") for t in openai_tools
         ):

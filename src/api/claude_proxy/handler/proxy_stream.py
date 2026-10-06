@@ -89,7 +89,7 @@ class ClaudeProxyStreamMixin:
 
         from src.api.opencode_proxy.handler.websearch import should_enable_web_search
         from src.api.opencode_proxy.handler.proxy import _WEBSEARCH_TOOL_DEF, _resolve_thinking_config, _extract_thinking_params
-        from src.logical_HQ_translator.sse_cache_agent import is_sub_agent_body
+        from src.core.sub_agent_detect import is_sub_agent_body
         if not is_sub_agent_body(body) and should_enable_web_search(body, account) and not any(
             t.get("function", {}).get("name") in ("WebSearch", "web_search") for t in openai_tools
         ):
@@ -230,10 +230,8 @@ class ClaudeProxyStreamMixin:
                     if recursion_depth == 0:
                         # Warn before the model starts when the context is near the
                         # TPM ceiling, so the user can /compact instead of hitting 429.
-                        from src.logical_HQ_translator.sse_cache_agent import (
-                            is_claude_code_body,
-                            is_sub_agent_body,
-                        )
+                        from src.core.sub_agent_detect import is_sub_agent_body
+                        from src.logical_HQ_translator.sse_cache_agent import is_claude_code_body
                         if input_tokens > (178000 if is_claude_code_body(body) else 170000) \
                                 and not is_sub_agent_body(body):
                             ctx_warn = (
@@ -698,7 +696,7 @@ class ClaudeProxyStreamMixin:
         except Exception as e:
             logger.error("[Claude Stream Recurse] PoolManager failed: %s", e, exc_info=True)
             if recursion_depth == 0:
-                from src.logical_HQ_translator.sse_cache_agent import is_sub_agent_body
+                from src.core.sub_agent_detect import is_sub_agent_body
                 if is_sub_agent_body(body):
                     summary_text = get_system_status_summary(model_alias)
                     fake_result = {

@@ -136,3 +136,59 @@ Mọi lỗi từ endpoint admin hiện thành `HTTP error! status: 404` thay vì
 Chi tiết ở [`routing_and_resilience.md`](routing_and_resilience.md) mục 9 và 10. Tóm tắt: `output_config.effort` — field Claude Code thật sự gửi — không được đọc, nên mọi effort đều rơi về `low`; `reasoning_effort: medium` lại tắt thinking; `thinking: disabled` bị `return {}` nuốt mất.
 
 Điểm chung của bug #2–#5: **không cái nào sinh ra lỗi để báo cáo**. Response vẫn hợp lệ, request vẫn 200. Chỉ có hành vi sai. Vì vậy chúng không tự lộ ra ngoài đời thực — cần test so sánh đầu/cuối mới thấy được.
+
+---
+
+## Bug #6: Tầng Đáy Import Ngược Lên Tầng Trên (2026-10-06)
+
+### Muc do
+Không sinh ra lỗi runtime nao — day la ma **van` hoa`. Cac ham deu chay dung, chi la sai cho.
+
+### Root cause
+Ba ham thuoc tinh cua mot tang sai, nam o cho co the import nguoc len tren:
+
+| Ham | Nam o | Ai can no | Sai o gi |
+|-------|-------|-----------|---------|
+| `_sanitize_schema_for_gemini` + 6 helper | `logical_HQ_translator/message_converter.py` | `providers/gemini_format.py` | Tầng dưới import tầng trên |
+| `_GLOBAL_TOOL_NAME_CACHE` | cung tren | ca hai deu dung | Khong thuoc ve tang nao |
+| `is_sub_agent_body` | `logical_HQ_translator/sse_cache_agent.py` | `server/openai_server/auth.py` | Auth middleware import tầng proxy |
+
+`_sanitize_schema_for_gemini` la vi du rõ nhat: ham` chi ton tai de thoa man
+google-genai (khong ho tro `const`, khong ho tro union `type`, khong ho tro
+`allOf`). Nó nam trong `message_converter` roi `providers` phai import nguoc len de
+lay.
+
+`auth.py` ngoi ra con **import trong ham** — dung hinh dang ma mot vong long se co.
+Khong co vong long that o day, nhung import trong ham khong con ly do de ton tai.
+
+### Fix
+Ba ham chuyen ve nhung noi trung tinh ma ca hai dau deu dung:
+
+| File moi | Noi cu | Chu o ai dung |
+|----------|--------|---------------|
+| `src/core/providers/gemini/schema_sanitizer.py` | canh google-genai | `message_converter`, `gemini_format` |
+| `src/core/tool_name_cache.py` | state dung chung (cross-request) | `message_converter`, `gemini_format` |
+| `src/core/sub_agent_detect.py` | ham thuan tren raw body | `auth`, 2 proxy, `sse_cache_agent` |
+| `src/core/sse_format.py` | 1 dong f-string | `auth`, `proxy_stream`, `sse_cache_agent` |
+
+`message_converter` gio import `schema_sanitizer` — **dung chieu** (translator
+nam tren providers). `sse_cache_agent` re-export de khong phai sua 4 proxy
+con lai, nhung import goc da troi thang ve `core/`.
+
+### Ket qua
+- Khong con `src/core/providers/` nao import `logical_HQ_translator`.
+- `auth.py` khong con import `src/api/`.
+- Pyflakes sach tren tat ca file da sua.
+
+### Vay co tai sao lai sao?
+Ba ham deu **thuan** — khong doc config, khong giua state rieng, khong I/O. Tinh
+`khong` nen chuyen file khong doi gi. Ham co side effect thi phan bo lai se la
+thay doi hanh vi, va do la luc can test truoc.
+
+### Con lai gi
+`auth.py` van lazy-import 2 ham tu `src/api/`: `get_system_status_summary` va
+`get_client_model_name`. Khong phai vong long (proxy khong import auth), va
+`get_client_model_name` la **ham identity co chu dich** — OpenCode doi chieu ten
+model voi `opencode.json`, nen tra ve nguyen ban la mot quyet dinh, khong phai
+code thua. Giai quyet ton tai bang cach giai quyet o 15 call site de lan ban
+quyet dinh do ra nhieu cho, te hon giu no.

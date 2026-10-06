@@ -19,7 +19,8 @@ import json
 import re
 from typing import Any, Dict, List, Optional
 
-from src.logical_HQ_translator.message_converter import _sanitize_schema_for_gemini
+from src.core.providers.gemini.schema_sanitizer import _sanitize_schema_for_gemini
+from src.core.tool_name_cache import _GLOBAL_TOOL_NAME_CACHE
 
 # Cấu hình cài đặt an toàn mặc định cho các yêu cầu Gemini.
 # Tất cả các danh mục an toàn được đặt thành "OFF" để cung cấp sự kiểm soát linh hoạt hơn
@@ -226,11 +227,7 @@ def build_gemini_body(
 
 def _lookup_global_tool_name(tool_call_id: str) -> str:
     """Look up tool name from global cache (cross-request fallback)."""
-    try:
-        from src.logical_HQ_translator.message_converter import _GLOBAL_TOOL_NAME_CACHE
-        return _GLOBAL_TOOL_NAME_CACHE.get(tool_call_id)
-    except Exception:
-        return ""
+    return _GLOBAL_TOOL_NAME_CACHE.get(tool_call_id)
 
 
 def _extract_text_content(content: Any) -> str:

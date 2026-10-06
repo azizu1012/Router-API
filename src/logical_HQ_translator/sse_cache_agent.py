@@ -18,22 +18,11 @@ from pathlib import Path
 from typing import Any, Dict, Iterator, Optional
 
 from src.core.config_n_logg.logger import logger_proxy as logger
+from src.core.sse_format import sse_event as _sse
 
 _PROJECT_ROOT = Path(__file__).resolve().parents[2]
 _log_path = _PROJECT_ROOT / "logs" / "claude_request.log"
 
-def _sse(event: str, data: Dict[str, Any]) -> bytes:
-    """
-    Tạo một chuỗi định dạng SSE (Server-Sent Events) từ tên sự kiện và dữ liệu.
-
-    Args:
-        event (str): Tên của sự kiện SSE.
-        data (Dict[str, Any]): Dữ liệu (dưới dạng dictionary) sẽ được chuyển đổi thành JSON và gửi đi.
-
-    Returns:
-        bytes: Chuỗi bytes đã được mã hóa UTF-8 ở định dạng SSE.
-    """
-    return f"event: {event}\ndata: {json.dumps(data, ensure_ascii=False)}\n\n".encode("utf-8")
 
 def _get_simulated_cache_usage(body: Dict[str, Any], input_tokens: int) -> Dict[str, int]:
     """
@@ -116,78 +105,6 @@ def is_claude_code_body(body: Dict[str, Any]) -> bool:
     system_prompt_lower = system_prompt.lower()
     return "you are claude code" in system_prompt_lower or "cc_version=" in system_prompt_lower or "claude-code" in system_prompt_lower
 
-def is_sub_agent_body(body: Dict[str, Any]) -> bool:
-    if not body:
-        return False
-    system_instruction = body.get("system", "")
-    if isinstance(system_instruction, list):
-        system_prompt = "\n".join([str(item.get("text", "")) for item in system_instruction if isinstance(item, dict)])
-    else:
-        system_prompt = str(system_instruction or "")
-
-    # For OpenAI/OpenCode formats, system prompt can be in the messages list with role "system" or "developer"
-    if not system_prompt:
-        for msg in body.get("messages", []):
-            if msg.get("role") in ("system", "developer"):
-                content = msg.get("content", "")
-                if isinstance(content, str):
-                    system_prompt = content
-                elif isinstance(content, list):
-                    system_prompt = "\n".join([str(item.get("text", "")) for item in content if isinstance(item, dict)])
-                break
-
-    if system_prompt:
-        system_prompt_lower = system_prompt.lower()
-        if "you are an interactive agent" in system_prompt_lower:
-            return False
-        if "you are claude code" in system_prompt_lower:
-            return True
-
-        sub_agent_keywords = [
-            "general-purpose agent",
-            "general-purpose assistant",
-            "explore agent",
-            "file search specialist",
-            "exploration task",
-            "read-only exploration",
-            "claude-code-guide",
-            "statusline-setup",
-            "specialized agent",
-            "subagent",
-            "sub-agent",
-            "security monitor",
-            "you are the claude-code-guide",
-            "you are the explore",
-            "you are the general-purpose",
-            "you are the statusline-setup",
-        ]
-        if any(kw in system_prompt_lower for kw in sub_agent_keywords):
-            return True
-
-        if re.search(r"you are (a|an|the)[\s\w\-]*sub.?agent", system_prompt_lower):
-            return True
-
-        if "[sub-agent]" in system_prompt_lower:
-            return True
-
-        tool_count = len(body.get("tools", []))
-        if 16 <= tool_count <= 25:
-            return True
-
-    messages = body.get("messages", [])
-    for msg in messages:
-        if msg.get("role") != "user":
-            continue
-        content = msg.get("content")
-        if isinstance(content, str) and (content.strip().startswith("[SUB-AGENT]") or "[SUB-AGENT]" in content):
-            return True
-        elif isinstance(content, list):
-            for block in content:
-                if isinstance(block, dict) and block.get("type") == "text":
-                    text_val = block.get("text", "").strip()
-                    if text_val.startswith("[SUB-AGENT]") or "[SUB-AGENT]" in text_val:
-                        return True
-    return False
 
 def _dict_to_sse_events(result: Dict[str, Any]) -> Iterator[bytes]:
     msg = {k: result.get(k) for k in ("id", "type", "role", "model", "content", "stop_reason", "stop_sequence")}
@@ -215,7 +132,6 @@ def _dict_to_sse_events(result: Dict[str, Any]) -> Iterator[bytes]:
             yield _sse("content_block_stop", {"type": "content_block_stop", "index": idx})
     yield _sse("message_delta", {"type": "message_delta", "delta": {"stop_reason": result.get("stop_reason", "end_turn"), "stop_sequence": None}, "usage": {"output_tokens": result.get("usage", {}).get("output_tokens", 0)}})
     yield _sse("message_stop", {"type": "message_stop"})
-
 
 def save_resolved_model_for_cwd(system_prompt: Any, model_alias: str, model_id: str) -> None:
     """
