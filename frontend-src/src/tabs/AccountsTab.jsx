@@ -6,7 +6,7 @@ import { api } from '../utils/api';
 import EditAccountModal from '../components/EditAccountModal';
 import Loading from '../components/Loading';
 import TokenTable, { InvitePanel } from '../components/TokenTable';
-import { Search, Plus, Trash2, ShieldCheck, ShieldAlert, KeyRound, Edit } from 'lucide-react';
+import { Search, Plus, Trash2, ShieldCheck, ShieldAlert, KeyRound, Edit, Copy, RefreshCw } from 'lucide-react';
 
 export default function AccountsTab() {
   const { tabData, token, lang, refreshTab } = useApp();
@@ -254,6 +254,31 @@ export default function AccountsTab() {
     }
   };
 
+  const handleCopyMasterKey = (key) => {
+    if (!key) {
+      alert('Tài khoản này không có master key.');
+      return;
+    }
+    navigator.clipboard.writeText(key);
+    alert('Đã copy master key vào clipboard!');
+  };
+
+  const handleRotateKey = async (name) => {
+    if (!window.confirm(`Bạn có chắc muốn cấp mới Master Key cho account "${name}"? Master key cũ sẽ bị vô hiệu hóa ngay lập tức.`)) return;
+    try {
+      const res = await api('/dashboard/admin/accounts/rotate-key', {
+        method: 'POST',
+        body: JSON.stringify({ name })
+      }, token);
+      refreshTab();
+      if (res.account && res.account.auth_key) {
+        alert(`Đã cấp mới Master Key thành công!\n\nKhóa mới: ${res.account.auth_key}\n\n(Hãy copy và lưu lại khóa này)`);
+      }
+    } catch (e) {
+      alert('Rotate key error: ' + e.message);
+    }
+  };
+
   return (
     <div className="space-y-5">
       {/* Title + Create button */}
@@ -470,6 +495,14 @@ export default function AccountsTab() {
                         <button onClick={() => openTokens(a)}
                           className="btn btn-ghost btn-xs btn-square text-warning hover:bg-warning/15" title="Quản lý auth tokens">
                           <KeyRound className="w-3.5 h-3.5" />
+                        </button>
+                        <button onClick={() => handleCopyMasterKey(a.auth_key)}
+                          className="btn btn-ghost btn-xs btn-square text-accent hover:bg-accent/15" title="Copy Master Key">
+                          <Copy className="w-3.5 h-3.5" />
+                        </button>
+                        <button onClick={() => handleRotateKey(a.name)}
+                          className="btn btn-ghost btn-xs btn-square text-secondary hover:bg-secondary/15" title="Rotate Master Key">
+                          <RefreshCw className="w-3.5 h-3.5" />
                         </button>
                         <button onClick={() => handleDeleteAccount(a.name)}
                           className="btn btn-ghost btn-xs btn-square text-error hover:bg-error/15" title="Delete Account">

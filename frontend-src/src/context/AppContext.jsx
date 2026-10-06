@@ -301,11 +301,11 @@ export function AppProvider({ children }) {
   const wsHook = useWebSocket(token);
 
   // Auth operations
-  const login = async (authKey) => {
+  const login = async (username, password) => {
     const response = await fetch('/dashboard/login', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ auth_key: authKey }),
+      body: JSON.stringify({ username, password }),
     });
     
     if (!response.ok) {
@@ -315,7 +315,7 @@ export function AppProvider({ children }) {
     
     const data = await response.json();
     setToken(data.token);
-    setUser({ name: data.name, tier: data.tier });
+    setUser({ name: data.name, tier: data.tier, must_change_password: data.must_change_password });
     // Default routing: preserve requested tab if authorized, otherwise redirect
     const isAdminTab = ['ov', 'ks', 'ac', 'us', 'ep', 'pe', 'mu', 'st'].includes(activeTab);
     if (data.tier === 'admin') {
@@ -327,6 +327,25 @@ export function AppProvider({ children }) {
         setActiveTab('myacc');
       }
     }
+    return data;
+  };
+
+  const register = async (inviteCode, username, password) => {
+    const response = await fetch('/dashboard/register', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ invite_code: inviteCode, name: username, password }),
+    });
+    
+    if (!response.ok) {
+      const errorData = await response.json().catch(() => ({}));
+      throw new Error(errorData.detail || 'Registration failed');
+    }
+    
+    const data = await response.json();
+    setToken(data.token);
+    setUser({ name: data.name, tier: 'free', must_change_password: data.must_change_password });
+    setActiveTab('myacc');
     return data;
   };
 
@@ -343,7 +362,7 @@ export function AppProvider({ children }) {
     <AppContext.Provider value={{
       token, user, activeTab, theme, lang, tabData, loading,
       foundEggs, unlockEgg, toast, wsHook, fontSize, setFontSize,
-      setActiveTab, setTheme, changeLanguage, login, logout, refreshTab: () => fetchTabData(activeTab, false)
+      setActiveTab, setTheme, changeLanguage, login, register, logout, refreshTab: () => fetchTabData(activeTab, false)
     }}>
       {children}
     </AppContext.Provider>

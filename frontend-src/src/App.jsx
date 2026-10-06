@@ -24,12 +24,15 @@ import ModelsTab from './tabs/ModelsTab';
 
 export default function App() {
   const { 
-    token, user, activeTab, setActiveTab, lang, login, logout, loading,
+    token, user, activeTab, setActiveTab, lang, login, register, logout, loading,
     foundEggs, unlockEgg, toast
   } = useApp();
 
   const [devToolsOpen, setDevToolsOpen] = useState(false);
-  const [authKey, setAuthKey] = useState('');
+  const [isRegisterMode, setIsRegisterMode] = useState(false);
+  const [inviteCode, setInviteCode] = useState('');
+  const [username, setUsername] = useState('');
+  const [password, setPassword] = useState('');
   const [showPassword, setShowPassword] = useState(false);
   const [loginError, setLoginError] = useState('');
   const [isLoggingIn, setIsLoggingIn] = useState(false);
@@ -144,19 +147,29 @@ export default function App() {
     };
   }, []);
 
-  // 2. Handle Login
   const handleLoginSubmit = async (e) => {
     e.preventDefault();
-    if (!authKey.trim()) {
-      setLoginError(t('err_auth_key_required', lang));
-      return;
-    }
     setLoginError('');
     setIsLoggingIn(true);
+    
     try {
-      await login(authKey.trim());
+      if (isRegisterMode) {
+        if (!inviteCode.trim() || !username.trim() || !password) {
+          setLoginError('Invite code, username, and password are required');
+          setIsLoggingIn(false);
+          return;
+        }
+        await register(inviteCode.trim(), username.trim(), password);
+      } else {
+        if (!username.trim() || !password) {
+          setLoginError(t('err_auth_key_required', lang) || 'Username and password are required');
+          setIsLoggingIn(false);
+          return;
+        }
+        await login(username.trim(), password);
+      }
     } catch (err) {
-      setLoginError(err.message || t('err_invalid_auth_key', lang));
+      setLoginError(err.message || (isRegisterMode ? 'Registration failed' : 'Invalid username or password'));
     } finally {
       setIsLoggingIn(false);
     }
@@ -195,24 +208,57 @@ export default function App() {
               <div className="w-12 h-12 bg-indigo-500/20 text-indigo-400 rounded-xl flex items-center justify-center mb-3 shadow-inner">
                 <Lock className="w-6 h-6" />
               </div>
-              <h1 className="text-2xl font-black tracking-tight text-base-content text-center">{t('login_title', lang)}</h1>
-              <p className="text-xs text-base-content/60 mt-1 text-center">{t('login_desc', lang)}</p>
+              <h1 className="text-2xl font-black tracking-tight text-base-content text-center">
+                {isRegisterMode ? 'Tạo Tài Khoản' : t('login_title', lang)}
+              </h1>
+              <p className="text-xs text-base-content/60 mt-1 text-center">
+                {isRegisterMode ? 'Nhập mã Invite Code để đăng ký.' : t('login_desc', lang)}
+              </p>
             </div>
 
             <form onSubmit={handleLoginSubmit} className="space-y-6">
               <div className="form-control w-full">
+                {isRegisterMode && (
+                  <>
+                    <label className="label">
+                      <span className="label-text font-bold text-xs uppercase tracking-wide text-base-content/75">Invite Code</span>
+                    </label>
+                    <input 
+                      type="text"
+                      value={inviteCode}
+                      onChange={(e) => setInviteCode(e.target.value)}
+                      placeholder="4-digit code" 
+                      className="input input-bordered w-full text-sm bg-base-200/50 focus:border-indigo-500 focus:outline-none mb-4"
+                      autoComplete="off"
+                      spellCheck="false"
+                    />
+                  </>
+                )}
+                
                 <label className="label">
-                  <span className="label-text font-bold text-xs uppercase tracking-wide text-base-content/75">{t('login_label', lang)}</span>
+                  <span className="label-text font-bold text-xs uppercase tracking-wide text-base-content/75">Username</span>
+                </label>
+                <input 
+                  type="text"
+                  value={username}
+                  onChange={(e) => setUsername(e.target.value)}
+                  placeholder="Username" 
+                  className="input input-bordered w-full text-sm bg-base-200/50 focus:border-indigo-500 focus:outline-none mb-4"
+                  autoComplete="off"
+                  spellCheck="false"
+                />
+                
+                <label className="label">
+                  <span className="label-text font-bold text-xs uppercase tracking-wide text-base-content/75">Password</span>
                 </label>
                 <div className="relative flex items-center">
                   <input 
                     type={showPassword ? "text" : "password"}
-                    value={authKey}
-                    onChange={(e) => setAuthKey(e.target.value)}
-                    placeholder="sk-..." 
+                    value={password}
+                    onChange={(e) => setPassword(e.target.value)}
+                    placeholder="Password" 
                     className="input input-bordered w-full pr-12 text-sm bg-base-200/50 focus:border-indigo-500 focus:outline-none"
                     autoComplete="off"
-                    spellCheck="false"
                   />
                   <button 
                     type="button" 
@@ -241,12 +287,25 @@ export default function App() {
                     {t('btn_authenticating', lang)}
                   </>
                 ) : (
-                  t('login_btn', lang)
+                  isRegisterMode ? 'Đăng Ký' : t('login_btn', lang)
                 )}
               </button>
             </form>
 
-            <div className="mt-8 text-center text-xs text-base-content/50">
+            <div className="mt-6 text-center">
+              <button 
+                type="button" 
+                onClick={() => {
+                  setIsRegisterMode(!isRegisterMode);
+                  setLoginError('');
+                }}
+                className="text-xs text-primary hover:underline font-semibold"
+              >
+                {isRegisterMode ? 'Đã có tài khoản? Đăng nhập ngay' : 'Bạn chưa có tài khoản? Đăng ký với Invite Code'}
+              </button>
+            </div>
+
+            <div className="mt-4 text-center text-xs text-base-content/50">
               {t('login_footer', lang)}
             </div>
           </div>
@@ -416,7 +475,28 @@ export default function App() {
         </aside>
 
         {/* Content Area */}
-        <main className="flex-1 p-4 lg:p-8 overflow-y-auto z-10 w-full min-w-0 max-w-full">
+        <main className="flex-1 p-4 lg:p-8 overflow-y-auto z-10 w-full min-w-0 max-w-full relative">
+          
+          {user?.must_change_password && (
+            <div className="mb-6 mx-auto max-w-7xl animate-fade-in-up">
+              <div className="alert bg-error/15 border border-error/30 text-error flex items-start gap-4 p-4 rounded-xl shadow-lg">
+                <AlertTriangle className="w-5 h-5 shrink-0 mt-0.5" />
+                <div className="flex-1">
+                  <h3 className="font-bold text-sm">Cảnh báo Bảo mật: Mật khẩu mặc định</h3>
+                  <div className="text-xs opacity-90 mt-1">
+                    Tài khoản của bạn đang sử dụng mật khẩu mặc định (1234). Vui lòng vào <strong>My Account</strong> và đổi mật khẩu thành một chuỗi dễ nhớ nhưng an toàn hơn.
+                  </div>
+                </div>
+                <button 
+                  onClick={() => setActiveTab('myacc')} 
+                  className="btn btn-sm btn-error shrink-0"
+                >
+                  Đổi ngay
+                </button>
+              </div>
+            </div>
+          )}
+
           <div className="max-w-7xl mx-auto animate-tab-in">
             {activeTab === 'ov' && <OverviewTab />}
             {activeTab === 'ks' && <KeysTab />}

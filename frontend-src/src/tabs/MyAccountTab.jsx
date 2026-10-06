@@ -11,9 +11,37 @@ import Loading from '../components/Loading';
 import TokenTable from '../components/TokenTable';
 
 export default function MyAccountTab() {
-  const { tabData, token, lang, refreshTab, wsHook } = useApp();
+  const { tabData, token, lang, refreshTab, wsHook, user, logout } = useApp();
   const data = tabData.myacc;
   const [liveActivity, setLiveActivity] = useState(null);
+
+  // ── Change Password ──
+  const [isChangingPassword, setIsChangingPassword] = useState(false);
+  const [currentPassword, setCurrentPassword] = useState('');
+  const [newPassword, setNewPassword] = useState('');
+  const [pwdMsg, setPwdMsg] = useState(null);
+
+  const handleChangePassword = async (e) => {
+    e.preventDefault();
+    setPwdMsg(null);
+    if (!currentPassword || !newPassword) {
+      setPwdMsg({ text: '⚠️ Vui lòng nhập đủ thông tin', type: 'error' });
+      return;
+    }
+    try {
+      await api('/dashboard/password', {
+        method: 'POST',
+        body: JSON.stringify({ current_password: currentPassword, new_password: newPassword })
+      }, token);
+      setPwdMsg({ text: '✅ Đổi mật khẩu thành công. Vui lòng đăng nhập lại.', type: 'success' });
+      setCurrentPassword('');
+      setNewPassword('');
+      setIsChangingPassword(false);
+      setTimeout(() => logout(), 2000);
+    } catch (err) {
+      setPwdMsg({ text: '❌ ' + err.message, type: 'error' });
+    }
+  };
 
   // ── auth tokens ──
   const [tokens, setTokens] = useState([]);
@@ -269,7 +297,47 @@ export default function MyAccountTab() {
               {t('lbl_account_id', lang)}: <span className="text-primary font-bold">{data.account_id || '—'}</span>
             </p>
           </div>
+          <button 
+            onClick={() => setIsChangingPassword(!isChangingPassword)}
+            className="btn btn-sm btn-outline text-xs whitespace-nowrap ml-auto"
+          >
+            Đổi mật khẩu
+          </button>
         </div>
+
+        {isChangingPassword && (
+          <form onSubmit={handleChangePassword} className="mt-6 pt-4 border-t border-base-content/10 max-w-sm animate-fade-in-up">
+            <h3 className="text-sm font-bold mb-3">Đổi Mật Khẩu Web</h3>
+            <div className="space-y-3">
+              <input 
+                type="password" 
+                placeholder="Mật khẩu hiện tại" 
+                value={currentPassword}
+                onChange={e => setCurrentPassword(e.target.value)}
+                className="input input-sm input-bordered w-full" 
+              />
+              <input 
+                type="password" 
+                placeholder="Mật khẩu mới (ít nhất 4 ký tự)" 
+                value={newPassword}
+                onChange={e => setNewPassword(e.target.value)}
+                className="input input-sm input-bordered w-full" 
+              />
+              <div className="flex items-center gap-2">
+                <button type="submit" className="btn btn-sm btn-primary">Xác nhận</button>
+                <button type="button" onClick={() => setIsChangingPassword(false)} className="btn btn-sm btn-ghost">Hủy</button>
+              </div>
+            </div>
+          </form>
+        )}
+
+        {pwdMsg && (
+          <div className={`mt-4 text-xs font-semibold p-2.5 rounded-lg border ${
+            pwdMsg.type === 'success' ? 'bg-success/10 text-success border-success/20' : 'bg-error/10 text-error border-error/20'
+          }`}>
+            {pwdMsg.text}
+          </div>
+        )}
       </Card>
 
       {/* Auth tokens — the user-facing half of the token refactor */}
