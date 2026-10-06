@@ -51,6 +51,7 @@ tests/*
 !tests/test_master_key.py
 !tests/test_retry_counter.py
 !tests/test_error_classification.py
+!tests/test_layering.py
 
 # The CI scanner is tracked; the rest of scripts/ is local tooling.
 !scripts/

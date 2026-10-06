@@ -8,6 +8,10 @@ proxies decide whether to enable web search.
 They used to be reachable only through src.api.opencode_proxy and
 src.logical_HQ_translator.sse_cache_agent, which meant auth middleware imported
 the proxy layer to ask it a question about a request it had already parsed.
+Both of those were function-body imports, so nothing looked wrong and nothing
+was wrong at runtime — the layering was simply invisible. Keep these imports at
+module level; if a future change appears to need a lazy one, confirm there is a
+real cycle first. See docs/bug-logs.md Bug #6.
 """
 import re
 from typing import Any, Dict

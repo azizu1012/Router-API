@@ -4,6 +4,11 @@ Lives under providers/ because it exists solely to satisfy google-genai: every
 rule here encodes a limitation of the Gemini Schema model (no const, no union
 type, no allOf, ...). Keeping it next to the SDK it targets is what stops
 providers/ from having to import a translation layer.
+
+Do not move this back into src/logical_HQ_translator/ for "cohesion". That is
+where it started, and the fix in the other direction was to bring it here:
+tests/test_layering.py fails if anything under src/core/providers/ reaches up
+into the translator or the proxy layer. See docs/bug-logs.md Bug #6.
 """
 # JSON Schema keywords NOT supported by google-genai SDK Schema model
 # Always remove these before passing to SDK to avoid Pydantic extra_forbidden

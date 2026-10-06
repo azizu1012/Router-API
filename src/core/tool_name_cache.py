@@ -5,6 +5,11 @@ way to name the tool in the response is to remember the id->name pairing
 from the request that produced it. message_converter writes it, providers
 reads it back, so it cannot live in either — it is shared mutable state and
 this module is the neutral floor both sides already stand on.
+
+Both of those callers once reached into src/logical_HQ_translator/message_converter.py
+for it, which put a providers->translator edge in the dependency graph. Moving the
+cache out is what removed that edge; tests/test_layering.py now keeps it removed.
+See docs/bug-logs.md Bug #6.
 """
 import threading
 

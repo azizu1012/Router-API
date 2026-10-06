@@ -2,6 +2,19 @@
 
 Xem `AGENTS.md` cho workflow chung (TODO list, batch read, sub-agent usage).
 
+## Phân tầng — đọc trước khi sửa import
+
+`src/api/` và `src/server/` ở trên, `src/core/` ở dưới, `src/core/providers/` là đáy.
+`src/logical_HQ_translator/` là **peer của `src/core/`**, không phải một tầng.
+
+Tầng dưới **không được** import tầng trên. Quy tắc đầy đủ ở `AGENTS.md` mục 6, và
+`tests/test_layering.py` **fail** khi vi phạm — nếu bạn thấy test đó đỏ sau khi sửa
+import, đó là báo đúng, không phải test sai.
+
+Helper dùng chung cho cả hai bên thì đặt vào `src/core/` như hàm thuần:
+`src/core/sub_agent_detect.py`, `sse_format.py`, `tool_name_cache.py`.
+Lý do và lịch sử: `docs/bug-logs.md` Bug #6.
+
 ## Quy tắc code
 
 - Always query CodeGraph MCP tools to resolve symbol definitions and understand code topology before falling back to heavy grep commands.

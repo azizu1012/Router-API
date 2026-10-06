@@ -3,8 +3,15 @@ from fastapi import HTTPException
 
 from src.core.limits import account_limiter, token_limiter
 from src.core.accounts import account_manager
+
+# Sub-agent detection and SSE framing come from src/core/ on purpose. Both used to
+# be imported from src.logical_HQ_translator.sse_cache_agent (and the opencode
+# proxy) inside function bodies, which read like cycle-breaking but were not one:
+# no proxy ever imports auth. That made auth depend upward on src/api/ with
+# nothing to show for it. Keep these at module level. See docs/bug-logs.md Bug #6.
 from src.core.sse_format import sse_event as _sse
 from src.core.sub_agent_detect import is_sub_agent_body, is_sub_agent_request_openai
+
 from src.backend.account_keys import get_key_db
 
 
