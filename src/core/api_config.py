@@ -67,16 +67,16 @@ AVAILABLE_MODELS: Dict[str, Dict[str, Any]] = {
         "hidden": True,
     },
     "gemini-flash": {
-        "display": "Gemini Flash Pool (38↔37↔36↔35↔30↔25)",
+        "display": os.getenv("GEMINI_FLASH_DISPLAY", "Gemini Flash Pool (38↔37↔36↔35↔30↔25)"),
         "priority": 1,
         "model_id": "gemini-flash-pool",
-        "rpm": int(os.getenv("GEMINI_FLASH_38_RPM", "2")) + int(os.getenv("GEMINI_FLASH_37_RPM", "1")) + int(os.getenv("GEMINI_FLASH_36_RPM", "2")) + int(os.getenv("GEMINI_FLASH_35_RPM", "2")) + int(os.getenv("GEMINI_FLASH_30_RPM", "2")) + int(os.getenv("GEMINI_FLASH_25_RPM", "5")),
-        "tpm": int(os.getenv("GEMINI_FLASH_38_TPM", "250000")) + int(os.getenv("GEMINI_FLASH_37_TPM", "250000")) + int(os.getenv("GEMINI_FLASH_36_TPM", "250000")) + int(os.getenv("GEMINI_FLASH_35_TPM", "250000")) + int(os.getenv("GEMINI_FLASH_30_TPM", "250000")) + int(os.getenv("GEMINI_FLASH_25_TPM", "250000")),
-        "rpd": int(os.getenv("GEMINI_FLASH_38_RPD", "50")) + int(os.getenv("GEMINI_FLASH_37_RPD", "15")) + int(os.getenv("GEMINI_FLASH_36_RPD", "50")) + int(os.getenv("GEMINI_FLASH_35_RPD", "50")) + int(os.getenv("GEMINI_FLASH_30_RPD", "50")) + int(os.getenv("GEMINI_FLASH_25_RPD", "20")),
+        "rpm": int(os.getenv("GEMINI_FLASH_RPM", "14")),
+        "tpm": int(os.getenv("GEMINI_FLASH_TPM", "1500000")),
+        "rpd": int(os.getenv("GEMINI_FLASH_RPD", "235")),
         "context_length": MODEL_CONTEXT_LENGTH,
     },
     "gemini-flash-lite": {
-        "display": "Gemini Flash Lite Pool (3.1↔2.5)",
+        "display": "Gemini Flash Lite Pool (3.5↔3.1↔2.5)",
         "priority": 2,
         "model_id": os.getenv("GEMINI_FLASH_LITE_MODEL", "gemini-3.1-flash-lite"),
         "rpm": int(os.getenv("GEMINI_FLASH_LITE_RPM", "3")),
@@ -146,33 +146,56 @@ MODEL_POOLS: Dict[str, Dict[str, Any]] = {
 }
 
 
+def _format_pool_member_label(m: Any) -> str:
+    lbl = str(m).replace("gemini-flash-", "").replace("gemini-", "")
+    if lbl in ("lite", "flash-lite"):
+        return "3.1"
+    if lbl.endswith("-lite"):
+        base = lbl[:-5]
+        return f"{base[0]}.{base[1]}" if len(base) == 2 and base.isdigit() else base
+    return lbl
+
+
 def _recompute_pool_aggregates() -> None:
     for pool_name, pool_cfg in MODEL_POOLS.items():
-        members = pool_cfg["members"]
+        members_list = list(pool_cfg.get("members", []))
         total_rpm = 0
         total_tpm = 0
         total_rpd = 0
-        for m in members:
-            if m == pool_name and m in MODEL_POOLS:
+        for m in members_list:
+            m_str = str(m)
+            if m_str == pool_name and m_str in MODEL_POOLS:
                 # Member name collides with pool name — AVAILABLE_MODELS[m]
                 # may have been overwritten with pool aggregate or stale DB value.
                 # Read individual per-key limit from env var directly.
-                rpm_env = m.upper().replace("-", "_") + "_RPM"
-                tpm_env = m.upper().replace("-", "_") + "_TPM"
-                rpd_env = m.upper().replace("-", "_") + "_RPD"
+                prefix = m_str.upper().replace("-", "_")
+                rpm_env = f"{prefix}_RPM"
+                tpm_env = f"{prefix}_TPM"
+                rpd_env = f"{prefix}_RPD"
                 total_rpm += int(os.getenv(rpm_env, "3"))
                 total_tpm += int(os.getenv(tpm_env, "250000"))
                 total_rpd += int(os.getenv(rpd_env, "500"))
             else:
-                cfg = AVAILABLE_MODELS.get(m)
+                cfg = AVAILABLE_MODELS.get(m_str)
                 if cfg:
-                    total_rpm += int(cfg.get("rpm", 0))
-                    total_tpm += int(cfg.get("tpm", 0))
-                    total_rpd += int(cfg.get("rpd", 0))
+                    total_rpm += int(cfg.get("rpm", 0) or 0)
+                    total_tpm += int(cfg.get("tpm", 0) or 0)
+                    total_rpd += int(cfg.get("rpd", 0) or 0)
         if pool_name in AVAILABLE_MODELS:
             AVAILABLE_MODELS[pool_name]["rpm"] = total_rpm
             AVAILABLE_MODELS[pool_name]["tpm"] = total_tpm
             AVAILABLE_MODELS[pool_name]["rpd"] = total_rpd
+            pool_env_key = pool_name.upper().replace("-", "_") + "_DISPLAY"
+            env_disp = os.getenv(pool_env_key)
+            if env_disp:
+                AVAILABLE_MODELS[pool_name]["display"] = env_disp
+            else:
+                short_labels = [_format_pool_member_label(m) for m in members_list]
+                sep = "↔"
+                joined_labels = sep.join(short_labels)
+                title = "Gemini Flash Lite Pool" if "lite" in pool_name else "Gemini Flash Pool"
+                AVAILABLE_MODELS[pool_name]["display"] = f"{title} ({joined_labels})"
+
 
 
 def merge_db_models() -> None:

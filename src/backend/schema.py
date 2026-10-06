@@ -213,34 +213,31 @@ def init_config_tables() -> None:
                     pass
             c.commit()
 
-            # Seed model_prices if empty
-            cur = c.execute("SELECT COUNT(*) FROM model_prices")
-            if cur.fetchone()[0] == 0:
-                default_prices = [
-                    ("gemini-3.5-flash", 0.0015, 0.009, "gemini-3.5-flash"),
-                    ("gemini-3.1-flash", 0.0005, 0.003, "gemini-3.1-flash"),
-                    ("gemini-3.1-flash-lite", 0.00025, 0.0015, "gemini-3.1-flash-lite"),
-                    ("gemini-3.1-pro", 0.002, 0.012, "gemini-3.1-pro"),
-                    ("gemini-2.5-flash", 0.0003, 0.0025, "gemini-2.5-flash"),
-                    ("gemini-2.5-flash-lite", 0.0001, 0.0004, "gemini-2.5-flash-lite"),
-                    ("gemini-2.5-pro", 0.00125, 0.01, "gemini-2.5-pro"),
-                    ("gemini-2.0-flash", 0.0001, 0.0004, "gemini-2.0-flash"),
-                    ("gemini-flash", 0.0005, 0.003, "gemini-3.1-flash"),
-                    ("gemini-flash-lite", 0.00025, 0.0015, "gemini-3.1-flash-lite"),
-                    ("custom-model", 0.0, 0.0, "custom-model"),
-                    ("gemini-flash-35", 0.0015, 0.009, "gemini-3.5-flash"),
-                    ("gemini-flash-25", 0.0003, 0.0025, "gemini-2.5-flash"),
-                    ("gemini-flash-25-lite", 0.0001, 0.0004, "gemini-2.5-flash-lite"),
-                ]
+            # Seed or update model_prices to real pricing
+            from src.backend.model_prices import DEFAULT_MODEL_PRICES
+            cur = c.execute("SELECT input_rate_per_1k FROM model_prices WHERE model_name = 'gemini-3.5-flash'")
+            old_flash_row = cur.fetchone()
+            if not old_flash_row or (old_flash_row and abs(old_flash_row[0] - 0.0015) < 1e-6):
+                c.executemany(
+                    "INSERT OR REPLACE INTO model_prices (model_name, input_rate_per_1k, output_rate_per_1k, response_model_name) VALUES (?,?,?,?)",
+                    DEFAULT_MODEL_PRICES,
+                )
+                logger.info("[Schema] Synchronized %d real model prices to DB", len(DEFAULT_MODEL_PRICES))
+            else:
                 c.executemany(
                     "INSERT OR IGNORE INTO model_prices (model_name, input_rate_per_1k, output_rate_per_1k, response_model_name) VALUES (?,?,?,?)",
-                    default_prices,
+                    DEFAULT_MODEL_PRICES,
                 )
-                logger.info("[Schema] Seeded %d model prices", len(default_prices))
             c.commit()
         finally:
             c.close()
-            
+
+    try:
+        from src.backend.model_config import sync_default_models_to_db
+        sync_default_models_to_db()
+    except Exception as e:
+        logger.warning("[Schema] Failed to sync default models: %s", e)
+
 
 
 

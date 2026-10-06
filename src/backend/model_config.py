@@ -1,5 +1,5 @@
 import json
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional
 
 from src.backend._db import _LOCK, conn as _conn
@@ -47,7 +47,7 @@ def save_model_config(alias: str, **updates: Any) -> Dict[str, Any]:
 
     account_id = updates.pop("account_id", "") or ""
     existing = get_model_config(alias, account_id)
-    now = datetime.utcnow().isoformat()
+    now = datetime.now(timezone.utc).isoformat()
 
     allowed = {"display", "model_id", "rpm", "tpm", "rpd", "rpd_enabled",
                "hidden", "priority", "context_length", "pool_name", "enabled"}
@@ -149,3 +149,73 @@ def load_all_model_configs() -> Dict[str, Dict[str, Any]]:
             "enabled": row.get("enabled", True),
         }
     return result
+
+
+def sync_default_models_to_db(force: bool = False) -> int:
+    """Đồng bộ các model cấu hình chuẩn (6 Flash, 3 Lite, 2 Pools) vào bảng model_config trong SQLite.
+    Nếu model chưa có trong DB, sẽ tự động chèn mới.
+    Nếu force=True hoặc là pool mang tên hiển thị cũ (outdated display), sẽ cập nhật lại.
+    """
+    from src.core.api_config import AVAILABLE_MODELS, MODEL_POOLS
+
+    alias_to_pool = {}
+    for pn, pc in MODEL_POOLS.items():
+        for m in pc.get("members", []):
+            alias_to_pool[m] = pn
+
+    now = datetime.now(timezone.utc).isoformat()
+    synced_count = 0
+
+    with _LOCK:
+        c = _conn()
+        try:
+            for alias, cfg in AVAILABLE_MODELS.items():
+                cur = c.execute(
+                    "SELECT display, rpm, tpm, rpd FROM model_config WHERE alias = ? AND account_id = ''",
+                    (alias,),
+                )
+                existing = cur.fetchone()
+                pool_name = "" if alias in MODEL_POOLS else alias_to_pool.get(alias, "")
+                display = cfg.get("display", alias)
+                model_id = cfg.get("model_id", alias)
+                rpm = int(cfg.get("rpm", 10))
+                tpm = int(cfg.get("tpm", 1000000))
+                rpd = int(cfg.get("rpd", 1000))
+                hidden = 1 if cfg.get("hidden", False) else 0
+                priority = int(cfg.get("priority", 1))
+                context_length = int(cfg.get("context_length", 220000))
+
+                # Cập nhật nếu chưa có, hoặc nếu force=True, hoặc nếu display trong DB không khớp với env
+                needs_update = force or (existing and existing["display"] != display)
+
+                if not existing:
+                    c.execute(
+                        """INSERT INTO model_config
+                           (alias, account_id, display, model_id, rpm, tpm, rpd, rpd_enabled,
+                            hidden, priority, context_length, pool_name, enabled, updated_at)
+                           VALUES (?, '', ?, ?, ?, ?, ?, 0, ?, ?, ?, ?, 1, ?)""",
+                        (alias, display, model_id, rpm, tpm, rpd, hidden, priority, context_length, pool_name, now),
+                    )
+                    synced_count += 1
+                elif needs_update:
+                    c.execute(
+                        """UPDATE model_config SET
+                           display = ?, model_id = ?, rpm = ?, tpm = ?, rpd = ?,
+                           hidden = ?, priority = ?, context_length = ?, pool_name = ?, updated_at = ?
+                           WHERE alias = ? AND account_id = ''""",
+                        (display, model_id, rpm, tpm, rpd, hidden, priority, context_length, pool_name, now, alias),
+                    )
+                    synced_count += 1
+            c.commit()
+        finally:
+            c.close()
+    return synced_count
+
+
+def sync_env_to_db() -> int:
+    """Đồng bộ toàn bộ cấu hình model từ ENV vào database SQLite (model_config).
+    Đảm bảo khi .env thay đổi thì database được cập nhật ngay lập tức.
+    """
+    return sync_default_models_to_db(force=True)
+
+

@@ -145,7 +145,7 @@ async def admin_save_model(request: Request):
                     update_endpoint_db(ep["name"], enabled_models=enabled)
                 break
 
-    from src.core.api_config import reload_model_config
+    from src.core.api_config import AVAILABLE_MODELS, MODEL_POOLS, reload_model_config
     reload_model_config()
 
     from .helpers import update_env_var
@@ -155,6 +155,15 @@ async def admin_save_model(request: Request):
             update_env_var(f"{prefix}_{field.upper()}", str(body[field]))
     if "model_id" in body:
         update_env_var(f"{prefix}_MODEL", str(body["model_id"]))
+
+    # Đồng bộ cả aggregate limits của các virtual pool vào .env
+    for pn in MODEL_POOLS:
+        p_cfg = AVAILABLE_MODELS.get(pn)
+        if p_cfg:
+            p_prefix = pn.upper().replace("-", "_")
+            update_env_var(f"{p_prefix}_RPM", str(p_cfg.get("rpm", 0)))
+            update_env_var(f"{p_prefix}_TPM", str(p_cfg.get("tpm", 0)))
+            update_env_var(f"{p_prefix}_RPD", str(p_cfg.get("rpd", 0)))
 
     # Reload env vars into os.environ so config picks them up
     from dotenv import load_dotenv

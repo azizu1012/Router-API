@@ -23,8 +23,8 @@ def get_client_model_name(requested_model: str) -> str:
 def estimate_cost(input_tokens: int, output_tokens: int, model_alias: str) -> float:
     """Calculate estimated cost for this request using DB prices or defaults."""
     is_lite = "lite" in str(model_alias).lower()
-    input_rate = 0.001 if is_lite else 0.0025
-    output_rate = 0.004 if is_lite else 0.010
+    input_rate = 0.000075 if is_lite else 0.00015
+    output_rate = 0.0003 if is_lite else 0.0006
 
     try:
         from src.backend.model_prices import get_model_price

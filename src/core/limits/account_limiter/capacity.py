@@ -32,6 +32,43 @@ _key_capacities_cache_ts = 0.0
 _key_capacities_pool_cache = {}
 _key_capacities_pool_cache_ts = {}
 
+
+def _resolve_pool_model_ids(pool_type: str, available_models: dict) -> set[str]:
+    """Phát hiện động danh sách backing model_ids thuộc pool_type mà không cần hardcode tên model.
+    Đọc từ MODEL_POOLS và AVAILABLE_MODELS (đã nạp từ env & db).
+    """
+    try:
+        from src.core.api_config import MODEL_POOLS
+    except Exception:
+        MODEL_POOLS = {}
+
+    target_pool_name = "gemini-flash-lite" if pool_type == "lite" else "gemini-flash"
+    pool_cfg = MODEL_POOLS.get(target_pool_name, {})
+    members = pool_cfg.get("members", [])
+
+    mids = set()
+    for m in members:
+        cfg = available_models.get(m)
+        if cfg and cfg.get("model_id"):
+            mids.add(cfg["model_id"])
+        elif m != target_pool_name:
+            mids.add(m)
+
+    # Phân loại fallback động theo keyword nếu pool members chưa định nghĩa
+    if not mids:
+        for alias, cfg in available_models.items():
+            mid = cfg.get("model_id")
+            if not mid or mid.endswith("-pool"):
+                continue
+            name_check = f"{alias} {mid}".lower()
+            if pool_type == "lite" and "lite" in name_check:
+                mids.add(mid)
+            elif pool_type == "flash" and "flash" in name_check and "lite" not in name_check:
+                mids.add(mid)
+
+    return mids
+
+
 def calculate_key_capacities_by_pool(pool_type: str = "flash") -> dict:
     global _key_capacities_pool_cache, _key_capacities_pool_cache_ts
     now = time.time()
@@ -54,8 +91,8 @@ def calculate_key_capacities_by_pool(pool_type: str = "flash") -> dict:
             Cap_admin_tpm = 0
             Cap_admin_rpd = 0
             
-            flash_models = {"gemini-3.5-flash", "gemini-3-flash-preview", "gemini-2.5-flash"}
-            lite_models = {"gemini-3.1-flash-lite", "gemini-2.5-flash-lite"}
+            flash_models = _resolve_pool_model_ids("flash", AVAILABLE_MODELS)
+            lite_models = _resolve_pool_model_ids("lite", AVAILABLE_MODELS)
             
             with router._key_lock:
                 key_statuses = list(router._key_status.items())
@@ -226,8 +263,8 @@ def calculate_pool_capacities_for_user(user_tier: str, active_counts: Dict[str, 
     with router._key_lock:
         key_statuses = list(router._key_status.items())
         
-    flash_models = {"gemini-3.5-flash", "gemini-3-flash-preview", "gemini-2.5-flash"}
-    lite_models = {"gemini-3.1-flash-lite", "gemini-2.5-flash-lite"}
+    flash_models = _resolve_pool_model_ids("flash", AVAILABLE_MODELS)
+    lite_models = _resolve_pool_model_ids("lite", AVAILABLE_MODELS)
     
     pool_stats = {
         "flash": {

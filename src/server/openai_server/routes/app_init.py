@@ -163,15 +163,23 @@ async def _watch_env_file():
             if ENV_PATH.exists():
                 mtime = ENV_PATH.stat().st_mtime
                 if mtime > last_mtime:
-                    logger.info("[EnvWatch] .env file change detected! Reloading keys...")
+                    logger.info("[EnvWatch] .env file change detected! Reloading keys & models...")
                     last_mtime = mtime
+                    from dotenv import load_dotenv
+                    load_dotenv(ENV_PATH, override=True)
                     new_keys = reload_config()
                     register_keys_in_db(new_keys)
                     _set_tiers()
                     router.refresh_keys()
                     api_manager.refresh_pool_size()
                     clear_rate_limiters()
-                    logger.info("[EnvWatch] Keys successfully reloaded dynamically!")
+
+                    from src.core.api_config import reload_model_config
+                    reload_model_config()
+                    from src.backend.model_config import sync_env_to_db
+                    sync_env_to_db()
+
+                    logger.info("[EnvWatch] Keys and models successfully reloaded and synced to DB!")
         except asyncio.CancelledError:
             break
         except Exception as e:

@@ -84,6 +84,7 @@ stop_router_ssl.sh
 
 # ─── IDE ───
 .vscode/
+pyrightconfig.json
 
 # ─── Local Claude Code config ───
 .claude/settings.local.json

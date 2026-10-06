@@ -53,8 +53,8 @@ def _calculate_financial_savings(summary: list) -> dict:
 
         # Lấy giá từ DB thay vì hardcode
         cfg = get_model_price(alias) or {}
-        in_rate = float(cfg.get("input_rate_per_1k", 0.0015))
-        out_rate = float(cfg.get("output_rate_per_1k", 0.009))
+        in_rate = float(cfg.get("input_rate_per_1k", 0.00015))
+        out_rate = float(cfg.get("output_rate_per_1k", 0.0006))
 
         # 1. Standard Cost (Claude 3.7 Sonnet pricing)
         std_input = p * 3.0 / 1_000_000.0
