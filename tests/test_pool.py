@@ -281,6 +281,54 @@ class TestRecovery:
         pool.release(again)
 
     @pytest.mark.anyio
+    async def test_release_is_idempotent(self):
+        """A surplus release must be a no-op, not an exception.
+
+        pool_manager releases the member from its error handlers and again in
+        the finally block. asyncio.Lock raises "Lock is not acquired" on a
+        second release, and the handlers are not guarded — so without this the
+        request aborts carrying the wrong error.
+        """
+        pool = make_pool(["a"])
+        m = await _acquire(pool)
+        pool.release(m)
+        pool.release(m)  # would raise if release were not idempotent
+        assert not pool._locks[m].locked()
+
+    @pytest.mark.anyio
+    async def test_release_of_never_acquired_member_is_harmless(self):
+        pool = make_pool(["a"])
+        pool.release("a")  # no acquire at all
+        m = await _acquire(pool)
+        assert m == "a"
+        pool.release(m)
+
+    @pytest.mark.anyio
+    async def test_release_of_unknown_member_is_harmless(self):
+        pool = make_pool(["a"])
+        pool.release("not-a-member")
+        m = await _acquire(pool)
+        assert m == "a"
+        pool.release(m)
+
+    @pytest.mark.anyio
+    async def test_one_slot_per_member_survives_a_surplus_release(self):
+        """A surplus release must free the slot, and only free it once."""
+        pool = make_pool(["only"])
+        first = await _acquire(pool)
+        pool.release(first)
+        pool.release(first)  # surplus: must not corrupt the slot
+
+        # available again, exactly as after a single release
+        again = await _acquire(pool, timeout=0.5)
+        assert again == "only"
+
+        # and still only one holder
+        with pytest.raises(TimeoutError):
+            await _acquire(pool, timeout=0.2)
+        pool.release(again)
+
+    @pytest.mark.anyio
     async def test_slot_returns_after_churn(self):
         pool = make_pool(["a"])
         for _ in range(5):

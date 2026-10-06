@@ -54,4 +54,18 @@ class ModelPool:
         raise TimeoutError(f"Pool {self.members}: no free member after {timeout}s")
 
     def release(self, member: str) -> None:
-        self._locks[member].release()
+        """Return a member's slot to the pool.
+
+        Idempotent: releasing a member that is not held is a no-op. asyncio.Lock
+        raises on a second release, and pool_manager releases the member both
+        from its error handlers and again in the finally block — with the
+        handlers unguarded, one surplus release anywhere in the retry path
+        would abort the request with "Lock is not acquired" instead of the
+        error being handled.
+
+        The end state is the same either way: the lock is unlocked and the next
+        caller acquires it normally.
+        """
+        lock = self._locks.get(member)
+        if lock is not None and lock.locked():
+            lock.release()
