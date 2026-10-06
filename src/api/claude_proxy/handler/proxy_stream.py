@@ -135,6 +135,79 @@ class ClaudeProxyStreamMixin:
             logger.error("[Claude Stream] stream_message failed: %s", e, exc_info=True)
             raise e
 
+    def _buffer_tool_calls(self, delta, tool_buffers: Dict[int, Dict[str, Any]]) -> None:
+        """Accumulate streamed tool calls into tool_buffers, keyed by index.
+
+        Providers stream a tool call as one part carrying the name and id, then one
+        part per argument fragment carrying neither. Both shapes arrive in the wild —
+        some endpoints return plain dicts, some return objects — so both are handled
+        here rather than normalised upstream, which would mean rewriting what the pool
+        yields mid-stream.
+
+        Keyed by index because the arguments come after the name: the second fragment
+        for index 0 has to land in the buffer the first fragment created.
+        """
+        tool_calls_val = getattr(delta, "tool_calls", None) or delta.get("tool_calls") if hasattr(delta, "get") else None
+        if not tool_calls_val:
+            return
+        for tc in tool_calls_val:
+            if isinstance(tc, dict):
+                tc_idx = tc.get("index", 0)
+                fn = tc.get("function", {})
+                fn_name = fn.get("name", "") if isinstance(fn, dict) else (getattr(fn, "name", "") if hasattr(fn, "name") else "")
+                if tc_idx not in tool_buffers:
+                    tc_id = tc.get("id", f"toolu_{fn_name}_{uuid.uuid4().hex[:12]}" if fn_name else f"toolu_{uuid.uuid4().hex}")
+                    fn_args = fn.get("arguments") if isinstance(fn, dict) else (getattr(fn, "arguments", None) if hasattr(fn, "arguments") else None)
+                    tool_buffers[tc_idx] = {"id": tc_id, "name": fn_name, "args": ""}
+                    if fn_args:
+                        if isinstance(fn_args, dict):
+                            args_str = json.dumps(fn_args)
+                        elif not isinstance(fn_args, str):
+                            args_str = str(fn_args)
+                        else:
+                            args_str = fn_args
+                        tool_buffers[tc_idx]["args"] += args_str
+                else:
+                    if fn_name:
+                        tool_buffers[tc_idx]["name"] = fn_name
+                    fn_args = fn.get("arguments") if isinstance(fn, dict) else (getattr(fn, "arguments", None) if hasattr(fn, "arguments") else None)
+                    if fn_args:
+                        if isinstance(fn_args, dict):
+                            args_str = json.dumps(fn_args)
+                        elif not isinstance(fn_args, str):
+                            args_str = str(fn_args)
+                        else:
+                            args_str = fn_args
+                        tool_buffers[tc_idx]["args"] += args_str
+            else:
+                tc_idx = getattr(tc, "index", 0)
+                fn = getattr(tc, "function", {}) if hasattr(tc, "function") else {}
+                fn_name = getattr(fn, "name", "") if hasattr(fn, "name") else ""
+                if tc_idx not in tool_buffers:
+                    tc_id = getattr(tc, "id", f"toolu_{fn_name}_{uuid.uuid4().hex[:12]}" if fn_name else f"toolu_{uuid.uuid4().hex}")
+                    fn_args = getattr(fn, "arguments", None) if hasattr(fn, "arguments") else None
+                    tool_buffers[tc_idx] = {"id": tc_id, "name": fn_name, "args": ""}
+                    if fn_args:
+                        if isinstance(fn_args, dict):
+                            args_str = json.dumps(fn_args)
+                        elif not isinstance(fn_args, str):
+                            args_str = str(fn_args)
+                        else:
+                            args_str = fn_args
+                        tool_buffers[tc_idx]["args"] += args_str
+                else:
+                    if fn_name:
+                        tool_buffers[tc_idx]["name"] = fn_name
+                    fn_args = getattr(fn, "arguments", None) if hasattr(fn, "arguments") else None
+                    if fn_args:
+                        if isinstance(fn_args, dict):
+                            args_str = json.dumps(fn_args)
+                        elif not isinstance(fn_args, str):
+                            args_str = str(fn_args)
+                        else:
+                            args_str = fn_args
+                        tool_buffers[tc_idx]["args"] += args_str
+
     async def _stream_message_impl(
         self,
         body: Dict[str, Any],
@@ -370,66 +443,7 @@ class ClaudeProxyStreamMixin:
                                 })
                                 output_chars += len(norm_val)
 
-                tool_calls_val = getattr(delta, "tool_calls", None) or delta.get("tool_calls") if hasattr(delta, "get") else None
-                if tool_calls_val:
-                    for tc in tool_calls_val:
-                        if isinstance(tc, dict):
-                            tc_idx = tc.get("index", 0)
-                            fn = tc.get("function", {})
-                            fn_name = fn.get("name", "") if isinstance(fn, dict) else (getattr(fn, "name", "") if hasattr(fn, "name") else "")
-                            if tc_idx not in tool_buffers:
-                                tc_id = tc.get("id", f"toolu_{fn_name}_{uuid.uuid4().hex[:12]}" if fn_name else f"toolu_{uuid.uuid4().hex}")
-                                fn_args = fn.get("arguments") if isinstance(fn, dict) else (getattr(fn, "arguments", None) if hasattr(fn, "arguments") else None)
-                                tool_buffers[tc_idx] = {"id": tc_id, "name": fn_name, "args": ""}
-                                if fn_args:
-                                    if isinstance(fn_args, dict):
-                                        args_str = json.dumps(fn_args)
-                                    elif not isinstance(fn_args, str):
-                                        args_str = str(fn_args)
-                                    else:
-                                        args_str = fn_args
-                                    tool_buffers[tc_idx]["args"] += args_str
-                            else:
-                                if fn_name:
-                                    tool_buffers[tc_idx]["name"] = fn_name
-                                fn_args = fn.get("arguments") if isinstance(fn, dict) else (getattr(fn, "arguments", None) if hasattr(fn, "arguments") else None)
-                                if fn_args:
-                                    if isinstance(fn_args, dict):
-                                        args_str = json.dumps(fn_args)
-                                    elif not isinstance(fn_args, str):
-                                        args_str = str(fn_args)
-                                    else:
-                                        args_str = fn_args
-                                    tool_buffers[tc_idx]["args"] += args_str
-                        else:
-                            tc_idx = getattr(tc, "index", 0)
-                            fn = getattr(tc, "function", {}) if hasattr(tc, "function") else {}
-                            fn_name = getattr(fn, "name", "") if hasattr(fn, "name") else ""
-                            if tc_idx not in tool_buffers:
-                                tc_id = getattr(tc, "id", f"toolu_{fn_name}_{uuid.uuid4().hex[:12]}" if fn_name else f"toolu_{uuid.uuid4().hex}")
-                                fn_args = getattr(fn, "arguments", None) if hasattr(fn, "arguments") else None
-                                tool_buffers[tc_idx] = {"id": tc_id, "name": fn_name, "args": ""}
-                                if fn_args:
-                                    if isinstance(fn_args, dict):
-                                        args_str = json.dumps(fn_args)
-                                    elif not isinstance(fn_args, str):
-                                        args_str = str(fn_args)
-                                    else:
-                                        args_str = fn_args
-                                    tool_buffers[tc_idx]["args"] += args_str
-                            else:
-                                if fn_name:
-                                    tool_buffers[tc_idx]["name"] = fn_name
-                                fn_args = getattr(fn, "arguments", None) if hasattr(fn, "arguments") else None
-                                if fn_args:
-                                    if isinstance(fn_args, dict):
-                                        args_str = json.dumps(fn_args)
-                                    elif not isinstance(fn_args, str):
-                                        args_str = str(fn_args)
-                                    else:
-                                        args_str = fn_args
-                                    tool_buffers[tc_idx]["args"] += args_str
-
+                self._buffer_tool_calls(delta, tool_buffers)
                 if fr:
                     # Keep the provider's raw reason here. Mapping it to the
                     # Anthropic enum now loses information — "length" contains no
