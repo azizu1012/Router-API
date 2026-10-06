@@ -80,8 +80,16 @@ router_api/
     *   **`_db.py`**: Quản lý kết nối DB dùng chung, **và tạo các bảng đọc lúc import**.
     *   **`schema.py`**: Schema đầy đủ + các `ALTER TABLE` migration, chạy trong startup hook.
     *   **`key_status.py`**: Các thao tác nguyên tất (atomic) để cập nhật trạng thái key (reserve, release, freeze, disable).
-    *   **`accounts.py`, `endpoints.py`, `model_prices.py`**: CRUD cho tài khoản, custom endpoints và giá model.
+    *   **`accounts.py`, `endpoints.py`, `model_prices.py`**: CRUD cho tài khoản, custom endpoints và giá model thực tế chuẩn Google Gemini API (với cơ chế auto-migration loại bỏ giá ảo cũ).
+    *   **`model_config.py`**: Quản lý cấu hình per-model trong bảng `model_config` (RPM, TPM, RPD, pool_name, priority) và cung cấp hàm đồng bộ hai chiều `sync_env_to_db()`.
     *   **`account_keys.py`**: Auth token theo `sk-<name>-<6 ký tự>`, web credential, invite code.
+
+#### Cơ chế đồng bộ hai chiều ENV ↔ DB (Two-Way Synchronization)
+
+Hệ thống thiết lập nguyên tắc: **`.env` là Source of Truth chính cho runtime, Database SQLite (`usage.db`) là nơi lưu trữ trạng thái và phục vụ Admin WebUI**:
+- **Chiều `.env` → DB:** Khi file `.env` được chỉnh sửa, background watcher (`_watch_env_file` trong `app_init.py`) phát hiện file change, reload `os.environ`, cập nhật `AVAILABLE_MODELS` và tự động gọi `sync_env_to_db()` để ghi đè cập nhật vào bảng `model_config`.
+- **Chiều DB → `.env`:** Khi Admin chỉnh sửa cấu hình model trên Dashboard UI (`/dashboard/admin/models/save`), backend lưu vào DB, gọi `update_env_var()` để ghi ngược lại các biến `GEMINI_*_RPM/TPM/RPD/MODEL` vào file `.env`, đồng thời tự động cập nhật lại aggregate limits của các virtual pool (`GEMINI_FLASH_*`).
+
 
 #### Vì sao `_db.py` cũng phải tạo bảng
 

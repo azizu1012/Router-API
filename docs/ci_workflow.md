@@ -38,12 +38,21 @@ pytest
 | `test_effort_mapping.py` | effort Anthropic/OpenAI → thinking level của Gemini |
 | `test_invite_codes.py` | va chạm mã 4 số không làm hỏng nút admin |
 | `test_dashboard_tokens.py` | API quản lý token qua app thật, có DB thật |
-| `test_tier_limits.py` | trần RPM/TPM/RPD theo tier, clamp xuống không nâng |
-| `test_password_recovery.py` | bản mã hoá mật khẩu cho admin, hash vẫn là thứ xác thực |
-| `test_admin_password_recovery.py` | route admin xem mật khẩu, chỉ admin, nói rõ khi không đọc được |
-| `test_must_change_password.py` | cờ `must_change` từ DB tới banner; admin bật/tắt được |
-| `test_search_engine_precedence.py` | engine theo dialect; override ở tầng account đã bị bỏ |
-| `test_layering.py` | tầng dưới không import tầng trên (AST, cần chạy sạch) |
+| `test_master_key.py` | Master Key 46 ký tự (`sk-live-admin-`), collision guard, trần quyền hạn admin |
+| `test_retry_counter.py` | Bộ đếm số lần retry trong PoolManager khi gặp lỗi tạm thời |
+| `test_error_classification.py` | Phân loại lỗi HTTP/SDK (transient vs hard error, status 429, 503) |
+| `test_layering.py` | Tầng dưới không import tầng trên (AST, cần chạy sạch) |
+| `test_custom_pool_rate_limit.py` | Rate limit độc lập cho custom endpoint pools |
+| `test_error_visibility.py` | Minh bạch thông điệp lỗi cho client thay vì giấu lỗi |
+| `test_stream_impl_seams.py` | Ranh giới SSE stream và chunk parsing giữa Anthropic & OpenAI |
+| `test_responses_mapping.py` | Mapping response schema giữa Gemini, Anthropic và OpenAI |
+| `test_api_help.py` | Endpoint `/stats/help` tài liệu hướng dẫn tích hợp API |
+| `test_tier_limits.py` | Trần RPM/TPM/RPD theo tier, clamp xuống không nâng |
+| `test_password_recovery.py` | Bản mã hoá mật khẩu cho admin, hash vẫn là thứ xác thực |
+| `test_admin_password_recovery.py` | Route admin xem mật khẩu, chỉ admin, nói rõ khi không đọc được |
+| `test_must_change_password.py` | Cờ `must_change` từ DB tới banner; admin bật/tắt được |
+| `test_search_engine_precedence.py` | Engine theo dialect; override ở tầng account đã bị bỏ |
+| `test_log_permissions.py` | Phân quyền RBAC xem log stream (system/keys/web vs proxy/api) |
 
 Chạy nhanh một file:
 

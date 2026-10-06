@@ -208,6 +208,14 @@ Hệ thống phân cấp tài khoản thành các Tier rõ rệt:
 | **Kênh Log (`proxy`, `api`)** | Được phép xem qua HTTP History & WS Live | **Được phép xem** |
 | **Kênh Log (`keys`, `system`, `web`)** | Được phép xem toàn bộ | **Bị chặn (403 Forbidden & WS Error)** |
 
+### Token Tier Bounds (Giới hạn cấp bậc Token)
+Khi người dùng tạo mới (`/dashboard/user/keys/issue`) hoặc cập nhật (`/dashboard/user/keys/update`) auth token của mình, **Token Tier bị chặn trên bởi Account Tier**:
+- Tài khoản `free`: Chỉ được tạo/gán token bậc `free`. Mọi yêu cầu nâng lên `premium` hay `admin` sẽ bị từ chối với lỗi `403 Forbidden: Cannot create token with tier higher than account tier`.
+- Tài khoản `premium`: Được tự do chuyển đổi token giữa `free` và `premium`, nhưng không được nâng lên `admin`.
+- Tài khoản `admin`: Có quyền tạo và điều chỉnh token ở bất kỳ tier nào (`free`, `premium`, `admin`).
+*(Được kiểm chứng tự động trong `tests/test_dashboard_tokens.py`)*
+
+
 ---
 
 ## 7. Luồng xác thực
@@ -384,6 +392,9 @@ vì tạo row nghĩa là bịa ra một hash với mật khẩu không ai biết
 | `POST` | `/dashboard/admin/accounts/keys/update` | Sửa giới hạn / trạng thái |
 | `POST` | `/dashboard/admin/accounts/keys/revoke` | Thu hồi token |
 | `POST` | `/dashboard/register` | Đăng ký tự do (cần mã) |
+| `GET`  | `/dashboard/admin/models` | Xem toàn bộ cấu hình Models, Pools & Endpoints |
+| `POST` | `/dashboard/admin/models/save` | Lưu cấu hình Model vào DB và tự động ghi ngược vào `.env` |
+| `POST` | `/dashboard/admin/models/delete` | Xoá cấu hình Model tuỳ chỉnh khỏi DB và `.env` |
 
 ---
 
@@ -419,3 +430,19 @@ Alias theo quy ước `gemini-flash-<version>` → `gemini-<version>-flash`.
 `gemini-2.0-flash` và `gemini-2.0-flash-lite` không còn trong API. Config không tham chiếu chúng.
 
 Có sẵn alias không ghim version: `gemini-flash-latest`, `gemini-flash-lite-latest`. Nên dùng thay vì hardcode version để không phải sửa config mỗi khi Google ra bản mới.
+
+---
+
+## 11. Bảng giá thực tế Google Gemini API trong Database (`model_prices`)
+
+Bảng `model_prices` trong SQLite `usage.db` lưu trữ giá theo đơn vị **USD per 1,000 tokens** chuẩn niêm yết của Google Developer API (loại bỏ giá ảo cũ):
+
+| Dòng Model | Tên Model / Alias | Input Rate / 1k | Output Rate / 1k | Quy đổi / 1M tokens |
+|---|---|---|---|---|
+| **Flash 3.x** | `gemini-3.8-flash`, `3.7`, `3.6`, `3.5`, `3.0`, `gemini-flash` | `$0.00015` | `$0.00060` | $0.15 in / $0.60 out |
+| **Flash Lite** | `gemini-3.5-flash-lite`, `3.1`, `2.5`, `gemini-flash-lite` | `$0.000075` | `$0.00030` | $0.075 in / $0.30 out |
+| **Flash 2.5/2.0** | `gemini-2.5-flash`, `gemini-flash-25`, `gemini-2.0-flash` | `$0.00010` | `$0.00040` | $0.10 in / $0.40 out |
+| **Gemini Pro** | `gemini-2.5-pro`, `gemini-3.1-pro` | `$0.00125` | `$0.00500` | $1.25 in / $5.00 out |
+| **Custom** | `custom-model` | `$0.0` | `$0.0` | Miễn phí / endpoint riêng |
+
+- Khi server khởi động, `init_config_tables()` trong `schema.py` sẽ tự động đối chiếu nếu bảng chứa giá cũ sẽ tự động ghi đè bằng bảng giá chuẩn trên.

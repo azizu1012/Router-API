@@ -362,8 +362,8 @@ The system maintains two distinct SQLite databases configured in WAL (Write-Ahea
 |   | models, enabled_models   |    | context_length INTEGER   |    | model_name (PK) TEXT     |   |
 |   | pool_assignments TEXT    |    | pool_name TEXT           |    | input_rate_per_1k REAL   |   |
 |   +--------------------------+    +--------------------------+    | output_rate_per_1k REAL  |   |
-|                                                                   +--------------------------+   |
-|   key_status                      key_penalties                                                  |
+|                                                                   | response_model_name TEXT |   |
+|   key_status                      key_penalties                   +--------------------------+   |
 |   +--------------------------+    +--------------------------+                                   |
 |   | key (PK) TEXT            |    | pkey (PK) TEXT           |                                   |
 |   | enabled INTEGER          |    | api_key TEXT             |                                   |
@@ -372,6 +372,12 @@ The system maintains two distinct SQLite databases configured in WAL (Write-Ahea
 |   | consecutive_failures INT |    | expires REAL             |                                   |
 |   | per_model TEXT           |    | score_reduction INTEGER  |                                   |
 |   +--------------------------+    +--------------------------+                                   |
+|                                                                                                  |
+|   TWO-WAY CONFIGURATION SYNCHRONIZATION (.env <───> SQLite model_config)                         |
+|   +------------------------------------------------------------------------------------------+   |
+|   |  Direction 1: .env Edit ──> _watch_env_file() ──> reload_model_config() ──> sync_env_to_db   |   |
+|   |  Direction 2: Admin WebUI ──> save_model_config() ──> update_env_var() ──> .env written   |   |
+|   +------------------------------------------------------------------------------------------+   |
 +--------------------------------------------------------------------------------------------------+
 
 +--------------------------------------------------------------------------------------------------+

@@ -173,3 +173,23 @@ Hệ thống Log Stream thời gian thực được xây dựng bằng xterm.js 
 * **Disk Tail Fallback**: Khi client yêu cầu số lượng dòng lớn hơn buffer hiện có trong RAM, server tự động đọc phần còn thiếu trực tiếp từ đĩa.
 * **Kênh Chuẩn Hóa (`normalize_channel`)**: Hỗ trợ linh hoạt mọi định dạng channel như `proxy`, `log:proxy`, `proxy.log`, hoặc `log:proxy:endpoint` đảm bảo client và backend luôn đồng bộ.
 
+---
+
+## 8. Quản Lý Models & Pools (ModelsTab) & Đồng Bộ Hai Chiều ENV ↔ DB
+
+Tab quản lý Model ([ModelsTab.jsx](file:///d:/AI_Projects/router_api/frontend-src/src/tabs/ModelsTab.jsx)) dành riêng cho Quản trị viên (`/stats/models`):
+
+### 8.1. Hiển thị & Cấu hình Đa tầng
+- **Trực quan hoá Pool & Members:** Hiển thị danh sách 6 model Flash (`gemini-flash-38` đến `gemini-flash-25`), 3 model Lite (`gemini-flash-35-lite`, `gemini-flash-lite`, `gemini-flash-25-lite`) và các custom endpoint gán vào pool.
+- **Trạng thái lưu trữ (`in_db`):** Huy hiệu nhận biết model đang chạy theo mặc định từ ENV hay đã có bản ghi tuỳ biến lưu trong SQLite DB `model_config`.
+- **Cấu hình giới hạn:** Cho phép admin chỉnh sửa trực tiếp `RPM`, `TPM`, `RPD`, `Context Length`, `Priority`, và trạng thái ẩn/hiện (`hidden`).
+
+### 8.2. Cơ chế Đồng bộ Hai Chiều Thực tế (Two-Way Sync)
+- **Khi Admin lưu trên WebUI (`/dashboard/admin/models/save`):**
+  - Backend cập nhật dữ liệu vào bảng `model_config` của SQLite `usage.db`.
+  - Tự động gọi `update_env_var()` để **ghi ngược lại các biến môi trường tương ứng vào file `.env`** trên đĩa.
+  - Tự động tính toán lại tổng giới hạn của các virtual pool (`GEMINI_FLASH_RPM/TPM/RPD`) và đồng bộ vào `.env`.
+- **Khi sửa file `.env` từ máy chủ:**
+  - Background worker `_watch_env_file()` phát hiện thay đổi trong vòng 3 giây, tự động nạp lại `dotenv`, reload cấu hình bộ nhớ và gọi `sync_env_to_db()` để cập nhật đồng bộ xuống SQLite DB.
+
+

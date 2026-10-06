@@ -228,6 +228,29 @@ Test: `tests/test_effort_mapping.py` — pin cả hai chiều, kể cả việc 
 - **Hệ quả:** `retry_attempt` là tham số bật **Extreme Checking** ở attempt ≥ 10 (mục 5). Luồng stream lặp quá 10 lần vẫn không bao giờ bật van an toàn đó, trong đúng lúc tải nặng nhất — trong khi non-stream thì có. Hai nhánh là bản sao của nhau nên lệch nhau là sai.
 - **Test:** `tests/test_retry_counter.py` pin bất biến `seen == list(range(len(seen)))` cho cả hai đường. Đưa lại lỗi thì 4 test đỏ.
 
+### 2026-10-07 — Mở rộng Pool 6 Flash & 3 Lite, Dynamic Resolution và Đồng bộ Hai chiều ENV ↔ DB
+- **Files:** `src/core/api_config.py`, `src/core/limits/account_limiter/capacity.py`, `src/backend/model_config.py`, `src/server/openai_server/routes/app_init.py`
+- **Thay đổi:**
+  - **Mở rộng Pool:** `gemini-flash` bao gồm 6 model thành viên (`gemini-flash-38`, `37`, `36`, `35`, `30`, `25`); `gemini-flash-lite` gồm 3 model (`gemini-flash-35-lite`, `gemini-flash-lite`, `gemini-flash-25-lite`).
+  - **Loại bỏ Hardcode:** `capacity.py` chuyển sang hàm `_resolve_pool_model_ids()` tự động suy luận danh sách backing models từ `MODEL_POOLS` & `AVAILABLE_MODELS`.
+  - **Tính toán Pool động:** `api_config.py` tự động tính tổng RPM/TPM/RPD từ các members và tự sinh chuỗi nhãn hiển thị `display` dựa trên thành viên hiện có.
+  - **Đồng bộ hai chiều ENV ↔ DB:** File watcher tự động đẩy thay đổi từ `.env` vào SQLite `model_config`, đồng thời Admin UI khi cập nhật DB sẽ tự ghi ngược lại file `.env`.
+
 ---
 
 ## 11. Các Biến Môi Trường Chính
+
+### Virtual Pools & Backing Model Limits
+| Biến Môi Trường | Mặc Định | Mô Tả |
+|---|---|---|
+| `GEMINI_FLASH_RPM` | `14` | Tổng RPM cho `gemini-flash` pool (tổng từ 6 members: 2+1+2+2+2+5) |
+| `GEMINI_FLASH_TPM` | `1500000` | Tổng TPM cho `gemini-flash` pool |
+| `GEMINI_FLASH_RPD` | `235` | Tổng RPD cho `gemini-flash` pool (50+15+50+50+50+20) |
+| `GEMINI_FLASH_LITE_RPM` | `8` | Tổng RPM cho `gemini-flash-lite` pool (2+3+3) |
+| `GEMINI_FLASH_LITE_TPM` | `750000` | Tổng TPM cho `gemini-flash-lite` pool |
+| `GEMINI_FLASH_LITE_RPD` | `540` | Tổng RPD cho `gemini-flash-lite` pool (20+500+20) |
+| `POOL_SWAP_FAILURES` | `5` | Số lần thất bại liên tiếp trước khi đổi sang pool member tiếp theo |
+| `POOL_MAX_ATTEMPTS` | `15` | Số lần thử lại tối đa qua toàn bộ các pool members |
+| `KEY_429_COOLDOWN_SECONDS` | `15` | Thời gian cooldown khi key dính rate limit tạm thời |
+| `KEY_INVALID_COOLDOWN_SECONDS` | `3600` | Thời gian đóng băng khi key invalid |
+| `MODEL_CONTEXT_LENGTH` | `220000` | Độ dài ngữ cảnh tối đa của mô hình |

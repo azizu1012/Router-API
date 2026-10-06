@@ -402,3 +402,44 @@ Giao diện Log Stream trên WebUI không xem được log, terminal trắng tr�
 
 ### Test
 Build Vite bundle thành công (`npm run build`), kiểm tra `no-undef` bằng ESLint, toàn bộ 579 tests pytest pass 100%.
+
+---
+
+## Bug #13: Giá Ảo Lệch 10–15x Trong DB, Thiếu Model Flash 3.6–3.8 & Rào Cản Hardcode Model Pool (2026-10-07)
+
+### Mô tả
+1. Giá token trong database (`model_prices`) bị cấu hình giá ảo cao gấp 10-15 lần thực tế (ví dụ `gemini-2.5-flash` và các flash models bị tính $0.0015/1k input và $0.009/1k output thay vì $0.00015 và $0.0006).
+2. Hệ thống chỉ hỗ trợ 3 models Flash và 2 models Lite, thiếu hụt các thế hệ Flash mới (`gemini-flash-38`, `37`, `36`) và Flash Lite (`gemini-flash-35-lite`).
+3. Logic phân bổ dung lượng token (`src/core/limits/capacity.py`) hardcode danh sách tên model (`gemini-2.5-flash`, `gemini-2.5-flash-lite`, `gemini-flash-35`), dẫn đến các model mới không nhận diện được pool và bị gán nhầm quota mặc định 15 RPM / 32k TPM / 1k RPD.
+4. Cấu hình `.env` và database SQLite `model_config` hoạt động tách biệt: thay đổi `.env` không đồng bộ lên DB, và admin sửa model trên Dashboard không ghi ngược lại `.env`.
+
+### Root cause
+1. **Giá ảo trong seed data**: Bảng `model_prices` lúc ban đầu được khởi tạo với bảng giá nháp/ước lượng quá cao, không khớp với bảng giá chính thức từ Google Gemini API.
+2. **Thiếu hỗ trợ alias và model mới trong Router**: `src/core/router/core/router.py` và `src/core/api_config.py` chưa khai báo alias cho các model `gemini-flash-36`, `37`, `38` và `gemini-flash-35-lite`.
+3. **Hardcode Capacity Limiter**: Trong `capacity.py`, hàm phân loại pool dựa vào chuỗi tĩnh thay vì đọc cấu hình pool từ config hoặc router, khiến các model mới không được hưởng hạn mức cao của pool ảo.
+4. **Thiếu cơ chế Two-Way Sync**: `src/backend/model_config.py` chỉ đọc/ghi SQLite, không có hook đồng bộ với `.env`, trong khi `src/core/api_config.py` đọc `.env` lúc khởi động mà không reload động khi file `.env` bị sửa.
+
+### Fix
+1. **Đồng bộ bảng giá thực tế Google Gemini API**:
+   - Cập nhật `DEFAULT_MODEL_PRICES` trong [src/backend/model_prices.py](file:///d:/AI_Projects/router_api/src/backend/model_prices.py) chuẩn xác theo biểu giá Google:
+     - 6 Flash models: $0.00015 / 1k input ($0.0003 >128k), $0.0006 / 1k output ($0.0012 >128k).
+     - 3 Lite models: $0.000075 / 1k input ($0.00015 >128k), $0.0003 / 1k output ($0.0006 >128k).
+     - Pro models: $0.00125 / 1k input ($0.0025 >128k), $0.005 / 1k output ($0.010 >128k).
+   - Thêm auto-migration trong `init_db()` ([src/backend/schema.py](file:///d:/AI_Projects/router_api/src/backend/schema.py)) tự động sửa giá cũ nếu phát hiện giá ảo > 0.001 cho flash.
+2. **Mở rộng 6 Flash, 3 Lite và 2 Virtual Pools**:
+   - Thêm đầy đủ 6 Flash models (`gemini-flash-38` đến `25`), 3 Lite models (`gemini-flash-35-lite`, `lite`, `25-lite`) vào `.env`, `src/core/api_config.py`, và router mappings.
+   - 2 Virtual Pools: `gemini-flash` (gộp 6 models flash) và `gemini-flash-lite` (gộp 3 models lite) với cơ chế fallback tự động.
+3. **Dynamic Pool Resolution Trong Capacity Limiter**:
+   - Xóa bỏ toàn bộ hardcode tên model trong [src/core/limits/capacity.py](file:///d:/AI_Projects/router_api/src/core/limits/capacity.py).
+   - Bổ sung hàm `_resolve_pool_model_ids(pool_name)` tự động phân giải danh sách model trực tiếp từ `api_config.py` hoặc alias registry.
+4. **Cơ chế Two-Way Synchronization (.env ↔ DB)**:
+   - Triển khai `sync_env_to_db()` và `sync_db_to_env()` trong [src/backend/model_config.py](file:///d:/AI_Projects/router_api/src/backend/model_config.py).
+   - Khi server khởi động: đồng bộ các model từ `.env` vào DB nếu chưa có.
+   - Khi Admin cập nhật model qua Dashboard (`PUT /dashboard/admin/models/{id}`): cập nhật vào DB đồng thời ghi lại biến môi trường tương ứng trong `.env` (`update_env_var`).
+   - Bổ sung `_watch_env_file()` tự động theo dõi file `.env` theo chu kỳ để hot-reload vào RAM cache mà không cần restart server.
+
+### Test
+Toàn bộ unit test & integration test pass 100%:
+- `test_layering.py` (AST layering không vi phạm phân tầng).
+- `test_master_key.py`, `test_dashboard_tokens.py`, `test_secret_scanner.py`.
+- Đồng bộ dữ liệu giá thực tế và model pools kiểm tra thành công trên SQLite và `.env`.
