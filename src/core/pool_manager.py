@@ -373,11 +373,20 @@ class PoolManager:
                         if member_tc and "lite" in model_full_val.lower():
                             member_tc = {}
 
-                        has_quota = await router.acquire_quota(estimated_tokens, model_alias)
-                        if not has_quota:
-                            apply_error_penalty(api_key_val, "rate_limit_rpm_tpm", model_id_val)
-                            router.freeze_key(api_key_val, config.KEY_429_COOLDOWN_SECONDS, model_id_val, "rate_limit")
-                            raise RuntimeError("quota_exhausted")
+                        # Custom pool models are rate-limited per model_id, not by the
+                        # Gemini quota path. This check used to live only in
+                        # _resolve_and_call, which the streaming path deliberately
+                        # bypasses (it has to hold the key for the whole stream), so
+                        # streaming bypassed custom endpoint RPM entirely.
+                        if is_custom:
+                            if not await check_custom_pool_rate(model_id_val):
+                                raise RuntimeError("custom_endpoint_rate_limited")
+                        else:
+                            has_quota = await router.acquire_quota(estimated_tokens, model_alias)
+                            if not has_quota:
+                                apply_error_penalty(api_key_val, "rate_limit_rpm_tpm", model_id_val)
+                                router.freeze_key(api_key_val, config.KEY_429_COOLDOWN_SECONDS, model_id_val, "rate_limit")
+                                raise RuntimeError("quota_exhausted")
 
                         try:
                             kwargs = {
@@ -480,13 +489,22 @@ class PoolManager:
                         retry_attempt=attempt, pool_mode=False
                     )
 
+                    is_custom = reservation.get("provider") == "custom"
+
                     member_tc = _compute_thinking_for_model(thinking_params, model_full_val) if not thinking_config else thinking_config
                     if member_tc and "lite" in model_full_val.lower():
                         member_tc = {}
 
-                    has_quota = await router.acquire_quota(estimated_tokens, model_alias)
-                    if not has_quota:
-                        raise RuntimeError("quota_exhausted")
+                    # Same gap as the pool streaming path above: standalone streaming
+                    # never went through _resolve_and_call, so custom pool models
+                    # were exempt from their per-model RPM limit.
+                    if is_custom:
+                        if not await check_custom_pool_rate(model_id_val):
+                            raise RuntimeError("custom_endpoint_rate_limited")
+                    else:
+                        has_quota = await router.acquire_quota(estimated_tokens, model_alias)
+                        if not has_quota:
+                            raise RuntimeError("quota_exhausted")
 
                     try:
                         kwargs = {

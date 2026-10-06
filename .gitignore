@@ -52,6 +52,8 @@ tests/*
 !tests/test_retry_counter.py
 !tests/test_error_classification.py
 !tests/test_layering.py
+!tests/test_custom_pool_rate_limit.py
+!tests/test_error_visibility.py
 
 # The CI scanner is tracked; the rest of scripts/ is local tooling.
 !scripts/

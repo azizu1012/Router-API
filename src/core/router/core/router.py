@@ -247,8 +247,11 @@ class APIRouter(KeyResolverMixin):
                             "root": mid,
                             "display": f"{mid} ({ep.get('name', 'custom')})",
                         })
-        except Exception:
-            pass
+        except Exception as e:
+            # Dropping this silently makes every custom endpoint model disappear
+            # from /v1/models, and the client's next call for one fails with an
+            # unknown-model error that points nowhere near the real cause.
+            logger.error("[Router] Failed to list custom endpoint models: %s", e)
 
         return models
 

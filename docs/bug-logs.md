@@ -192,3 +192,134 @@ thay doi hanh vi, va do la luc can test truoc.
 model voi `opencode.json`, nen tra ve nguyen ban la mot quyet dinh, khong phai
 code thua. Giai quyet ton tai bang cach giai quyet o 15 call site de lan ban
 quyet dinh do ra nhieu cho, te hon giu no.
+---
+
+## Bug #7: Custom Endpoint Không Bị Giới Hạn RPM Khi Streaming (2026-10-06)
+
+### Muc do
+Nghiêm trọng theo thiết hậu quả, im lặng theo biểu hiện. Không có log, không có
+trace, không co response nao sai.
+
+### Root cause
+`check_custom_pool_rate()` — sliding window 10 req/phút cho **từng model** của
+custom endpoint — nam trong `_resolve_and_call()`:
+
+```python
+if is_custom:
+    if not await check_custom_pool_rate(model_id_val):
+        raise RuntimeError("custom_endpoint_rate_limited")
+else:
+    has_quota = await router.acquire_quota(...)
+```
+
+`call_nonstream()` goi `_resolve_and_call()`, nen duong non-stream duoc bao ve.
+
+`call_stream()` **khong** goi `_resolve_and_call()`. No phai do qua bet — ma vi
+key phai duoc giu suot thoi gian client keo chunk:
+
+```python
+# _resolve_and_call, dong 633-636
+finally:
+    if api_key_val:
+        router.release_key(api_key_val)   # tha key ngay khi ham return
+```
+
+Dung helper thi key bi tha truoc khi chunk dau tien toi client. Nen stream phai
+tu viet lai phan setup, va ban viet lai do **khong kem** nhanh `is_custom`.
+
+### Hậu quả
+Mot model custom bi chan 10 RPM tren duong `/v1/messages`, nhung **khong chan
+gi** tren:
+
+- `call_stream()` — pool mode
+- `call_stream()` — standalone mode (thieu ca `is_custom` luon)
+
+Gemini keys khong bi anh huong — `check_custom_pool_rate` chi danh cho custom
+endpoint. Nen loi chi mo khi nao co nguoi cau hinh custom endpoint lau dau tien.
+
+### Fix
+Bo sung nhanh `is_custom` vao ca hai duong stream, giong het `_resolve_and_call`.
+
+### Test
+`tests/test_custom_pool_rate_limit.py` — 9 test, parametrize ca 3 duong
+(non-stream / pool stream / standalone stream), pin ca "bi chan khi qua han" va
+"khong chan khi duoi han" de khong over-correct. Mutation: revert tung fix rieng,
+test do do tu chay.
+
+---
+
+## Bug #8: `per_model` dạng JSON sai hình dạng làm sập lúc đọc key (2026-10-06)
+
+### Muc do
+Không sinh ra lỗi cho tới khi cột `per_model` chứa JSON không phải object —
+ví dụ một list. Khi đó toàn bộ doc key status ném `AttributeError`, và vì nó
+xảy ra trong lúc khởi tạo nên app không lên được.
+
+### Root cause
+`except Exception` chỉ bọc `json.loads()`, không bọc dòng dùng kết quả:
+
+```python
+try:
+    pm_dict = json.loads(d["per_model"])
+except Exception:
+    pm_dict = {}
+
+for mid, pm_entry in pm_dict.items():   # <-- AttributeError, khong ai bat
+```
+
+`json.loads("[1,2,3]")` tra ve list, het. `except` o tren khong dong vao vi no
+khong nem loi — loi nam o dong sau.
+
+### Fix
+Thu hep `except` thanh `(ValueError, TypeError)` va them guard hinh dang:
+
+```python
+except (ValueError, TypeError):
+    pm_dict = {}
+if not isinstance(pm_dict, dict):
+    pm_dict = {}
+```
+
+Co **hai** handler loai nay trong cung mot ham (parse o dau vong lap, merge o
+duoi), ca hai deu bi thu hep.
+
+### Vì sao `except Exception` o day la sai
+Nó tao cam giang an toan ma that ra la che loi. Mot `AttributeError` trong vong
+lap — tuc la bug lap trinh — se **biot y nhieu** voi mot cot JSON hong. Test
+`test_no_catch_all_handler_remains_in_the_row_loop` quet AST de chan handler
+catch-all moi them vao.
+
+### Test
+`tests/test_error_visibility.py` — 12 test, gom ca 2 fix nay va log o
+`router.list_models` (xem Bug #9).
+---
+
+## Bug #9: Dashboard Nuốt Mất Lý Do Lỗi (2026-10-06)
+
+### Muc do
+Khong sinh ra response sai — sinh ra **khong co** response nao de chan doan.
+
+### Root cause
+`router.list_models()` nap danh sach model cua custom endpoint trong mot
+`except Exception: pass`:
+
+```python
+for mid in (ep.get("enabled_models") or ep.get("models") or []):
+    if not any(m["id"] == mid for m in models):
+        models.append({...})
+except Exception:
+    pass
+```
+
+Neu `list_endpoints()` loi — bang bi khoa, DB loi bat thuong — **toan bo model
+custom bien mat khoi `/v1/models`**, khong mot dong log nao. Client goi toi
+model do nhan `unknown-model error` tro ve, tro sai hoan toan.
+
+### Fix
+Ghi log thay vi `pass`. Khong thu hep exception: `list_models()` la code duong
+bien, mat mot model hon la dung hon la lam mat tat ca.
+
+### Test
+`tests/test_error_visibility.py` — pin co log khi endpoint list that, khong log
+khi khoe, va phan Gemini van tra ve duoc khi endpoint that. Mutation: revert
+ve `pass` thi test do.

@@ -49,7 +49,15 @@ def get_key_status_db() -> Dict[str, Dict[str, Any]]:
                 if d.get("per_model"):
                     try:
                         pm_dict = json.loads(d["per_model"])
-                    except Exception:
+                    except (ValueError, TypeError):
+                        # Corrupt or non-text per_model: an empty dict is the right
+                        # fallback and the defaults below still apply. Narrow on
+                        # purpose — a bare catch here hid real bugs in this loop.
+                        pm_dict = {}
+                    if not isinstance(pm_dict, dict):
+                        # Valid JSON of the wrong shape, e.g. a list. This reached
+                        # pm_dict.items() below and raised AttributeError out of an
+                        # unprotected line, taking down every key read at startup.
                         pm_dict = {}
                     
                     pm_dirty = False
@@ -84,7 +92,12 @@ def get_key_status_db() -> Dict[str, Dict[str, Any]]:
                             for k_old, v_old in old.items():
                                 if k_old not in d or d[k_old] is None:
                                     d[k_old] = v_old
-                    except Exception:
+                    except (ValueError, TypeError):
+                        # json.loads raises JSONDecodeError (a ValueError) on a
+                        # corrupt per_model blob, and TypeError if the column is
+                        # not text. Both are recoverable: skipping the merge is
+                        # correct and the defaults below still apply. Anything
+                        # else raised here is a real bug and should surface.
                         pass
 
                 d.setdefault("enabled", 1)
