@@ -254,6 +254,7 @@ async def admin_create_account(request: Request):
         tpm = body.get("tpm")
         rpd = body.get("rpd")
         tier = str(body.get("tier", "free")).strip().lower()
+        password = str(body.get("password", "")).strip()
         search_engine = str(body.get("search_engine", "auto")).strip().lower()
         web_search_enabled = body.get("web_search_enabled")
         if web_search_enabled is None:
@@ -277,6 +278,20 @@ async def admin_create_account(request: Request):
     if search_engine not in ("auto", "google_grounding", "duckduckgo", "disabled"):
         search_engine = "auto"
 
+    # Clamp against the tier before anything is written. The tier is the ceiling;
+    # an admin asking for 10M TPM on a free account gets the free ceiling, not
+    # whatever the form let them type.
+    from src.core.tier_limits import clamp_to_tier
+    capped = clamp_to_tier(tier, {"rpm": rpm_val, "tpm": tpm_val, "rpd": rpd_val})
+    rpm_val, tpm_val, rpd_val = capped["rpm"], capped["tpm"], capped["rpd"]
+
+    # An account with no web credential cannot be listed on the dashboard, and
+    # an admin who created it has no other way in. So a password is part of
+    # creating an account, not an extra step afterwards.
+    from src.backend.account_keys import DEFAULT_PASSWORD, set_password_db
+    if not password:
+        password = DEFAULT_PASSWORD
+
     import asyncio
     from src.core.accounts import account_manager
     try:
@@ -284,7 +299,13 @@ async def admin_create_account(request: Request):
             account_manager.create_account,
             name=name, rpm=rpm_val, tpm=tpm_val, rpd=rpd_val, tier=tier, search_engine=search_engine, web_search_enabled=web_search_enabled
         )
-        return {"status": "success", "account": acct}
+        await asyncio.to_thread(set_password_db, acct["account_id"], password)
+        return {
+            "status": "success",
+            "account": acct,
+            "has_web_credential": True,
+            "must_change_password": password == DEFAULT_PASSWORD,
+        }
     except Exception as e:
         raise HTTPException(status_code=400, detail=str(e))
 
@@ -390,6 +411,27 @@ async def admin_update_account(request: Request):
     if search_engine is not None and search_engine in ("auto", "google_grounding", "duckduckgo", "disabled"):
         updates["search_engine"] = search_engine
 
+    # Clamp limits against the tier that will be in effect *after* this update.
+    # A downgrade is the case that matters: dropping an account to free must
+    # not leave it holding 6M TPM because the request only mentioned the tier.
+    if any(k in updates for k in ("rpm", "tpm", "rpd")) or "tier" in updates:
+        import asyncio as _asyncio
+        from src.backend.accounts import find_account_by_name
+        from src.core.tier_limits import clamp_to_tier, normalise_tier
+
+        current = await _asyncio.to_thread(find_account_by_name, name)
+        if current:
+            effective = normalise_tier(updates.get("tier", current.get("tier")))
+            merged = {
+                "rpm": updates.get("rpm", current.get("rpm")),
+                "tpm": updates.get("tpm", current.get("tpm")),
+                "rpd": updates.get("rpd", current.get("rpd")),
+            }
+            capped = clamp_to_tier(effective, merged)
+            for k, v in capped.items():
+                if v is not None:
+                    updates[k] = v
+
     import asyncio
     from src.core.accounts import account_manager
     try:
@@ -397,6 +439,52 @@ async def admin_update_account(request: Request):
         return {"status": "success", "account": acct}
     except Exception as e:
         raise HTTPException(status_code=400, detail=str(e))
+
+
+@app.get("/dashboard/admin/accounts/recovery")
+async def admin_account_recovery(request: Request, name: str):
+    """Read a user's password back, for the operator.
+
+    Separate from the account listing on purpose: a password must never ride
+    along with a table of accounts, because that table is what an operator
+    glances at and what a screenshot captures. This has to be asked for by name.
+
+    Admin-only, and it reports honestly when it cannot answer. A NULL means one
+    of three things — the account predates the feature, no key is configured, or
+    the row does not decrypt — and none of them are worth guessing at.
+    """
+    _require_admin(request)
+    clean = str(name or "").strip()
+    if not clean:
+        raise HTTPException(status_code=400, detail="name is required")
+
+    import asyncio
+    from src.backend.accounts import find_account_by_name
+    from src.backend.account_keys import get_recoverable_password_db
+    from src.backend.password_recovery import is_enabled
+
+    acct = await asyncio.to_thread(find_account_by_name, clean)
+    if not acct:
+        raise HTTPException(status_code=404, detail="Account not found")
+
+    if not is_enabled():
+        return {
+            "name": clean,
+            "password": None,
+            "available": False,
+            "reason": "ROUTER_API_PASSWORD_KEY chưa được đặt — tính năng xem mật khẩu đang tắt",
+        }
+
+    plain = await asyncio.to_thread(get_recoverable_password_db, acct["account_id"])
+    if plain is None:
+        return {
+            "name": clean,
+            "password": None,
+            "available": False,
+            "reason": "Tài khoản này chưa có bản mật khẩu có thể đọc lại. "
+                      "Đặt lại mật khẩu để tạo bản mới.",
+        }
+    return {"name": clean, "password": plain, "available": True}
 
 
 @app.post("/dashboard/admin/accounts/search-engine")

@@ -58,6 +58,9 @@ tests/*
 !tests/test_responses_mapping.py
 !tests/test_api_help.py
 !tests/conftest.py
+!tests/test_tier_limits.py
+!tests/test_password_recovery.py
+!tests/test_admin_password_recovery.py
 
 # The CI scanner is tracked; the rest of scripts/ is local tooling.
 !scripts/

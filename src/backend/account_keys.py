@@ -271,21 +271,51 @@ def all_keys_db() -> List[Dict[str, Any]]:
 
 def set_password_db(account_id: str, password: str, must_change: int = 0) -> None:
     digest, salt = hash_password(password)
+    # A second, reversible copy so an operator can read the password back. Login
+    # still verifies against the PBKDF2 digest above; this column is never used
+    # to authenticate. See src/backend/password_recovery.py for what this does
+    # and does not protect against.
+    from src.backend.password_recovery import encrypt_password
+    recoverable = encrypt_password(password)
     with _LOCK:
         c = _conn()
         try:
             c.execute(
                 "INSERT INTO account_credentials "
-                "(account_id, password_hash, password_salt, must_change, updated_at) "
-                "VALUES (?,?,?,?,?) "
+                "(account_id, password_hash, password_salt, password_enc, must_change, updated_at) "
+                "VALUES (?,?,?,?,?,?) "
                 "ON CONFLICT(account_id) DO UPDATE SET "
                 "password_hash=excluded.password_hash, password_salt=excluded.password_salt, "
+                "password_enc=excluded.password_enc, "
                 "must_change=excluded.must_change, updated_at=excluded.updated_at",
-                (account_id, digest, salt, int(must_change), int(time.time())),
+                (account_id, digest, salt, recoverable, int(must_change), int(time.time())),
             )
             c.commit()
         finally:
             c.close()
+
+
+def get_recoverable_password_db(account_id: str) -> Optional[str]:
+    """The plaintext password for an account, or None.
+
+    Admin-only by the caller's route guard. Returns None when the row has no
+    encrypted copy, when no key is configured, or when the stored blob does not
+    decrypt — all three mean the same thing to a caller and guessing is not an
+    option.
+    """
+    with _LOCK:
+        c = _conn()
+        try:
+            row = c.execute(
+                "SELECT password_enc FROM account_credentials WHERE account_id = ?",
+                (account_id,),
+            ).fetchone()
+        finally:
+            c.close()
+    if not row:
+        return None
+    from src.backend.password_recovery import decrypt_password
+    return decrypt_password(row[0])
 
 
 def get_credential_db(account_id: str) -> Optional[Dict[str, Any]]:

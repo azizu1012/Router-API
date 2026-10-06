@@ -106,6 +106,7 @@ def init_config_tables() -> None:
                     account_id TEXT PRIMARY KEY,
                     password_hash TEXT NOT NULL,
                     password_salt TEXT NOT NULL,
+                    password_enc TEXT,
                     must_change INTEGER DEFAULT 0,
                     updated_at INTEGER
                 );
@@ -122,6 +123,16 @@ def init_config_tables() -> None:
                 CREATE INDEX IF NOT EXISTS idx_invite_expiry ON invite_codes(expires_at);
             """)
             c.commit()
+
+            # Migration: operator-recoverable password copy on account_credentials.
+            # Nullable on purpose — rows written before this, and rows written
+            # with no ROUTER_API_PASSWORD_KEY configured, simply have no copy.
+            # The CREATE above already carries the column for fresh databases;
+            # this is for the ones that predate it.
+            try:
+                c.execute("ALTER TABLE account_credentials ADD COLUMN password_enc TEXT")
+            except Exception:
+                pass
 
             # Migration: add tier to accounts
             init_model_config_table(c)

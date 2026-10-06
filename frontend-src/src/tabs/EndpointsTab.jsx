@@ -105,7 +105,7 @@ export default function EndpointsTab() {
       <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4 animate-tab-in">
         <div className="text-left">
           <h1 className="text-2xl font-black tracking-tight">{t('nav_ep', lang) || 'Endpoint Tùy Chỉnh'}</h1>
-          <p className="text-xs text-base-content/60 mt-1">{t('ep_sub', lang) || 'Kết nối các endpoint OpenAI/Gemini bên thứ ba và gán cho các tài khoản con khác nhau'}</p>
+          <p className="text-xs text-base-content/60 mt-1">{t('ep_sub', lang) || 'Kết nối các endpoint OpenAI/Gemini bên thứ ba và gán cho các tài khoản người dùng khác nhau'}</p>
         </div>
         <button
           onClick={() => setShowAddForm(v => !v)}
@@ -231,7 +231,7 @@ export default function EndpointsTab() {
                       <div className="grid grid-cols-1 sm:grid-cols-3 gap-4 pt-3 border-t border-base-content/5">
                         <div className="space-y-2 text-left sm:col-span-1">
                           <label className="text-[10px] font-bold uppercase tracking-wider text-base-content/50 block">
-                            {t('lbl_assigned_account', lang) || 'Gán cho tài khoản con'}
+                            {t('lbl_assigned_account', lang) || 'Gán cho tài khoản người dùng'}
                           </label>
                           <select
                             value={accountName || assignedAccountId}

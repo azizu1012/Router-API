@@ -266,6 +266,57 @@ Admin cũng có thể tạo thẳng account qua `POST /dashboard/admin/accounts/
 
 ---
 
+## 8b. Admin xem lại mật khẩu của user
+
+Tạo account mà không có password là tạo account không ai đăng nhập được. Nên
+`create` nhận `password` (thiếu thì dùng `1234` + `must_change=1`), và admin có
+thể đọc lại password của bất kỳ account nào.
+
+### Vì sao cần bản mã hoá thứ hai
+
+`password_hash` là PBKDF2-SHA256 200k vòng — một chiều, **không có hàm decode
+để viết**. Cho hash + salt, việc khôi phục nghĩa là 200.000 vòng đoán mỗi ứng
+viên. Đây là lựa chọn đúng cho xác thực và là lựa chọn sai cho người vận hành
+cần biết user được cấp mật khẩu gì.
+
+Nên `account_credentials` có thêm cột `password_enc`: bản mã hoá Fernet, khoá
+derive từ `ROUTER_API_PASSWORD_KEY` qua SHA-256 (nên operator đặt passphrase tuỳ
+ý, không phải tự sinh key đúng hình dạng).
+
+| | |
+|---|---|
+| Xác thực | vẫn là PBKDF2. `password_enc` **không** bao giờ dùng để login |
+| `usage.db` một mình | không đủ — thiếu `.env` thì không đọc được row nào |
+| `.env` + `usage.db` | đủ. Coi hai thứ đó là **một** secret, không phải hai |
+
+Cột này `NULL` là chuyện bình thường, và route nói rõ lý do thay vì trả chuỗi
+rỗng — chuỗi rỗng trên UI trông như "mật khẩu trống", không phải "đọc không được".
+
+### Ba trường hợp `available: false`
+
+| Nguyên nhân | Khi nào |
+|---|---|
+| Chưa đặt `ROUTER_API_PASSWORD_KEY` | Tính năng tự tắt. **Đăng nhập vẫn chạy bình thường** |
+| Row có hash nhưng `password_enc` NULL | Account tạo trước khi có cột này, hoặc lúc đó chưa đặt key |
+| Không giải mã được | Sai key, hoặc row hỏng |
+
+Cả ba đều dẫn tới cùng một việc: **đặt lại mật khẩu** để sinh bản mới.
+
+### Vì sao route tách riêng, không nhét vào bảng accounts
+
+Bảng accounts là thứ admin liếc qua và thứ chụp màn hình. Nếu password nằm trong
+payload đó, một tấm ảnh chụp màn hình là một danh sách credential. Nên nó là
+`GET /dashboard/admin/accounts/recovery?name=...` — phải hỏi tên mới nhận, admin
+only, và UI bắt **nhấn 2 lần** (lần đầu chỉ mở khoá, không gọi API) rồi tự ẩn sau
+15 giây.
+
+### Đổi `ROUTER_API_PASSWORD_KEY` sau này
+
+Mọi `password_enc` cũ **hỏng**. Không phải hỏng một cách âm thầm — route trả
+`available: false` với lý do — nhưng vẫn hỏng. Giữ nguyên key từ lần đầu đặt.
+
+---
+
 ## 9. Endpoints
 
 ### User tự quản lý

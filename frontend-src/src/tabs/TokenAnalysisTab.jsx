@@ -62,7 +62,7 @@ export default function TokenAnalysisTab() {
       {/* Title */}
       <div className="text-left">
         <h1 className="text-2xl font-black tracking-tight">{t('nav_us', lang) || 'Phân tích tiêu thụ'}</h1>
-        <p className="text-xs text-base-content/60 mt-1">Bảng xếp hạng tài khoản con và các khóa API tiêu hao nhiều tài nguyên nhất trong 30 ngày qua</p>
+        <p className="text-xs text-base-content/60 mt-1">Bảng xếp hạng tài khoản người dùng và các khóa API tiêu hao nhiều tài nguyên nhất trong 30 ngày qua</p>
       </div>
 
       {/* Overview Stat Cards */}

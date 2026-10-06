@@ -1,7 +1,7 @@
 import os
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import List
+from typing import Dict, List
 
 from dotenv import load_dotenv
 
@@ -118,6 +118,34 @@ class RouterApiConfig:
     DEFAULT_ACCOUNT_RPM: int = _get_int("ROUTER_API_DEFAULT_ACCOUNT_RPM", 300)
     DEFAULT_ACCOUNT_TPM: int = _get_int("ROUTER_API_DEFAULT_ACCOUNT_TPM", 6000000)
     DEFAULT_ACCOUNT_RPD: int = _get_int("ROUTER_API_DEFAULT_ACCOUNT_RPD", 20000)
+
+    # Per-tier ceiling on what an account or token may be granted.
+    #
+    # An admin can loosen a user's limits but not past these: without a ceiling,
+    # "give this account more headroom" has no upper bound and the pool's own
+    # budget becomes the only thing standing between one account and the whole
+    # key fleet. The admin tier's caps sit at DEFAULT_ACCOUNT_*, so this
+    # introduces no new limit for existing admin accounts.
+    #
+    # Token limits are additionally capped by the owning account's tier — see
+    # clamp_to_tier. A token can never exceed the account that owns it.
+    TIER_CAPS: Dict[str, Dict[str, int]] = field(default_factory=lambda: {
+        "free": {
+            "rpm": _get_int("ROUTER_API_TIER_FREE_RPM", 30),
+            "tpm": _get_int("ROUTER_API_TIER_FREE_TPM", 200_000),
+            "rpd": _get_int("ROUTER_API_TIER_FREE_RPD", 1_000),
+        },
+        "premium": {
+            "rpm": _get_int("ROUTER_API_TIER_PREMIUM_RPM", 120),
+            "tpm": _get_int("ROUTER_API_TIER_PREMIUM_TPM", 800_000),
+            "rpd": _get_int("ROUTER_API_TIER_PREMIUM_RPD", 5_000),
+        },
+        "admin": {
+            "rpm": _get_int("ROUTER_API_TIER_ADMIN_RPM", 300),
+            "tpm": _get_int("ROUTER_API_TIER_ADMIN_TPM", 6_000_000),
+            "rpd": _get_int("ROUTER_API_TIER_ADMIN_RPD", 20_000),
+        },
+    })
 
     # Gemini keys
     GEMINI_API_KEYS: List[str] = field(default_factory=_load_gemini_keys)

@@ -59,7 +59,7 @@ export default function EditAccountModal({ account, isOpen, onClose, onSaveSucce
     <div className="modal modal-open z-[9999] fixed inset-0 flex items-center justify-center">
       <div className="modal-overlay fixed inset-0 bg-black/60 backdrop-blur-sm" onClick={onClose}></div>
       <div className="modal-box max-w-md bg-base-100 border border-base-content/10 relative z-10 p-6 rounded-2xl shadow-2xl">
-        <h3 className="font-extrabold text-lg mb-4 text-left">Chỉnh sửa tài khoản con</h3>
+        <h3 className="font-extrabold text-lg mb-4 text-left">Chỉnh sửa tài khoản người dùng</h3>
         
         <form onSubmit={handleSave} className="space-y-4 text-left">
           <div className="form-control w-full">

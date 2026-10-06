@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useCallback } from 'react';
+import React, { useState, useEffect, useCallback, useMemo } from 'react';
 import { useApp } from '../context/AppContext';
 import { t } from '../utils/i18n';
 import { fmt, fmtD } from '../utils/format';
@@ -6,6 +6,7 @@ import { api } from '../utils/api';
 import EditAccountModal from '../components/EditAccountModal';
 import Loading from '../components/Loading';
 import TokenTable, { InvitePanel } from '../components/TokenTable';
+import PasswordReveal from '../components/PasswordReveal';
 import { Search, Plus, Trash2, ShieldCheck, ShieldAlert, KeyRound, Edit, Copy, RefreshCw } from 'lucide-react';
 
 export default function AccountsTab() {
@@ -25,9 +26,26 @@ export default function AccountsTab() {
   const [newRpm, setNewRpm] = useState('');
   const [newTpm, setNewTpm] = useState('');
   const [newRpd, setNewRpd] = useState('');
+  const [newPassword, setNewPassword] = useState('');
   const [showCreateForm, setShowCreateForm] = useState(false);
   const [isCreating, setIsCreating] = useState(false);
   const [createMsg, setCreateMsg] = useState({ text: '', type: '' });
+
+  // Mirrors config.TIER_CAPS. Duplicated rather than fetched so the form can
+  // warn before the round trip; the server clamps regardless, so this is only
+  // a heads-up, never the enforcement.
+  const TIER_CAPS = {
+    free: { rpm: 30, tpm: 200000, rpd: 1000 },
+    premium: { rpm: 120, tpm: 800000, rpd: 5000 },
+    admin: { rpm: 300, tpm: 6000000, rpd: 20000 },
+  };
+
+  const tierCapped = useMemo(() => {
+    const caps = TIER_CAPS[newTier];
+    if (!caps) return false;
+    const over = (val, cap) => val !== '' && Number(val) > cap;
+    return over(newRpm, caps.rpm) || over(newTpm, caps.tpm) || over(newRpd, caps.rpd);
+  }, [newTier, newRpm, newTpm, newRpd]);
 
   // Edit account modal state
   const [editingAccount, setEditingAccount] = useState(null);
@@ -186,9 +204,10 @@ export default function AccountsTab() {
     setCreateMsg({ text: '⏳ Đang tạo...', type: 'info' });
 
     const body = { 
-      name: newName.trim(), 
+      name: newName.trim(),
       tier: newTier,
     };
+    if (newPassword) body.password = newPassword;
     if (newRpm.trim() !== '') body.rpm = parseInt(newRpm, 10);
     if (newTpm.trim() !== '') body.tpm = parseInt(newTpm, 10);
     if (newRpd.trim() !== '') body.rpd = parseInt(newRpd, 10);
@@ -204,6 +223,8 @@ export default function AccountsTab() {
       setNewTpm('');
       setNewRpd('');
       setNewTier('free');
+
+      setNewPassword('');
       
       if (res && res.account) {
         alert(`Tạo tài khoản ${res.account.name} thành công!\nKey truy cập: ${res.account.auth_key}\n\n(Hãy copy và lưu lại khóa này!)`);
@@ -295,7 +316,7 @@ export default function AccountsTab() {
         <div className="card glass-card p-5 rounded-2xl text-left border border-primary/20 animate-fade-in-up">
           <h3 className="font-extrabold text-sm mb-4 flex items-center gap-2">
             <Plus className="w-4 h-4 text-primary" />
-            {t('ac_add_account_title', lang) || 'Tạo tài khoản con mới'}
+            {t('ac_add_account_title', lang) || 'Tạo tài khoản người dùng mới'}
           </h3>
           <form onSubmit={handleCreate} className="space-y-4">
             <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
@@ -310,6 +331,22 @@ export default function AccountsTab() {
                   <option value="premium">Premium</option>
                   <option value="admin">Admin</option>
                 </select>
+                {TIER_CAPS[newTier] && (
+                  <span className="text-[10px] text-base-content/45 mt-1 font-mono">
+                    trần: {TIER_CAPS[newTier].rpm} RPM · {fmt(TIER_CAPS[newTier].tpm)} TPM · {fmt(TIER_CAPS[newTier].rpd)} RPD
+                  </span>
+                )}
+              </div>
+              <div className="form-control">
+                <label className="label py-1"><span className="label-text text-[11px] font-bold text-base-content/60 uppercase">Mật khẩu đăng nhập</span></label>
+                <input
+                  type="text"
+                  disabled={isCreating}
+                  value={newPassword}
+                  onChange={(e) => setNewPassword(e.target.value)}
+                  placeholder="để trống = 1234, user phải đổi khi đăng nhập"
+                  className="input input-bordered input-sm text-xs w-full"
+                />
               </div>
               <div className="form-control">
                 <label className="label py-1"><span className="label-text text-[11px] font-bold text-base-content/60 uppercase">Giới hạn (RPM / TPM / RPD)</span></label>
@@ -318,6 +355,11 @@ export default function AccountsTab() {
                   <input type="number" disabled={isCreating} value={newTpm} onChange={(e) => setNewTpm(e.target.value)} placeholder="TPM" className="input input-bordered input-sm text-xs w-full" />
                   <input type="number" disabled={isCreating} value={newRpd} onChange={(e) => setNewRpd(e.target.value)} placeholder="RPD" className="input input-bordered input-sm text-xs w-full" />
                 </div>
+                {tierCapped && (
+                  <span className="text-[10px] text-warning font-bold mt-1">
+                    vượt trần {newTier} — sẽ bị chặn về giá trị tối đa của tier
+                  </span>
+                )}
               </div>
             </div>
             
@@ -401,7 +443,7 @@ export default function AccountsTab() {
       {/* Accounts Table — full width */}
       <div className="card glass-card rounded-2xl overflow-hidden text-left border border-base-content/5 animate-fade-in-up cascade-3">
         <div className="p-5 border-b border-base-content/5 flex justify-between items-center bg-base-200/10">
-          <h3 className="font-extrabold text-sm">{t('ac_list_title', lang) || 'Danh sách tài khoản con'}</h3>
+          <h3 className="font-extrabold text-sm">{t('ac_list_title', lang) || 'Danh sách tài khoản người dùng'}</h3>
           <span className="text-xs text-base-content/50 font-bold">{filteredAccounts.length} / {accounts.length} {t('accounts_count', lang) || 'tài khoản'}</span>
         </div>
         <div className="overflow-x-auto w-full">
@@ -416,6 +458,7 @@ export default function AccountsTab() {
                 <th onClick={() => handleSort('tpm')} className="font-bold cursor-pointer hover:bg-base-200/50 hover:text-base-content transition-all w-[8%] whitespace-nowrap">TPM{sortBy === 'tpm' ? (sortOrder === 'asc' ? ' ▲' : ' ▼') : ''}</th>
                 <th onClick={() => handleSort('rpd')} className="font-bold cursor-pointer hover:bg-base-200/50 hover:text-base-content transition-all w-[8%] whitespace-nowrap">RPD{sortBy === 'rpd' ? (sortOrder === 'asc' ? ' ▲' : ' ▼') : ''}</th>
                 <th onClick={() => handleSort('created')} className="font-bold cursor-pointer hover:bg-base-200/50 hover:text-base-content transition-all w-[10%] whitespace-nowrap">{t('th_created_at', lang) || 'Ngày tạo'}{sortBy === 'created' ? (sortOrder === 'asc' ? ' ▲' : ' ▼') : ''}</th>
+                <th className="font-bold w-[8%] whitespace-nowrap">Mật khẩu</th>
                 <th className="font-bold w-[8%] whitespace-nowrap">Hành động</th>
               </tr>
             </thead>
@@ -454,6 +497,9 @@ export default function AccountsTab() {
                     <td>{(a.rpd || 0).toLocaleString()}</td>
                     <td className="text-base-content/50 font-medium whitespace-nowrap">{fmtD(a.created_at)}</td>
                     <td>
+                      <PasswordReveal token={token} accountName={a.name} />
+                    </td>
+                    <td>
                       <div className="flex items-center gap-0.5">
                         <button onClick={() => handleToggleStatus(a.name, a.enabled)}
                           className={`btn btn-ghost btn-xs btn-square ${a.enabled ? 'text-error hover:bg-error/15' : 'text-success hover:bg-success/15'}`}
@@ -486,8 +532,8 @@ export default function AccountsTab() {
                 ))
               ) : (
                 <tr>
-                  <td colSpan="9" className="text-center py-8 text-base-content/40 font-medium">
-                    {t('no_accounts_found', lang) || 'Không tìm thấy tài khoản con nào'}
+                  <td colSpan="10" className="text-center py-8 text-base-content/40 font-medium">
+                    {t('no_accounts_found', lang) || 'Không tìm thấy tài khoản người dùng nào'}
                   </td>
                 </tr>
               )}

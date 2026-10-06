@@ -214,6 +214,13 @@ async def my_create_key(request: Request):
         return max(lo, min(hi, v))
 
     # Ceilings for a self-service user. An admin may exceed all of these.
+    #
+    # Left on DEFAULT_ACCOUNT_* rather than the per-tier caps: token limits and
+    # account limits are independent layers, and the account limiter already
+    # bounds traffic by the account's tier-capped value. Clamping the token here
+    # too would not lower any real ceiling — the account limiter does that — it
+    # would only stop an admin configuring a token above its account, which
+    # docs/account_auth.md explicitly allows.
     if is_admin:
         c_max_conc, c_rpm, c_tpm, c_rpd = 64, 100_000, 100_000_000, 100_000
     else:
