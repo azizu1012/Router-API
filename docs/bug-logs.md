@@ -999,3 +999,126 @@ deterministic: khi chunk mang `reasoning_content`, stream path **co** san
 `content_block_start` (thinking), `thinking_delta`, `signature_delta` va
 `content_block_stop`. Khac biet chi la model khong tra thought part cho prompt
 do. Khong sua gi.
+---
+
+## Bug #24: `finish_reason` Vuot Enum OpenAI, Client Bao "Invalid Response" (2026-10-09)
+
+### Muc do
+Nghiem trong theo bat xac thuc. `finish_reason` la `Literal` trong SDK
+(`stop`, `length`, `tool_calls`, `content_filter`, `function_call`), nen mot
+gia tri ngoai enum lam **ca response** khong parse duoc.
+
+### Root cause
+Router pass thang gia tri tu upstream:
+
+```python
+finish = getattr(choice, "finish_reason", "stop")
+```
+
+Gemini dung bo khac hoan toan: `SAFETY`, `RECITATION`, `BLOCKLIST`,
+`PROHIBITED_CONTENT`, `SPII`, `IMAGE_SAFETY`, `MALFORMED_FUNCTION_CALL`,
+`UNEXPECTED_TOOL_CALL`...
+
+Da quan sat thuc te mot client nhan `finish_reason: "malformed_function_call"`
+voi `tool_calls: null` — dung chuoi duy nhat trong danh sach khong phai enum
+ma lai "moi` loi invalid response".
+
+Duong streaming con sai theo huong nguoc: no rut moi ve `length` hoac `stop`,
+nen **`content_filter` bi mat hoan toan**.
+
+### Fix
+`src/core/providers/finish_reason.py` — mot noi quyet dinh, ca hai duong dung:
+
+| Truong hop | Ket qua |
+|---|---|
+| co `tool_calls` trong payload | `tool_calls` (thang ca ca khi upstream noi gi) |
+| `SAFETY` / `RECITATION` / `BLOCKLIST` / `SPII` / ... | `content_filter` |
+| `MAX_TOKENS` va moi tu dua tren | `length` |
+| `MALFORMED_FUNCTION_CALL` / `UNEXPECTED_TOOL_CALL` | `stop` |
+| bat ky gia tri khac | `stop` |
+
+Hang cuoi cung la ly do fix ton tai: mot chuoi la khong enum thi **khong the**
+pass thang, va do la chinh la nguyen nhan response khong hop le.
+
+### Test
+`tests/test_finish_reason.py` — 34 test, gom vong lap tren **moi** member cua
+`google.genai.types.FinishReason` de khong con enum nao chua duoc xet, va hai
+test goi truc tiep `build_response` / `_extract_finish_reason` de chung to ra
+wire. Guard chong fix qua tay: tool call **khong** co trong payload thi
+`MALFORMED_FUNCTION_CALL` phai ra `stop`, khong phai `tool_calls`.
+
+---
+
+## Bug #25: Gemini Native Tra 500 `text/plain`, Root Cause La Mot Package Thieu (2026-10-09)
+
+### Muc do
+Nghiem trong theo he qua: **ca endpoint** `:generateContent` chet, va client
+chi thay `Internal Server Error` khong phai JSON.
+
+### Chain day du
+```
+client -> POST /v1beta/models/gemini-flash:generateContent {"contents": [...]}
+  -> web_search = True          (mac dinh cap account, du client khong hoi search)
+  -> can_native_ground = False  (model khong phai lite)
+  -> _load_adk_runner()        (google-adk CHUA CAI)
+  -> nam trong retry loop -> bat `except Exception` -> dem la model failure
+  -> thu lai moi key, moi pool member
+  -> all_models_excluded -> RuntimeError("quota_exhausted")
+  -> khong bat -> 500, content-type: text/plain, body: "Internal Server Error"
+```
+
+Ba tang, ca ba sai:
+1. `ADKUnavailableError` docstring ghi *"Raised before the retry loop"* — nhung
+   `adk = _load_adk_runner()` nam **trong** loop, dung nguoc docstring.
+2. `quota_exhausted` chon sai hoan toan: nguyen nhan la mot package chua cai.
+3. Handler nem exception ra Starlette, nhan `500 text/plain`. Google API tra
+   `{"error": {"code", "message", "status"}}`, va `google.genai.errors.APIError`
+   doc dung ba field do. Client native chi thay loi decode.
+
+`streamGenerateContent` còn te hon: no nem frame `{"error": {"message","type"}}`
+— **shape cua chat-completions** — nen client native thay mot loi ma doc
+duoc gi ca.
+
+### Fix
+- `_load_adk_runner()` chuyen ra **truoc** retry loop, o ca `call_gemini` va
+  `call_gemini_stream`. Dieu kien `web_search and not can_native_ground` khong
+  doi theo key, attempt hay model nen tinh mot lan la du.
+- Handler phan biet **search client yeu cau** voi **mac dinh cap account**. Khong
+  co yeu cau thi tra loi luon khong co search — client hoi mot cau hoi, khong
+  phai hoi mot cu tim kiem. Co yeu cau thi tra loi loi that, noi ro nguyen nhan.
+- `gemini_error.py`: mot noi sinh envelope cua Google cho ca hai duong.
+  Streaming het HTTP 200 roi nen body la cho duy nhat con lai de bao client.
+- Khong sua gi o `gemini_streaming.py` cho phep fallback — `except RuntimeError`
+  bat mat `ADKUnavailableError` truoc khi fallback co co hoi.
+
+### Bonus: SDK field lo bi ship ra client
+`GenerateContentResponse.sdk_http_response` la httpx response con s sung cua
+SDK. `model_dump(by_alias=True)` ship header block no vao **moi chunk**, va o
+mot chunk no chua `bytes` kien `json.dumps` nem
+`"Object of type bytes is not JSON serializable"` — loi khong noi ten model, khong
+noi ten field, khong noi ten chunk nao.
+
+`src/core/providers/gemini/response_dump.py` cat field nay (va `parsed`,
+`automatic_function_calling_history`).
+
+**Bay bien**: `Part.thought_signature` la `bytes`, va config pydantic cua SDK tu
+base64 ho no khi xuat JSON. `model_dump()` tra raw bytes, nen `json.dumps` hoac
+tu choi, hoac — neu them `default=str` — ghi dung python repr `"b'\\x12i...'"`
+vao mot field client coi la chu ky. Do la ly do phai qua `model_dump_json`.
+Test khoa ca hai chieu.
+
+### Vì sao helper nam o `src/core/`, khong o `src/server/`
+Lần dau dat `dump_generation_response` canh route cua native Gemini. Nhung no
+dung trong `manager.py` — ma `manager.py` o `src/core/`, va`src/core/` khong duoc
+import `src/server/`. `tests/test_layering.py` bat ngay. Helper chuyen xuong
+`src/core/providers/gemini/`; phan sinh HTTP envelope moi thuoc ve server.
+
+### Test
+`tests/test_native_gemini_errors.py` — 20 test: envelope co dung field ma SDK
+doc, mapping status, `APIError` parse duoc body cua chung ta, phan loai loi
+(thieu ADK = 500 chu roi quota = 429), va hai test doc source bang `inspect` de
+khoa `adk` nam truoc `for attempt`.
+
+Xac nhan bang **google-genai that** qua HTTP that: `generateContent` tra loi binh
+thuong, `APIError` doc duoc loi cua chung ta, `streamGenerateContent` ra chunk
+validate duoc.

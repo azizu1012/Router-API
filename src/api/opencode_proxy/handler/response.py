@@ -11,6 +11,7 @@ from typing import Any, Dict
 
 from src.core.config_n_logg.logger import logger_proxy as logger
 from src.core.usage_logger import log_usage
+from src.core.providers.finish_reason import normalize_finish_reason
 from src.api.claude_proxy.handler.helpers import get_system_status_summary
 from src.logical_HQ_translator import _get_simulated_cache_usage
 
@@ -56,11 +57,14 @@ def build_response(
         text, finish, thinking, tool_calls, ts = "", "stop", "", [], None
     else:
         text = _extract_text(choice)
-        finish = getattr(choice, "finish_reason", "stop")
         msg = choice.message
         thinking = getattr(msg, "reasoning_content", "") or getattr(msg, "thinking", "") or ""
         ts = getattr(msg, "thought_signature", None)
         raw_tcs = getattr(msg, "tool_calls", None) or []
+        # Upstream reasons are not OpenAI reasons; an unmapped value here makes
+        # the whole response fail to parse in a strict client.
+        finish = normalize_finish_reason(getattr(choice, "finish_reason", None),
+                                         has_tool_calls=bool(raw_tcs))
         tool_calls = []
         for tc in raw_tcs:
             fn = getattr(tc, "function", None)

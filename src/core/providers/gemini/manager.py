@@ -89,6 +89,16 @@ class GeminiAPIManager:
         total_keys = self.pool.pool_size
         tier = self.pool.resolve_tier(account)
 
+        # Whether this call needs the ADK runner does not depend on the key, the
+        # attempt or the chosen model, so it is resolved once here. Loading it
+        # inside the loop meant a missing optional dependency was caught by the
+        # `except Exception` below, counted as a model failure and retried
+        # against every key and every pool member before surfacing as
+        # "quota_exhausted" -- a message pointing at quota when the cause was a
+        # package that was never installed. ADKUnavailableError exists to be
+        # raised before the retry loop; this is where that has to happen.
+        adk = _load_adk_runner() if web_search else None
+
         for attempt in range(1, config.MAX_RETRIES + 1):
             await wait_global_cooldown(attempt)
             estimated_total = self._estimate_tokens(prompt_text, max_tokens, image_count)
@@ -137,8 +147,8 @@ class GeminiAPIManager:
                         and ("gemini" in target_model_id.lower())
                     )
 
-                    if web_search and not can_native_ground:
-                        adk = _load_adk_runner()
+                    if adk is not None and not can_native_ground:
+                        # `adk` was resolved once, before the retry loop.
                         auth_key_prefix = account.get("api_key", "")[:12] if account else "sk-no-account"
                         resp_dict = await adk.run_adk_agent(
                             model_id=model_id,
@@ -272,6 +282,16 @@ class GeminiAPIManager:
         total_keys = self.pool.pool_size
         tier = self.pool.resolve_tier(account)
 
+        # Whether this call needs the ADK runner does not depend on the key, the
+        # attempt or the chosen model, so it is resolved once here. Loading it
+        # inside the loop meant a missing optional dependency was caught by the
+        # `except Exception` below, counted as a model failure and retried
+        # against every key and every pool member before surfacing as
+        # "quota_exhausted" -- a message pointing at quota when the cause was a
+        # package that was never installed. ADKUnavailableError exists to be
+        # raised before the retry loop; this is where that has to happen.
+        adk = _load_adk_runner() if web_search else None
+
         for attempt in range(1, config.MAX_RETRIES + 1):
             await wait_global_cooldown(attempt)
             estimated_total = self._estimate_tokens(prompt_text, max_tokens, image_count)
@@ -316,8 +336,8 @@ class GeminiAPIManager:
                         and ("gemini" in target_model_id.lower())
                     )
 
-                    if web_search and not can_native_ground:
-                        adk = _load_adk_runner()
+                    if adk is not None and not can_native_ground:
+                        # `adk` was resolved once, before the retry loop.
                         auth_key_prefix = account.get("api_key", "")[:12] if account else "sk-no-account"
                         adk_stream = adk.run_adk_agent_stream(
                             model_id=model_id,
@@ -373,7 +393,8 @@ class GeminiAPIManager:
                     full_parts: List[str] = []
                     chunk = None
                     async for chunk in stream_gen:
-                        chunk_dict = chunk.model_dump(by_alias=True, exclude_none=True)
+                        from .response_dump import dump_generation_response
+                        chunk_dict = dump_generation_response(chunk)
                         yield {
                             "response_chunk": chunk_dict,
                             "model_alias": model_alias,

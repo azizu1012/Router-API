@@ -25,10 +25,23 @@ def _extract_response_text(result: dict) -> str:
 
 
 def _extract_finish_reason(result: dict) -> str:
+    """The upstream reason, mapped onto the OpenAI enum.
+
+    Upstream does not speak OpenAI's vocabulary — Gemini reports things like
+    `malformed_function_call` — and the field is a Literal in the SDK, so an
+    unmapped value makes the response unparseable rather than merely odd.
+    """
+    from src.core.providers.finish_reason import normalize_finish_reason
+
     choices = result.get("choices", [])
     if not choices:
         return "stop"
-    return choices[0].get("finish_reason") or "stop"
+    has_calls = any(
+        isinstance(c, dict) and (c.get("message") or {}).get("tool_calls")
+        for c in choices
+    )
+    return normalize_finish_reason(choices[0].get("finish_reason"),
+                                   has_tool_calls=has_calls)
 
 
 def _extract_response_tool_calls(result: dict) -> list[dict]:

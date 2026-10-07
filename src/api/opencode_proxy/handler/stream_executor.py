@@ -18,6 +18,7 @@ from typing import Any, Dict, List, AsyncIterator, Optional, cast
 from src.core.config_n_logg import config
 from src.core.config_n_logg.logger import logger_proxy as logger
 from src.core.usage_logger import log_usage
+from src.core.providers.finish_reason import normalize_finish_reason
 from src.logical_HQ_translator import (
     _get_simulated_cache_usage,
     StreamingTextNormalizer,
@@ -313,7 +314,11 @@ async def execute_stream(
             if content:
                 yield _openai_sse(model_name, content=content, chunk_id=chunk_id)
             if fr:
-                yield _openai_sse(model_name, finish_reason=fr, chunk_id=chunk_id)
+                yield _openai_sse(
+                    model_name,
+                    finish_reason=normalize_finish_reason(
+                        fr, has_tool_calls=bool(_get_tool_calls(delta))),
+                    chunk_id=chunk_id)
 
         yield b"data: [DONE]\n\n"
         return
@@ -524,9 +529,8 @@ async def execute_stream(
             async for c in _yield_text(flushed):
                 yield c
 
-        stop_reason = "tool_calls" if has_tool_calls else (
-            "length" if stream_finish_reason and "max" in str(stream_finish_reason).lower() else "stop"
-        )
+        stop_reason = normalize_finish_reason(stream_finish_reason,
+                                          has_tool_calls=has_tool_calls)
         yield _openai_sse(model_name, finish_reason=stop_reason, chunk_id=chunk_id)
 
         out_tokens = max(1, out_len // 4)

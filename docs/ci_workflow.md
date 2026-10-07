@@ -59,6 +59,8 @@ pytest
 | `test_openai_stream_usage_chunk.py` | Chunk `choices: []` chỉ gửi khi client yêu cầu `include_usage` |
 | `test_anthropic_stream_order.py` | Thứ tự SSE Anthropic (`message_start` trước `ping`), ping đúng spec, và tool_use không bị rơi |
 | `test_responses_conformance.py` | Mọi event `/v1/responses` validate bằng model chính thức của OpenAI SDK, kể cả `strict=True`; tool call phải quay lại đủ |
+| `test_finish_reason.py` | `finish_reason` luôn nằm trong enum OpenAI; có tool call thì là `tool_calls` |
+| `test_native_gemini_errors.py` | Native Gemini trả envelope lỗi đúng chuẩn Google, không báo nhầm quota, không ship field nội bộ của SDK |
 
 Chạy nhanh một file:
 

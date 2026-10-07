@@ -1,3 +1,4 @@
+import asyncio
 import json
 from fastapi import HTTPException, Request
 from fastapi.responses import JSONResponse, StreamingResponse
@@ -7,14 +8,88 @@ from src.core.config_n_logg import config
 from src.core.config_n_logg.logger import logger_api
 from src.core.router import router
 from src.core.providers import api_manager
+from src.core.providers.gemini.manager import ADKUnavailableError
 from src.core.usage_logger import log_usage
 from src.core.limits import account_limiter
 from src.server.openai_server.auth import _check_auth, _auth_key_prefix
 from .gemini_parsers import resolve_gemini_auth, parse_gemini_contents, parse_gemini_tools
+from .gemini_error import detail_message as _detail_message
+from .gemini_error import gemini_error_body as _gemini_error_body
 from .gemini_streaming import stream_gemini_native, stream_custom_endpoint_native
 
 
+def gemini_error_response(status_code: int, message: str) -> JSONResponse:
+    return JSONResponse(status_code=status_code, content=_gemini_error_body(status_code, message))
+
+
+def _classify_native_failure(exc: Exception) -> tuple[int, str]:
+    """Map an internal failure onto the status Google would have returned.
+
+    Without this, anything raised below reached Starlette unhandled and came
+    back as `500 Internal Server Error` with a `text/plain` body — which a
+    native Gemini client cannot parse at all, so the only thing the caller saw
+    was a decode failure instead of the reason.
+    """
+    msg = str(exc) or exc.__class__.__name__
+
+    if isinstance(exc, HTTPException):
+        return exc.status_code, _detail_message(exc.detail)
+    if "no_available_key" in msg or "quota_exhausted" in msg:
+        return 429, "All API keys are temporarily unavailable, retry later"
+    if "google-adk" in msg or isinstance(exc, ADKUnavailableError):
+        # A missing optional dependency is a server misconfiguration, not a
+        # client error, and it must not be reported as a quota problem.
+        return 500, msg
+    if isinstance(exc, (TimeoutError, asyncio.TimeoutError)):
+        return 504, "Upstream request timed out"
+    return 500, msg
+
+
+async def _stream_with_search_fallback(**kw):
+    """stream_gemini_native, retrying once without search if ADK is missing.
+
+    The ADK runner is resolved before its retry loop, so the failure arrives on
+    the first pull rather than after every key has been tried. This is the
+    streaming counterpart of the same fallback in the non-stream path: search
+    that the account default switched on must not stop a request the caller
+    never asked to search for.
+    """
+    search_requested = kw.pop("search_requested", False)
+    try:
+        async for item in stream_gemini_native(**kw):
+            yield item
+    except ADKUnavailableError:
+        if search_requested:
+            raise
+        logger_api.warning(
+            "[GeminiNative] search unavailable (google-adk missing); "
+            "streaming %s without it", kw.get("model_alias"))
+        kw["web_search"] = False
+        async for item in stream_gemini_native(**kw):
+            yield item
+
+
 async def _handle_gemini_native(
+    model_id: str,
+    request: Request,
+    authorization: str | None,
+    x_api_key: str | None,
+    x_goog_api_key: str | None,
+    stream: bool
+):
+    try:
+        return await _handle_gemini_native_inner(
+            model_id, request, authorization, x_api_key, x_goog_api_key, stream)
+    except HTTPException:
+        raise
+    except Exception as exc:
+        status, message = _classify_native_failure(exc)
+        logger_api.error("[GeminiNative] %s -> HTTP %s: %s",
+                         model_id, status, message, exc_info=True)
+        return gemini_error_response(status, message)
+
+
+async def _handle_gemini_native_inner(
     model_id: str,
     request: Request,
     authorization: str | None,
@@ -107,6 +182,11 @@ async def _handle_gemini_native(
     for tool in tools:
         if getattr(tool, "google_search", None) is not None:
             web_search = True
+    # Whether the caller asked for search, as opposed to the account-level
+    # default turning it on below. The distinction decides what happens when
+    # the search backend is missing: a request that never asked for search must
+    # still be answered, one that did has to be told it cannot be served.
+    search_requested = web_search
     explicit_disable = False
     for flag in ["web_search", "search", "google_search", "grounding"]:
         if flag in body and body[flag] is False:
@@ -189,7 +269,7 @@ async def _handle_gemini_native(
             except Exception as e:
                 logger_api.warning("[AccountEndpoint Pass-through] %s failed (%s), trying next endpoint", model_alias, e)
     if stream:
-        return StreamingResponse(stream_gemini_native(
+        return StreamingResponse(_stream_with_search_fallback(
             model_alias=model_alias,
             system_instruction=system_instruction,
             contents=contents,
@@ -200,30 +280,59 @@ async def _handle_gemini_native(
             image_count=image_count,
             account=account,
             web_search=web_search,
+            search_requested=search_requested,
             hybrid_citations=hybrid_citations,
             auth_key_prefix=auth_key_prefix,
             thinking_level=thinking_level,
             thinking_budget=thinking_budget,
             include_thoughts=include_thoughts,
         ), media_type="text/event-stream")
-    gresult = await api_manager.call_gemini(
-        model_alias=model_alias,
-        system_instruction=system_instruction,
-        contents=contents,
-        max_tokens=max_tokens,
-        temperature=temperature,
-        top_p=top_p,
-        tools=tools or None,
-        image_count=image_count,
-        account=account,
-        web_search=web_search,
-        thinking_level=thinking_level,
-        thinking_budget=thinking_budget,
-        include_thoughts=include_thoughts,
-    )
+    try:
+        gresult = await api_manager.call_gemini(
+            model_alias=model_alias,
+            system_instruction=system_instruction,
+            contents=contents,
+            max_tokens=max_tokens,
+            temperature=temperature,
+            top_p=top_p,
+            tools=tools or None,
+            image_count=image_count,
+            account=account,
+            web_search=web_search,
+            thinking_level=thinking_level,
+            thinking_budget=thinking_budget,
+            include_thoughts=include_thoughts,
+        )
+    except ADKUnavailableError:
+        if search_requested:
+            raise
+        # Search was switched on by the account default, not by this request.
+        # Answering the question without search beats refusing it: the caller
+        # asked for an answer, and without google-adk installed this used to
+        # take the whole :generateContent endpoint down.
+        logger_api.warning(
+            "[GeminiNative] search unavailable (google-adk missing); "
+            "answering %s without it", model_alias)
+        gresult = await api_manager.call_gemini(
+            model_alias=model_alias,
+            system_instruction=system_instruction,
+            contents=contents,
+            max_tokens=max_tokens,
+            temperature=temperature,
+            top_p=top_p,
+            tools=tools or None,
+            image_count=image_count,
+            account=account,
+            web_search=False,
+            thinking_level=thinking_level,
+            thinking_budget=thinking_budget,
+            include_thoughts=include_thoughts,
+        )
     response_obj = gresult["response"]
-    resp_json = response_obj.model_dump_json(by_alias=True, exclude_none=True)
-    resp_dict = json.loads(resp_json)
+    # Strip the SDK's own bookkeeping; `sdk_http_response` is the live httpx
+    # response and has no business in a body a client parses.
+    from src.core.providers.gemini.response_dump import dump_generation_response
+    resp_dict = dump_generation_response(response_obj)
     try:
         candidates = resp_dict.get("candidates") or []
         if candidates and "content" in candidates[0]:

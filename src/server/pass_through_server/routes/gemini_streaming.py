@@ -7,7 +7,10 @@ from src.core.providers.genai_types import types as gt
 from src.core.config_n_logg import config
 from src.core.config_n_logg.logger import logger_api
 from src.core.providers import api_manager
+from src.core.providers.gemini.manager import ADKUnavailableError
 from src.core.usage_logger import log_usage
+from .gemini_error import gemini_error_chunk as _gemini_error_chunk
+from .gemini_error import detail_message as _detail_message
 
 
 async def stream_gemini_native(
@@ -84,18 +87,18 @@ async def stream_gemini_native(
                     0,
                     0,
                 )
+    except ADKUnavailableError:
+        # Not a stream failure to report: the caller can still be served
+        # without search, so the decision belongs to whoever owns the request.
+        raise
     except RuntimeError as e:
-        error_message = str(e)
-        logger_api.error("Streaming failed: %s", error_message)
-        error_payload = {"error": {"message": error_message, "type": "stream_error"}}
-        yield f"data: {_json.dumps(error_payload, ensure_ascii=False)}\n\n".encode("utf-8")
+        logger_api.error("Streaming failed: %s", e)
+        yield _gemini_error_chunk(500, str(e))
     except HTTPException as he:
-        error_payload = {"error": {"message": str(he.detail), "type": "http_error"}}
-        yield f"data: {_json.dumps(error_payload, ensure_ascii=False)}\n\n".encode("utf-8")
+        yield _gemini_error_chunk(he.status_code, _detail_message(he.detail))
     except Exception as e:
         logger_api.error("Unhandled exception during streaming: %s", e)
-        error_payload = {"error": {"message": str(e), "type": "server_error"}}
-        yield f"data: {_json.dumps(error_payload, ensure_ascii=False)}\n\n".encode("utf-8")
+        yield _gemini_error_chunk(500, str(e))
 
 
 async def stream_custom_endpoint_native(

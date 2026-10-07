@@ -70,6 +70,8 @@ tests/*
 !tests/test_openai_stream_usage_chunk.py
 !tests/test_anthropic_stream_order.py
 !tests/test_responses_conformance.py
+!tests/test_finish_reason.py
+!tests/test_native_gemini_errors.py
 
 # The CI scanner is tracked; the rest of scripts/ is local tooling.
 !scripts/
