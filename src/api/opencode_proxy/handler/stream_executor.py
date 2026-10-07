@@ -262,6 +262,20 @@ async def execute_stream(
         "thinking_budget": body.get("thinking_budget"),
         "include_thoughts": include_thoughts,
     }
+    # The trailing usage chunk carries `choices: []`. OpenAI sends that only when
+    # the client asks for it:
+    #   include_usage: "If set, an additional chunk will be streamed before the
+    #   data: [DONE] message. The usage field on this chunk shows the token usage
+    #   statistics for the entire request, and the choices field will always be an
+    #   empty array."
+    # Emitting it unasked is a spec violation, and clients that index
+    # chunk.choices[0] without a length check raise IndexError on it — which
+    # surfaces as "invalid response" / "switch model" rather than anything
+    # pointing at the real cause.
+    _stream_opts = body.get("stream_options") or {}
+    _wants_usage = bool(
+        isinstance(_stream_opts, dict) and _stream_opts.get("include_usage") is True
+    )
     has_websearch = any(t.get("function", {}).get("name") == "WebSearch" for t in tools)
     requested_model = body.get("model") or model_alias
     model_name = get_client_model_name(requested_model)
@@ -522,19 +536,20 @@ async def execute_stream(
         cr = cache_usage.get("cache_read_input_tokens", 0) or 0
         await log_usage(last_model_id, kp, last_input_tokens, out_tokens, auth_key_prefix, cc, cr)
 
-        usage_chunk = {
-            "id": chunk_id,
-            "object": "chat.completion.chunk",
-            "created": int(time.time()),
-            "model": model_name,
-            "choices": [],
-            "usage": {
-                "prompt_tokens": last_input_tokens,
-                "completion_tokens": out_tokens,
-                "total_tokens": last_input_tokens + out_tokens,
-            },
-        }
-        yield f"data: {json.dumps(usage_chunk, ensure_ascii=False)}\n\n".encode("utf-8")
+        if _wants_usage:
+            usage_chunk = {
+                "id": chunk_id,
+                "object": "chat.completion.chunk",
+                "created": int(time.time()),
+                "model": model_name,
+                "choices": [],
+                "usage": {
+                    "prompt_tokens": last_input_tokens,
+                    "completion_tokens": out_tokens,
+                    "total_tokens": last_input_tokens + out_tokens,
+                },
+            }
+            yield f"data: {json.dumps(usage_chunk, ensure_ascii=False)}\n\n".encode("utf-8")
         if thinking_enabled and not reasoning_received:
             logger.info(
                 "[OpenCode Stream] thinking enabled but no reasoning_content from SDK model=%s (API may not return thought parts in stream mode)",

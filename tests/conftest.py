@@ -111,8 +111,18 @@ def temp_db():
     Mirrors what several tests were already doing by hand, in one place so the
     next one does not forget. Restores _DB and clears the bootstrap flag so the
     real database is re-read afterwards.
+
+    The router singleton is also refreshed, and that is not optional. It holds
+    key status loaded at import time from whatever _DB pointed at then. A test
+    that boots the app registers keys and records successes through that
+    cached state, and those writes go back to the real database — which is how
+    a suite that redirects _DB still ends up writing to usage.db. Refreshing
+    after the redirect points the router at the temp file, and refreshing again
+    on teardown points it back.
     """
     import tempfile
+
+    from src.core.router import router as core_router
 
     fd, path = tempfile.mkstemp(suffix='.db')
     os.close(fd)
@@ -123,10 +133,15 @@ def temp_db():
     db_mod._bootstrapped = False
     try:
         schema_mod.init_config_tables()
+        core_router.refresh_keys()
         yield path
     finally:
         db_mod._DB = original_db
         db_mod._bootstrapped = original_boot
+        try:
+            core_router.refresh_keys()
+        except Exception:
+            pass          # teardown must not mask the test's own failure
         for suffix in ('', '-wal', '-shm'):
             try:
                 os.unlink(path + suffix)

@@ -56,6 +56,7 @@ pytest
 | `test_pool_member_toggle.py` | Bật/tắt model con trong pool: lọc member, cache pool, aggregate, route toggle |
 | `test_responses_and_search_dialects.py` | `/v1/responses` trả typed event; Anthropic SDK server tool web search không bị drop |
 | `test_stream_keepalive.py` | Keepalive không bắn vào chính generator đang chạy |
+| `test_openai_stream_usage_chunk.py` | Chunk `choices: []` chỉ gửi khi client yêu cầu `include_usage` |
 
 Chạy nhanh một file:
 

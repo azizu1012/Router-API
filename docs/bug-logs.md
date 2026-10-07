@@ -653,3 +653,70 @@ Ngoài ra sửa một bug sẵn có trong chính conftest: guard chỉ kiểm `b
 
 ### Test
 Xác nhận fix là thật: revert `tests/conftest.py` → 7 fail trở lại đúng như cũ. Suite xanh 647 test.
+
+---
+
+## Bug #18: Chunk `choices: []` Gửi Không Đúng Spec, Client Báo "invalid response" (2026-10-08)
+
+### Muc do
+Client chat dung OpenAI SDK, bao loi khi stream. Không phai loi model — cau truc phai ve sai.
+
+### Mô tả
+`/v1/chat/completions` với `stream: true` luôn gửi thêm mot chunk dung ở cuối:
+
+```json
+{"id":"chatcmpl-...","choices":[],"usage":{"prompt_tokens":N,...}}
+```
+
+Client nao index `chunk.choices[0]` ma khong kiem tra do dai se gap `IndexError` — va loi do len la "invalid response" / "switch model", khong chi nao mot frame client chang khong nen nhan.
+
+### Spec (OpenAI, `include_usage`)
+
+> If set, an additional chunk will be streamed before the `data: [DONE]` message.
+> The usage field on this chunk shows the token usage statistics for the entire
+> request, and **the choices field will always be an empty array**.
+
+Truc "an toan" danh sach rong **chi** hop le o chunk do, va **chi khi client yeu cau**. Do do:
+
+| Client gui | Spec | Router truoc fix | Router sau fix |
+|---|---|---|---|
+| khong co `stream_options` | khong gui usage chunk | **gui** (sai) | khong gui |
+| `include_usage: true` | gui chunk usage | gui | gui |
+| `include_usage: false` | khong gui | **gui** (sai) | khong gui |
+
+Code cu lay ra 6 frame cho moi ca ba truong hop — bang chung rang no bo qua client.
+
+### Root cause
+`execute_stream()` doc `body` nhung khong bao gio doc `stream_options`. Chunk usage duoc `yield` vo dieu kien:
+
+```python
+usage_chunk = {..., "choices": [], "usage": {...}}
+yield f"data: {json.dumps(usage_chunk)}\n\n".encode("utf-8")
+```
+
+### Fix
+Doc `stream_options.include_usage` va chi yield chunk khi client thuc su yeu cau. Khong sua gi o client-side — client lam dung, router phai tuan thu spec.
+
+### Vì sao phải verify bằng SDK thật
+Test chay `TestClient` + assert tho co the bo loi. Phai chay **OpenAI SDK that** (`openai` 2.41.0) va **Anthropic SDK that** (`anthropic` 1.12.0) qua HTTP that tren port thật, roi doc exception chain day du (SDK boc loi trong `APIConnectionError`). Chi khi do moi biet client that su that co that bai khong.
+
+Ket qua do test: 4 duong deu xanh — non-stream/stream × 2 protocol, kem tool call va output dai. Loi chi xuat hien o client *tuy chon* dung frame, nen phai dung client that moi bat duoc.
+
+### Test
+`tests/test_openai_stream_usage_chunk.py` — 8 test, chay app that qua route that. Co guard chong fix qua tay: `include_usage: true` van phai nhan duoc usage chunk, va moi frame van phai co `choices` khong rong.
+- Bản gốc: **5 fail**
+- Sau fix: **8 pass**
+
+### Them: `temp_db` fixture hong data that
+Con do lo test nay, `conftest` bat duoc suite ghi vao `usage.db` (`key_status` +1, `key_penalties` +1):
+
+```
+AssertionError: the test suite wrote to usage.db: {'key_status': (66, 67), ...}
+```
+
+`temp_db` redirect `db_mod._DB` nhung **khong refresh `router` singleton**. Router giu key status tai thoi diem import, tu DB luc do. Test boot app -> `register_keys_in_db()` + `record_success()` ghi qua state da cache do, va nhung write do ve `usage.db` that.
+
+Fix: `temp_db` goi `router.refresh_keys()` sau khi redirect (tro con cache ve temp file), va them mot lan nua o teardown tro nguoc lai. Day la lo hong cua fixture dung chung, khong phai cua test nay.
+
+### Test
+655 pass, chay 2 lan lien tiep deu xanh, khong con canh bao ghi DB.
