@@ -194,7 +194,9 @@ class ClaudeProxyStreamMixin:
         Keyed by index because the arguments come after the name: the second fragment
         for index 0 has to land in the buffer the first fragment created.
         """
-        tool_calls_val = getattr(delta, "tool_calls", None) or delta.get("tool_calls") if hasattr(delta, "get") else None
+        tool_calls_val = getattr(delta, "tool_calls", None)
+        if tool_calls_val is None and hasattr(delta, "get"):
+            tool_calls_val = delta.get("tool_calls")
         if not tool_calls_val:
             return
         for tc in tool_calls_val:
@@ -271,6 +273,7 @@ class ClaudeProxyStreamMixin:
         recursion_depth: int,
         start_block_index: int,
         sampling_params: Optional[Dict[str, Any]] = None,
+        emit_message_start: bool = True,
     ) -> AsyncIterator[bytes]:
         try:
             text_started = False
@@ -307,12 +310,49 @@ class ClaudeProxyStreamMixin:
                 sampling_params=sampling_params,
             )
 
+            # message_start is emitted before the pool is even pulled, so it is
+            # unconditionally the first event. Anthropic documents the order as
+            # message_start -> content blocks -> message_delta -> message_stop
+            # with ping "dispersed throughout", and its own SDK accumulator
+            # raises `Unexpected event order, got <event> before
+            # "message_start"` for anything else arriving first. The SDK hides
+            # that by filtering on the SSE event name, so a client reading
+            # `type` off the payload is the one that breaks.
+            #
+            # It cannot live inside the loop below: the keepalive fires whenever
+            # the model goes quiet, which includes before its first chunk.
+            #
+            # Recursion re-enters this method to run a tool result, and that
+            # continuation is part of the same message — a second
+            # message_start would restart the client's event state mid-stream.
+            if emit_message_start:
+                client_input_tokens = estimate_input_tokens(body)
+                client_usage = compute_usage(body, client_input_tokens, 0)
+                yield _sse("message_start", {
+                    "type": "message_start",
+                    "message": {
+                        "id": msg_id,
+                        "type": "message",
+                        "role": "assistant",
+                        "model": body.get("model") or model_alias,
+                        "content": [],
+                        "stop_reason": None,
+                        "stop_sequence": None,
+                        "usage": client_usage,
+                    },
+                })
+                yield _sse("ping", {"type": "ping"})
+
             # Wrap the pool iterator so a `ping` is emitted whenever the model is
             # slow, not just once at the start. Without this, long Gemini thinking
             # phases leave the connection silent and intermediaries drop it.
             async for item in _iter_with_keepalive(stream, KEEPALIVE_INTERVAL):
                 if item is _KEEPALIVE:
-                    yield _sse("ping", {"type": "ping", "retry": 0, "reason": "keepalive"})
+                    # Payload matches the docs exactly: {"type": "ping"}. The
+                    # retry/reason fields this used to carry are not in the spec,
+                    # and a client that switches on `type` would be reading them
+                    # as part of an event it does not recognise.
+                    yield _sse("ping", {"type": "ping"})
                     continue
 
                 if not isinstance(item, dict):
@@ -354,23 +394,6 @@ class ClaudeProxyStreamMixin:
                             })
                             accumulated_text.append(ctx_warn)
                             output_chars += len(ctx_warn)
-
-                        client_input_tokens = estimate_input_tokens(body)
-                        client_usage = compute_usage(body, client_input_tokens, 0)
-                        yield _sse("ping", {"type": "ping", "retry": 0, "reason": "initial"})
-                        yield _sse("message_start", {
-                            "type": "message_start",
-                            "message": {
-                                "id": msg_id,
-                                "type": "message",
-                                "role": "assistant",
-                                "model": body.get("model") or model_alias,
-                                "content": [],
-                                "stop_reason": None,
-                                "stop_sequence": None,
-                                "usage": client_usage,
-                            },
-                        })
 
                 chunk = item["chunk"]
                 if not chunk.choices:
@@ -662,6 +685,7 @@ class ClaudeProxyStreamMixin:
                     recursion_depth=recursion_depth + 1,
                     start_block_index=next_block_idx,
                     sampling_params=sampling_params,
+                    emit_message_start=False,
                 ):
                     yield chunk
 

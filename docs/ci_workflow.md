@@ -57,6 +57,8 @@ pytest
 | `test_responses_and_search_dialects.py` | `/v1/responses` trả typed event; Anthropic SDK server tool web search không bị drop |
 | `test_stream_keepalive.py` | Keepalive không bắn vào chính generator đang chạy |
 | `test_openai_stream_usage_chunk.py` | Chunk `choices: []` chỉ gửi khi client yêu cầu `include_usage` |
+| `test_anthropic_stream_order.py` | Thứ tự SSE Anthropic (`message_start` trước `ping`), ping đúng spec, và tool_use không bị rơi |
+| `test_responses_conformance.py` | Mọi event `/v1/responses` validate bằng model chính thức của OpenAI SDK, kể cả `strict=True` |
 
 Chạy nhanh một file:
 

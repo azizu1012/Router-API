@@ -67,6 +67,14 @@ def _budget_to_level(budget: int) -> Optional[str]:
     return "low"
 
 
+# Gemini's ThinkingLevel enum is exactly minimal/low/medium/high. Words that
+# turn thinking off are honoured as-is because build_thinking_config handles
+# them, and _effort_to_level would fold them into "minimal" — which re-enables
+# thinking on a 2.5 model instead of switching it off.
+_VALID_LEVELS = ("minimal", "low", "medium", "high")
+_OFF_WORDS = ("none", "off", "false")
+
+
 def _extract_thinking_params(body: Dict[str, Any]) -> Dict[str, Any]:
     """Extract thinking params from body supporting multiple formats.
 
@@ -84,7 +92,15 @@ def _extract_thinking_params(body: Dict[str, Any]) -> Dict[str, Any]:
     tb = body.get("thinking_budget")
     inc = body.get("include_thoughts")
     if tl is not None:
-        params["thinking_level"] = tl
+        # An unrecognised word cannot go through as-is: ThinkingLevel is a closed
+        # enum, so the GenAI SDK only warns and still sends the bad value to
+        # Google, which rejects it at runtime. Every other effort source below
+        # already lands on "low" for an unknown word; this one used to be the
+        # single path that skipped the check.
+        level = str(tl).lower().strip()
+        params["thinking_level"] = (
+            level if level in _VALID_LEVELS or level in _OFF_WORDS else "low"
+        )
     if tb is not None:
         params["thinking_budget"] = tb
     if inc is not None:

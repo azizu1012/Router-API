@@ -720,3 +720,216 @@ Fix: `temp_db` goi `router.refresh_keys()` sau khi redirect (tro con cache ve te
 
 ### Test
 655 pass, chay 2 lan lien tiep deu xanh, khong con canh bao ghi DB.
+---
+
+## Bug #19: Tool Call Bien Mat Hoan Toan Tren Anthropic Streaming (2026-10-09)
+
+### Muc do
+Nghiem trong nhat cua lo chay nay. Moi request streaming co tool_use deu tra ve
+HTTP 200, SSE hop le, `message_stop` dung — **va khong co block nao**. Client
+chay xong mot luot hop le roi khong lam duoc gi.
+
+### Root cause
+
+`_buffer_tool_calls` doc delta bang:
+
+```python
+tool_calls_val = getattr(delta, "tool_calls", None) or delta.get("tool_calls") if hasattr(delta, "get") else None
+```
+
+Python parse bieu thuc tren theo `(a or b) if hasattr(...) else None`. Vay khi
+delta **khong co** `.get()` — va delta luon la object, boi vi proxy doc bang
+`getattr` — toan bie bieu thuc ra `None`, ke ca khi `tool_calls` co that.
+
+```python
+class D: tool_calls=[{'id':'c1',...}]
+d = D()
+getattr(d,'tool_calls',None) or d.get('tool_calls') if hasattr(d,'get') else None
+# -> None        <-- tool_calls ton tai va bi bo qua
+```
+
+Dong 405 trong cung file (`thought_signature`) co dau ngoac, nen **dung**. Chi
+dong 197 thieu — va no la dong quyet dinh tool call co the ban hay khong.
+
+### Hau qua
+Khong phai chi thieu mot block:
+
+| | Truoc | Sau |
+|---|---|---|
+| `content_block_start` | khong co | `tool_use` |
+| `stop_reason` | `end_turn` | `tool_use` |
+
+`end_turn` chinh la ly do bug song sot: client thay mot cau tra loi hoan chinh
+voi `end_turn` thay vi `tool_use`, va Claude Code tu ket thuc luot, khong bao
+gi gọi tool. Khong log, khong trace, khong status sai.
+
+### Fix
+Tach `getattr` va `.get` thanh hai buoc, khong dua `hasattr` vao conditional
+expression:
+
+```python
+tool_calls_val = getattr(delta, "tool_calls", None)
+if tool_calls_val is None and hasattr(delta, "get"):
+    tool_calls_val = delta.get("tool_calls")
+```
+
+### Vì sao test harness cũ không bắt được
+Test phai truyen delta dang **object**. Test cu truyen dict, va dict co `.get`,
+nen bieu thuc cu giong vo cach chay production — chi co chunk dau tien co
+tool_calls la loi, phan con lai chay dung. Test moi truyen object nhu that.
+
+### Test
+`tests/test_anthropic_stream_order.py::TestToolCallsSurvive` — 4 test: co
+`tool_use` block, dung id/name/arguments, `stop_reason == "tool_use"`, va ca
+duong dict. Bản gốc: **fail**; revert fix: **fail ngay**.
+
+Xac nhan them bang **Anthropic SDK that** 1.12.0 qua HTTP that:
+`stop_reason=tool_use tool=get_weather({'city': 'Paris'})`, va
+`ToolUseBlock.model_validate()` pass.
+
+---
+
+## Bug #20: `/v1/responses` Event Sai Spec, Cac Frame Closing Mat Câu Tra Loi (2026-10-09)
+
+### Muc do
+Nghiem trong theo bat xac thuc. Cac frame van **validate duoc** — nen khong co
+gi bao loi — nhung mang noi dung rong.
+
+### Root cause
+Adapter dung mau cu (chi co 3 event, thieu 2) va bo qua tung field bat buoc.
+Check bang `openai.types.responses` (model that client that dung de build):
+
+| Sai lech | Hau qua |
+|---|---|
+| `Response` thieu `parallel_tool_calls`, `tool_choice`, `tools` | 3 event fail validation |
+| `output_text.delta` / `.done` thieu `logprobs` | 1 event fail validation |
+| `ResponseUsage` thieu `input_tokens_details`, `output_tokens_details` | `response.completed` fail |
+| `response.output_text.done` `text=""` | mat toan bo cau tra loi |
+| `output_item.done` `content: []` | mat cau tra loi |
+| `response.completed` `output: []` | **day la field client doc ket qua** |
+| thieu `content_part.added` / `content_part.done` | vong doi content part khong dong |
+| thieu dong `event: <type>` | client dispatch theo event name khong chay |
+
+Dong `text: ""` + `content: []` + `output: []` nguy hiem nhat: ca ba deu hop le
+validate, nen may tinh khong bao gi. Nhưng `response.completed.output` chinh
+la noi client Responses doc ket qua — **mot request thanh cong tra ve rong**.
+
+### Fix
+- `_responses_event` them dong `event: <type>` truoc `data:`.
+- `_responses_envelope()` — mot cho, ca hai path — khai bao `parallel_tool_calls`,
+  `tool_choice`, `tools`, `usage`.
+- `_responses_usage()` doi `prompt/completion_tokens` sang `input/output_tokens`
+  va luon kem ca hai object `*_tokens_details`.
+- Gom text trong adapter, roi day vao `output_text.done`, `content_part.done`,
+  `output_item.done` va `response.completed.output`.
+- `sequence_number` chay tu `0`, dung mau docs.
+
+### Vi sao lai do chung mot helper
+Stream va non-stream la hai route, nhung cung mot dialect. Hai ban sao la cach
+tuy chon de chung mot field bat buoc. `_responses_envelope` va
+`_responses_usage` bay gio la noi dung chung; test khoá ca hai.
+
+### Test
+`tests/test_responses_conformance.py` — 24 test. Validate **moi** event bang
+model chinh thuc, ke ca `strict=True` (ban doc chat hon, reject bat ky field
+SDK khong khai bao). Cac frame mau trong docs OpenAI chinh la chuan so sanh.
+
+`tests/test_responses_and_search_dialects.py` phai doc dong `data:` thay vi
+`text.startswith("data: ")` — frame hien hop le co hai dong.
+
+---
+
+## Bug #21: Anthropic Stream Mo Bang `ping`, Khong Phai `message_start` (2026-10-09)
+
+### Muc do
+Nghiem trong theo hieu bieu. Client doc `type` truc tiep tu payload se **that
+bai khi vua nhan** chu khong phai hien thi sai.
+
+### Root cause
+Proxy phat ping truoc, kem hai field tu phat `reason` va `retry` — ca hai deu
+khong co trong spec. Docs Anthropic (`messages-streaming`) mo ta:
+
+> 1. `message_start` (a Message with empty content)
+> ...
+> There may be `ping` events dispersed throughout the response as well
+
+va payload cua ping la `{"type": "ping"}`, khong gi them.
+
+Anthropic SDK accumulator tu cho thay:
+
+```python
+if current_snapshot is None:
+    if event.type == "message_start":
+        return ...
+    raise RuntimeError(f'Unexpected event order, got {event.type} before "message_start"')
+```
+
+SDK that **khong** gap loi vi `Stream.__stream__` loc event theo **ten SSE**
+va bo `ping` truoc khi den accumulator. Client nao doc payload `type` thi khong
+co loc do — va no that bai bang loi *"event order"*, tro sai hoan toan.
+
+### Fix
+`message_start` phat truoc khi keo tu pool, truoc moi ping va context event.
+Payload ping rut gon ve `{"type": "ping"}`. `emit_message_start` co lai, nen
+vong tool recursion (`emit_message_start=False`) khong phat lan hai.
+
+### Test
+`tests/test_anthropic_stream_order.py` — 19 test, gồm:
+- `message_start` la event dau.
+- Mot bo terminal (`message_delta`, `message_stop`) duy nhat, ke ca khi recursion.
+- Payload ping **dung bang** `{type}` — cau hinh cu `reason`/`retry` se do lao.
+- `accumulate_event` cua SDK chay duoc ca stream (test dat payload ping sai thu
+  tinh co lenh RuntimeError trong `test_ping_before_message_start_is_what_the_sdk_rejects`).
+
+Hai test cu (`test_stream_impl_seams.py`, `test_anthropic_integration.py`) **dinh
+thu tu sai** — chung chinh la thu tu bug — nen da sua theo docs. Intent goc cua
+chung ("ping den truoc token dau") van duoc giu.
+
+---
+
+## Bug #22: `thinking_level` Explicit Bo qua Enum Cua Gemini (2026-10-09)
+
+### Muc do
+Im lang theo bieu bieu, va chi lo ra khi key nguoi dung go tay `thinking_level`.
+
+### Root cause
+`ThinkingLevel` cua GenAI la enum dong: `minimal/low/medium/high`. Nhung SDK
+**khong validate** — no chi `UserWarning` roi van tao ra member
+`ThinkingLevel.banana`:
+
+```
+UserWarning: banana is not a valid ThinkingLevel
+```
+
+`build_thinking_config` cung chi `.lower().strip()`, nen khong chan gi ca.
+
+Va `_effort_to_level` — ham chuan hoa **moi** effort source khac — khong chay
+ tren nhanh `thinking_level` explicit:
+
+```python
+if tl is not None:
+    params["thinking_level"] = tl     # <-- thang duy nhat bo qua chuan hoa
+```
+
+Con `reasoning_effort` va `output_config.effort` deu `or "low"` khi gap tu la.
+
+Ket qua: client gui `thinking_level: "banana"` se day `thinkingLevel: "banana"`
+xuong Google, va Google **tu choi** tai request do.
+
+### Fix
+Cho `thinking_level` explicit di qua kiem tra enum, giu nguyen nghia cac tu tat
+thinking:
+
+```python
+_VALID_LEVELS = ("minimal", "low", "medium", "high")
+_OFF_WORDS = ("none", "off", "false")
+```
+
+`_effort_to_level` se gop `off/none/false` thanh `minimal`, va tren 2.5
+`minimal` lai **bat** thinking — ham nay loai do, giu nguyen duong tat.
+
+### Test
+`tests/test_effort_mapping.py::TestExplicitThinkingLevelIsChecked` — 9 test:
+tu la ve `low`, ca 4 level that giu nguyen, uppercase chuan hoa, ca 3 tu tat
+van tat (ca tren 2.5), chuoi rong, va test cuoi cung kiem `types.ThinkingConfig(...)`
+co that su ra mot enum member hop le hay khong.

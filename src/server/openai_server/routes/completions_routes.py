@@ -32,8 +32,67 @@ def _extract_finish_reason(result: dict) -> str:
 
 
 def _responses_event(kind: str, seq: int, **fields) -> bytes:
+    """One Responses SSE frame.
+
+    Official frames carry an `event:` line naming the type *and* a `data:` line
+    whose JSON repeats it. The Python SDK reads the type out of the JSON, but
+    other clients dispatch on the event name, so both are emitted.
+    """
     payload = {"type": kind, "sequence_number": seq, **fields}
-    return f"data: {json.dumps(payload, ensure_ascii=False)}\n\n".encode("utf-8")
+    body = json.dumps(payload, ensure_ascii=False)
+    return f"event: {kind}\ndata: {body}\n\n".encode("utf-8")
+
+
+def _responses_usage(usage: dict | None) -> dict:
+    """Chat usage -> Responses usage. The two dialects name the same numbers
+    differently: prompt/completion_tokens vs input/output_tokens.
+
+    Both `*_tokens_details` objects are required members of ResponseUsage, so
+    they are always emitted; the numbers inside them default to 0.
+    """
+    usage = usage or {}
+    inp = int(usage.get("prompt_tokens", usage.get("input_tokens", 0)) or 0)
+    out = int(usage.get("completion_tokens", usage.get("output_tokens", 0)) or 0)
+    total = int(usage.get("total_tokens", 0) or 0) or (inp + out)
+    cached = int((usage.get("prompt_tokens_details") or {}).get("cached_tokens", 0) or 0)
+    reasoning = int((usage.get("completion_tokens_details") or {}).get("reasoning_tokens", 0) or 0)
+    return {
+        "input_tokens": inp,
+        "input_tokens_details": {"cached_tokens": cached},
+        "output_tokens": out,
+        "output_tokens_details": {"reasoning_tokens": reasoning},
+        "total_tokens": total,
+    }
+
+
+def _responses_envelope(rid: str, model: str, status: str, output: list,
+                        created_at: int, usage: dict | None = None) -> dict:
+    """The `response` object embedded in created/in_progress/completed.
+
+    `parallel_tool_calls`, `tool_choice` and `tools` are required members of the
+    Response object; omitting them makes the official SDK reject the frame.
+    """
+    return {
+        "id": rid,
+        "object": "response",
+        "created_at": created_at,
+        "model": model,
+        "status": status,
+        "output": output,
+        "parallel_tool_calls": True,
+        "tool_choice": "auto",
+        "tools": [],
+        "usage": usage,
+    }
+
+
+def _output_text_part(text: str) -> dict:
+    return {"type": "output_text", "text": text, "annotations": [], "logprobs": []}
+
+
+def _output_message(item_id: str, status: str, text: str) -> dict:
+    return {"id": item_id, "type": "message", "status": status,
+            "role": "assistant", "content": [_output_text_part(text)]}
 
 
 async def _responses_sse_stream(chunks, model: str = ""):
@@ -45,29 +104,39 @@ async def _responses_sse_stream(chunks, model: str = ""):
     else, so forwarding chat chunks verbatim produced a stream that opened and
     closed with no text in it. The model never failed; the client just had no
     event to print.
+
+    The closing frames used to carry empty text and empty arrays, which the
+    official SDK accepts for `output_item.done` but which discard the answer:
+    `response.completed.output` is what a Responses client reads as the result,
+    so an empty array there means a successful call that returns nothing.
     """
     rid = f"resp_{uuid.uuid4().hex}"
     item_id = f"msg_{uuid.uuid4().hex}"
     created = int(time.time())
     seq = 0
+    parts: list[str] = []
+    usage = None
 
+    def envelope(status, output, u=None):
+        return _responses_envelope(rid, model, status, output, created, u)
+
+    yield _responses_event("response.created", seq,
+                          response=envelope("in_progress", []))
     seq += 1
-    yield _responses_event(
-        "response.created", seq,
-        response={"id": rid, "object": "response", "created_at": created,
-                  "model": model, "status": "in_progress", "output": []},
-    )
-    seq += 1
-    yield _responses_event(
-        "response.in_progress", seq,
-        response={"id": rid, "object": "response", "created_at": created,
-                  "model": model, "status": "in_progress", "output": []},
-    )
+    yield _responses_event("response.in_progress", seq,
+                          response=envelope("in_progress", []))
     seq += 1
     yield _responses_event(
         "response.output_item.added", seq,
-        output_index=0, item={"id": item_id, "type": "message", "role": "assistant",
-                              "status": "in_progress", "content": []},
+        output_index=0, item={"id": item_id, "type": "message",
+                              "status": "in_progress", "content": [],
+                              "role": "assistant"},
+    )
+    seq += 1
+    yield _responses_event(
+        "response.content_part.added", seq,
+        item_id=item_id, output_index=0, content_index=0,
+        part=_output_text_part(""),
     )
 
     async for raw in chunks:
@@ -90,34 +159,44 @@ async def _responses_sse_stream(chunks, model: str = ""):
             continue
         if not isinstance(payload, dict):
             continue
+        if payload.get("usage"):
+            usage = _responses_usage(payload["usage"])
 
         for choice in payload.get("choices") or []:
             delta = (choice.get("delta") or {}).get("content")
             if not isinstance(delta, str) or not delta:
                 continue
+            parts.append(delta)
             seq += 1
             yield _responses_event(
                 "response.output_text.delta", seq,
-                item_id=item_id, output_index=0, content_index=0, delta=delta,
+                item_id=item_id, output_index=0, content_index=0,
+                delta=delta, logprobs=[],
             )
 
+    text = "".join(parts)
     seq += 1
     yield _responses_event(
         "response.output_text.done", seq,
-        item_id=item_id, output_index=0, content_index=0, text="",
+        item_id=item_id, output_index=0, content_index=0,
+        text=text, logprobs=[],
+    )
+    seq += 1
+    yield _responses_event(
+        "response.content_part.done", seq,
+        item_id=item_id, output_index=0, content_index=0,
+        part=_output_text_part(text),
     )
     seq += 1
     yield _responses_event(
         "response.output_item.done", seq,
-        output_index=0,
-        item={"id": item_id, "type": "message", "role": "assistant",
-              "status": "completed", "content": []},
+        output_index=0, item=_output_message(item_id, "completed", text),
     )
     seq += 1
     yield _responses_event(
         "response.completed", seq,
-        response={"id": rid, "object": "response", "created_at": created,
-                  "model": model, "status": "completed", "output": []},
+        response=envelope("completed",
+                          [_output_message(item_id, "completed", text)], usage),
     )
     yield b"data: [DONE]\n\n"
 
@@ -402,15 +481,14 @@ async def responses(
 
     text = _extract_response_text(result)
     rid = f"resp_{uuid.uuid4().hex}"
+    item_id = f"msg_{uuid.uuid4().hex}"
     return {
-        "id": rid,
-        "object": "response",
-        "created_at": int(time.time()),
-        "model": result.get("model") or body.get("model", ""),
-        "status": "completed",
+        **_responses_envelope(
+            rid, result.get("model") or body.get("model", ""), "completed",
+            [_output_message(item_id, "completed", text)],
+            int(time.time()), _responses_usage(usage),
+        ),
         "output_text": text,
-        "output": [{"id": f"msg_{uuid.uuid4().hex}", "type": "message", "role": "assistant", "content": [{"type": "output_text", "text": text}]}],
-        "usage": usage,
     }
 
 

@@ -185,3 +185,45 @@ class TestExistingBehaviour:
             cfg = _resolve_thinking_config({"output_config": {"effort": effort}}, V25)
             assert "thinking_level" not in cfg, f"{effort}: 2.5 got a level"
             assert isinstance(cfg.get("thinking_budget"), int)
+
+
+# ── the router's own thinking_level field must obey the enum ────────────────
+
+class TestExplicitThinkingLevelIsChecked:
+    """`thinking_level` is the router's own field, so it is the one effort
+    source a client can spell any way it likes.
+
+    Gemini's ThinkingLevel is a closed enum. The GenAI SDK does not validate it
+    — it emits a UserWarning and still constructs a ThinkingLevel.banana member
+    — so an unchecked value is not caught locally, it becomes a `thinkingLevel`
+    that Google rejects at request time. Every other source here already lands on
+    "low" for a word it does not recognise.
+    """
+
+    def test_an_unknown_word_does_not_reach_gemini(self):
+        assert level_of({"thinking_level": "banana"}) == "low"
+
+    @pytest.mark.parametrize("word", ["minimal", "low", "medium", "high"])
+    def test_every_real_level_survives_untouched(self, word):
+        assert level_of({"thinking_level": word}) == word
+
+    def test_uppercase_is_normalised(self):
+        assert level_of({"thinking_level": "HIGH"}) == "high"
+
+    @pytest.mark.parametrize("word", ["off", "none", "false"])
+    def test_a_word_that_turns_thinking_off_still_does(self, word):
+        """_effort_to_level folds these into "minimal", which re-enables
+        thinking on a 2.5 model rather than switching it off."""
+        cfg = _resolve_thinking_config({"thinking_level": word}, V25)
+        assert cfg == {"include_thoughts": False}, word
+
+    def test_an_empty_string_does_not_reach_gemini(self):
+        assert level_of({"thinking_level": ""}) == "low"
+
+    def test_the_result_is_a_real_thinking_level_member(self):
+        """The end the check exists for: what GenAI actually constructs."""
+        types = pytest.importorskip("google.genai.types")
+        cfg = _resolve_thinking_config({"thinking_level": "banana"}, V3)
+
+        level = types.ThinkingConfig(**cfg).thinking_level
+        assert level in tuple(types.ThinkingLevel), level

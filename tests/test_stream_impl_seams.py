@@ -144,14 +144,21 @@ class Harness:
 # ── Seam 1a: message_start and the initial ping ─────────────────────────────
 
 class TestStreamOpensCorrectly:
-    def test_opens_with_initial_ping_then_message_start(self):
+    def test_opens_with_message_start_then_the_keepalive_ping(self):
+        """The docs open the stream with `message_start`; pings may then be
+        "dispersed throughout". This proxy used to send the ping first, which
+        the Anthropic SDK accumulator rejects when it is not filtered out by
+        SSE event name."""
         events, _ = Harness([Chunk(Delta(content="hi"))]).run()
-        assert names(events)[:2] == ["ping", "message_start"], names(events)
+        assert names(events)[:2] == ["message_start", "ping"], names(events)
 
-    def test_initial_ping_carries_its_reason(self):
+    def test_the_ping_payload_is_exactly_the_documented_one(self):
+        """`{"type": "ping"}` and nothing else. The extra `reason` field was
+        ours, and a client validating the event against the SDK's union rejects
+        any member it does not declare."""
         events, _ = Harness([Chunk(Delta(content="hi"))]).run()
         ping = dict(events)["ping"]
-        assert ping["type"] == "ping" and ping["reason"] == "initial", ping
+        assert ping == {"type": "ping"}, ping
 
     def test_message_start_reports_the_requested_model(self):
         body = {"model": "gemini-flash", "messages": [{"role": "user", "content": "hi"}]}

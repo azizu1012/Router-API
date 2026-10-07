@@ -399,11 +399,21 @@ class TestStreamEvents:
         assert capture["logged"], "log_usage must be called on the stream path"
 
     def test_ping_is_emitted_before_first_token(self, proxy, capture):
+        """The point of a keepalive is to arrive before there is anything to
+        print.
+
+        This used to assert `ping` came before `message_start`, which is what
+        the proxy emitted — but the docs open the stream with `message_start`
+        and only then allow pings to be "dispersed throughout". A client that
+        reads `type` off the data payload fails on that order; see
+        tests/test_anthropic_stream_order.py.
+        """
         chunks = [FakeChunk(FakeDelta(content="hi"))]
         events = self._events(proxy, capture, chunks)
         names = [n for n, _ in events]
-        assert "ping" in names
-        assert names.index("ping") < names.index("message_start")
+        assert "ping" in names, f"no keepalive ping: {names}"
+        assert names.index("message_start") == 0, names
+        assert names.index("ping") < names.index("content_block_delta"), names
 
     def test_block_indices_are_unique_and_ordered(self, proxy, capture):
         chunks = [

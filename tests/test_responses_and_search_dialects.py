@@ -39,8 +39,11 @@ def _events(chunks, model="gemini-flash"):
         text = blob.decode("utf-8")
         if text.strip() == "data: [DONE]":
             continue
-        assert text.startswith("data: "), f"not an SSE data frame: {text[:80]!r}"
-        parsed.append(json.loads(text[6:]))
+        # The documented Responses frame is two lines: `event: <type>` naming the
+        # event, then `data: {...}` carrying it. Read the data line, not position.
+        data = [ln[6:] for ln in text.splitlines() if ln.startswith("data: ")]
+        assert len(data) == 1, f"not one SSE data frame: {text[:80]!r}"
+        parsed.append(json.loads(data[0]))
     return parsed
 
 
@@ -80,7 +83,7 @@ class TestResponsesStreamEmitsTypedEvents:
 
         seqs = [e["sequence_number"] for e in events]
         assert seqs == sorted(seqs)
-        assert seqs[0] == 1
+        assert seqs[0] == 0, "the documented sample numbers from 0"
 
     def test_the_lifecycle_opens_and_closes(self):
         events = _events(["x"])
@@ -123,7 +126,7 @@ class TestResponsesStreamEmitsTypedEvents:
         async def _run():
             return [c async for c in _responses_sse_stream(_chunks(), model="m")]
 
-        events = [json.loads(b.decode()[6:]) for b in asyncio.run(_run())
+        events = [json.loads(b.decode().split("data: ", 1)[1]) for b in asyncio.run(_run())
                   if b.strip() != b"data: [DONE]"]
         deltas = [e["delta"] for e in events
                   if e["type"] == "response.output_text.delta"]
@@ -142,7 +145,7 @@ class TestResponsesStreamEmitsTypedEvents:
         async def _run():
             return [c async for c in _responses_sse_stream(_chunks(), model="m")]
 
-        events = [json.loads(b.decode()[6:]) for b in asyncio.run(_run())
+        events = [json.loads(b.decode().split("data: ", 1)[1]) for b in asyncio.run(_run())
                   if b.strip() != b"data: [DONE]"]
         deltas = [e["delta"] for e in events
                   if e["type"] == "response.output_text.delta"]
