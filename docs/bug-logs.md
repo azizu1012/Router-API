@@ -933,3 +933,69 @@ _OFF_WORDS = ("none", "off", "false")
 tu la ve `low`, ca 4 level that giu nguyen, uppercase chuan hoa, ca 3 tu tat
 van tat (ca tren 2.5), chuoi rong, va test cuoi cung kiem `types.ThinkingConfig(...)`
 co that su ra mot enum member hop le hay khong.
+---
+
+## Bug #23: `/v1/responses` Bo Qua Tool Call, Client Duoc Tra Ve "Da Tra Loi" Rong (2026-10-09)
+
+### Muc do
+Nghiêm trọng theo nghia nghĩa client: mot client goi `/v1/responses` co truyen
+`tools`, model goi ham, va client nhan ve mot response **thanh cong** trong do
+khong co gi ca.
+
+### Root cause
+Adapter chi doc `delta.content`:
+
+```python
+delta = (choice.get("delta") or {}).get("content")
+if not isinstance(delta, str) or not delta:
+    continue
+```
+
+Mot luot goi tool khong co text nao, nen khong frame nao duoc sinh ra ngoai
+bo khung. `response.completed` den voi `output: []` — va do chinh la field
+client doc ket qua.
+
+Day la **cung lop bug** voi Bug #19 (tool call bi bo tren Anthropic), chi o
+mot tang duoi. Bug #19 da duoc sua o `src/api/`, con duong nay la mot adapter
+rieng trong `src/server/` nen khong di theo.
+
+Non-stream cung vay: `_extract_response_text` tra `""`, envelope duoc dung
+tuong doc, `output_text: ''`, `output` rong.
+
+### Fix
+- Stream: theo doi `delta.tool_calls` theo `index`, cap `output_index` **khi
+  item mo** chu khong phai khi item dong (`len(output)` luon bang 0 trong vong
+  lap). Emit day du bo:
+  `response.output_item.added` (item `function_call`) →
+  `response.function_call_arguments.delta` →
+  `response.function_call_arguments.done` → `response.output_item.done`.
+- Item message **khong** mo up front nua: chi mo khi co text delta dau tien,
+  vi luot chi goi tool se sinh ra mot message rong.
+- Non-stream: them `_extract_response_tool_calls()`, doc ca hai khu duyet
+  (`function.name` long nhau va dang flatten) va serialize dict arguments
+  thanh JSON thay vi bo.
+
+### Vì sao test cua chinh tui bat them mot bug
+`test_two_tool_calls_get_separate_output_indices` fail ngay lan chay dau voi
+`assert [0, 0] == [0, 0]` — `len(output)` la 0 suot thoi gian loop, nen ca hai
+tool call cung nhan `output_index` 0. Neu chi kiem "co function_call hay khong"
+thi hai client deu co the nhan ve mot stream **hop le** voi hai item chong
+nhau.
+
+### Test
+`tests/test_responses_conformance.py::TestToolCalls` va
+`::TestNonStreamToolCalls` — 11 test. Trong do co guard chong fix qua tay:
+mot luot chi goi tool **khong** duoc sinh `output_text.delta`,
+va text + tool call phai ra `["message", "function_call"]`.
+
+Xac nhan bang **OpenAI SDK that** 2.41.0 qua HTTP that:
+`get_weather({"city": "Paris"})` o ca non-stream va stream, va moi frame
+validate duoi `strict=True`.
+
+### Khong phai bug: streaming khong co thinking block
+Quan sat HTTP cho thay `/v1/messages` co `thinking` block o non-stream nhung
+khong co o stream, nghi la mat extended thinking. Kiem chung lai bang stub
+deterministic: khi chunk mang `reasoning_content`, stream path **co** san
+`content_block_start` (thinking), `thinking_delta`, `signature_delta` va
+`content_block_stop`. Khac biet chi la model khong tra thought part cho prompt
+do. Khong sua gi.

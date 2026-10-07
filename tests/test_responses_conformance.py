@@ -53,12 +53,16 @@ def _models():
     return _MODELS
 
 
-async def _chat(*pieces, usage=None, finish="stop"):
+async def _chat(*pieces, usage=None, finish="stop", tool_calls=None):
     """Yield the bytes the chat proxy actually yields: SSE with a JSON payload."""
     for piece in pieces:
         yield ("data: " + json.dumps({
             "choices": [{"delta": {"content": piece}, "finish_reason": None}]}
         )).encode("utf-8")
+    if tool_calls:
+        yield ("data: " + json.dumps({
+            "choices": [{"delta": {"tool_calls": tool_calls},
+                         "finish_reason": None}]})).encode("utf-8")
     tail = {"choices": [{"delta": {}, "finish_reason": finish}]}
     if usage:
         tail["usage"] = usage
@@ -66,13 +70,14 @@ async def _chat(*pieces, usage=None, finish="stop"):
     yield b"data: [DONE]\n\n"
 
 
-def _stream(*pieces, usage=None, finish="stop"):
+def _stream(*pieces, usage=None, finish="stop", tool_calls=None):
     from src.server.openai_server.routes.completions_routes import _responses_sse_stream
 
     async def go():
         raw = []
-        async for c in _responses_sse_stream(_chat(*pieces, usage=usage, finish=finish),
-                                            model="gemini-flash"):
+        async for c in _responses_sse_stream(
+                _chat(*pieces, usage=usage, finish=finish, tool_calls=tool_calls),
+                model="gemini-flash"):
             raw.append(c.decode("utf-8") if isinstance(c, (bytes, bytearray))
                        else str(c))
         return raw
@@ -273,3 +278,161 @@ class TestNonStreamEnvelope:
         assert got["input_tokens"] == 7
         assert got["output_tokens"] == 5
         assert got["total_tokens"] == 12
+# ── tool calls ──────────────────────────────────────────────────────────────
+
+class TestToolCalls:
+    """A Responses client that passes tools must get them back.
+
+    The adapter only ever read `delta.content`, so a turn that called a function
+    produced a stream with no text in it: `output_text.done` with `text: ""` and
+    `response.completed` with `output: []`. Every function call was dropped and
+    the client was told it had been answered — the same failure as the Anthropic
+    tool-call drop, one layer down.
+    """
+
+    def test_a_tool_turn_returns_a_function_call(self):
+        events = _events(_stream(
+            finish="tool_calls",
+            tool_calls=[{"index": 0, "id": "call_1", "type": "function",
+                         "function": {"name": "get_weather",
+                                      "arguments": '{"city":"Paris"}'}}]))
+
+        calls = [o for o in _of_type(events, "response.output_item.done")[0:1]]
+        items = [e["item"] for e in _of_type(events, "response.output_item.done")
+                 if e["item"]["type"] == "function_call"]
+        assert items, [e["item"]["type"] for e in
+                       _of_type(events, "response.output_item.done")]
+        assert items[0]["name"] == "get_weather"
+        assert items[0]["call_id"] == "call_1"
+        assert items[0]["status"] == "completed"
+        del calls
+
+    def test_the_arguments_arrive_as_json(self):
+        events = _events(_stream(
+            finish="tool_calls",
+            tool_calls=[{"index": 0, "id": "call_1", "type": "function",
+                         "function": {"name": "get_weather",
+                                      "arguments": '{"city":"Paris"}'}}]))
+
+        done = _of_type(events, "response.function_call_arguments.done")
+        assert done, [e["type"] for e in events]
+        assert json.loads(done[0]["arguments"]) == {"city": "Paris"}
+
+    def test_the_item_is_opened_before_its_arguments(self):
+        events = _events(_stream(
+            finish="tool_calls",
+            tool_calls=[{"index": 0, "id": "call_1", "type": "function",
+                         "function": {"name": "f", "arguments": "{}"}}]))
+
+        kinds = [e["type"] for e in events]
+        assert kinds.index("response.output_item.added") < \
+            kinds.index("response.function_call_arguments.delta")
+        assert kinds.index("response.function_call_arguments.done") < \
+            kinds.index("response.output_item.done")
+
+    def test_completed_output_carries_the_function_call(self):
+        events = _events(_stream(
+            finish="tool_calls",
+            tool_calls=[{"index": 0, "id": "call_1", "type": "function",
+                         "function": {"name": "f", "arguments": "{}"}}]))
+
+        output = _of_type(events, "response.completed")[0]["response"]["output"]
+        assert [o["type"] for o in output] == ["function_call"], output
+
+    def test_a_tool_only_turn_emits_no_empty_message_item(self):
+        """Opening the message item up front would give the client an empty
+        assistant message alongside the call."""
+        events = _events(_stream(
+            finish="tool_calls",
+            tool_calls=[{"index": 0, "id": "call_1", "type": "function",
+                         "function": {"name": "f", "arguments": "{}"}}]))
+
+        assert not _of_type(events, "response.output_text.delta")
+        assert not _of_type(events, "response.output_text.done")
+        assert "message" not in [o["type"] for o in
+                                 _of_type(events, "response.completed")[0]
+                                 ["response"]["output"]]
+
+    def test_text_and_a_tool_call_both_survive(self):
+        events = _events(_stream(
+            "Let me check.", finish="tool_calls",
+            tool_calls=[{"index": 0, "id": "call_1", "type": "function",
+                         "function": {"name": "f", "arguments": "{}"}}]))
+
+        assert _of_type(events, "response.output_text.done")[0]["text"] == "Let me check."
+        output = _of_type(events, "response.completed")[0]["response"]["output"]
+        assert [o["type"] for o in output] == ["message", "function_call"], output
+
+    def test_two_tool_calls_get_separate_output_indices(self):
+        events = _events(_stream(
+            finish="tool_calls",
+            tool_calls=[{"index": 0, "id": "c1", "type": "function",
+                         "function": {"name": "a", "arguments": "{}"}},
+                        {"index": 1, "id": "c2", "type": "function",
+                         "function": {"name": "b", "arguments": "{}"}}]))
+
+        added = _of_type(events, "response.output_item.added")
+        idx = [e["output_index"] for e in added
+               if e["item"]["type"] == "function_call"]
+        assert idx == sorted(idx) and len(set(idx)) == 2, idx
+        output = _of_type(events, "response.completed")[0]["response"]["output"]
+        assert [o["name"] for o in output] == ["a", "b"], output
+
+    def test_every_tool_frame_validates_under_strict(self):
+        events = _events(_stream(
+            finish="tool_calls",
+            tool_calls=[{"index": 0, "id": "call_1", "type": "function",
+                         "function": {"name": "f", "arguments": '{"a":1}'}}]))
+        models = _models()
+        models.update(_TOOL_MODELS())
+
+        for e in events:
+            model = models.get(e["type"])
+            assert model is not None, f"unknown event {e['type']}"
+            model.model_validate(e, strict=True)
+
+
+def _TOOL_MODELS():
+    R = pytest.importorskip("openai.types.responses")
+    return {
+        "response.function_call_arguments.delta":
+            R.ResponseFunctionCallArgumentsDeltaEvent,
+        "response.function_call_arguments.done":
+            R.ResponseFunctionCallArgumentsDoneEvent,
+    }
+
+
+class TestNonStreamToolCalls:
+    def test_a_tool_turn_returns_a_function_call(self):
+        from src.server.openai_server.routes.completions_routes import (
+            _extract_response_tool_calls,
+        )
+
+        got = _extract_response_tool_calls({"choices": [{"message": {
+            "content": None,
+            "tool_calls": [{"id": "call_1", "type": "function",
+                            "function": {"name": "get_weather",
+                                         "arguments": '{"city":"Paris"}'}}],
+        }}]})
+
+        assert got == [{"id": "call_1", "name": "get_weather",
+                        "arguments": '{"city":"Paris"}'}], got
+
+    def test_a_plain_reply_has_no_tool_calls(self):
+        from src.server.openai_server.routes.completions_routes import (
+            _extract_response_tool_calls,
+        )
+
+        assert _extract_response_tool_calls(
+            {"choices": [{"message": {"content": "hi"}}]}) == []
+
+    def test_dict_arguments_are_serialised_rather_than_dropped(self):
+        from src.server.openai_server.routes.completions_routes import (
+            _extract_response_tool_calls,
+        )
+
+        got = _extract_response_tool_calls({"choices": [{"message": {
+            "tool_calls": [{"id": "c", "function": {
+                "name": "f", "arguments": {"city": "Paris"}}}]}}]})
+
+        assert json.loads(got[0]["arguments"]) == {"city": "Paris"}

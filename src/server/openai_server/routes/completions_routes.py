@@ -31,6 +31,36 @@ def _extract_finish_reason(result: dict) -> str:
     return choices[0].get("finish_reason") or "stop"
 
 
+def _extract_response_tool_calls(result: dict) -> list[dict]:
+    """The function calls a chat-format response asked for, flattened.
+
+    Reads both nested shapes: `message.tool_calls[].function` is what the proxy
+    emits, but a handler may hand back the flattened `function.name` /
+    `function.arguments` form, and silently returning nothing for either is how
+    a tool turn used to come back empty.
+    """
+    choices = result.get("choices") or []
+    if not choices:
+        return []
+    msg = choices[0].get("message") or {}
+
+    out: list[dict] = []
+    for tc in msg.get("tool_calls") or []:
+        if not isinstance(tc, dict):
+            continue
+        fn = tc.get("function") or {}
+        name = fn.get("name") or tc.get("name") or ""
+        if not name:
+            continue
+        args = fn.get("arguments")
+        if args is None:
+            args = tc.get("arguments")
+        if not isinstance(args, str):
+            args = json.dumps(args) if args else ""
+        out.append({"id": tc.get("id"), "name": name, "arguments": args})
+    return out
+
+
 def _responses_event(kind: str, seq: int, **fields) -> bytes:
     """One Responses SSE frame.
 
@@ -109,35 +139,36 @@ async def _responses_sse_stream(chunks, model: str = ""):
     official SDK accepts for `output_item.done` but which discard the answer:
     `response.completed.output` is what a Responses client reads as the result,
     so an empty array there means a successful call that returns nothing.
+
+    Tool calls are the same failure one level down. The adapter only ever read
+    `delta.content`, so a turn that called a function produced a stream with no
+    text at all: `output_text.done` with `text: ""` and `response.completed`
+    with `output: []`. Every function call the model made was dropped, and the
+    client got a successful response describing nothing it had asked for.
     """
     rid = f"resp_{uuid.uuid4().hex}"
-    item_id = f"msg_{uuid.uuid4().hex}"
+    msg_id = f"msg_{uuid.uuid4().hex}"
     created = int(time.time())
     seq = 0
     parts: list[str] = []
     usage = None
+    msg_open = False
+    msg_index = 0
+    # Output indices are handed out as items open, not as they close, so this
+    # cannot be derived from `len(output)` — that stays 0 until the end.
+    next_index = 0
+    tools: dict[int, dict] = {}
+    output: list = []
 
-    def envelope(status, output, u=None):
+    def envelope(status, u=None):
         return _responses_envelope(rid, model, status, output, created, u)
 
     yield _responses_event("response.created", seq,
-                          response=envelope("in_progress", []))
+                           response=envelope("in_progress"))
     seq += 1
     yield _responses_event("response.in_progress", seq,
-                          response=envelope("in_progress", []))
+                           response=envelope("in_progress"))
     seq += 1
-    yield _responses_event(
-        "response.output_item.added", seq,
-        output_index=0, item={"id": item_id, "type": "message",
-                              "status": "in_progress", "content": [],
-                              "role": "assistant"},
-    )
-    seq += 1
-    yield _responses_event(
-        "response.content_part.added", seq,
-        item_id=item_id, output_index=0, content_index=0,
-        part=_output_text_part(""),
-    )
 
     async for raw in chunks:
         # The chat proxy yields bytes; a literal "[DONE]" ends the stream.
@@ -163,40 +194,119 @@ async def _responses_sse_stream(chunks, model: str = ""):
             usage = _responses_usage(payload["usage"])
 
         for choice in payload.get("choices") or []:
-            delta = (choice.get("delta") or {}).get("content")
-            if not isinstance(delta, str) or not delta:
-                continue
-            parts.append(delta)
-            seq += 1
-            yield _responses_event(
-                "response.output_text.delta", seq,
-                item_id=item_id, output_index=0, content_index=0,
-                delta=delta, logprobs=[],
-            )
+            delta = choice.get("delta") or {}
+
+            content = delta.get("content")
+            if isinstance(content, str) and content:
+                # The message item is opened on the first text fragment rather
+                # than up front: a turn that only calls a function must not emit
+                # an empty message item.
+                if not msg_open:
+                    msg_open = True
+                    msg_index = next_index
+                    next_index += 1
+                    yield _responses_event(
+                        "response.output_item.added", seq,
+                        output_index=msg_index,
+                        item={"id": msg_id, "type": "message",
+                              "status": "in_progress", "content": [],
+                              "role": "assistant"},
+                    )
+                    seq += 1
+                    yield _responses_event(
+                        "response.content_part.added", seq,
+                        item_id=msg_id, output_index=msg_index, content_index=0,
+                        part=_output_text_part(""),
+                    )
+                    seq += 1
+                parts.append(content)
+                yield _responses_event(
+                    "response.output_text.delta", seq,
+                    item_id=msg_id, output_index=msg_index, content_index=0,
+                    delta=content, logprobs=[],
+                )
+                seq += 1
+
+            for tc in delta.get("tool_calls") or []:
+                if not isinstance(tc, dict):
+                    continue
+                idx = int(tc.get("index", 0) or 0)
+                fn = tc.get("function") or {}
+                args = fn.get("arguments")
+                args = args if isinstance(args, str) else (
+                    json.dumps(args) if args else "")
+                entry = tools.get(idx)
+                if entry is None:
+                    fc_id = tc.get("id") or f"fc_{uuid.uuid4().hex}"
+                    name = fn.get("name") or ""
+                    entry = {"id": f"fc_{uuid.uuid4().hex}",
+                             "call_id": fc_id, "name": name,
+                             "arguments": "", "index": next_index}
+                    next_index += 1
+                    tools[idx] = entry
+                    yield _responses_event(
+                        "response.output_item.added", seq,
+                        output_index=entry["index"],
+                        item={"id": entry["id"], "type": "function_call",
+                              "status": "in_progress",
+                              "call_id": fc_id, "name": name, "arguments": ""},
+                    )
+                    seq += 1
+                elif fn.get("name") and not entry["name"]:
+                    entry["name"] = fn["name"]
+                if not args:
+                    continue
+                entry["arguments"] += args
+                yield _responses_event(
+                    "response.function_call_arguments.delta", seq,
+                    item_id=entry["id"], output_index=entry["index"],
+                    delta=args,
+                )
+                seq += 1
 
     text = "".join(parts)
-    seq += 1
-    yield _responses_event(
-        "response.output_text.done", seq,
-        item_id=item_id, output_index=0, content_index=0,
-        text=text, logprobs=[],
-    )
-    seq += 1
-    yield _responses_event(
-        "response.content_part.done", seq,
-        item_id=item_id, output_index=0, content_index=0,
-        part=_output_text_part(text),
-    )
-    seq += 1
-    yield _responses_event(
-        "response.output_item.done", seq,
-        output_index=0, item=_output_message(item_id, "completed", text),
-    )
-    seq += 1
+    if msg_open:
+        yield _responses_event(
+            "response.output_text.done", seq,
+            item_id=msg_id, output_index=msg_index, content_index=0,
+            text=text, logprobs=[],
+        )
+        seq += 1
+        yield _responses_event(
+            "response.content_part.done", seq,
+            item_id=msg_id, output_index=msg_index, content_index=0,
+            part=_output_text_part(text),
+        )
+        seq += 1
+        item = _output_message(msg_id, "completed", text)
+        yield _responses_event(
+            "response.output_item.done", seq,
+            output_index=msg_index, item=item,
+        )
+        seq += 1
+        output.append(item)
+
+    for idx in sorted(tools):
+        entry = tools[idx]
+        yield _responses_event(
+            "response.function_call_arguments.done", seq,
+            item_id=entry["id"], output_index=entry["index"],
+            arguments=entry["arguments"], name=entry["name"],
+        )
+        seq += 1
+        item = {"id": entry["id"], "type": "function_call",
+                "status": "completed", "call_id": entry["call_id"],
+                "name": entry["name"], "arguments": entry["arguments"]}
+        yield _responses_event(
+            "response.output_item.done", seq,
+            output_index=entry["index"], item=item,
+        )
+        seq += 1
+        output.append(item)
+
     yield _responses_event(
         "response.completed", seq,
-        response=envelope("completed",
-                          [_output_message(item_id, "completed", text)], usage),
+        response=envelope("completed", usage),
     )
     yield b"data: [DONE]\n\n"
 
@@ -482,11 +592,26 @@ async def responses(
     text = _extract_response_text(result)
     rid = f"resp_{uuid.uuid4().hex}"
     item_id = f"msg_{uuid.uuid4().hex}"
+
+    output = []
+    if text:
+        output.append(_output_message(item_id, "completed", text))
+    # A tool turn carries no text, so building the envelope from the text alone
+    # returned an empty output and the client was told it had been answered.
+    for tc in _extract_response_tool_calls(result):
+        output.append({
+            "id": f"fc_{uuid.uuid4().hex}",
+            "type": "function_call",
+            "status": "completed",
+            "call_id": tc.get("id") or f"call_{uuid.uuid4().hex}",
+            "name": tc.get("name") or "",
+            "arguments": tc.get("arguments") or "",
+        })
+
     return {
         **_responses_envelope(
             rid, result.get("model") or body.get("model", ""), "completed",
-            [_output_message(item_id, "completed", text)],
-            int(time.time()), _responses_usage(usage),
+            output, int(time.time()), _responses_usage(usage),
         ),
         "output_text": text,
     }
