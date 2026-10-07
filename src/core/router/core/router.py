@@ -3,7 +3,13 @@ import threading
 import time
 from typing import Any, Dict, List, Optional, Set
 
-from src.core.api_config import AVAILABLE_MODELS, MODEL_POOLS, MODEL_PRIORITY, is_sunset_25
+from src.core.api_config import (
+    AVAILABLE_MODELS,
+    MODEL_POOLS,
+    MODEL_PRIORITY,
+    active_pool_members,
+    is_sunset_25,
+)
 from src.core.router.pool import ModelPool
 from src.core.config_n_logg import config
 from src.core.config_n_logg.logger import logger_keys as logger
@@ -216,6 +222,10 @@ class APIRouter(KeyResolverMixin):
         for alias, cfg in AVAILABLE_MODELS.items():
             if cfg.get("hidden"):
                 continue
+            if not cfg.get("enabled", True):
+                # Admin switched it off — offering it here would invite a client
+                # to pick a model the router will refuse to route.
+                continue
             if is_sunset_25() and alias in ("gemini-flash-25", "gemini-flash-25-lite"):
                 continue
             m = {
@@ -315,7 +325,7 @@ class APIRouter(KeyResolverMixin):
         """
         pool_cfg = MODEL_POOLS.get(alias)
         if pool_cfg:
-            members = [m for m in pool_cfg["members"] if not (is_sunset_25() and m in ("gemini-flash-25", "gemini-flash-25-lite"))]
+            members = active_pool_members(alias)
 
             # Add custom endpoints with pool_assignments for this alias as real pool members
             custom_endpoint_members: Set[str] = set()

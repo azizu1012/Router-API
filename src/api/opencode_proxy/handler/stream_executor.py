@@ -394,7 +394,7 @@ async def execute_stream(
         try:
             first_item = await gen.__anext__()
         except StopAsyncIteration:
-            raise RuntimeError("Empty stream from pool manager")
+            return None, None
         return gen, first_item
 
     fetch_task = asyncio.create_task(_fetch_first())
@@ -419,23 +419,37 @@ async def execute_stream(
         logger.error("[OpenCode Stream] Failed to get first chunk: %s", e)
         raise e
 
+    if gen is None or first_item is None:
+        # The pool stream ended before producing anything — the client hung up,
+        # or the model returned nothing. Not a crash: the peer has already
+        # stopped listening, so the right move is to close the SSE quietly.
+        logger.info("[OpenCode Stream] %s closed before the first chunk", model_alias)
+        return
+
     ttfb = asyncio.get_event_loop().time() - t0_wait
     logger.info("[OpenCode Stream] model=%s ttfb=%.2fs", model_alias, ttfb)
 
     async def _iter_with_keepalive():
+        """Yield items, or None when the model goes quiet, without double-pulling.
+
+        Same hazard as the Anthropic keepalive: `shield` keeps the in-flight
+        __anext__ alive through a timeout, so starting another one on the next
+        pass raises "asynchronous generator is already running". The pending
+        pull is awaited again instead.
+        """
         yield first_item
         it = gen.__aiter__()
+        pending: asyncio.Future = asyncio.ensure_future(it.__anext__())
         while True:
             try:
-                while True:
-                    try:
-                        item = await asyncio.wait_for(asyncio.shield(it.__anext__()), timeout=4.0)
-                        yield item
-                        break
-                    except asyncio.TimeoutError:
-                        yield None
+                item = await asyncio.wait_for(asyncio.shield(pending), timeout=4.0)
+            except asyncio.TimeoutError:
+                yield None          # keepalive; the pull is still in flight
+                continue
             except StopAsyncIteration:
-                break
+                return
+            yield item
+            pending = asyncio.ensure_future(it.__anext__())
 
     try:
         async for item in _iter_with_keepalive():

@@ -57,7 +57,7 @@ def _real_database_is_not_a_scratchpad():
     before = _row_counts(REAL_DB)
     yield
     after = _row_counts(REAL_DB)
-    if before is None:
+    if before is None or after is None:
         return
     changed = {
         t: (before.get(t), after.get(t))
@@ -69,6 +69,39 @@ def _real_database_is_not_a_scratchpad():
         "Tests must not touch the real database — use the temp_db fixture, which "
         "redirects src.backend._db for the duration of the test."
     )
+
+
+@pytest.fixture(autouse=True)
+def _no_shared_ip_rate_limit():
+    """Clear the per-IP dashboard/login counters around each test.
+
+    security_middleware caps /dashboard/* at 60 req/min per IP, keyed on
+    request.client.host. Every TestClient in this suite reports the same host
+    ("testclient"), and the counters live in module-level dicts that live as
+    long as the process — so the requests of test 61 were counted against test
+    1. test_dashboard_tokens.py tripped that on its last few cases and failed
+    with `KeyError: 'code'` / 429s that had nothing to do with what it asserted.
+
+    Running the file alone passed, which is exactly why it survived: a shared
+    global crossed a production limit only under full-suite ordering.
+
+    This is a fixture, not a change to the limiter. 60/min/IP is the intended
+    production behaviour and nothing here weakens it.
+    """
+    from src.server.openai_server import security
+
+    def _clear():
+        # Clear the dicts outright rather than the per-IP helpers: the helpers
+        # take a lock and need their own event loop, and this runs between tests
+        # where nothing is in flight.
+        security._dash_hits.clear()
+        security._login_hits.clear()
+        security._bf_fails.clear()
+        security._bf_blocked.clear()
+
+    _clear()
+    yield
+    _clear()
 
 
 @pytest.fixture

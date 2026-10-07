@@ -53,6 +53,9 @@ pytest
 | `test_must_change_password.py` | Cờ `must_change` từ DB tới banner; admin bật/tắt được |
 | `test_search_engine_precedence.py` | Engine theo dialect; override ở tầng account đã bị bỏ |
 | `test_log_permissions.py` | Phân quyền RBAC xem log stream (system/keys/web vs proxy/api) |
+| `test_pool_member_toggle.py` | Bật/tắt model con trong pool: lọc member, cache pool, aggregate, route toggle |
+| `test_responses_and_search_dialects.py` | `/v1/responses` trả typed event; Anthropic SDK server tool web search không bị drop |
+| `test_stream_keepalive.py` | Keepalive không bắn vào chính generator đang chạy |
 
 Chạy nhanh một file:
 

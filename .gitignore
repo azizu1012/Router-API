@@ -64,6 +64,9 @@ tests/*
 !tests/test_must_change_password.py
 !tests/test_search_engine_precedence.py
 !tests/test_log_permissions.py
+!tests/test_pool_member_toggle.py
+!tests/test_responses_and_search_dialects.py
+!tests/test_stream_keepalive.py
 
 # The CI scanner is tracked; the rest of scripts/ is local tooling.
 !scripts/

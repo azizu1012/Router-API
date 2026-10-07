@@ -4,7 +4,7 @@ import { t } from '../utils/i18n';
 import { api } from '../utils/api';
 import { createPortal } from 'react-dom';
 import Loading from '../components/Loading';
-import { Layers, Save, Trash2, Edit3, Plus, X, RefreshCw, Eye, EyeOff, Info, HelpCircle } from 'lucide-react';
+import { Layers, Save, Trash2, Edit3, Plus, X, RefreshCw, Eye, EyeOff, Info, HelpCircle, Zap } from 'lucide-react';
 
 function Tooltip({ text }) {
   return (
@@ -301,6 +301,79 @@ function PoolCell({ model, poolOptions, token, onRefresh }) {
   return <span className="text-xs font-mono">{model.pool_name || '-'}</span>;
 }
 
+function PoolMembersPanel({ pools, models, token, onToggle, busyAlias }) {
+  const healthByAlias = {};
+  for (const m of models || []) {
+    healthByAlias[m.alias] = m;
+  }
+
+  return (
+    <div className="space-y-3">
+      {(pools || []).map(p => {
+        const activeCount = (p.active_members || []).length;
+        const total = (p.members || []).length;
+        return (
+          <div key={p.name} className="card glass-card rounded-2xl border border-base-content/5 overflow-hidden">
+            <div className="flex flex-wrap items-center justify-between gap-2 px-4 py-3 bg-base-200/35 border-b border-base-content/5">
+              <div className="flex items-center gap-2 min-w-0">
+                <span className="font-bold text-sm font-mono truncate">{p.name}</span>
+                <span className={`badge badge-xs font-bold ${activeCount ? 'badge-success' : 'badge-error'}`}>
+                  {activeCount}/{total} hoạt động
+                </span>
+              </div>
+              <span className="text-[10px] text-base-content/50">
+                Tắt model mà key của bạn không được phép dùng (Google yêu cầu paid tier)
+              </span>
+            </div>
+            <div className="divide-y divide-base-content/5">
+              {(p.members || []).map(m => {
+                const info = healthByAlias[m] || {};
+                const on = info.enabled !== false;
+                const busy = busyAlias === m;
+                return (
+                  <div
+                    key={m}
+                    className={`flex flex-wrap items-center justify-between gap-3 px-4 py-2.5 transition-colors ${on ? '' : 'bg-base-200/25'}`}
+                  >
+                    <div className="flex items-center gap-2 min-w-0">
+                      <span className={`font-mono text-xs font-bold ${on ? '' : 'text-base-content/40 line-through'}`}>
+                        {m}
+                      </span>
+                      {info.display && (
+                        <span className="text-[10px] text-base-content/40 truncate hidden sm:inline">
+                          {info.display}
+                        </span>
+                      )}
+                    </div>
+                    <div className="flex items-center gap-3">
+                      <span className="text-[10px] font-mono text-base-content/50">
+                        {on ? `${info.rpm ?? '?'} RPM` : 'đang tắt'}
+                      </span>
+                      <label className="flex items-center gap-2 cursor-pointer">
+                        <input
+                          type="checkbox"
+                          className="toggle toggle-success toggle-xs"
+                          checked={on}
+                          disabled={busy}
+                          onChange={e => onToggle(m, e.target.checked)}
+                        />
+                        <span className={`text-[10px] font-bold ${on ? 'text-success' : 'text-base-content/40'}`}>
+                          {on ? 'Bật' : 'Tắt'}
+                        </span>
+                      </label>
+                      {busy && <span className="loading loading-spinner loading-xs"></span>}
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+          </div>
+        );
+      })}
+    </div>
+  );
+}
+
 export default function ModelsTab() {
   const { tabData, token, lang } = useApp();
 
@@ -351,6 +424,29 @@ export default function ModelsTab() {
 
   const [editModel, setEditModel] = useState(null);
   const [editOpen, setEditOpen] = useState(false);
+
+  const [busyAlias, setBusyAlias] = useState(null);
+
+  const handleToggleMember = async (alias, enabled) => {
+    setBusyAlias(alias);
+    try {
+      const res = await api('/dashboard/admin/pools/toggle-member', {
+        method: 'POST',
+        body: JSON.stringify({ alias, enabled }),
+      }, token);
+      const left = (res.active_members || []).filter(m => m !== alias);
+      showMsg(
+        `${enabled ? 'Đã bật' : 'Đã tắt'} ${alias}`
+        + (res.pool ? ` — pool ${res.pool} còn ${(res.active_members || []).length} member: ${left.join(', ') || '—'}` : ''),
+        'success',
+      );
+      fetchData();
+    } catch (err) {
+      showMsg('Không đổi được: ' + err.message, 'error');
+    } finally {
+      setBusyAlias(null);
+    }
+  };
 
   const fetchData = useCallback(async () => {
     setLoading(true);
@@ -580,6 +676,23 @@ export default function ModelsTab() {
         </div>
       )}
 
+      {/* Pool Members */}
+      <div className="flex justify-between items-center bg-base-200/20 px-4 py-3 rounded-xl border border-base-content/5 animate-fade-in-up cascade-1">
+        <span className="text-xs font-bold text-base-content/70 flex items-center gap-1.5">
+          <Zap className="w-4 h-4 text-amber-400" />
+          Thành viên Pool
+        </span>
+        <span className="text-[10px] text-base-content/50">Bật/tắt model con, áp dụng ngay không cần restart</span>
+      </div>
+
+      <PoolMembersPanel
+        pools={data?.pools}
+        models={models}
+        token={token}
+        onToggle={handleToggleMember}
+        busyAlias={busyAlias}
+      />
+
       {/* Models Table */}
       <div className="flex justify-between items-center bg-base-200/20 px-4 py-3 rounded-xl border border-base-content/5 animate-fade-in-up cascade-1">
         <span className="text-xs font-bold text-base-content/70 flex items-center gap-1.5">
@@ -604,6 +717,7 @@ export default function ModelsTab() {
                 <th className="font-bold min-w-[55px]">TPM</th>
                 <th className="font-bold min-w-[45px]">RPD</th>
                 <th className="font-bold min-w-[40px]">DB</th>
+                <th className="font-bold min-w-[60px]">Trạng thái</th>
                 <th className="font-bold min-w-[80px]">Hành động</th>
               </tr>
             </thead>
@@ -639,6 +753,11 @@ export default function ModelsTab() {
                     {m.in_db
                       ? <span className="badge badge-xs badge-success font-bold">DB</span>
                       : <span className="badge badge-xs badge-ghost font-bold">env</span>}
+                  </td>
+                  <td>
+                    {m.source === 'gemini' && m.enabled === false
+                      ? <span className="badge badge-xs badge-error font-bold">Đã tắt</span>
+                      : <span className="badge badge-xs badge-success badge-outline font-bold">Hoạt động</span>}
                   </td>
                   <td>
                     <div className="flex items-center gap-0.5">

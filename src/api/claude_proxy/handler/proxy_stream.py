@@ -41,6 +41,53 @@ KEEPALIVE_INTERVAL = 4.0
 # Sentinel yielded by the keepalive wrapper; distinct from any real pool item.
 _KEEPALIVE = object()
 
+# How long one pull may take before the wrapper considers the model quiet.
+_POLL_TIMEOUT = 1.0
+
+
+async def _iter_with_keepalive(
+    stream: Any, keepalive_interval: float
+) -> AsyncIterator[Any]:
+    """Yield pool items, emitting a sentinel whenever the model goes quiet.
+
+    Module-level rather than a closure inside _stream_message_impl so it can be
+    tested on its own — this is the seam where the stream used to die.
+
+    The subtle part is the timeout. `shield` exists so an in-flight pull survives
+    a timeout, which makes the obvious `except: continue` the worst possible next
+    line: it starts a *second* `__anext__` on a generator that is still running,
+    and asyncio raises
+
+        RuntimeError: anext(): asynchronous generator is already running
+
+    which killed the whole stream. A thinking turn takes longer than one second,
+    so the first slow model response triggered it — exactly the case this
+    wrapper exists to handle. HTTP stayed 200 and the client got a well-formed
+    error event, so nothing upstream noticed.
+
+    So the pending pull is held in `pending` and awaited again on the next pass.
+    A ping costs latency; two concurrent pulls on one generator cost the response.
+    """
+    aiter_ = stream.__aiter__()
+    pending: asyncio.Future = asyncio.ensure_future(aiter_.__anext__())
+    last_emit = time.monotonic()
+    while True:
+        try:
+            item = await asyncio.wait_for(
+                asyncio.shield(pending), timeout=_POLL_TIMEOUT
+            )
+        except asyncio.TimeoutError:
+            if time.monotonic() - last_emit >= keepalive_interval:
+                last_emit = time.monotonic()
+                yield _KEEPALIVE
+            continue
+        except StopAsyncIteration:
+            return
+        yield item
+        last_emit = time.monotonic()
+        # Only now is the previous pull finished, so the next one is safe.
+        pending = asyncio.ensure_future(aiter_.__anext__())
+
 
 class ClaudeProxyStreamMixin:
     """
@@ -263,27 +310,7 @@ class ClaudeProxyStreamMixin:
             # Wrap the pool iterator so a `ping` is emitted whenever the model is
             # slow, not just once at the start. Without this, long Gemini thinking
             # phases leave the connection silent and intermediaries drop it.
-            last_emit = time.monotonic()
-
-            async def _iter_with_keepalive() -> AsyncIterator[Any]:
-                nonlocal last_emit
-                aiter_ = stream.__aiter__()
-                while True:
-                    try:
-                        item = await asyncio.wait_for(
-                            asyncio.shield(aiter_.__anext__()), timeout=1.0
-                        )
-                        yield item
-                        last_emit = time.monotonic()
-                    except asyncio.TimeoutError:
-                        if time.monotonic() - last_emit >= KEEPALIVE_INTERVAL:
-                            last_emit = time.monotonic()
-                            yield _KEEPALIVE
-                        continue
-                    except StopAsyncIteration:
-                        return
-
-            async for item in _iter_with_keepalive():
+            async for item in _iter_with_keepalive(stream, KEEPALIVE_INTERVAL):
                 if item is _KEEPALIVE:
                     yield _sse("ping", {"type": "ping", "retry": 0, "reason": "keepalive"})
                     continue

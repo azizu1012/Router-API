@@ -12,6 +12,19 @@ class ModelPool:
             cls._instances[pool_name] = cls(pool_config, custom_endpoint_members)
         return cls._instances[pool_name]
 
+    @classmethod
+    def reset_instances(cls) -> None:
+        """Drop cached pools so the next get_or_create rebuilds from current config.
+
+        ``get_or_create`` keys on the pool name alone, so a member the admin just
+        switched off on the dashboard stays in the cached ``_locks`` map and keeps
+        being handed out — the toggle would save to the DB and change nothing at
+        runtime. Pools are cheap to rebuild (one lock per member) and any slot
+        still held belongs to a request already in flight, which finishes on its
+        own.
+        """
+        cls._instances.clear()
+
     def __init__(self, pool_config: dict, custom_endpoint_members: Optional[Set[str]] = None):
         self.members = list(pool_config["members"])
         self.swap_failures = int(pool_config["swap_failures"])

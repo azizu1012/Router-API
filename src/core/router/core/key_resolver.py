@@ -5,7 +5,13 @@ import random
 from datetime import datetime, timedelta
 from typing import Any, Dict, Optional
 
-from src.core.api_config import AVAILABLE_MODELS, MODEL_POOLS, is_sunset_25
+from src.core.api_config import (
+    AVAILABLE_MODELS,
+    MODEL_POOLS,
+    active_pool_members,
+    is_model_enabled,
+    is_sunset_25,
+)
 from src.core.config_n_logg import config
 from src.core.config_n_logg.logger import logger_keys as logger
 from src.backend.key_status import (
@@ -323,6 +329,13 @@ class KeyResolverMixin:
             logger.warning("Model %s has been sunsetted. Blocking reservation.", model_alias)
             return None
 
+        # Model bị admin tắt trên dashboard: chặn cả request trực tiếp, không chỉ
+        # pool rotation. Client gọi thẳng alias này vẫn nhận 400 từ tầng trên,
+        # nên chặn ở đây là lớp phòng thủ cuối cùng cho request đã đi vòng.
+        if not is_model_enabled(model_alias):
+            logger.warning("Model %s is disabled by admin. Blocking reservation.", model_alias)
+            return None
+
         try:
             # --- BƯỚC 2: PHÂN QUYỀN TRUY CẬP TIER ---
             allowed_tiers = self._get_allowed_tiers(account)
@@ -330,7 +343,7 @@ class KeyResolverMixin:
 
             pool_cfg = MODEL_POOLS.get(model_alias)
             if pool_cfg:
-                members = [m for m in pool_cfg["members"] if not (is_sunset_25() and m in ("gemini-flash-25", "gemini-flash-25-lite"))]
+                members = active_pool_members(model_alias)
                 if exclude_models:
                     members = [m for m in members if m not in exclude_models and self.get_model_id(m) not in exclude_models]
                 members = self.get_healthy_pool_members(members)

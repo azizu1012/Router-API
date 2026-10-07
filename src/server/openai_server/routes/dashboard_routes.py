@@ -681,6 +681,19 @@ async def get_model_pools_api(request: Request):
             if is_sunset_25() and member in ("gemini-flash-25", "gemini-flash-25-lite"):
                 continue
             cfg = AVAILABLE_MODELS.get(member, {})
+            if not cfg.get("enabled", True):
+                # Keep it in the payload, flagged off: the admin needs to see what
+                # exists in order to turn it back on. Dropping it silently would
+                # make a disabled model look deleted.
+                members.append({
+                    "model_id": cfg.get("model_id", member),
+                    "alias": member,
+                    "rpm": 0,
+                    "tpm": 0,
+                    "health_score": 0.0,
+                    "enabled": False,
+                })
+                continue
             limiter = get_rate_limiter(member)
             backing_id = cfg.get("model_id", member)
             health = core_router._model_health.get(member, {})
@@ -690,6 +703,7 @@ async def get_model_pools_api(request: Request):
                 "rpm": limiter.rpm_limit,
                 "tpm": limiter.tpm_limit,
                 "health_score": health.get("score", 100.0) if isinstance(health, dict) else 100.0,
+                "enabled": True,
             })
 
         # Append assigned custom endpoints (avoiding double-counting custom endpoint models when pool stats are calculated)

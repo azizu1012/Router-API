@@ -192,4 +192,19 @@ Tab quản lý Model ([ModelsTab.jsx](file:///d:/AI_Projects/router_api/frontend
 - **Khi sửa file `.env` từ máy chủ:**
   - Background worker `_watch_env_file()` phát hiện thay đổi trong vòng 3 giây, tự động nạp lại `dotenv`, reload cấu hình bộ nhớ và gọi `sync_env_to_db()` để cập nhật đồng bộ xuống SQLite DB.
 
+### 8.3. Panel "Thành viên Pool" — bật/tắt model con
+
+Google yêu cầu paid tier cho một số model (Flash 3.7 / 3.8), còn key free chỉ tới 3.6. Panel này cho admin tắt chúng ở UI thay vì sửa `.env` rồi restart.
+
+| Vùng | Nội dung |
+|---|---|
+| Header mỗi pool | Tên pool + badge `N/M hoạt động` |
+| Mỗi member | Toggle bật/tắt, RPM, alias gạch ngang khi đang tắt |
+
+Toggle gọi `POST /dashboard/admin/pools/toggle-member` và **áp dụng ngay không cần restart** — `reload_model_config()` xoá cache `ModelPool` nên member vừa tắt rời khỏi pool ở lượt request kế tiếp.
+
+Route trả 400 nếu tắt member cuối cùng của một pool: pool rỗng nghĩa là `ModelPool.acquire()` hết member và mọi request vào pool alias sẽ `TimeoutError` sau 120s.
+
+Bảng Models bên dưới có thêm cột **Trạng thái** để nhất quán với toggle — đọc `enabled` từ `GET /dashboard/admin/models`, nơi cũng trả `active_members` cho từng pool.
+
 

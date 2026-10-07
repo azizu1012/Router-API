@@ -7,7 +7,7 @@ from ..auth_session import _require_admin
 @app.get("/dashboard/admin/models")
 async def admin_get_models(request: Request):
     _require_admin(request)
-    from src.core.api_config import AVAILABLE_MODELS, MODEL_POOLS
+    from src.core.api_config import AVAILABLE_MODELS, MODEL_POOLS, active_pool_members
     from src.backend.model_config import list_model_configs
     from src.backend.endpoints import list_endpoints_db as list_endpoints
     from src.backend.accounts import list_accounts_db
@@ -38,6 +38,7 @@ async def admin_get_models(request: Request):
             "priority": cfg.get("priority", 1),
             "context_length": cfg.get("context_length", 220000),
             "pool_name": cfg.get("pool_name", ""),
+            "enabled": cfg.get("enabled", True),
             "in_db": dbc is not None,
             "source": "gemini",
             "endpoint": "",
@@ -99,6 +100,7 @@ async def admin_get_models(request: Request):
         {
             "name": pn,
             "members": pc["members"],
+            "active_members": active_pool_members(pn),
         }
         for pn, pc in MODEL_POOLS.items()
     ]
@@ -198,3 +200,67 @@ async def admin_delete_model(request: Request):
     remove_env_var(f"{prefix}_MODEL")
 
     return {"status": "success", "alias": alias}
+
+
+@app.post("/dashboard/admin/pools/toggle-member")
+async def admin_toggle_pool_member(request: Request):
+    """Bật/tắt một model con trong virtual pool.
+
+    Tách khỏi /models/save vì toggle là hành động lặp lại liên tục (Google có
+    khi mở, có khi lại yêu cầu paid tier cho model mới), còn save là thao tác
+    cấu hình một lần. Response trả về danh sách member còn hoạt động để UI không
+    phải refetch toàn bộ.
+    """
+    _require_admin(request)
+    try:
+        body = await request.json()
+    except Exception:
+        raise HTTPException(status_code=400, detail="Invalid JSON")
+
+    alias = str(body.get("alias", "")).strip().lower()
+    enabled = body.get("enabled")
+    if not alias:
+        raise HTTPException(status_code=400, detail="alias is required")
+    if not isinstance(enabled, bool):
+        raise HTTPException(status_code=400, detail="enabled must be a boolean")
+
+    from src.core.api_config import MODEL_POOLS, AVAILABLE_MODELS, reload_model_config
+    if alias not in AVAILABLE_MODELS:
+        raise HTTPException(status_code=404, detail=f"Model '{alias}' not found")
+
+    owner_pool = next(
+        (pn for pn, pc in MODEL_POOLS.items() if alias in pc.get("members", [])),
+        "",
+    )
+
+    # Tắt hết member của một pool là nghẽn cổ: pool đó không còn member nào để
+    # xoay vòng, mọi request vào pool alias sẽ timeout. Chặn ở đây thay vì để
+    # admin tự phát hiện lúc production chết.
+    if owner_pool and not enabled:
+        from src.core.api_config import is_model_enabled
+        remaining = [
+            m for m in MODEL_POOLS[owner_pool].get("members", [])
+            if m != alias and is_model_enabled(m)
+        ]
+        if not remaining:
+            raise HTTPException(
+                status_code=400,
+                detail=f"'{alias}' là member cuối cùng của pool '{owner_pool}' — "
+                       f"tắt nó sẽ làm pool không còn model nào phục vụ",
+            )
+
+    from src.backend.model_config import save_model_config
+    save_model_config(alias, enabled=enabled)
+
+    # reload_model_config() xoá cache ModelPool, nên member vừa tắt rời khỏi pool
+    # ngay lượt request kế tiếp thay vì chờ restart.
+    reload_model_config()
+
+    from src.core.api_config import active_pool_members
+    return {
+        "status": "success",
+        "alias": alias,
+        "enabled": enabled,
+        "pool": owner_pool,
+        "active_members": active_pool_members(owner_pool) if owner_pool else [],
+    }

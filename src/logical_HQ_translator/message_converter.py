@@ -13,6 +13,14 @@ UNSUPPORTED_OR_HEAVY_TOOLS = {
     "NotebookRead", "NotebookEdit",
 } | SCIENCE_TOOLS_TO_STRIP
 
+# Anthropic's server-side search tool is typed, not named: the schema lives in the
+# model, so the request carries a `type` and no input_schema. Listing the known
+# versions keeps a future dated version from falling back to "not a tool at all".
+SERVER_SEARCH_TOOL_TYPES = {
+    "web_search", "web_search_20250305", "web_search_2025_08_26",
+    "web_search_preview", "web_search_preview_2025_03_05",
+}
+
 # Anthropic tool_use.id pattern: ^[a-zA-Z0-9_-]+$
 _TOOL_ID_PATTERN = re.compile(r"^[a-zA-Z0-9_-]+$")
 
@@ -211,7 +219,15 @@ def _convert_messages(body: Dict[str, Any]) -> Tuple[List[Dict[str, Any]], List[
     openai_tools: List[Dict[str, Any]] = []
 
     for tool in body.get("tools") or []:
-        tool_name = str(tool.get("name", "")).strip()
+        # Anthropic server-side web search arrives as a typed tool, e.g.
+        # {"type": "web_search_20250305", "name": "web_search", ...}. The name is
+        # there in current SDK versions but the type is the authoritative signal,
+        # and reading only `name` dropped the tool outright when it was absent —
+        # silently, since the request then succeeded with no search at all.
+        tool_name = str(tool.get("name", "") or "").strip()
+        tool_type = str(tool.get("type", "") or "").strip().lower()
+        if tool_type in SERVER_SEARCH_TOOL_TYPES:
+            tool_name = tool_name or "web_search"
         if not tool_name or tool_name in UNSUPPORTED_OR_HEAVY_TOOLS:
             continue
         raw_schema = tool.get("input_schema", {})

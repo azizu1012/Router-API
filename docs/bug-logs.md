@@ -443,3 +443,213 @@ Toàn bộ unit test & integration test pass 100%:
 - `test_layering.py` (AST layering không vi phạm phân tầng).
 - `test_master_key.py`, `test_dashboard_tokens.py`, `test_secret_scanner.py`.
 - Đồng bộ dữ liệu giá thực tế và model pools kiểm tra thành công trên SQLite và `.env`.
+
+---
+
+## Bug #14: Cột `enabled` Tồn Tại Nhưng Không Tắt Được Model Nào (2026-10-07)
+
+### Muc do
+Nghiêm trọng theo hậu quả, im lặng theo biểu hiện. Không có log, không có trace, response van` dung.
+
+### Mô tả
+Google bắt buộc paid tier cho Flash 3.7 / 3.8, còn key free chi tới 3.6. Pool `gemini-flash` van xoay vong qua 3.7/3.8, nen moi request dinh `permission_denied` roi doi model lien tuc — dung triệu chứng nguoi dùng bao loi.
+
+Admin muon tat 3.7/3.8 tren dashboard cho toi khi Google mo cho tat ca. Cot `model_config.enabled` **đã có sẵn** từ lâu. Tắt nó không làm gì.
+
+### Root cause
+Ba tầng độc lập nhau, cả ba đều sai theo cach riêng:
+
+**1. `merge_db_models` bo qua han row disabled**
+
+```python
+for alias, db_cfg in db_models.items():
+    if not db_cfg.get("enabled", True):
+        continue          # <-- co la doc, nhung bo ca row
+```
+
+`continue` nghia la "khong ap dung limit cua row nay" chu khong phai "model nay dang tat". Model van nam trong `MODEL_POOLS[...]["members"]` voi han muc lay tu env. Khong co co `enabled` gi de tang routing doc.
+
+**2. `ModelPool.get_or_create` cache theo ten pool**
+
+```python
+if pool_name not in cls._instances:
+    cls._instances[pool_name] = cls(pool_config, ...)
+return cls._instances[pool_name]
+```
+
+Pool object dau tien duoc tao — voi ca 6 member — song lai ton tai het vong doi process, giu `_locks` cua member da bi tat. Bat `enabled=0` vao DB thay doi mot thu ma routing khong bao gio doc.
+
+**3. Khong cho client thay model da tat**
+
+`list_models()` chi bo qua `hidden`. Client van thay 3.7 trong `/v1/models`, chon no, roi router tu choi.
+
+### Fix
+
+| File | Thay doi |
+|---|---|
+| `src/core/api_config.py` | `is_model_enabled()` + `active_pool_members()`; doc `enabled` vao `AVAILABLE_MODELS` thay vi bo qua row; `_recompute_pool_aggregates` bo qua member da tat; `reload_model_config()` goi `ModelPool.reset_instances()` |
+| `src/core/router/pool.py` | `ModelPool.reset_instances()` |
+| `src/core/router/core/router.py` | `resolve_pool` + `list_models` doc qua `active_pool_members()` / `enabled` |
+| `src/core/router/core/key_resolver.py` | `reserve_key` doc qua `active_pool_members()`; chan request truc tiep vao model da tat |
+| `src/core/providers/gemini/utils.py` | `all_models_excluded` doc cung danh sach da loc |
+| `src/core/limits/account_limiter/capacity.py` | `_resolve_pool_model_ids` bo qua member da tat |
+| `src/server/.../admin/models.py` | Route `POST /dashboard/admin/pools/toggle-member`, expose `enabled` + `active_members` |
+| `frontend-src/src/tabs/ModelsTab.jsx` | Panel "Thanh vien Pool" voi toggle |
+
+### Vì sao `all_models_excluded` phải đọc cùng một danh sách đã lọc
+Member da tat **khong bao gio nhan loi goi**, nen khong bao gio tich luý failure, nen khong bao gio bi exclude. Dem no vao la `all([])` semantics sai: ham tra `False` vinh vien, va vong retry cu dao mai mot pool da can thay vi doi ra.
+
+### Vì sao chặn member cuối
+Tat het member cua mot pool la nghen co: `ModelPool.acquire()` het member, moi request vao pool alias do se `TimeoutError` sau 120s. Route tra 400 ro rang thay vi de admin tu phat hien luc production chet.
+
+### Bất biến đã pin trong test
+- Member da tat khong bao gio duoc cap phat tu `ModelPool.acquire()`.
+- Aggregate cua pool khong tinh budget cua member da tat — con lai thi pool quang bao RPM no khong the dat toi, va moi model them vao lam lo chenh lech lon hon chu khong nho hon.
+- `AVAILABLE_MODELS[alias]` mac dinh `enabled=True` khi alias khong ton tai. Doc thieu config la "off" se kien mot typo trong ten member lam pool tu rong.
+- `MODEL_POOLS[...]["members"]` khong bi mutate: day la thanh vien khai bao, bo loc chi la view luc doc, nen reload sau bi gia lai duoc.
+
+### Test
+`tests/test_pool_member_toggle.py` — 28 test. Chay tren ban goc: **24 fail** (feature chua ton tai). Bam lai tung fix rieng de xac nhan test do tu chay.
+
+---
+
+## Bug #15: `/v1/responses` Streaming Không In Ra Gì, Anthropic SDK Mất Web Search (2026-10-07)
+
+### Muc do
+Nghiêm trọng theo biểu hiện. Cả hai đều trả HTTP 200 với body **hợp lệ rỗng** — client nhận được phản hồi thành công rồi không có gì để hiển thị. Không log, không trace, không status code sai.
+
+### Bug A — `/v1/responses` stream trả sai dialect
+
+**Mô tả**: Client dùng Responses API với `stream: true` không in ra chữ nào.
+
+**Root cause**: `responses()` stream thẳng chat chunk của proxy ra, không đổi frame:
+
+```python
+async def _gen():
+    async for chunk in opencode_proxy.stream_chat_completion(...):
+        yield chunk          # <-- data: {"choices":[{"delta":...}]}
+```
+
+Responses client parse **typed event** — `response.created`, `response.output_text.delta`, `response.completed` — và bỏ qua payload nó không nhận ra. Nên stream mở ra, có dữ liệu bay, rồi đóng lại, không có event nào để client in. Model chưa từng trả sai; chỉ là không có event nào đúng hình dạng.
+
+Non-stream thì **đúng** (`_extract_response_text` + dựng `output[]`), nên bug chỉ xuất hiện khi bật stream — và test chỉ thử non-stream nên không thấy.
+
+**Fix**: thêm `_responses_sse_stream()` — adapter dịch chat delta → Responses event, kèm đủ vòng đời `created → in_progress → output_item.added → output_text.delta → output_item.done → completed` + `[DONE]`.
+
+### Bug B — Anthropic SDK web search bị drop
+
+**Mô tả**: Client chat dùng Anthropic SDK (không phải Claude Code) gửi `{"type": "web_search_20250305"}` → không tìm kiếm, model trả lời từ trí nhớ.
+
+**Root cause**: `_convert_messages` chỉ đọc `tool["name"]`:
+
+```python
+tool_name = str(tool.get("name", "")).strip()
+if not tool_name or tool_name in UNSUPPORTED_OR_HEAVY_TOOLS:
+    continue          # <-- tool typed khong co name -> bo qua im lang
+```
+
+Anthropic server tool được định danh bằng `type`, **không phải** `name` — schema nằm trong model chứ không nằm trong request. SDK version nào không gửi `name` thì tool bị bỏ trong im lặng. Request vẫn 200, vẫn có câu trả lời, chỉ là không có bước search nào chạy.
+
+**Fix**: `SERVER_SEARCH_TOOL_TYPES` gom các biến thể đã biết; khi `type` khớp thì suy ra `name = "web_search"`. Giữ nguyên guard "không có name lẫn type thì vẫn bỏ" — fix không được biến thành "giữ tất cả".
+
+### Vì sao không phát hiện được bằng log
+Cả hai đều là **silent success**. Server làm đúng việc nó nghĩ nó được yêu cầu: stream đúng 200, tool đúng không phải function tool. Chỉ có client mới biết mình không nhận được gì — nên phải test ở tầng frame, không phải assert HTTP 200.
+
+### Test
+`tests/test_responses_and_search_dialects.py` — 24 test. Chạy trên bản gốc: **collection error** (`_responses_sse_stream` chưa tồn tại). Có guard chống fix quá tay: tool không có cả `name` lẫn `type` vẫn phải bị bỏ.
+
+---
+
+## Bug #16: `/v1/messages` Streaming Chết Vì Keepalive Tự Bắn Vào Chính Mình (2026-10-07)
+
+### Muc do
+Nghiêm trọng nhất trong ba bug này. **Mọi request streaming của Anthropic đều chết** nếu model cần hơn 1 giây để trả chunk đầu tiên.
+
+### Mô tả
+Test thực tế:
+```
+event: error
+data: {"type": "error", "error": {"type": "api_error",
+        "message": "anext(): asynchronous generator is already running"}}
+event: message_stop
+data: {"type": "message_stop"}
+```
+
+HTTP **200**, SSE hợp lệ, có `message_stop` đóng stream đàng hoàng — nhưng không có `content_block_delta` nào. Client thấy một response thành công rồi không có chữ nào.
+
+### Root cause
+Keepalive wrapper trong `proxy_stream.py`:
+
+```python
+item = await asyncio.wait_for(asyncio.shield(aiter_.__anext__()), timeout=1.0)
+except asyncio.TimeoutError:
+    if ...:
+        yield _KEEPALIVE
+    continue          # <-- tao __anext__ MOI tren generator dang chay
+```
+
+`asyncio.shield` tồn tại **chính để** pull đang chạy sống sót qua timeout. Nên `continue` là cái sai tuyệt đối nhất: nó tạo một `__anext__` thứ hai trên generator chưa xong, và asyncio ném `RuntimeError`.
+
+Vòng lặp ping được viết để giữ kết nối sống — nhưng nó giết chính stream cần giữ. Một lượt thinking của Gemini mất hơn 1 giây, tức là **đúng trường hợp keepalive sinh ra để xử lý** là trường hợp làm hỏng.
+
+### Fix
+Tách thành hàm module-level `_iter_with_keepalive(stream, keepalive_interval)`, giữ pull đang chạy trong `pending` và chờ lại nó ở vòng sau thay vì tạo pull mới:
+
+```python
+pending: asyncio.Future = asyncio.ensure_future(aiter_.__anext__())
+while True:
+    try:
+        item = await asyncio.wait_for(asyncio.shield(pending), timeout=_POLL_TIMEOUT)
+    except asyncio.TimeoutError:
+        ...  # yield _KEEPALIVE; KHONG tao pull moi
+        continue
+    except StopAsyncIteration:
+        return
+    yield item
+    pending = asyncio.ensure_future(aiter_.__anext__())   # pull moi sau khi da xong
+```
+
+Pull kế tiếp chỉ được tạo **sau khi chunk trước đã được yield** — tức là pull cũ chắc chắn đã hoàn thành.
+
+Cùng lớp bug còn một chỗ nữa, ở `opencode_proxy/handler/stream_executor.py` — cùng pattern `shield` + timeout, cùng `continue`/lặp lại pull. Sửa cùng lúc, vì đó là bản sao của cùng một quyết định. Ngoài ra `_fetch_first` raise `RuntimeError("Empty stream from pool manager")` khi generator kết thúc trước chunk đầu tiên (client ngắt giữa lúc) — giờ đóng SSE sạch thay vì ném exception ra giữa stream.
+
+### Vì sao đưa ra module-level
+Wrapper là nested closure nên không test được. Test chỉ có thể chép lại logic — mà test một bản sao chỉ chứng minh bản sao đó đúng, không chứng minh code thật. Tách ra để `tests/test_stream_keepalive.py` gọi đúng hàm đang chạy production.
+
+### Test
+`tests/test_stream_keepalive.py` — 12 test, bao gồm:
+- Chunk chậm hơn timeout vẫn giao **đủ và đúng thứ tự** (bug gốc).
+- **Không bao giờ có 2 pull đồng thời** — đo bằng counter, đây là bất biến gốc.
+- Keepalive **vẫn ping** — nếu fix bằng cách bỏ ping thì mất hết mục đích, và test phải bắt được điều đó.
+- Model nhanh không bị spam ping.
+- Assert cấu trúc: không có `__anext__` nào trong khối `except asyncio.TimeoutError`.
+
+Trên bản gốc: **collection error** (hàm chưa tồn tại).
+
+### Bài học
+`asyncio.shield` + timeout + `continue` là một cặp độc hại, và trông rất hợp lý khi đọc. Keepalive vốn là code "phòng thủ chung", nên nó chạy đúng khi không có gì sai và chỉ hỏng khi thứ nó bảo vệ xảy ra.
+
+---
+
+## Bug #17: 7 Test Đỏ Khi Chạy Full Suite, Xanh Khi Chạy Riêng (2026-10-07)
+
+### Muc do
+Test nói dối. Không phải bug production — nhưng cũng là bug, vì nó che giấu bug thật.
+
+### Mô tả
+`test_dashboard_tokens.py` pass 29/29 khi chạy riêng. Chạy full suite: 7 fail với `KeyError: 'code'`, `KeyError: 'key_id'`, `AssertionError: 429 == 200`.
+
+### Root cause
+`security_middleware` giới hạn `/dashboard/*` 60 req/phút mỗi IP, đếm trong `_dash_hits` — dict ở module level, sống suốt process. `TestClient` **luôn** báo host `"testclient"`, nên mọi test trong suite dồn về một ô đếm.
+
+Test thứ 61 bị tính vào trần của test thứ 1. Chạy riêng file thì dưới 60 nên xanh — đó là lý do nó sống sót: một global dùng chung chỉ vượt trần production khi đúng thứ tự chạy đầy đủ.
+
+### Fix
+Autouse fixture trong `conftest.py` xoá counter trước và sau mỗi test.
+
+**Đây là fixture, không phải sửa limiter.** 60 req/phút mỗi IP là hành vi production đúng và không có gì ở đây làm nó nới lỏng.
+
+Ngoài ra sửa một bug sẵn có trong chính conftest: guard chỉ kiểm `before is None`, không kiểm `after` — nếu `usage.db` bị xoá giữa lúc thì `.get()` gọi trên `None`.
+
+### Test
+Xác nhận fix là thật: revert `tests/conftest.py` → 7 fail trở lại đúng như cũ. Suite xanh 647 test.

@@ -38,13 +38,16 @@ def _resolve_pool_model_ids(pool_type: str, available_models: dict) -> set[str]:
     Đọc từ MODEL_POOLS và AVAILABLE_MODELS (đã nạp từ env & db).
     """
     try:
-        from src.core.api_config import MODEL_POOLS
+        from src.core.api_config import active_pool_members
     except Exception:
-        MODEL_POOLS = {}
+        active_pool_members = None
 
     target_pool_name = "gemini-flash-lite" if pool_type == "lite" else "gemini-flash"
-    pool_cfg = MODEL_POOLS.get(target_pool_name, {})
-    members = pool_cfg.get("members", [])
+    if active_pool_members:
+        members = active_pool_members(target_pool_name)
+    else:
+        from src.core.api_config import MODEL_POOLS
+        members = MODEL_POOLS.get(target_pool_name, {}).get("members", [])
 
     mids = set()
     for m in members:
@@ -59,6 +62,8 @@ def _resolve_pool_model_ids(pool_type: str, available_models: dict) -> set[str]:
         for alias, cfg in available_models.items():
             mid = cfg.get("model_id")
             if not mid or mid.endswith("-pool"):
+                continue
+            if not cfg.get("enabled", True):
                 continue
             name_check = f"{alias} {mid}".lower()
             if pool_type == "lite" and "lite" in name_check:

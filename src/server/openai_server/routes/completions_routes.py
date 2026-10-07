@@ -1,3 +1,4 @@
+import json
 import uuid
 import time
 from fastapi import Header, HTTPException, Request
@@ -28,6 +29,97 @@ def _extract_finish_reason(result: dict) -> str:
     if not choices:
         return "stop"
     return choices[0].get("finish_reason") or "stop"
+
+
+def _responses_event(kind: str, seq: int, **fields) -> bytes:
+    payload = {"type": kind, "sequence_number": seq, **fields}
+    return f"data: {json.dumps(payload, ensure_ascii=False)}\n\n".encode("utf-8")
+
+
+async def _responses_sse_stream(chunks, model: str = ""):
+    """Re-frame chat-completions SSE into Responses API events.
+
+    The chat proxy speaks the chat dialect: `data: {"choices":[{"delta":...}]}`.
+    A Responses client parses typed events — `response.created`,
+    `response.output_text.delta`, `response.completed` — and ignores anything
+    else, so forwarding chat chunks verbatim produced a stream that opened and
+    closed with no text in it. The model never failed; the client just had no
+    event to print.
+    """
+    rid = f"resp_{uuid.uuid4().hex}"
+    item_id = f"msg_{uuid.uuid4().hex}"
+    created = int(time.time())
+    seq = 0
+
+    seq += 1
+    yield _responses_event(
+        "response.created", seq,
+        response={"id": rid, "object": "response", "created_at": created,
+                  "model": model, "status": "in_progress", "output": []},
+    )
+    seq += 1
+    yield _responses_event(
+        "response.in_progress", seq,
+        response={"id": rid, "object": "response", "created_at": created,
+                  "model": model, "status": "in_progress", "output": []},
+    )
+    seq += 1
+    yield _responses_event(
+        "response.output_item.added", seq,
+        output_index=0, item={"id": item_id, "type": "message", "role": "assistant",
+                              "status": "in_progress", "content": []},
+    )
+
+    async for raw in chunks:
+        # The chat proxy yields bytes; a literal "[DONE]" ends the stream.
+        if isinstance(raw, (bytes, bytearray)):
+            try:
+                text = raw.decode("utf-8")
+            except UnicodeDecodeError:
+                continue
+        else:
+            text = str(raw)
+        if not text.startswith("data:"):
+            continue
+        data = text[5:].strip()
+        if not data or data == "[DONE]":
+            continue
+        try:
+            payload = json.loads(data)
+        except ValueError:
+            continue
+        if not isinstance(payload, dict):
+            continue
+
+        for choice in payload.get("choices") or []:
+            delta = (choice.get("delta") or {}).get("content")
+            if not isinstance(delta, str) or not delta:
+                continue
+            seq += 1
+            yield _responses_event(
+                "response.output_text.delta", seq,
+                item_id=item_id, output_index=0, content_index=0, delta=delta,
+            )
+
+    seq += 1
+    yield _responses_event(
+        "response.output_text.done", seq,
+        item_id=item_id, output_index=0, content_index=0, text="",
+    )
+    seq += 1
+    yield _responses_event(
+        "response.output_item.done", seq,
+        output_index=0,
+        item={"id": item_id, "type": "message", "role": "assistant",
+              "status": "completed", "content": []},
+    )
+    seq += 1
+    yield _responses_event(
+        "response.completed", seq,
+        response={"id": rid, "object": "response", "created_at": created,
+                  "model": model, "status": "completed", "output": []},
+    )
+    yield b"data: [DONE]\n\n"
 
 @app.post("/v1/chat/completions")
 async def chat_completions(
@@ -196,6 +288,11 @@ async def completions(
     except HTTPException:
         raise
     except Exception as e:
+        # Log before mapping to a status. The client only ever sees a generic
+        # 503, so without this the cause exists nowhere: the response says
+        # "unavailable" and no log line says why. /v1/chat/completions logs its
+        # own failures; these two routes did not.
+        logger_api.error("[Upstream] request failed: %s", e, exc_info=True)
         msg = str(e)
         if "no_available_key" in msg:
             return JSONResponse(status_code=503, content={"error": {"message": "All keys are temporarily frozen, retry later", "type": "overloaded_error"}})
@@ -261,14 +358,13 @@ async def responses(
         await _apply_account_limit(account, chat_body)
         from src.api.opencode_proxy import opencode_proxy
         if is_stream:
-            async def _gen():
-                async for chunk in opencode_proxy.stream_chat_completion(
-                    chat_body, account=account, is_opencode=False
-                ):
-                    yield chunk
-
             return StreamingResponse(
-                _gen(),
+                _responses_sse_stream(
+                    opencode_proxy.stream_chat_completion(
+                        chat_body, account=account, is_opencode=False
+                    ),
+                    model=str(body.get("model", "")),
+                ),
                 media_type="text/event-stream",
                 headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
             )
@@ -276,6 +372,11 @@ async def responses(
     except HTTPException:
         raise
     except Exception as e:
+        # Log before mapping to a status. The client only ever sees a generic
+        # 503, so without this the cause exists nowhere: the response says
+        # "unavailable" and no log line says why. /v1/chat/completions logs its
+        # own failures; these two routes did not.
+        logger_api.error("[Upstream] request failed: %s", e, exc_info=True)
         msg = str(e)
         if "no_available_key" in msg:
             return JSONResponse(status_code=503, content={"error": {"message": "All keys are temporarily frozen, retry later", "type": "overloaded_error"}})

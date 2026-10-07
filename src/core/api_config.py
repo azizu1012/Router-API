@@ -156,6 +156,41 @@ def _format_pool_member_label(m: Any) -> str:
     return lbl
 
 
+_SUNSET_MEMBERS = ("gemini-flash-25", "gemini-flash-25-lite")
+
+
+def is_model_enabled(alias: str) -> bool:
+    """A model the admin has not switched off on the dashboard.
+
+    Gemini bắt buộc paid tier cho một số model (3.7 / 3.8), nên key free gọi vào
+    đó chỉ nhận về lỗi. Admin tắt nó ở UI để pool xoay vòng qua model khác cho
+    tới khi Google mở cho tất cả.
+    """
+    return bool(AVAILABLE_MODELS.get(str(alias), {}).get("enabled", True))
+
+
+def active_pool_members(pool_name: str) -> List[str]:
+    """Members a pool may actually hand out, honouring both sunset and the admin switch.
+
+    Every read of ``MODEL_POOLS[...]["members"]`` that feeds routing has to go
+    through here. Reading the raw list is what let a disabled member keep
+    serving traffic: the pool object was already built from the full list, and
+    ``get_or_create`` cached it by name, so a runtime toggle changed nothing.
+    """
+    cfg = MODEL_POOLS.get(pool_name)
+    if not cfg:
+        return []
+    members = []
+    for m in cfg.get("members", []):
+        m_str = str(m)
+        if is_sunset_25() and m_str in _SUNSET_MEMBERS:
+            continue
+        if not is_model_enabled(m_str):
+            continue
+        members.append(m_str)
+    return members
+
+
 def _recompute_pool_aggregates() -> None:
     for pool_name, pool_cfg in MODEL_POOLS.items():
         members_list = list(pool_cfg.get("members", []))
@@ -164,6 +199,11 @@ def _recompute_pool_aggregates() -> None:
         total_rpd = 0
         for m in members_list:
             m_str = str(m)
+            if not is_model_enabled(m_str):
+                # A switched-off member keeps its RPM/TPM in the DB so turning it
+                # back on is instant — but it must not inflate the pool ceiling,
+                # or the pool advertises capacity it can no longer reach.
+                continue
             if m_str == pool_name and m_str in MODEL_POOLS:
                 # Member name collides with pool name — AVAILABLE_MODELS[m]
                 # may have been overwritten with pool aggregate or stale DB value.
@@ -190,12 +230,11 @@ def _recompute_pool_aggregates() -> None:
             if env_disp:
                 AVAILABLE_MODELS[pool_name]["display"] = env_disp
             else:
-                short_labels = [_format_pool_member_label(m) for m in members_list]
+                short_labels = [_format_pool_member_label(m) for m in active_pool_members(pool_name)]
                 sep = "↔"
                 joined_labels = sep.join(short_labels)
                 title = "Gemini Flash Lite Pool" if "lite" in pool_name else "Gemini Flash Pool"
                 AVAILABLE_MODELS[pool_name]["display"] = f"{title} ({joined_labels})"
-
 
 
 def merge_db_models() -> None:
@@ -205,8 +244,6 @@ def merge_db_models() -> None:
     except Exception:
         db_models = {}
     for alias, db_cfg in db_models.items():
-        if not db_cfg.get("enabled", True):
-            continue
         if alias in AVAILABLE_MODELS:
             existing = AVAILABLE_MODELS[alias]
             existing["display"] = db_cfg.get("display") or existing.get("display", alias)
@@ -218,6 +255,9 @@ def merge_db_models() -> None:
             existing["hidden"] = db_cfg.get("hidden", existing.get("hidden", False))
             existing["priority"] = db_cfg.get("priority", existing.get("priority", 1))
             existing["context_length"] = db_cfg.get("context_length", existing.get("context_length", 220000))
+            # Read even when disabled: the flag itself is the thing being switched,
+            # and skipping the row left the model serving traffic with env limits.
+            existing["enabled"] = bool(db_cfg.get("enabled", True))
         else:
             AVAILABLE_MODELS[alias] = {
                 "display": db_cfg.get("display", alias),
@@ -229,6 +269,7 @@ def merge_db_models() -> None:
                 "rpd_enabled": db_cfg.get("rpd_enabled", False),
                 "context_length": db_cfg.get("context_length", 220000),
                 "hidden": db_cfg.get("hidden", False),
+                "enabled": bool(db_cfg.get("enabled", True)),
             }
 
     _rebuild_backing_to_alias()
@@ -263,6 +304,8 @@ def reload_model_config() -> None:
     merge_db_models()
     from src.core.limits.gemini_rate_limiter import clear_rate_limiters
     clear_rate_limiters()
+    from src.core.router.pool import ModelPool
+    ModelPool.reset_instances()
 
 
 # Load DB overrides at import time

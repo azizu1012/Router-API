@@ -20,11 +20,15 @@ def get_excluded_models(model_failures: Dict[str, int], model_alias: str) -> Lis
 
 
 def all_models_excluded(model_failures: Dict[str, int], model_alias: str) -> bool:
-    from src.core.api_config import MODEL_POOLS, is_sunset_25
+    from src.core.api_config import MODEL_POOLS, active_pool_members, is_sunset_25
     excluded = get_excluded_models(model_failures, model_alias)
     pool_cfg = MODEL_POOLS.get(model_alias)
     if pool_cfg:
-        members = [m for m in pool_cfg["members"]
+        # Must read the filtered member list: a switched-off model never receives
+        # a call, so it can never accumulate a failure and never gets excluded.
+        # Counting it would make this return False forever and the retry loop
+        # would keep hammering an exhausted pool instead of rotating.
+        members = [m for m in active_pool_members(model_alias)
                    if not (is_sunset_25() and m in ("gemini-flash-25", "gemini-flash-25-lite"))]
         return all(router.get_model_id(m) in excluded or m in excluded for m in members)
     concrete = router.get_model_id(model_alias)
