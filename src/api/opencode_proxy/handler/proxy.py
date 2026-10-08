@@ -285,15 +285,20 @@ class OpenCodeProxy:
         from src.api.opencode_proxy.handler.search_intercept import (
             drive_search_loop,
         )
-        result, _messages, _tools = await drive_search_loop(
+        result, _messages, _tools, search_trace = await drive_search_loop(
             call_once, messages, tools, body, account,
             get_auth_key_prefix(account),
         )
 
         resp = result["response"]
 
-        return build_response(body, resp, model_alias, result["api_key"],
-                              result["input_tokens"])
+        out = build_response(body, resp, model_alias, result["api_key"],
+                             result["input_tokens"])
+        # A hosted search the router ran is not a function call the client owes
+        # an answer to; it is reported in the dialect's own hosted-tool shape.
+        if search_trace:
+            out["_search_trace"] = search_trace
+        return out
 
 
     async def stream_chat_completion(
@@ -329,6 +334,57 @@ class OpenCodeProxy:
 
 
     # ── Message Processing ───────────────────────────────────────
+
+    async def prime_search(self, body: Dict[str, Any],
+                           account: Optional[Dict[str, Any]] = None
+                           ) -> tuple:
+        """Resolve every search the model wants, before a stream starts.
+
+        The streaming path cannot surface a search call mid-flight as a
+        `web_search_call` item without threading the trace through the chunk
+        generator, so searches are driven to completion first and only the
+        answering turn is streamed. OpenAI emits the search item before the
+        message text anyway, so the ordering the client observes matches; the
+        cost is that a search turn does not begin streaming until the search is
+        done.
+
+        Returns (messages, tools, trace).
+        """
+        messages, tools = body.get("messages", []), list(body.get("tools", []))
+        messages, tools = self._inject_websearch_tool(body, messages, tools,
+                                                      account)
+        if not any(t.get("function", {}).get("name") == "WebSearch"
+                   for t in tools):
+            return messages, tools, []
+
+        model_alias = await self._resolve_alias(body, account=account,
+                                                is_opencode=False)
+        thinking_config = _resolve_thinking_config(body, model_alias)
+        thinking_params = {
+            "thinking_level": body.get("thinking_level"),
+            "thinking_budget": body.get("thinking_budget"),
+            "include_thoughts": body.get("include_thoughts", True),
+        }
+        max_tokens = min(int(body.get("max_tokens") or config.MAX_OUTPUT_TOKENS),
+                         config.MAX_OUTPUT_TOKENS)
+        temperature = float(body.get("temperature") or 0.7)
+
+        async def call_once(msgs, tls):
+            return await pool_manager.call_nonstream(
+                model_alias=model_alias, messages=msgs, tools=tls or None,
+                temperature=temperature, max_tokens=max_tokens,
+                thinking_config=thinking_config, account=account,
+                extra_body=None, thinking_params=thinking_params,
+            )
+
+        from src.api.opencode_proxy.handler.search_intercept import (
+            drive_search_loop,
+        )
+        _result, messages, tools, trace = await drive_search_loop(
+            call_once, messages, tools, body, account,
+            get_auth_key_prefix(account),
+        )
+        return messages, tools, trace
 
     def _inject_websearch_tool(
             self, body: Dict[str, Any],

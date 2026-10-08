@@ -216,6 +216,53 @@ def thinking_signature(thinking_text: str) -> str:
     return "gmni_" + hashlib.sha256((thinking_text or "").encode()).hexdigest()[:60]
 
 
+# ── server tools ────────────────────────────────────────────────────────────
+# Anthropic calls a tool the API runs itself a *server tool*, and reports it as
+# a `server_tool_use` block paired with a result block. The caller never sends a
+# tool_result back for these — that is the whole difference from a client
+# `tool_use`. Docs: "The API executes the tool internally. You see the call and
+# its result in the response, but you don't handle execution."
+
+_SERVER_TOOL_PREFIX = "srvtoolu_"
+
+
+def _server_tool_record(name: str, tc_id: str, args: Any,
+                        result: str) -> Dict[str, Any]:
+    """Record one search the router ran, for the server-tool blocks."""
+    query = ""
+    if isinstance(args, dict):
+        query = str(args.get("query") or args.get("url") or "")
+    return {
+        "id": tc_id if str(tc_id).startswith(_SERVER_TOOL_PREFIX)
+        else _SERVER_TOOL_PREFIX + str(tc_id),
+        "name": "web_search" if name.lower().endswith("search") else "web_fetch",
+        "query": query,
+        "result": result or "",
+        "failed": not (result or "").strip()
+        or (result or "").startswith(("Search error", "WebFetch error",
+                                      "Fetch error", "HTTP error")),
+    }
+
+
+def _server_tool_use_block(rec: Dict[str, Any]) -> Dict[str, Any]:
+    key = "query" if rec["name"] == "web_search" else "url"
+    return {"type": "server_tool_use", "id": rec["id"], "name": rec["name"],
+            "input": {key: rec["query"]}}
+
+
+def _web_search_result_block(rec: Dict[str, Any]) -> Dict[str, Any]:
+    """The result block paired with a `server_tool_use` by `tool_use_id`."""
+    if rec.get("failed"):
+        return {"type": "web_search_tool_result", "tool_use_id": rec["id"],
+                "content": {"type": "web_search_tool_result_error",
+                            "error_code": "unavailable"}}
+    return {"type": "web_search_tool_result", "tool_use_id": rec["id"],
+            "content": [{"type": "web_search_result",
+                          "title": rec.get("query") or "Result",
+                          "url": rec.get("query") or "",
+                          "encrypted_content": rec.get("result") or ""}]}
+
+
 def estimate_input_tokens(body: Dict[str, Any]) -> int:
     """Estimate the *client-visible* input tokens for a request body.
 

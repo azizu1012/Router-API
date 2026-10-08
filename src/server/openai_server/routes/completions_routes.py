@@ -138,7 +138,39 @@ def _output_message(item_id: str, status: str, text: str) -> dict:
             "role": "assistant", "content": [_output_text_part(text)]}
 
 
-async def _responses_sse_stream(chunks, model: str = ""):
+def _web_search_action(record: dict) -> dict:
+    """The action object inside a `web_search_call` item.
+
+    The docs define `search` and `open_page`; `find_in_page` also exists for
+    reasoning models. Only `search` carries queries.
+    """
+    if record.get("type") == "open_page":
+        return {"type": "open_page", "url": record.get("url", "")}
+    action: dict = {"type": "search"}
+    if record.get("query"):
+        action["query"] = record["query"]
+    if record.get("engine"):
+        action["search_engine"] = record["engine"]
+    return action
+
+
+def _web_search_call_item(call_id: str, record: dict) -> dict:
+    """A `web_search_call` output item.
+
+    `status` is `failed` when the search did not produce results, which is how
+    a client can tell an empty search apart from one that ran.
+    """
+    failed = bool(record.get("error")) or not record.get("query")
+    return {
+        "id": call_id,
+        "type": "web_search_call",
+        "status": "failed" if failed else "completed",
+        "action": _web_search_action(record),
+    }
+
+
+async def _responses_sse_stream(chunks, model: str = "",
+                                search_trace: list | None = None):
     """Re-frame chat-completions SSE into Responses API events.
 
     The chat proxy speaks the chat dialect: `data: {"choices":[{"delta":...}]}`.
@@ -161,6 +193,7 @@ async def _responses_sse_stream(chunks, model: str = ""):
     """
     rid = f"resp_{uuid.uuid4().hex}"
     msg_id = f"msg_{uuid.uuid4().hex}"
+    searches = list(search_trace or [])
     created = int(time.time())
     seq = 0
     parts: list[str] = []
@@ -172,6 +205,7 @@ async def _responses_sse_stream(chunks, model: str = ""):
     next_index = 0
     tools: dict[int, dict] = {}
     output: list = []
+    search_trace: list = []
 
     def envelope(status, u=None):
         return _responses_envelope(rid, model, status, output, created, u)
@@ -181,6 +215,32 @@ async def _responses_sse_stream(chunks, model: str = ""):
     seq += 1
     yield _responses_event("response.in_progress", seq,
                            response=envelope("in_progress"))
+
+    # A search the router ran for the model is a hosted tool call, not a
+    # function call: OpenAI reports these as `web_search_call` items that come
+    # before the message, with no client-side tool loop. Emitting a
+    # `function_call` here would ask the client to run a tool it does not have.
+    for record in searches:
+        idx = next_index
+        next_index += 1
+        call_id = record.get("id") or f"ws_{uuid.uuid4().hex}"
+        item = _web_search_call_item(call_id, record)
+        yield _responses_event("response.output_item.added", seq,
+                              output_index=idx, item=item)
+        seq += 1
+        yield _responses_event("response.web_search_call.in_progress", seq,
+                              item_id=call_id, output_index=idx)
+        seq += 1
+        yield _responses_event("response.web_search_call.searching", seq,
+                              item_id=call_id, output_index=idx)
+        seq += 1
+        yield _responses_event("response.web_search_call.completed", seq,
+                              item_id=call_id, output_index=idx)
+        seq += 1
+        yield _responses_event("response.output_item.done", seq,
+                              output_index=idx, item=item)
+        seq += 1
+        output.append(item)
     seq += 1
 
     async for raw in chunks:
@@ -242,6 +302,14 @@ async def _responses_sse_stream(chunks, model: str = ""):
 
             for tc in delta.get("tool_calls") or []:
                 if not isinstance(tc, dict):
+                    continue
+                fn = tc.get("function") or {}
+                name = fn.get("name") or tc.get("name") or ""
+                if name in ("WebSearch", "web_search", "WebFetch",
+                            "web_fetch"):
+                    # The router runs these itself and reports them as hosted
+                    # tool calls. A function_call for them would ask the client
+                    # to execute a tool the client was never given.
                     continue
                 idx = int(tc.get("index", 0) or 0)
                 fn = tc.get("function") or {}
@@ -562,13 +630,23 @@ async def responses(
     try:
         await _apply_account_limit(account, chat_body)
         from src.api.opencode_proxy import opencode_proxy
+        search_trace: list = []
         if is_stream:
+            # Searches are driven to completion first so the stream can open with
+            # the search item already reported, the order OpenAI uses.
+            _msgs, _tools, search_trace = await opencode_proxy.prime_search(
+                chat_body, account=account)
+            stream_body = dict(chat_body)
+            stream_body["messages"] = _msgs
+            if _tools:
+                stream_body["tools"] = _tools
             return StreamingResponse(
                 _responses_sse_stream(
                     opencode_proxy.stream_chat_completion(
-                        chat_body, account=account, is_opencode=False
+                        stream_body, account=account, is_opencode=False
                     ),
                     model=str(body.get("model", "")),
+                    search_trace=search_trace,
                 ),
                 media_type="text/event-stream",
                 headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
@@ -608,13 +686,22 @@ async def responses(
     text = _extract_response_text(result)
     rid = f"resp_{uuid.uuid4().hex}"
     item_id = f"msg_{uuid.uuid4().hex}"
+    trace = result.get("_search_trace") or []
+    result.pop("_search_trace", None)
 
     output = []
+    # Hosted search items come before the message, matching OpenAI's order.
+    for record in trace:
+        call_id = record.get("id") or f"ws_{uuid.uuid4().hex}"
+        output.append(_web_search_call_item(call_id, record))
     if text:
         output.append(_output_message(item_id, "completed", text))
     # A tool turn carries no text, so building the envelope from the text alone
     # returned an empty output and the client was told it had been answered.
     for tc in _extract_response_tool_calls(result):
+        if tc.get("name") in ("WebSearch", "web_search", "WebFetch",
+                              "web_fetch"):
+            continue
         output.append({
             "id": f"fc_{uuid.uuid4().hex}",
             "type": "function_call",

@@ -62,6 +62,7 @@ pytest
 | `test_finish_reason.py` | `finish_reason` luôn nằm trong enum OpenAI; có tool call thì là `tool_calls` |
 | `test_native_gemini_errors.py` | Native Gemini trả envelope lỗi đúng chuẩn Google, không báo nhầm quota, không ship field nội bộ của SDK |
 | `test_uncovered_routes.py` | `/v1/completions` không 503 khi thiếu `max_tokens`; `/v1/models` là superset hợp lệ; `web_search` chạy server-side chứ không rò tool ra client |
+| `test_hosted_search_shape.py` | Hosted web search đúng hình dạng chuẩn của từng provider: `web_search_call` bên OpenAI, `server_tool_use` bên Anthropic, không tự bật search |
 
 Chạy nhanh một file:
 

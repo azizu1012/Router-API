@@ -84,8 +84,15 @@ async def run_intercepted(
     body: Dict[str, Any],
     account: Optional[Dict[str, Any]],
     auth_key_prefix: str,
-) -> str:
-    """Execute one intercepted tool and return the text to feed back."""
+) -> Tuple[str, Dict[str, Any]]:
+    """Execute one intercepted tool.
+
+    Returns the text to feed back to the model, plus a record of what was done.
+    The record is what lets each dialect report the call in its own hosted-tool
+    shape — OpenAI wants a `web_search_call` item, Anthropic wants a
+    `server_tool_use` block — instead of a function call the client would have
+    to answer itself.
+    """
     name = _tool_name(tc)
     args = _tool_args(tc)
 
@@ -93,7 +100,8 @@ async def run_intercepted(
         query = str(args.get("query") or args.get("q") or "")
         logger.info("[SearchIntercept] executing query=%r", query[:160])
         if not query.strip():
-            return "Search error: no query given."
+            return "Search error: no query given.", {"type": "search",
+                                                     "query": query}
         try:
             from src.api.opencode_proxy.handler.websearch import resolve_search_engine
             from src.core.providers.search_manager import execute_hybrid_search
@@ -104,7 +112,9 @@ async def run_intercepted(
                 auth_key_prefix=auth_key_prefix, account=account,
             )
             if not context:
-                return "No search results found."
+                return ("No search results found.",
+                        {"type": "search", "query": query, "engine": engine,
+                         "citations": []})
             parts = [context]
             links = []
             for c in citations or []:
@@ -114,15 +124,19 @@ async def run_intercepted(
                     links.append(f"- [{title}]({url})")
             if links:
                 parts.append("\n**Sources / Citations:**\n" + "\n".join(links))
-            return "\n".join(parts)
+            return ("\n".join(parts),
+                    {"type": "search", "query": query, "engine": engine,
+                     "citations": list(citations or [])})
         except Exception as e:  # a search failure must not fail the turn
             logger.warning("[SearchIntercept] query failed: %s", e)
-            return f"Search error: {e}"
+            return (f"Search error: {e}",
+                    {"type": "search", "query": query, "error": str(e)})
 
     url = str(args.get("url") or "")
     logger.info("[SearchIntercept] fetching url=%r", url[:200])
     if not url.strip():
-        return "Fetch error: no url given."
+        return ("Fetch error: no url given.",
+                {"type": "open_page", "url": url})
     try:
         import aiohttp
 
@@ -133,11 +147,15 @@ async def run_intercepted(
                          "Mozilla/5.0 (Router API; +http://127.0.0.1:58100)"}
             ) as resp:
                 if resp.status == 200:
-                    return (await resp.text())[:8000]
-                return f"HTTP error {resp.status}"
+                    body_text = (await resp.text())[:8000]
+                    return body_text, {"type": "open_page", "url": url,
+                                       "content": body_text}
+                msg = f"HTTP error {resp.status}"
+                return msg, {"type": "open_page", "url": url, "error": msg}
     except Exception as e:
         logger.warning("[SearchIntercept] fetch failed: %s", e)
-        return f"WebFetch error: {e}"
+        return f"WebFetch error: {e}", {"type": "open_page", "url": url,
+                                       "error": str(e)}
 
 
 def _message_of(resp: Any) -> Any:
@@ -184,31 +202,41 @@ async def drive_search_loop(
     account: Optional[Dict[str, Any]],
     auth_key_prefix: str,
     max_rounds: int = MAX_SEARCH_ROUNDS,
-) -> Tuple[Any, List[Dict[str, Any]], List[Dict[str, Any]]]:
+) -> Tuple[Any, List[Dict[str, Any]], List[Dict[str, Any]],
+               List[Dict[str, Any]]]:
     """Run `call_once` until the model stops asking for the router's own tools.
 
-    Returns the final result plus the message and tool lists that produced it,
-    so the caller can build its response without re-deriving them.
+    Returns the final result, the message and tool lists that produced it, and
+    the record of every search the router ran on the model's behalf. That last
+    one is what each dialect needs in order to report the call in its own
+    hosted-tool shape rather than as a function call the client must answer.
     """
     result = None
+    trace: List[Dict[str, Any]] = []
     for _ in range(max_rounds):
         result = await call_once(messages, tools)
         tool_calls = _tool_calls_of(result)
         target = find_intercepted(tool_calls)
         if target is None:
-            return result, messages, tools
+            return result, messages, tools, trace
 
-        result = await run_intercepted(target, body, account, auth_key_prefix)
+        result_text, record = await run_intercepted(
+            target, body, account, auth_key_prefix)
+        trace.append({
+            "id": _tool_id(target),
+            "name": _tool_name(target),
+            **record,
+        })
         messages = list(messages) + [
             {"role": "assistant", "content": "",
              "tool_calls": [_as_assistant_tool_call(tc)
                             for tc in tool_calls]},
             {"role": "tool", "tool_call_id": _tool_id(target),
-             "name": _tool_name(target), "content": result},
+             "name": _tool_name(target), "content": result_text},
         ]
         logger.info("[SearchIntercept] feeding %d chars back, round %d",
-                    len(result), _ + 1)
-    return result, messages, tools
+                    len(result_text), _ + 1)
+    return result, messages, tools, trace
 
 
 def _as_assistant_tool_call(tc: Any) -> Dict[str, Any]:

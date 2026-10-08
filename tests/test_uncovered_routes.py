@@ -186,7 +186,7 @@ class TestSearchToolDoesNotLeak:
                     call_once, [{"role": "user", "content": "hi"}], [],
                     {"web_search": True}, None, "kp")
 
-            result, messages, _tools = asyncio.run(go())
+            result, messages, _tools, trace = asyncio.run(go())
         finally:
             sm.execute_hybrid_search = original
 
@@ -195,6 +195,10 @@ class TestSearchToolDoesNotLeak:
         roles = [m["role"] for m in messages]
         assert roles == ["user", "assistant", "tool"], roles
         assert messages[-1]["tool_call_id"] == "call_1"
+        # The trace is what each dialect turns into its hosted-tool shape.
+        assert trace == [{"id": "call_1", "name": "WebSearch", "type": "search",
+                          "query": "capital of France", "engine": "duckduckgo",
+                          "citations": [{"url": "http://x", "title": "X"}]}], trace
 
     def test_a_reply_with_no_tool_call_is_returned_untouched(self):
         from src.api.opencode_proxy.handler import search_intercept as si
@@ -207,10 +211,11 @@ class TestSearchToolDoesNotLeak:
                 call_once, [{"role": "user", "content": "hi"}], [],
                 {}, None, "kp")
 
-        result, messages, _tools = asyncio.run(go())
+        result, messages, _tools, trace = asyncio.run(go())
 
         assert result["response"].choices[0].message.content == "Paris."
         assert len(messages) == 1, messages
+        assert trace == [], trace
 
     def test_a_turn_that_keeps_searching_is_bounded(self):
         from src.api.opencode_proxy.handler import search_intercept as si
@@ -249,11 +254,15 @@ class TestSearchToolDoesNotLeak:
         original = sm.execute_hybrid_search
         sm.execute_hybrid_search = boom
         try:
-            result = asyncio.run(si.run_intercepted(_ToolCall(), {}, None, "kp"))
+            text, record = asyncio.run(
+                si.run_intercepted(_ToolCall(), {}, None, "kp"))
         finally:
             sm.execute_hybrid_search = original
 
-        assert "search backend down" in result, result
+        assert "search backend down" in text, text
+        # The failure is also recorded, so the dialect can report it rather than
+        # presenting an empty search as a completed one.
+        assert record["error"], record
 
     def test_the_tool_call_is_normalised_to_the_openai_shape(self):
         from src.api.opencode_proxy.handler.search_intercept import (

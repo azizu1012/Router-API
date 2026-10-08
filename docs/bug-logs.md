@@ -1188,3 +1188,69 @@ hoac dinh nghia route rieng, nen khong route nao chay day du vong
 Kiem chung them bang SDK that qua HTTP that: `/v1/completions` validate la
 `Completion`, `/v1/models` validate la `ModelInfo`, va `web_search: true` tra
 `finish_reason: stop` kem cau tra loi that tren ca 3 engine.
+---
+
+## Bug #27: Hosted Web Search Ra Sai Hinh Dang Cua Ca Hai Provider (2026-10-09)
+
+### Muc do
+Im lang va lam hong luot chat. Client nhan mot `function_call` cho mot tool ma
+no khong co — do chinh router nem ra.
+
+### Root cause
+Router xu ly search **nhu mot function tool** ten `WebSearch`. Do la khong dung
+hinh dang cua **ca hai** provider, va khong dung ca hinh dang function tool:
+
+| | Client khai bao | Provider thuc thi | Client chay loop | Tra ve |
+|---|---|---|---|---|
+| OpenAI | `tools:[{"type":"web_search"}]` | co | **khong** | item `web_search_call` |
+| Anthropic | `tools:[{"type":"web_search_20250305"}]` | co | **khong** | block `server_tool_use` + `web_search_tool_result` |
+| Function tool | `tools:[{"type":"function",...}]` | **khong** | **co** | `function_call` + client gui `tool_result` |
+
+OpenAI noi ro trong docs Agents API:
+
+> "If you leave web_search out of agent.tools, built-in web search is off.
+> **Asking for a search in the prompt does not turn it on.**"
+
+Ba tang sai, ke ca mot tang tu "auto" ma ban ghi:
+1. `gemini_handlers.py` bat search cho **moi** account ma `search_engine` khong
+   literal la `"disabled"` — tuc la moi account, vi default la `"auto"`. Mot
+   cau hoi binh thuong bi day vao ADK path; thieu `google-adk` thi ca endpoint
+   `:generateContent` chet (Bug #25).
+2. Chat dialect inject tool search ma khong gi chay no (Bug #26).
+3. Ket qua la client nhan `WebSearch` tren mot response rong.
+
+### Fix
+- **`_hosted_search`**: Responses danh dau chat body; chi dialect nay duoc inject.
+- **Responses**: phat `response.web_search_call.in_progress` / `.searching` /
+  `.completed` + item `web_search_call` co `action` va `status`. Khong phat
+  `function_call`.
+- **Anthropic**: phat `server_tool_use` (id tien to `srvtoolu_`) + 
+  `web_search_tool_result` noi bang `tool_use_id`. Khong phat client `tool_use`.
+- **Gemini native**: bo nhanh default-on. Client muon search thi gui
+  `google_search` tool; Google tu quyet dinh grounding — van dung.
+- **Chat Completions**: khong co hosted search, khop spec OpenAI. Muon search thi
+  dung `POST /v1/search`.
+- `drive_search_loop` tra them `trace` de moi dialect tu phat hinh dang cua no.
+
+### Vì sao trace lai can
+`search_intercept` lo duyet client co the chay tool nao. Nhung client phai
+thay **hinh dang cua provider dang noi**, khong phai mot function call chung.
+Mot danh sach "cuc bo nao da search" duoc cho ca hai va khong ton tai o gi.
+
+### Ghi chu: streaming
+Responses stream phai bao cao `web_search_call` *truoc* khi text bat dau — dung
+thu tu OpenAI. De lam duoc, search duoc chay cho xong truoc khi stream bat dau
+(`prime_search`); luot co search do khong stream dan thong cho den khi search
+xong. Do la dinh dich, va no ghi ro trong docstring.
+
+### Test
+`tests/test_hosted_search_shape.py` — 21 test: `web_search_call` validate duoi
+`strict=True`, `server_tool_use` co `srvtoolu_`, result block noi bang
+`tool_use_id`, search fail -> `status: failed` / `error_code`, function tool
+that cua client **van** la `function_call`, va mot test doc source khoa rang native
+path chi bat search mot lan — o cho doc `google_search` tool cua client.
+
+Xac nhan bang SDK that qua HTTP that:
+- OpenAI: `output=['web_search_call','message']`, status=completed, action=search
+- Anthropic: blocks `['server_tool_use','web_search_tool_result',...,'text']`,
+  `stop_reason=end_turn`

@@ -21,6 +21,9 @@ from .anthropic_spec import (
     extract_tool_choice,
     map_stop_reason,
     thinking_signature,
+    _server_tool_record,
+    _server_tool_use_block,
+    _web_search_result_block,
 )
 from .compaction import _pre_compact_and_truncate
 
@@ -98,6 +101,9 @@ class ClaudeProxyNonstreamMixin:
         stop_sequences = sampling_params.get("stop_sequences")
 
         recursion_depth = 0
+        # Searches the router ran for the model, reported as
+        # server-tool blocks instead of client tool_use blocks.
+        server_tool_calls: list = []
         output_tokens = 0
         text = ""
         thought = None
@@ -263,9 +269,24 @@ class ClaudeProxyNonstreamMixin:
                 "content": tool_result
             }
             openai_messages.extend([assistant_msg, tool_result_msg])
+            # The router ran this search itself, so the caller sees Anthropic's
+            # hosted-tool shape rather than a client tool_use it must answer.
+            server_tool_calls.append(
+                _server_tool_record(name, tc_id, args, tool_result)
+            )
             recursion_depth += 1
 
         content_blocks = []
+        # Searches the router ran on the model's behalf, reported in Anthropic's
+        # hosted-tool shape rather than as a client `tool_use` the caller would
+        # be obliged to answer.
+        for rec in server_tool_calls:
+            content_blocks.append(
+                _server_tool_use_block(rec)
+            )
+            content_blocks.append(
+                _web_search_result_block(rec)
+            )
         if thought:
             content_blocks.append({
                 "type": "thinking",

@@ -195,9 +195,16 @@ async def _handle_gemini_native_inner(
     if explicit_disable:
         web_search = False
         tools = [t for t in tools if getattr(t, "google_search", None) is None]
-    else:
-        if not web_search and account and (account.get("web_search_enabled") or account.get("search_engine", "auto") != "disabled"):
-            web_search = True
+    # No default-on branch. This used to switch search on for any account whose
+    # `search_engine` was not literally "disabled" — which is every account,
+    # since the default is "auto". A client asking a question then got routed
+    # onto the ADK search path, so without google-adk installed the whole
+    # :generateContent endpoint failed. Google decides grounding on its own when
+    # the client asks for it with a google_search tool; a request that never
+    # asked must not be sent searching.
+    #
+    # OpenAI's own guidance on hosted search is the same principle: asking for a
+    # search in the prompt does not turn it on.
     target_model_id = router.get_model_id(model_alias)
     is_lite = "lite" in model_alias.lower() or "lite" in target_model_id.lower()
     can_native_ground = (

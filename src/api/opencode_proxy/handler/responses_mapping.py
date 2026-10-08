@@ -158,6 +158,11 @@ def responses_to_chat_body(body: Dict[str, Any]) -> Dict[str, Any]:
 
     if wants_search:
         chat["web_search"] = True
+        # Marks this as the Responses dialect asking for hosted search, which is
+        # the only place the router injects its WebSearch tool. Without the
+        # marker the injection gate reads "not asked" and Responses silently
+        # loses search.
+        chat["_hosted_search"] = True
         # Only set the engine when the client did not name one. An explicit
         # search_engine in the request outranks the dialect default, and this
         # function is what builds the body, so clobbering it here would make
