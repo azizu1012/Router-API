@@ -1122,3 +1122,69 @@ khoa `adk` nam truoc `for attempt`.
 Xac nhan bang **google-genai that** qua HTTP that: `generateContent` tra loi binh
 thuong, `APIError` doc duoc loi cua chung ta, `streamGenerateContent` ra chunk
 validate duoc.
+---
+
+## Bug #26: `/v1/completions` 503, `/v1/models` Khong Hop Le, WebSearch Ro Ra Client (2026-10-09)
+
+Ba bug tim bang cach quet lai **toan bo** endpoint, dung SDK that qua HTTP that.
+Khong cai nao nam trong khu vuc test hien co.
+
+### 1. `/v1/completions` — 503 khi khong co `max_tokens`
+
+Route do lenh `chat_body["max_tokens"] = body.get("max_tokens")`, tuc la
+**luon co key**, gia tri la `None`. Ben ngoai:
+
+```python
+max_tokens = min(int(body.get("max_tokens", config.MAX_OUTPUT_TOKENS)), ...)
+```
+
+`dict.get(k, default)` **chi** tra default khi key *vang mat*. Key co mat,
+gia tri `None`, nen `int(None)` nem `TypeError`. Route bat loi roi tra 503
+generic — client chi thay "Service temporarily unavailable".
+
+Cung lo trap voi `temperature`. Sua ca hai: dung `or`, va route bo hanh
+ghi `None` vao body.
+
+### 2. `/v1/models` — thieu `lifecycle`
+
+Comment trong file khai *"emit a superset that satisfies each validator"*.
+`anthropic.types.ModelInfo` **bat buoc** `id`, `type`, `display_name`,
+`created_at`, `lifecycle` — thieu `lifecycle` nen entry khong validate duoc.
+README cung quang bao "OpenAI **and** Anthropic schema superset".
+
+### 3. `web_search: true` — router ro `WebSearch` tool ra client
+
+Route chat inject `_WEBSEARCH_TOOL_DEF`, gan voi hien `pool_manager` **khong co**
+tham so `web_search` nen khong the dung Google grounding. Tool do la co che tim
+kiem duy nhat tren path nay — va **khong ai chay no**.
+
+Ket qua do moi cau hoi can search:
+
+```
+finish_reason: 'tool_calls'
+content:       ''
+tool_calls:    [{"name": "WebSearch", "arguments": "{\"query\": \"...\"}"}]
+```
+
+Mot tool noi bo ma client khong co phien ban, tren mot response rong. README
+mo ta day la "server-side tool loop" — client khong phai implement search.
+
+May interception co san **chi o proxy Anthropic**. Proxy OpenCode co mot ban
+khac trong `nonstream_executor.py`, nhung `/v1/chat/completions` goi thang
+`pool_manager.call_nonstream` va bo qua ca hai.
+
+Fix: `search_intercept.py` chay search, feed ket qua nguoc vao, lap lai, gioi
+han 3 vong. Doc ca hai shape tool call (facade lam phang `{name, arguments}`,
+OpenAI long trong `function`) va ca hai hinh response (`choices[0].message`
+va `message`) — sai mot cai la loop im lang khong bat tool nao.
+
+### Vì sao test harness cu khong bat duoc
+Ca ba deu can request that. Test hien co chi goi `pool_manager` truc tiep
+hoac dinh nghia route rieng, nen khong route nao chay day du vong
+`route -> proxy -> pool_manager -> provider`.
+
+### Test
+`tests/test_uncovered_routes.py` — 13 test. Bản gốc: **5 fail**.
+Kiem chung them bang SDK that qua HTTP that: `/v1/completions` validate la
+`Completion`, `/v1/models` validate la `ModelInfo`, va `web_search: true` tra
+`finish_reason: stop` kem cau tra loi that tren ca 3 engine.

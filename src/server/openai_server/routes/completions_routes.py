@@ -443,9 +443,12 @@ async def completions(
         "messages": [{"role": "user", "content": str(prompt)}],
         "temperature": body.get("temperature", 0.7),
         "top_p": body.get("top_p", 0.95),
-        "max_tokens": body.get("max_tokens"),
         "stream": body.get("stream", False),
     }
+    # Only forward max_tokens when the caller actually sent one. Writing a None
+    # into the body looked like a value to everything downstream.
+    if body.get("max_tokens"):
+        chat_body["max_tokens"] = body["max_tokens"]
     try:
         requested_model = chat_body.get("model", "")
         from src.core.api_config import AVAILABLE_MODELS, MODEL_CONTEXT_LENGTH

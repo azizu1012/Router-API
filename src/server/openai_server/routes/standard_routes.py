@@ -58,15 +58,16 @@ async def mcp_discovery():
 
 
 # Anthropic and OpenAI disagree on the model-list schema: Anthropic wants
-# `type`/`display_name`/`created_at`, OpenAI wants `object`/`created`. Both
-# client families hit this one endpoint, so emit a superset that satisfies each
-# validator instead of registering two conflicting routes on the same path.
+# `type`/`display_name`/`created_at`/`lifecycle`, OpenAI wants
+# `object`/`created`. Both client families hit this one endpoint, so emit a
+# superset that satisfies each validator instead of registering two conflicting
+# routes on the same path.
 _ANTHROPIC_EPOCH = "2025-01-01T00:00:00Z"
 
 
 def _model_entry(m: Dict[str, Any]) -> Dict[str, Any]:
     model_id = m.get("id")
-    return {
+    entry = {
         "id": model_id,
         "object": "model",
         "type": "model",
@@ -77,7 +78,18 @@ def _model_entry(m: Dict[str, Any]) -> Dict[str, Any]:
         "display": m.get("display") or model_id,
         "root": m.get("root"),
         "context_length": m.get("context_length"),
+        # Required by Anthropic's ModelInfo alongside id/type/display_name.
+        # Without it the entry fails validation, so the "emit a superset" comment
+        # above was not true of every field the two schemas need.
+        "lifecycle": "active",
     }
+    # Optional in both schemas, but free to state accurately and useful to a
+    # client deciding what it can send.
+    cl = m.get("context_length")
+    if cl:
+        entry["max_input_tokens"] = cl
+    entry["max_tokens"] = config.MAX_OUTPUT_TOKENS
+    return entry
 
 
 @app.get("/v1/models")

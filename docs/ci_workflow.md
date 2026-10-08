@@ -61,6 +61,7 @@ pytest
 | `test_responses_conformance.py` | Mọi event `/v1/responses` validate bằng model chính thức của OpenAI SDK, kể cả `strict=True`; tool call phải quay lại đủ |
 | `test_finish_reason.py` | `finish_reason` luôn nằm trong enum OpenAI; có tool call thì là `tool_calls` |
 | `test_native_gemini_errors.py` | Native Gemini trả envelope lỗi đúng chuẩn Google, không báo nhầm quota, không ship field nội bộ của SDK |
+| `test_uncovered_routes.py` | `/v1/completions` không 503 khi thiếu `max_tokens`; `/v1/models` là superset hợp lệ; `web_search` chạy server-side chứ không rò tool ra client |
 
 Chạy nhanh một file:
 

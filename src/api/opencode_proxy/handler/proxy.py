@@ -260,27 +260,40 @@ class OpenCodeProxy:
             "thinking_budget": body.get("thinking_budget"),
             "include_thoughts": body.get("include_thoughts", True),
         }
-        max_tokens = min(int(body.get("max_tokens", config.MAX_OUTPUT_TOKENS)), config.MAX_OUTPUT_TOKENS)
-        temperature = float(body.get("temperature", 0.7))
+        # `or`, not `get(k, default)`: a default only fires when the key is
+        # absent, and callers that always populate the body send an explicit
+        # None for "unset" — which is what /v1/completions did, turning a
+        # request with no max_tokens into `int(None)`. temperature has the same
+        # trap.
+        max_tokens = min(int(body.get("max_tokens") or config.MAX_OUTPUT_TOKENS),
+                         config.MAX_OUTPUT_TOKENS)
+        temperature = float(body.get("temperature") or 0.7)
 
-        result = await pool_manager.call_nonstream(
-            model_alias=model_alias,
-            messages=messages,
-            tools=tools or None,
-            temperature=temperature,
-            max_tokens=max_tokens,
-            thinking_config=thinking_config,
-            account=account,
-            extra_body=None,
-            thinking_params=thinking_params,
+        async def call_once(msgs, tls):
+            return await pool_manager.call_nonstream(
+                model_alias=model_alias,
+                messages=msgs,
+                tools=tls or None,
+                temperature=temperature,
+                max_tokens=max_tokens,
+                thinking_config=thinking_config,
+                account=account,
+                extra_body=None,
+                thinking_params=thinking_params,
+            )
+
+        from src.api.opencode_proxy.handler.search_intercept import (
+            drive_search_loop,
+        )
+        result, _messages, _tools = await drive_search_loop(
+            call_once, messages, tools, body, account,
+            get_auth_key_prefix(account),
         )
 
         resp = result["response"]
-        api_key = result["api_key"]
-        model_id = result["model_id"]
-        input_tokens = result["input_tokens"]
 
-        return build_response(body, resp, model_alias, api_key, input_tokens)
+        return build_response(body, resp, model_alias, result["api_key"],
+                              result["input_tokens"])
 
 
     async def stream_chat_completion(
