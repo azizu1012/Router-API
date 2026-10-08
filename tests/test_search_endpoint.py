@@ -114,7 +114,7 @@ class TestTheErrorEnvelopeIsReachable:
         ) as search:
             check.return_value = {"name": "t", "auth_key": "k", "enabled": True}
             search.side_effect = RuntimeError("engine down")
-            r = client.post("/v1/search", json={"query": "x"},
+            r = client.post("/v1/search", json={"query": "x", "search_engine": "duckduckgo"},
                             headers={"Authorization": "Bearer test-key"})
 
         assert r.status_code == 500
@@ -133,7 +133,7 @@ class TestTheErrorEnvelopeIsReachable:
         ) as log:
             check.return_value = {"name": "t", "auth_key": "k", "enabled": True}
             search.return_value = ("Grounded prose with no links.", [])
-            r = client.post("/v1/search", json={"query": "x"},
+            r = client.post("/v1/search", json={"query": "x", "search_engine": "duckduckgo"},
                             headers={"Authorization": "Bearer test-key"})
 
         assert r.status_code == 200
@@ -156,9 +156,97 @@ class TestTheErrorEnvelopeIsReachable:
             check.return_value = {"name": "t", "auth_key": "k", "enabled": True}
             search.return_value = ("Prose.", [{"title": "T",
                                                "url": "https://e.com"}])
-            r = client.post("/v1/search", json={"query": "x"},
+            r = client.post("/v1/search", json={"query": "x", "search_engine": "duckduckgo"},
                             headers={"Authorization": "Bearer test-key"})
 
         assert r.status_code == 200
         assert not [c for c in log.warning.call_args_list
                     if "0 citations" in str(c)]
+
+
+class TestTheEngineMustBeNamed:
+    """No implicit `auto`.
+
+    `auto` ran Google grounding first, which is both the slower engine (measured
+    ~90s against ~5s for DuckDuckGo) and the one that spends the account's
+    quota. A caller who never thought about it was paying, slowly, for a search
+    they had not chosen — the same reasoning that removed the implicit search
+    tool from the chat dialects.
+    """
+
+    def _post(self, body):
+        with patch(
+            "src.server.openai_server.routes.standard_routes._check_auth"
+        ) as check:
+            check.return_value = {"name": "t", "auth_key": "k",
+                                  "enabled": True}
+            return client.post("/v1/search", json=body,
+                               headers={"Authorization": "Bearer test-key"})
+
+    @pytest.mark.anyio
+    async def test_a_missing_engine_is_refused(self):
+        r = self._post({"query": "x"})
+
+        assert r.status_code == 400
+        assert "search_engine" in r.json()["error"]["message"]
+
+    @pytest.mark.anyio
+    async def test_the_message_lists_the_choices(self):
+        msg = self._post({"query": "x"}).json()["error"]["message"]
+
+        for engine in ("duckduckgo", "google_grounding", "auto"):
+            assert engine in msg, f"{engine} not offered to the client"
+
+    @pytest.mark.anyio
+    async def test_it_says_which_engine_costs_quota(self):
+        msg = self._post({"query": "x"}).json()["error"]["message"].lower()
+
+        assert "quota" in msg, (
+            "the client cannot tell which engine spends the account's budget")
+
+
+class TestOnlyTheGroundedSearchSpendsQuota:
+    """A DuckDuckGo search makes no LLM call, so it must not be charged.
+
+    The limiter call sat above the engine branch, so a plain HTTP scrape —
+    which never touches a Gemini key — still consumed the account's RPM/TPM/RPD.
+    That contradicts what the docs promise about this path.
+    """
+
+    def _charged(self, engine):
+        import asyncio
+
+        import src.core.limits.account_limiter as al
+        from src.core.providers.search_manager import execute_hybrid_search
+
+        charged = []
+
+        async def fake_acquire(effective, tokens, pool, *a, **kw):
+            charged.append(pool)
+            return True, "ok"
+
+        async def ddg(query):
+            return ("text", [{"title": "T", "url": "https://e.com"}])
+
+        # `al` is the limiter instance, not the module.
+        original = al.acquire
+        al.acquire = fake_acquire
+        try:
+            with patch("src.tools.duckduckgo.search_with_citations",
+                       new=AsyncMock(side_effect=ddg)), \
+                 patch("src.core.providers.search_manager.api_manager") as am:
+                am.call_gemini = AsyncMock(return_value={
+                    "response": None, "api_key": "k", "model_id": "m",
+                    "input_tokens": 1, "output_tokens": 1})
+                asyncio.run(execute_hybrid_search(
+                    ["q"], search_engine=engine,
+                    account={"name": "a", "tier": "admin", "enabled": True}))
+        finally:
+            al.acquire = original
+        return len(charged)
+
+    def test_duckduckgo_is_not_charged(self):
+        assert self._charged("duckduckgo") == 0
+
+    def test_google_grounding_is_charged(self):
+        assert self._charged("google_grounding") == 1

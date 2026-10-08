@@ -31,7 +31,7 @@ git clone https://github.com/azizu1012/Router-API.git
 cd Router-API
 
 python -m venv .venv
-source .venv/bin/activate        # Windows: .venv\Scripts\activate
+source .venv/bin/activate        # Windows: .venvScriptsactivate
 
 pip install -r requirements.txt
 cp .env.example .env             # then fill in GEMINI_API_KEY_1..N
@@ -170,7 +170,20 @@ An app that drives its own loop should prefer `POST /v1/search`: it costs no Gem
 quota and does not spend a second model call re-reading the conversation. The
 in-chat tool exists for clients that cannot drive their own loop.
 
+`POST /v1/search` requires `search_engine` — there is no default:
+
+| `search_engine` | Cost | Measured latency |
+|---|---|---|
+| `duckduckgo` | no Gemini quota | ~5s |
+| `google_grounding` | spends the account's RPM/TPM/RPD | ~90s |
+| `auto` | spends the account's quota if Google answers | slowest |
+
+On the same queries DuckDuckGo returned more sources and roughly twice the prose
+at a fifteenth of the latency, so the free path is the one to reach for. Only
+`google_grounding` calls a model, and only it is charged against the account.
+
 ---
+
 
 ## Endpoints
 

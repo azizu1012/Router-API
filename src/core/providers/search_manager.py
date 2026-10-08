@@ -225,24 +225,34 @@ async def execute_hybrid_search(
 
     logger.info("Executing WebSearch (Google Grounding first, DuckDuckGo fallback) for queries: %s", queries)
 
+    async def charge_account_quota(query: str) -> None:
+        """Charge the account's budget for one grounded model call.
+
+        Only the Google path below actually calls a model, so only it is charged.
+        This used to sit above the engine branch, which meant a DuckDuckGo search
+        — an HTTP scrape that never touches a Gemini key — still consumed the
+        account's RPM/TPM/RPD. That contradicts the documented promise that the
+        DuckDuckGo path costs no Gemini quota at all.
+        """
+        if not account:
+            return
+        try:
+            from src.core.limits.account_limiter import get_effective_limits_by_pool
+            from src.core.limits import account_limiter
+            estimated_tokens = len(query) // 4 + 300
+            eff_rpm, eff_tpm, eff_rpd = await get_effective_limits_by_pool(account, "lite")
+            effective = {**account, "rpm": eff_rpm, "tpm": eff_tpm, "rpd": eff_rpd}
+            allowed, reason = await account_limiter.acquire(effective, estimated_tokens, "lite")
+            if not allowed:
+                logger.warning("Account rate limit exceeded for lite pool in hybrid search: %s", reason)
+                raise RuntimeError(f"quota_exhausted: Account rate limit exceeded for lite pool in hybrid search: {reason}")
+        except Exception as s_err:
+            if "quota_exhausted" in str(s_err):
+                raise
+            logger.warning("Failed to check rate limit for hybrid search: %s", s_err)
+
     async def run_single_query(query: str) -> Dict[str, Any]:
         """Run one grounded search query. Returns {"query", "snippet", "citations"}."""
-        if account:
-            try:
-                from src.core.limits.account_limiter import get_effective_limits_by_pool
-                from src.core.limits import account_limiter
-                estimated_tokens = len(query) // 4 + 300
-                eff_rpm, eff_tpm, eff_rpd = await get_effective_limits_by_pool(account, "lite")
-                effective = {**account, "rpm": eff_rpm, "tpm": eff_tpm, "rpd": eff_rpd}
-                allowed, reason = await account_limiter.acquire(effective, estimated_tokens, "lite")
-                if not allowed:
-                    logger.warning("Account rate limit exceeded for lite pool in hybrid search: %s", reason)
-                    raise RuntimeError(f"quota_exhausted: Account rate limit exceeded for lite pool in hybrid search: {reason}")
-            except Exception as s_err:
-                if "quota_exhausted" in str(s_err):
-                    raise
-                logger.warning("Failed to check rate limit for hybrid search: %s", s_err)
-
         # ── DuckDuckGo Only ──
         if search_engine == "duckduckgo":
             try:
@@ -258,6 +268,9 @@ async def execute_hybrid_search(
 
         # ── Google Grounding (primary for auto/google_grounding) ──
         if search_engine in ("auto", "google_grounding"):
+            # This branch spends a real model call, so this is the only one that
+            # is charged.
+            await charge_account_quota(query)
             for model in ["gemini-flash-lite", "gemini-flash-25-lite", "gemini-flash"]:
                 try:
                     logger.info("run_single_query running Google Grounding with model %s for query: %s", model, query)

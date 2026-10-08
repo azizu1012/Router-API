@@ -176,7 +176,22 @@ async def web_search_endpoint(
                 "type": "invalid_request_error"}},
         )
 
-    search_engine = body.get("search_engine") or "auto"
+    search_engine = body.get("search_engine")
+    if not search_engine or not isinstance(search_engine, str):
+        # No implicit default. `auto` meant Google grounding first, which is both
+        # the slower engine (~90s against ~5s) and the one that spends the
+        # account's quota, so a caller who had not thought about it was paying
+        # for a search they had not chosen. Same principle as the hosted tools:
+        # the client says which engine it wants.
+        return JSONResponse(
+            status_code=400,
+            content={"error": {
+                "message": "`search_engine` is required and must be one of: "
+                           "'duckduckgo' (free, spends no Gemini quota), "
+                           "'google_grounding' (grounded, spends account quota), "
+                           "'auto' (grounded first, then falls back)",
+                "type": "invalid_request_error"}},
+        )
 
     from src.server.openai_server.auth import _auth_key_prefix
     akp = _auth_key_prefix(account)

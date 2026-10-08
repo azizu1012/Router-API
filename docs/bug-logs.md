@@ -1537,3 +1537,59 @@ Mot test gia lap xanh y het nhung khong chung minh gi, va no im lang hon ca mot
 test do. Bay moi fix deu verify hai dieu: mutant co mat trong file khong, va
 revert duoc thi co test do. `pyflakes` + `ast.parse` tren mutant la bao dam
 khong phai.
+
+---
+
+## Bug #34: DuckDuckGo Van Bi Tru Quota, Va `auto` Mac Dinh Chay Google (2026-10-10)
+
+### Muc do
+Mot cu goi `/v1/search` **khong** goi Gemini nao, van ton hao RPM/TPM/RPD cua
+account. Va client goi route ma khong khai engine nao se bi day xuong Google
+grounding — cham hon 15 lan.
+
+### Root cause
+
+Hai nguyen nhan doc lap nhau, ca hai deu im lang.
+
+**1. Tru quota nam tren nhanh engine.** `account_limiter.acquire()` nam *tren*
+`if search_engine == "duckduckgo"`, nen mot lan scrape HTTP thuan — khong cham
+key Gemini — van bi tinh tien. Do la mau thuan truc tiep voi README, noi rang
+duong DuckDuckGo "tiet kiem 100% han ngach API Key cua Gemini".
+
+Kiem chung don lap:
+
+```
+duckduckgo         limiter.acquire=1   LLM calls=0
+google_grounding   limiter.acquire=1   LLM calls=1
+```
+
+**2. Mac dinh la `auto`, va `auto` bat dau bang Google.** Do la engine cham
+nhat **va** la engine ton quota. Client goi route ma khong suy nghi chuyen
+gi dang tra tien cho mot search ho chua chon.
+
+Do chay cung mot cau hoi:
+
+| Truy van | DuckDuckGo | Google grounding |
+|---|---|---|
+| AI/tech news Oct 2026 | 4236 ch, 5 nguon, 5.5s | 2337 ch, 4 nguon, 91.9s |
+| React 19 release notes | 4740 ch, 5 nguon, 5.4s | 1663 ch, 4 nguon, 102.0s |
+| Python asyncio 2026 | 4005 ch, 5 nguon, 4.8s | 2454 ch, 5 nguon, 64.0s |
+
+DuckDuckGo nhieu nguon hon, text gap doi, nhanh gap 15–20 lan.
+
+### Fix
+- `charge_account_quota()` tach rieng, chi goi trong nhanh Google — nhanh nao
+  that su co model call moi bi tinh tien.
+- `search_engine` bat buoc tren `/v1/search`. Thong bao loi nen ra het engine
+  kem chi ro cai nao ton quota, de client khong can doc docs moi chon dung.
+
+Cung nguyen tac da dung cho hosted tool: client tu khai bao, router khong tu
+suy dien.
+
+### Test
+`TestOnlyTheGroundedSearchSpendsQuota` — 2 test, don lap, khong can cham
+luong thuc. `TestTheEngineMustBeNamed` — 3 test gan 400 + noi dung thong bao.
+
+### Khac biet can ro
+`auto` **van con** va van ton quota neu Google tra loi. No chi con la lua chon
+tuy bien, khong con la mac dinh.
