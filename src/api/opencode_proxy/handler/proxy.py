@@ -331,30 +331,32 @@ class OpenCodeProxy:
     # ── Message Processing ───────────────────────────────────────
 
     def _inject_websearch_tool(
-        self, body: Dict[str, Any],
-        messages: List[Dict[str, Any]],
-        tools: List[Dict[str, Any]],
-        account: Optional[Dict[str, Any]] = None,
-    ) -> tuple:
-        """
-        Chèn công cụ tìm kiếm web vào danh sách các công cụ nếu tìm kiếm web được kích hoạt
-        và yêu cầu không phải từ sub-agent.
+            self, body: Dict[str, Any],
+            messages: List[Dict[str, Any]],
+            tools: List[Dict[str, Any]],
+            account: Optional[Dict[str, Any]] = None,
+        ) -> tuple:
+            """Chèn công cụ WebSearch khi client đã khai báo hosted search.
 
-        Args:
-            body (Dict[str, Any]): Body của yêu cầu API gốc.
-            messages (List[Dict[str, Any]]): Danh sách các tin nhắn trong yêu cầu.
-            tools (List[Dict[str, Any]]): Danh sách các công cụ hiện có trong yêu cầu.
-            account (Optional[Dict[str, Any]], optional): Thông tin tài khoản người dùng. Mặc định là None.
+            Model-decided search is confined to the Responses dialect, and only when
+            the client actually asked for it there (`tools: [{"type":"web_search"}]`,
+            which the Responses route turns into this flag).
 
-        Returns:
-            tuple: Một tuple chứa danh sách tin nhắn và danh sách công cụ đã được cập nhật.
-        """
-        if _is_sub_agent_request(body):
+            It used to fire on any request carrying `web_search: true`, which meant
+            the model could be handed a search tool it was not equipped to serve —
+            and then went looking for one. On the chat dialects a client that wants
+            search drives it itself through `POST /v1/search`, or switches to
+            `/v1/responses`. Nothing is injected on speculation.
+            """
+            if _is_sub_agent_request(body):
+                return messages, tools
+            if not body.get("_hosted_search"):
+                return messages, tools
+            if not should_enable_web_search(body, account):
+                return messages, tools
+            if not any(t.get("function", {}).get("name") == "WebSearch" for t in tools):
+                tools.append(_WEBSEARCH_TOOL_DEF)
             return messages, tools
-        web_search = should_enable_web_search(body, account)
-        if web_search and not any(t.get("function", {}).get("name") == "WebSearch" for t in tools):
-            tools.append(_WEBSEARCH_TOOL_DEF)
-        return messages, tools
 
 
 _WEBSEARCH_TOOL_DEF = {
