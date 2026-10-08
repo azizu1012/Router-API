@@ -417,7 +417,7 @@ class TestAnthropicCitationsAndLimits:
         )
 
         rec = _server_tool_record("WebSearch", "srvtoolu_1", {"query": "q"},
-                                  "body", ACTION_WITH_RESULTS["citations"])
+"body", ACTION_WITH_RESULTS["citations"])
 
         cites = _search_citations([rec])
 
@@ -741,3 +741,233 @@ class TestRefusedSearchesAreNotCounted:
                  if b["type"] == "web_search_tool_result"
                  and isinstance(b["content"], dict)]
         assert codes == ["max_uses_exceeded"]
+
+
+# ── The streaming path ──────────────────────────────────────────────────────
+#
+# The search execution used to be written out twice, once per proxy path, and the
+# two copies drifted: only the non-streaming one read `max_uses`, only one kept
+# the citations, and the streaming one emitted no server-tool blocks at all — so a
+# streamed search lost every source it had found. These run the real streaming
+# proxy, so reverting any part of that shows up here.
+
+class _SDelta:
+    def __init__(self, content=None, tool_calls=None):
+        self.content = content
+        self.tool_calls = tool_calls
+        self.reasoning_content = None
+        self.thought = None
+        self.thought_signature = None
+
+    def get(self, key, default=None):
+        return getattr(self, key, default)
+
+
+class _SChoice:
+    def __init__(self, delta, finish_reason=None):
+        self.delta = delta
+        self.finish_reason = finish_reason
+        self.index = 0
+
+
+class _SChunk:
+    def __init__(self, delta, finish_reason=None):
+        self.choices = [_SChoice(delta, finish_reason)]
+
+
+def _stream_item(chunk):
+    return {"chunk": chunk, "api_key": "k-abcd123456",
+            "model_id": "gemini-3.5-flash", "input_tokens": 1000,
+            "reservation": {}}
+
+
+def _tool_call_chunk(name, args, tc_id):
+    call = {"index": 0, "id": tc_id, "type": "function",
+            "function": {"name": name, "arguments": json.dumps(args)}}
+    return _SChunk(_SDelta(tool_calls=[call]))
+
+
+def _parse_sse(raw_chunks):
+    out = []
+    for raw in raw_chunks:
+        text = raw.decode("utf-8") if isinstance(raw, (bytes, bytearray)) else str(raw)
+        name = data = None
+        for line in text.splitlines():
+            if line.startswith("event: "):
+                name = line[7:].strip()
+            elif line.startswith("data: "):
+                data = json.loads(line[6:])
+        if name:
+            out.append((name, data))
+    return out
+
+
+def _run_streamed_search(monkeypatch, turns, body=None):
+    """Drive the real streaming proxy over scripted turns; return parsed events."""
+    import src.api.claude_proxy.handler.proxy_stream as st
+    from src.api.claude_proxy import claude_proxy
+    from src.core.providers import search_manager
+
+    calls = {"n": 0, "search": 0}
+
+    async def fake_call_stream(**kwargs):
+        turn = turns[min(calls["n"], len(turns) - 1)]
+        calls["n"] += 1
+        for c in turn:
+            yield _stream_item(c)
+
+    async def fake_search(queries, **kwargs):
+        calls["search"] += 1
+        return ("Paris is the capital.", ACTION_WITH_RESULTS["citations"])
+
+    async def fake_log_usage(*a):
+        return None
+
+    monkeypatch.setattr(st.pool_manager, "call_stream", fake_call_stream)
+    monkeypatch.setattr(search_manager, "execute_hybrid_search", fake_search)
+    monkeypatch.setattr(st, "log_usage", fake_log_usage, raising=False)
+
+    body = body or {"model": "gemini-flash",
+                    "messages": [{"role": "user", "content": "capital?"}],
+                    "tools": [SEARCH_TOOL]}
+
+    async def go():
+        return [c async for c in claude_proxy.stream_message(dict(body))]
+
+    return _parse_sse(asyncio.run(go())), calls
+
+
+def _started_blocks(events):
+    return [d["content_block"]["type"] for n, d in events
+            if n == "content_block_start"]
+
+
+class TestTheStreamedSearchUsesTheHostedShape:
+    def test_the_search_is_reported_as_a_server_tool(self, monkeypatch):
+        events, _ = _run_streamed_search(monkeypatch, [
+            [_tool_call_chunk("WebSearch", {"query": "capital"}, "c1")],
+            [_SChunk(_SDelta("Paris."), finish_reason="stop")],
+        ])
+
+        blocks = _started_blocks(events)
+        assert "server_tool_use" in blocks
+        assert "web_search_tool_result" in blocks
+
+    def test_no_client_tool_use_is_emitted_for_the_search(self, monkeypatch):
+        events, _ = _run_streamed_search(monkeypatch, [
+            [_tool_call_chunk("WebSearch", {"query": "capital"}, "c1")],
+            [_SChunk(_SDelta("Paris."), finish_reason="stop")],
+        ])
+
+        assert "tool_use" not in _started_blocks(events)
+
+    def test_the_answer_still_arrives_after_the_search(self, monkeypatch):
+        events, _ = _run_streamed_search(monkeypatch, [
+            [_tool_call_chunk("WebSearch", {"query": "capital"}, "c1")],
+            [_SChunk(_SDelta("Paris."), finish_reason="stop")],
+        ])
+
+        text = "".join(d["delta"]["text"] for n, d in events
+                       if n == "content_block_delta"
+                       and d["delta"].get("type") == "text_delta")
+        assert "Paris." in text
+
+    def test_the_result_block_pairs_with_its_use(self, monkeypatch):
+        events, _ = _run_streamed_search(monkeypatch, [
+            [_tool_call_chunk("WebSearch", {"query": "capital"}, "c1")],
+            [_SChunk(_SDelta("Paris."), finish_reason="stop")],
+        ])
+
+        use = next(d["content_block"] for n, d in events
+                   if n == "content_block_start"
+                   and d["content_block"].get("type") == "server_tool_use")
+        res = next(d["content_block"] for n, d in events
+                   if n == "content_block_start"
+                   and d["content_block"].get("type")
+                   == "web_search_tool_result")
+        assert res["tool_use_id"] == use["id"]
+        assert use["id"].startswith("srvtoolu_")
+
+    def test_the_usage_counts_the_search(self, monkeypatch):
+        events, _ = _run_streamed_search(monkeypatch, [
+            [_tool_call_chunk("WebSearch", {"query": "capital"}, "c1")],
+            [_SChunk(_SDelta("Paris."), finish_reason="stop")],
+        ])
+
+        delta = next(d for n, d in events if n == "message_delta")
+        assert delta["usage"]["server_tool_use"] == {
+            "web_search_requests": 1, "web_fetch_requests": 0}
+
+    def test_the_answer_carries_citation_deltas(self, monkeypatch):
+        events, _ = _run_streamed_search(monkeypatch, [
+            [_tool_call_chunk("WebSearch", {"query": "capital"}, "c1")],
+            [_SChunk(_SDelta("Paris."), finish_reason="stop")],
+        ])
+
+        cites = [d["delta"]["citation"] for n, d in events
+                 if n == "content_block_delta"
+                 and d["delta"].get("type") == "citations_delta"]
+        assert cites, "the streamed answer cites nothing"
+        assert cites[0]["type"] == "web_search_result_location"
+        assert cites[0]["url"] == "https://example.org/paris"
+
+    def test_the_whole_streamed_message_validates(self, monkeypatch):
+        pytest.importorskip("anthropic.types")
+        from anthropic.lib.streaming._messages import accumulate_event as _accum
+        from anthropic.types import Message
+
+        events, _ = _run_streamed_search(monkeypatch, [
+            [_tool_call_chunk("WebSearch", {"query": "capital"}, "c1")],
+            [_SChunk(_SDelta("Paris."), finish_reason="stop")],
+        ])
+
+        # The SDK's own accumulator, fed our frames: if the order were wrong it
+        # raises, and if a block shape were wrong the Message would not validate.
+        snapshot = None
+        bufs = {}
+        for _name, data in events:
+            snapshot = _accum(event=data, current_snapshot=snapshot,
+                              json_bufs=bufs)
+        assert snapshot is not None
+        Message.model_validate(snapshot.model_dump(), strict=True,
+                               extra="forbid")
+
+
+class TestTheStreamedSearchHonoursMaxUses:
+    def _many_searches(self, monkeypatch, cap):
+        turns = [[_tool_call_chunk("WebSearch", {"query": f"q{i}"}, f"c{i}")]
+                 for i in range(5)]
+        turns.append([_SChunk(_SDelta("Answered."), finish_reason="stop")])
+        body = {"model": "gemini-flash",
+                "messages": [{"role": "user", "content": "q"}],
+                "tools": [dict(SEARCH_TOOL, max_uses=cap)]}
+        return _run_streamed_search(monkeypatch, turns, body)
+
+    def test_the_search_runs_at_most_max_uses_times(self, monkeypatch):
+        _, calls = self._many_searches(monkeypatch, 2)
+
+        assert calls["search"] == 2
+
+    def test_the_cap_counts_across_the_whole_recursion(self, monkeypatch):
+        """One shared counter, not one per recursion level."""
+        _, calls = self._many_searches(monkeypatch, 3)
+
+        assert calls["search"] == 3
+
+    def test_a_refused_attempt_is_not_reported_as_a_search(self, monkeypatch):
+        events, calls = self._many_searches(monkeypatch, 1)
+
+        delta = next(d for n, d in events if n == "message_delta")
+        assert delta["usage"]["server_tool_use"]["web_search_requests"] == 1
+
+    def test_the_refusal_reaches_the_client_as_an_error(self, monkeypatch):
+        events, _ = self._many_searches(monkeypatch, 1)
+
+        results = [d["content_block"] for n, d in events
+                   if n == "content_block_start"
+                   and d["content_block"].get("type")
+                   == "web_search_tool_result"]
+        refused = [r for r in results
+                   if isinstance(r["content"], dict)]
+        assert refused, "the refused attempt was reported as a result list"
+        assert refused[0]["content"]["error_code"] == "max_uses_exceeded"

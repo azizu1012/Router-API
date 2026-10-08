@@ -37,6 +37,30 @@ def _load_adk_runner():
     return adk_runner
 
 
+_ADK_CACHE: Dict[str, Any] = {}
+
+
+def _adk_runner_for_search(model_id: str, has_media: bool):
+    """The ADK runner if this call needs it, else None to ground natively.
+
+    The runner was resolved from `web_search` alone, so a client asking for
+    native grounding on a Gemini model — the documented way to search on this
+    endpoint — still died with `google-adk is required` when the package was
+    absent, even though nothing in that path uses it. Loading it only when the
+    ADK branch is genuinely selected keeps a missing optional dependency from
+    taking the endpoint down.
+    """
+    if "gemini" not in (model_id or "").lower() or has_media:
+        return None
+    if "loaded" not in _ADK_CACHE:
+        try:
+            _ADK_CACHE["module"] = _load_adk_runner()
+        except ADKUnavailableError as e:
+            _ADK_CACHE["error"] = str(e)
+        _ADK_CACHE["loaded"] = True
+    return _ADK_CACHE.get("module")
+
+
 class GeminiAPIManager:
     """Orchestrates Gemini API calls with key rotation and error handling.
 
@@ -89,15 +113,14 @@ class GeminiAPIManager:
         total_keys = self.pool.pool_size
         tier = self.pool.resolve_tier(account)
 
-        # Whether this call needs the ADK runner does not depend on the key, the
-        # attempt or the chosen model, so it is resolved once here. Loading it
-        # inside the loop meant a missing optional dependency was caught by the
-        # `except Exception` below, counted as a model failure and retried
-        # against every key and every pool member before surfacing as
-        # "quota_exhausted" -- a message pointing at quota when the cause was a
-        # package that was never installed. ADKUnavailableError exists to be
-        # raised before the retry loop; this is where that has to happen.
-        adk = _load_adk_runner() if web_search else None
+        # The ADK runner is resolved per attempt, from the model this key
+        # actually selected — not from `web_search` alone. Resolving it eagerly
+        # meant a client asking for native grounding, the documented search path
+        # on this endpoint, still failed on a missing optional package that
+        # nothing in that path imports. Resolving it inside the loop but outside
+        # the `try` keeps a real failure from being counted as a model failure
+        # and retried against every key.
+        has_media = image_count > 0 or self._has_media_or_files(contents)
 
         for attempt in range(1, config.MAX_RETRIES + 1):
             await wait_global_cooldown(attempt)
@@ -138,14 +161,24 @@ class GeminiAPIManager:
                     self.pool.record_key_usage(api_key)
 
                     target_model_id = model_id
-                    is_lite = "lite" in model_alias.lower() or "lite" in target_model_id.lower()
-                    has_media = image_count > 0 or self._has_media_or_files(contents)
                     can_native_ground = (
                         web_search
                         and not has_media
-                        and is_lite
                         and ("gemini" in target_model_id.lower())
                     )
+                    adk = None
+                    if web_search and not can_native_ground:
+                        adk = _adk_runner_for_search(target_model_id, has_media)
+                        if adk is None:
+                            # Without the runner a Google model can still search:
+                            # its own grounding is the documented path. Refusing
+                            # here turned a missing optional package into a dead
+                            # endpoint for every model, not just the ones that
+                            # genuinely need the sub-agent.
+                            logger.info(
+                                "[Gemini] adk unavailable; grounding natively "
+                                "on %s", target_model_id)
+                            can_native_ground = True
 
                     if adk is not None and not can_native_ground:
                         # `adk` was resolved once, before the retry loop.
@@ -282,15 +315,14 @@ class GeminiAPIManager:
         total_keys = self.pool.pool_size
         tier = self.pool.resolve_tier(account)
 
-        # Whether this call needs the ADK runner does not depend on the key, the
-        # attempt or the chosen model, so it is resolved once here. Loading it
-        # inside the loop meant a missing optional dependency was caught by the
-        # `except Exception` below, counted as a model failure and retried
-        # against every key and every pool member before surfacing as
-        # "quota_exhausted" -- a message pointing at quota when the cause was a
-        # package that was never installed. ADKUnavailableError exists to be
-        # raised before the retry loop; this is where that has to happen.
-        adk = _load_adk_runner() if web_search else None
+        # The ADK runner is resolved per attempt, from the model this key
+        # actually selected — not from `web_search` alone. Resolving it eagerly
+        # meant a client asking for native grounding, the documented search path
+        # on this endpoint, still failed on a missing optional package that
+        # nothing in that path imports. Resolving it inside the loop but outside
+        # the `try` keeps a real failure from being counted as a model failure
+        # and retried against every key.
+        has_media = image_count > 0 or self._has_media_or_files(contents)
 
         for attempt in range(1, config.MAX_RETRIES + 1):
             await wait_global_cooldown(attempt)
@@ -327,14 +359,24 @@ class GeminiAPIManager:
                     self.pool.record_key_usage(api_key)
 
                     target_model_id = model_id
-                    is_lite = "lite" in model_alias.lower() or "lite" in target_model_id.lower()
-                    has_media = image_count > 0 or self._has_media_or_files(contents)
                     can_native_ground = (
                         web_search
                         and not has_media
-                        and is_lite
                         and ("gemini" in target_model_id.lower())
                     )
+                    adk = None
+                    if web_search and not can_native_ground:
+                        adk = _adk_runner_for_search(target_model_id, has_media)
+                        if adk is None:
+                            # Without the runner a Google model can still search:
+                            # its own grounding is the documented path. Refusing
+                            # here turned a missing optional package into a dead
+                            # endpoint for every model, not just the ones that
+                            # genuinely need the sub-agent.
+                            logger.info(
+                                "[Gemini] adk unavailable; grounding natively "
+                                "on %s", target_model_id)
+                            can_native_ground = True
 
                     if adk is not None and not can_native_ground:
                         # `adk` was resolved once, before the retry loop.

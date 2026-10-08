@@ -86,14 +86,19 @@ def _responses_event(kind: str, seq: int, **fields) -> bytes:
     return f"event: {kind}\ndata: {body}\n\n".encode("utf-8")
 
 
-def _responses_usage(usage: dict | None) -> dict:
+def _responses_usage(usage: dict | None) -> dict | None:
     """Chat usage -> Responses usage. The two dialects name the same numbers
     differently: prompt/completion_tokens vs input/output_tokens.
 
     Both `*_tokens_details` objects are required members of ResponseUsage, so
     they are always emitted; the numbers inside them default to 0.
+
+    No usage at all yields None, not a row of zeros. `Response.usage` is
+    optional, and reporting 0/0 for a request that really spent tokens is a
+    number a client will believe and bill against; null says "unknown".
     """
-    usage = usage or {}
+    if not usage:
+        return None
     inp = int(usage.get("prompt_tokens", usage.get("input_tokens", 0)) or 0)
     out = int(usage.get("completion_tokens", usage.get("output_tokens", 0)) or 0)
     total = int(usage.get("total_tokens", 0) or 0) or (inp + out)
@@ -208,7 +213,8 @@ def _url_citations(text: str, citations: list) -> list:
 
 
 async def _responses_sse_stream(chunks, model: str = "",
-                                search_trace: list | None = None):
+                                search_trace: list | None = None,
+                                input_tokens_hint: int = 0):
     """Re-frame chat-completions SSE into Responses API events.
 
     The chat proxy speaks the chat dialect: `data: {"choices":[{"delta":...}]}`.
@@ -424,9 +430,18 @@ async def _responses_sse_stream(chunks, model: str = "",
         seq += 1
         output.append(item)
 
+    # The chat layer only sends its trailing usage chunk when the client asks,
+    # and sends nothing at all when the upstream stream is cut short.
+    # `response.completed` is expected to carry usage either way, so fall back to
+    # the same estimate the Anthropic path already reports: an estimate is closer
+    # to the truth than null, which leaves a client unable to bill the call.
+    final_usage = usage or _responses_usage({
+        "prompt_tokens": input_tokens_hint,
+        "completion_tokens": max(1, sum(len(p) for p in parts) // 4),
+    })
     yield _responses_event(
         "response.completed", seq,
-        response=envelope("completed", usage),
+        response=envelope("completed", final_usage),
     )
     yield b"data: [DONE]\n\n"
 
@@ -679,6 +694,13 @@ async def responses(
             stream_body["messages"] = _msgs
             if _tools:
                 stream_body["tools"] = _tools
+            # `response.completed` always carries usage in the Responses API,
+            # while the chat layer only emits its trailing usage chunk when the
+            # client asks. The client here speaks Responses and never sees a chat
+            # chunk, so asking for it here changes nothing on the wire the client
+            # sees — it only stops the completed event reporting `"usage": null`.
+            stream_body["stream_options"] = {**(chat_body.get("stream_options") or {}),
+                                            "include_usage": True}
             return StreamingResponse(
                 _responses_sse_stream(
                     opencode_proxy.stream_chat_completion(
@@ -686,6 +708,7 @@ async def responses(
                     ),
                     model=str(body.get("model", "")),
                     search_trace=search_trace,
+                    input_tokens_hint=estimate_input_tokens(dict(stream_body)),
                 ),
                 media_type="text/event-stream",
                 headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},

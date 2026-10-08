@@ -507,3 +507,155 @@ class TestSearchCitationsInTheEnvelope:
             _responses_usage({"prompt_tokens": 1, "completion_tokens": 2}),
         )
         Response.model_validate(body, strict=True, extra="forbid")
+
+
+class TestCompletedAlwaysCarriesUsage:
+    """`response.completed` reports usage; it is never null.
+
+    The chat layer only emits its trailing usage chunk when the client asks,
+    which is right for chat — but a Responses client never sends
+    `stream_options`, so the completed event was reporting `"usage": null`.
+    """
+
+    def test_the_responses_stream_asks_the_chat_layer_for_usage(self):
+        import inspect
+        from src.server.openai_server.routes import completions_routes
+
+        src = inspect.getsource(completions_routes.responses)
+
+        assert '"include_usage": True' in src, (
+            "the Responses stream does not request usage, so "
+            "response.completed reports null")
+
+    def test_a_usage_chunk_reaches_the_envelope(self):
+        """The adapter already reads usage off a `choices: []` chunk."""
+        from src.server.openai_server.routes.completions_routes import (
+            _responses_usage,
+        )
+
+        assert _responses_usage({"prompt_tokens": 11,
+                                 "completion_tokens": 7}) is not None
+
+    def test_no_usage_at_all_yields_none_rather_than_a_fake_number(self):
+        from src.server.openai_server.routes.completions_routes import (
+            _responses_usage,
+        )
+
+        assert _responses_usage(None) is None
+
+
+class TestUsageIsNeverNullOnCompleted:
+    """A completed Responses event reports usage even when the chat stream is cut.
+
+    The chat layer sends its trailing usage chunk only on request, and sends
+    nothing at all when the upstream stream ends early. `response.completed`
+    still owes the client a number — otherwise a client billing from usage sees
+    nothing — so the adapter falls back to an estimate rather than null.
+    """
+
+    def _events(self, chunks, hint=0):
+        import asyncio
+
+        from src.server.openai_server.routes.completions_routes import (
+            _responses_sse_stream,
+        )
+
+        async def gen():
+            async def src():
+                for c in chunks:
+                    yield f"data: {json.dumps(c)}\n\n".encode()
+                yield b"data: [DONE]\n\n"
+            async for ev in _responses_sse_stream(src(),
+                                                 input_tokens_hint=hint):
+                yield ev
+
+        return asyncio.run(_collect(gen()))
+
+    def test_a_truncated_stream_still_reports_usage(self):
+        frames = self._events([_chat_chunk("hi")], hint=500)
+        done = _of_type(frames, "response.completed")[0]
+
+        assert done["response"]["usage"] is not None
+
+    def test_the_fallback_uses_the_hint_it_was_given(self):
+        frames = self._events([_chat_chunk("hi")], hint=4321)
+        done = _of_type(frames, "response.completed")[0]
+
+        assert done["response"]["usage"]["input_tokens"] == 4321
+
+    def test_a_real_usage_chunk_is_preferred_over_the_estimate(self):
+        frames = self._events([
+            _chat_chunk("hi"),
+            {"id": "c", "choices": [], "usage": {
+                "prompt_tokens": 7, "completion_tokens": 3,
+                "total_tokens": 10}},
+        ], hint=9999)
+        done = _of_type(frames, "response.completed")[0]
+
+        assert done["response"]["usage"]["input_tokens"] == 7
+
+    def test_output_is_never_zero_for_a_non_empty_answer(self):
+        frames = self._events([_chat_chunk("a real sentence here")], hint=10)
+        done = _of_type(frames, "response.completed")[0]
+
+        assert done["response"]["usage"]["output_tokens"] >= 1
+class TestUsageIsNeverNullOnCompleted:
+    """A completed Responses event reports usage even when the chat stream is cut.
+
+    The chat layer sends its trailing usage chunk only on request, and sends
+    nothing at all when the upstream stream ends early. `response.completed`
+    still owes the client a number — otherwise a client billing from usage sees
+    nothing — so the adapter falls back to an estimate rather than null.
+    """
+
+    def _completed(self, *pieces, usage=None, hint=0):
+        from src.server.openai_server.routes.completions_routes import (
+            _responses_sse_stream,
+        )
+
+        frames = _stream(*pieces, usage=usage)
+        # Re-run with a hint by driving the adapter directly.
+        import asyncio
+
+        async def go():
+            raw = []
+            async for c in _responses_sse_stream(
+                    _chat(*pieces, usage=usage),
+                    model="gemini-flash", input_tokens_hint=hint):
+                raw.append(c.decode("utf-8") if isinstance(c, (bytes, bytearray))
+                           else str(c))
+            return raw
+
+        events = _events(asyncio.run(go()))
+        return _of_type(events, "response.completed")[0]["response"]
+
+    def test_a_stream_without_a_usage_chunk_still_reports_usage(self):
+        done = self._completed("hi", hint=500)
+
+        assert done["usage"] is not None
+
+    def test_the_fallback_uses_the_hint_it_was_given(self):
+        done = self._completed("hi", hint=4321)
+
+        assert done["usage"]["input_tokens"] == 4321
+
+    def test_a_real_usage_chunk_is_preferred_over_the_estimate(self):
+        done = self._completed("hi", hint=9999,
+                               usage={"prompt_tokens": 7,
+                                      "completion_tokens": 3,
+                                      "total_tokens": 10})
+
+        assert done["usage"]["input_tokens"] == 7
+
+    def test_output_is_never_zero_for_a_non_empty_answer(self):
+        done = self._completed("a real sentence here", hint=10)
+
+        assert done["usage"]["output_tokens"] >= 1
+
+    def test_the_completed_event_still_validates(self):
+        pytest.importorskip("openai.types.responses")
+        done = self._completed("hi", hint=500)
+
+        _models()["response.completed"].model_validate(
+            {"type": "response.completed", "sequence_number": 0,
+             "response": done}, strict=True, extra="forbid")

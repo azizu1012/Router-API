@@ -30,6 +30,12 @@ from .anthropic_spec import (
     extract_tool_choice,
     map_stop_reason,
     thinking_signature,
+    server_search_limits,
+    run_server_tool,
+    _server_tool_record,
+    _server_tool_use_block,
+    _web_search_result_block,
+    _search_citations,
 )
 from .compaction import _pre_compact_and_truncate
 from .helpers import get_system_status_summary
@@ -274,7 +280,15 @@ class ClaudeProxyStreamMixin:
         start_block_index: int,
         sampling_params: Optional[Dict[str, Any]] = None,
         emit_message_start: bool = True,
+        search_limits: Optional[Dict[str, Any]] = None,
+        server_tool_calls: Optional[List[Dict[str, Any]]] = None,
     ) -> AsyncIterator[bytes]:
+        # Shared across the recursion so `max_uses` counts every search in the
+        # turn, not one per level, and so the final usage reports the total.
+        if search_limits is None:
+            search_limits = server_search_limits(body)
+        if server_tool_calls is None:
+            server_tool_calls = []
         try:
             text_started = False
             thinking_started = False
@@ -569,6 +583,15 @@ class ClaudeProxyStreamMixin:
                 })
                 yield _sse("content_block_stop", {"type": "content_block_stop", "index": thinking_index})
             if text_started:
+                # Citations ride on the text that used them, arriving as
+                # `citations_delta` inside the block. Only the deepest turn has
+                # them — the searches are recorded on the shared list, so by the
+                # time the answer is closed they are all known.
+                for cite in _search_citations(server_tool_calls):
+                    yield _sse("content_block_delta", {
+                        "type": "content_block_delta", "index": text_index,
+                        "delta": {"type": "citations_delta", "citation": cite},
+                    })
                 yield _sse("content_block_stop", {"type": "content_block_stop", "index": text_index})
 
             next_block_idx = start_block_index + (1 if thinking_started else 0) + (1 if text_started else 0)
@@ -592,50 +615,39 @@ class ClaudeProxyStreamMixin:
                 except Exception:
                     args = {}
 
-                tool_result = ""
-                if name in ("web_search", "WebSearch"):
-                    query = args.get("query", "")
-                    logger.info("[Claude Proxy Intercept Stream - WebSearch] executing query=%r", query[:160])
-                    try:
-                        from src.core.providers.search_manager import execute_hybrid_search
-                        from src.api.opencode_proxy.handler.websearch import resolve_search_engine
-                        se = resolve_search_engine(body, account)
-                        search_context, combined_citations = await execute_hybrid_search(
-                            [query], search_engine=se, auth_key_prefix=auth_key_prefix, account=account
-                        )
-                        if search_context:
-                            result_lines = [search_context]
-                            unique_links = []
-                            for c in combined_citations:
-                                url = c.get("url")
-                                if url and url not in search_context:
-                                    title = c.get("title") or "Source"
-                                    unique_links.append(f"- [{title}]({url})")
-                            if unique_links:
-                                result_lines.append("\n**Sources / Citations:**\n" + "\n".join(unique_links))
-                            tool_result = "\n".join(result_lines)
-                        else:
-                            tool_result = "No search results found."
-                    except Exception as e:
-                        tool_result = f"Search error: {e}"
-                        logger.warning("[Claude Proxy Intercept Stream - WebSearch] query failed: %s", e)
+                tool_result, search_citations, search_error = await run_server_tool(
+                    name, args, body=body, account=account,
+                    auth_key_prefix=auth_key_prefix, limits=search_limits,
+                    used=len(server_tool_calls))
 
-                elif name in ("web_fetch", "WebFetch"):
-                    url = args.get("url", "")
-                    logger.info("[Claude Proxy Intercept Stream - WebFetch] fetching url=%r", url[:200])
-                    try:
-                        import aiohttp
-                        async with aiohttp.ClientSession() as session:
-                            async with session.get(url, timeout=aiohttp.ClientTimeout(total=10),
-                                                   headers={"User-Agent": "Mozilla/5.0 (Router API; +http://127.0.0.1:58100)"}) as resp_fetch:
-                                if resp_fetch.status == 200:
-                                    raw = await resp_fetch.text()
-                                    tool_result = raw[:8000]
-                                else:
-                                    tool_result = f"HTTP error {resp_fetch.status}"
-                    except Exception as e:
-                        tool_result = f"WebFetch error: {e}"
-                        logger.warning("[Claude Proxy Intercept Stream - WebFetch] fetch failed: %s", e)
+                record = _server_tool_record(name, tc_id, args, tool_result,
+                                             search_citations, search_error)
+                server_tool_calls.append(record)
+
+                # The search happened on this side of the wire, so the client
+                # has to be told about it in Anthropic's hosted-tool shape.
+                # Streaming these as ordinary content blocks is what the spec
+                # describes; without them the streamed message silently dropped
+                # every search and its sources.
+                yield _sse("content_block_start", {
+                    "type": "content_block_start", "index": next_block_idx,
+                    "content_block": _server_tool_use_block(record),
+                })
+                yield _sse("content_block_delta", {
+                    "type": "content_block_delta", "index": next_block_idx,
+                    "delta": {"type": "input_json_delta",
+                              "partial_json": json.dumps(args)},
+                })
+                yield _sse("content_block_stop", {
+                    "type": "content_block_stop", "index": next_block_idx})
+                next_block_idx += 1
+                yield _sse("content_block_start", {
+                    "type": "content_block_start", "index": next_block_idx,
+                    "content_block": _web_search_result_block(record),
+                })
+                yield _sse("content_block_stop", {
+                    "type": "content_block_stop", "index": next_block_idx})
+                next_block_idx += 1
 
                 thought = "".join(accumulated_thought)
                 tsig_str = "".join(accumulated_thought_signature)
@@ -686,6 +698,8 @@ class ClaudeProxyStreamMixin:
                     start_block_index=next_block_idx,
                     sampling_params=sampling_params,
                     emit_message_start=False,
+                    search_limits=search_limits,
+                    server_tool_calls=server_tool_calls,
                 ):
                     yield chunk
 
@@ -713,6 +727,18 @@ class ClaudeProxyStreamMixin:
                             })
                             yield _sse("content_block_stop", {"type": "content_block_stop", "index": next_block_idx})
                         else:
+                            # A search is not a client tool call. When the
+                            # recursion is exhausted the buffer still holds one,
+                            # and emitting it as `tool_use` told the client the
+                            # router had handed it a tool to answer — for a search
+                            # the router had already run, or that was refused.
+                            if name in ("web_search", "WebSearch", "web_fetch",
+                                        "WebFetch"):
+                                logger.info(
+                                    "[Claude Stream] dropping unhandled %s at "
+                                    "recursion limit depth=%d", name,
+                                    recursion_depth)
+                                continue
                             yield _sse("content_block_start", {
                                 "type": "content_block_start", "index": next_block_idx,
                                 "content_block": {"type": "tool_use", "id": buf["id"], "name": name, "input": {}},
@@ -734,6 +760,16 @@ class ClaudeProxyStreamMixin:
                 )
                 client_input_tokens = estimate_input_tokens(body)
                 final_usage = compute_usage(body, client_input_tokens, output_tokens)
+                # Same counter the non-streaming path reports, so a client
+                # reconciling its own spend sees one number either way.
+                ran_search = sum(1 for r in server_tool_calls
+                                 if r["name"] == "web_search" and not r["failed"])
+                ran_fetch = sum(1 for r in server_tool_calls
+                                if r["name"] == "web_fetch" and not r["failed"])
+                if ran_search or ran_fetch:
+                    final_usage["server_tool_use"] = {
+                        "web_search_requests": ran_search,
+                        "web_fetch_requests": ran_fetch}
 
                 # Persist usage so Claude Code traffic shows up in the dashboard.
                 try:

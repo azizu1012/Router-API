@@ -8,6 +8,10 @@ Covered here:
 - Request params: stop_sequences, top_p, top_k, tool_choice, metadata
 - Response: stop_reason / stop_sequence mapping (incl. refusal + stop_sequence)
 - Usage accounting: cache_control breakpoints -> cache_creation/cache_read tokens
+- Hosted web search: running it, the declared limits, and the blocks the client
+  sees. The search itself lived inline in each proxy path, and the two copies had
+  already drifted — only the non-streaming one read `max_uses`, only one of them
+  kept the citations, and only one of them filtered blocked domains.
 """
 
 import hashlib
@@ -228,6 +232,79 @@ def thinking_signature(thinking_text: str) -> str:
 
 _SERVER_TOOL_PREFIX = "srvtoolu_"
 _DEFAULT_MAX_USES = 5
+
+_SEARCH_NAMES = ("web_search", "WebSearch")
+_FETCH_NAMES = ("web_fetch", "WebFetch")
+
+
+async def run_server_tool(
+    name: str,
+    args: Dict[str, Any],
+    *,
+    body: Dict[str, Any],
+    account: Optional[Dict[str, Any]],
+    auth_key_prefix: str,
+    limits: Dict[str, Any],
+    used: int,
+) -> Tuple[str, List[Dict[str, Any]], Optional[str]]:
+    """Run one search the model asked for. Returns (result, citations, error_code).
+
+    Both proxy paths call this, because the alternative was two copies of the
+    same logic and they had drifted: the streaming copy enforced none of the
+    client's declared limits and kept no citations, so a streamed search lost
+    its sources while an identical non-streamed one kept them.
+    """
+    if name in _SEARCH_NAMES:
+        if not _search_budget_left(limits, used):
+            # Anthropic hands back an error result rather than searching past
+            # the cap, so the model can still answer from what it has.
+            return "max_uses_exceeded", [], "max_uses_exceeded"
+        query = str(args.get("query") or "")
+        logger.info("[ClaudeProxy] server search query=%r", query[:160])
+        try:
+            from src.api.opencode_proxy.handler.websearch import (
+                resolve_search_engine,
+            )
+            from src.core.providers.search_manager import execute_hybrid_search
+
+            engine = resolve_search_engine(body, account)
+            context, citations = await execute_hybrid_search(
+                [query], search_engine=engine,
+                auth_key_prefix=auth_key_prefix, account=account)
+        except Exception as e:
+            logger.warning("[ClaudeProxy] server search failed: %s", e)
+            return f"Search error: {e}", [], "unavailable"
+        citations = filter_citations(citations, limits)
+        if not context or not citations:
+            return "No search results found.", [], None
+        lines = [context]
+        links = []
+        for c in citations:
+            if c.get("url"):
+                links.append(f"- [{c.get('title') or 'Source'}]({c['url']})")
+        if links:
+            lines.append("\n**Sources / Citations:**\n" + "\n".join(links))
+        return "\n".join(lines), citations, None
+
+    if name in _FETCH_NAMES:
+        url = str(args.get("url") or "")
+        logger.info("[ClaudeProxy] server fetch url=%r", url[:200])
+        try:
+            import aiohttp
+
+            timeout = aiohttp.ClientTimeout(total=10)
+            headers = {"User-Agent": "Mozilla/5.0 (Router API; +http://127.0.0.1:58100)"}
+            async with aiohttp.ClientSession() as session:
+                async with session.get(url, timeout=timeout, headers=headers) as r:
+                    if r.status != 200:
+                        return f"HTTP error {r.status}", [], "unavailable"
+                    body_text = (await r.text())[:8000]
+        except Exception as e:
+            logger.warning("[ClaudeProxy] server fetch failed: %s", e)
+            return f"WebFetch error: {e}", [], "unavailable"
+        return body_text, [{"url": url, "title": url, "snippet": body_text[:500]}], None
+
+    return "", [], None
 
 
 def _search_budget_left(limits: Dict[str, Any], used: int) -> bool:

@@ -1376,3 +1376,111 @@ Bam lai tung fix: bo `error_code` → 5 fail; hardcode `"unavailable"` → 2 fai
 `encrypted_content` cua Anthropic la du lieu **provider-side da ma hoa**. Router
 khong the tai tao encryption that, nen no gui excerpt model da doc. Day la gioi
 han cua mot gateway, va no duoc ghi ra day thay vi gia lao duoc ma hoa that.
+
+---
+
+## Bug #30: `google_search` Tren Gemini Native Chết 500 Khi Thieu `google-adk` (2026-10-10)
+
+### Muc do
+`POST /v1beta/models/{model}:generateContent` voi `tools: [{"google_search": {}}]`
+tra **500**. Day la duong search **native** cua Google — client chi can khai bao
+tool, Google lo phan con lai. Khong co gi sai ve protocol.
+
+### Root cause
+
+`_load_adk_runner()` chay khi `web_search=True`, truoc ca khi xem co can den ADK
+hay khong:
+
+```python
+adk = _load_adk_runner() if web_search else None   # nem loi ngay
+...
+if adk is not None and not can_native_ground:       # quyet dinh o day, muon
+```
+
+`can_native_ground` cung yeu cau `is_lite`, nen `gemini-flash` (model mac dinh)
+luon roi sang nhanh ADK. Vay client hoi native grounding tren mot model Gemini
+— tai lieu cua chinh endpoint nay — van chet vi mot package optional chua cai,
+du khong tai nao tren duong do can import no.
+
+Comment ngay tren cung noi ro: *"Google decides grounding on its own when the
+client asks for it with a google_search tool"*. Code lam nguoc lai.
+
+### Fix
+- `_adk_runner_for_search(model_id, has_media)` — chi resolve ADK khi branch ADK
+  thu su tai can, va cache ca ket qua that bai.
+- Bo `is_lite` khoi `can_native_ground`: Google ho tro grounding tren ca Flash
+  va Lite. Khi ADK khong co, giu nhanh native thay vi tu choi.
+
+### Test
+`tests/test_native_gemini_errors.py::TestAdkIsNotSwallowed` viet lai thanh test
+**hanh vi** thay vi test vi tri code. Hai test cu gan `src.index("_load_adk_runner()")
+< src.index("for attempt in range")` — chung kiem mot vi tri, khong kiem mot
+hành vi, va chính vi vay chung xanh khi endpoint chet.
+
+---
+
+## Bug #31: Streaming Anthropic Bo Qua Toan Bo Phan Hosted Search (2026-10-10)
+
+### Muc do
+Stream `/v1/messages` voi `web_search_20250305`: client **khong thay** block
+`server_tool_use`, **khong thay** `web_search_tool_result`, **khong thay**
+citations. Ma van tra 200 va `message_stop` dung — client chay xong mot luot
+hop le roi khong co gi.
+
+### Root cause
+
+Logic search viet **hai lan**, mot trong `proxy_nonstream.py`, mot trong
+`proxy_stream.py`, va hai ban do lech nhau ngay tu dau:
+
+| | non-stream | stream |
+|---|---|---|
+| doc `max_uses` | co | **khong** |
+| giu citations | co | **khong** |
+| loc `blocked_domains` | co | **khong** |
+| phat `server_tool_use` | co | **khong** |
+| `usage.server_tool_use` | co | **khong** |
+
+Khi recursion het, buffer con lai duoc emit ra **`tool_use`** cua client — lai
+nhau cho mot search router da chay, hoac da bi `max_uses` tu choi.
+
+### Fix
+- `run_server_tool()` trong `anthropic_spec.py` — mot noi chay search, mot noi
+  doc gioi han client, ca hai path dung chung. Docstring ghi ro vi sao phai
+  gop: hai ban da lech truoc khi co test nao chan.
+- Stream phat `server_tool_use` + `web_search_tool_result` bang content block
+  thuong (dung hinh dang Anthropic mo ta cho streaming), kem `citations_delta`
+  tren text block.
+- `server_tool_calls` va `search_limits` truyen qua de quy, de `max_uses` dem
+  ca luot chu khong dem theo tang.
+- Search khong con xuyen ra `tool_use` client o ca hai path.
+
+### Test
+`TestTheStreamedSearchUsesTheHostedShape` + `TestTheStreamedSearchHonoursMaxUses`
+— 14 test, chay proxy stream thật. Gate manh nhat: nap frame vao chinh
+`accumulate_event` cua SDK roi validate `Message` strict + forbid.
+Mutation: bo server-tool blocks → 2 fail; bo `citations_delta` → 1 fail;
+bo counter → 4 fail.
+
+---
+
+## Bug #32: `response.completed` Bao `usage: null` (2026-10-10)
+
+### Root cause
+Chat chi gui chunk usage khi client xin, dung spec Chat Completions. Nhưng
+`response.completed` cua Responses **luon** co usage. Client Responses khong
+gui `stream_options` nen chunk do khong bao gi toi.
+
+### Fix
+Route Responses stream hoi `include_usage` cho tang chat. Client khong thay
+chat chunk nao nen khong vi pham gi tren wire no nhin thay; chi dung de
+`response.completed` co so lieu. Khi stream bi cat, adapter fallback sang uoc
+luong — cung kieu uoc luong ma nhanh Anthropic da dung — vi `null` khi client
+dang tinh tien se khong tinh gi ca.
+
+### Bai hoc ve kiem chung
+`Response.model_validate(client.model_dump())` **hong khong bao gi**: SDK them
+computed property (`output_text.parsed`) ma API khong gui, roi pydantic bao loi
+cho tung thanh vien cua union `output` — 159 loi cho mot response hoan toan hop
+le. Phai validate **payload tren wire**. `tests/test_responses_conformance.py::
+TestSearchCitationsInTheEnvelope` do cai nay, va harness live kiem bang raw
+httpx chu khong phai SDK.

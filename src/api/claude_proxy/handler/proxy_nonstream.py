@@ -26,8 +26,7 @@ from .anthropic_spec import (
     _web_search_result_block,
     _search_citations,
     server_search_limits,
-    filter_citations,
-    _search_budget_left,
+    run_server_tool,
 )
 from .compaction import _pre_compact_and_truncate
 
@@ -205,69 +204,12 @@ class ClaudeProxyNonstreamMixin:
                 except Exception:
                     args = {}
 
-            tool_result = ""
-            search_citations: list = []
-            search_error: str | None = None
             searches_used = sum(1 for r in server_tool_calls
                                 if r["name"] == "web_search")
-            if name in ("web_search", "WebSearch") and not _search_budget_left(
-                    search_limits, searches_used):
-                # Anthropic hands the model an error result rather than running
-                # the search past the cap, so the model can still answer.
-                tool_result = "max_uses_exceeded"
-                search_citations = []
-                search_error = "max_uses_exceeded"
-            elif name in ("web_search", "WebSearch"):
-                query = args.get("query", "")
-                logger.info("[Claude Proxy Intercept - WebSearch] executing query=%r", query[:160])
-                try:
-                    from src.core.providers.search_manager import execute_hybrid_search
-                    from src.api.opencode_proxy.handler.websearch import resolve_search_engine
-                    se = resolve_search_engine(body, account)
-                    search_context, combined_citations = await execute_hybrid_search(
-                        [query], search_engine=se, auth_key_prefix=auth_key_prefix, account=account
-                    )
-                    if search_context:
-                        result_lines = [search_context]
-                        unique_links = []
-                        for c in combined_citations:
-                            url = c.get("url")
-                            if url and url not in search_context:
-                                title = c.get("title") or "Source"
-                                unique_links.append(f"- [{title}]({url})")
-                        if unique_links:
-                            result_lines.append("\n**Sources / Citations:**\n" + "\n".join(unique_links))
-                        tool_result = "\n".join(result_lines)
-                        search_citations = combined_citations
-                    else:
-                        tool_result = "No search results found."
-                except Exception as e:
-                    tool_result = f"Search error: {e}"
-                    logger.warning("[Claude Proxy Intercept - WebSearch] query failed: %s", e)
-            if search_citations:
-                search_citations = filter_citations(search_citations, search_limits)
-                if not search_citations:
-                    tool_result = "No search results found."
-
-            elif name in ("web_fetch", "WebFetch"):
-                url = args.get("url", "")
-                logger.info("[Claude Proxy Intercept - WebFetch] fetching url=%r", url[:200])
-                try:
-                    import aiohttp
-                    async with aiohttp.ClientSession() as session:
-                        async with session.get(url, timeout=aiohttp.ClientTimeout(total=10),
-                                               headers={"User-Agent": "Mozilla/5.0 (Router API; +http://127.0.0.1:58100)"}) as resp_fetch:
-                            if resp_fetch.status == 200:
-                                raw = await resp_fetch.text()
-                                tool_result = raw[:8000]
-                                search_citations = [{"url": url,
-                                                     "title": url,
-                                                     "snippet": tool_result[:500]}]
-                            else:
-                                tool_result = f"HTTP error {resp_fetch.status}"
-                except Exception as e:
-                    tool_result = f"WebFetch error: {e}"
-                    logger.warning("[Claude Proxy Intercept - WebFetch] fetch failed: %s", e)
+            tool_result, search_citations, search_error = await run_server_tool(
+                name, args, body=body, account=account,
+                auth_key_prefix=auth_key_prefix, limits=search_limits,
+                used=searches_used)
 
             # Construct messages for recursive turn
             ast_text = text
@@ -351,6 +293,17 @@ class ClaudeProxyNonstreamMixin:
                             args = json.loads(args)
                         except (json.JSONDecodeError, TypeError):
                             pass
+                    if name in ("web_search", "WebSearch", "web_fetch",
+                                "WebFetch"):
+                        # Reached only when the recursion ran out. This is not a
+                        # tool the client owns — the router already ran it, or
+                        # refused it past `max_uses` — so emitting `tool_use`
+                        # would hand the client work it has no definition for.
+                        logger.info(
+                            "[Claude NonStream] dropping unhandled %s at "
+                            "recursion limit", name)
+                        has_tool_calls = False
+                        continue
                     if name in ("Agent", "Task"):
                         prompt_str = args.get("prompt", "") if isinstance(args, dict) else str(args)
                         content_blocks.append({

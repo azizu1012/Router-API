@@ -115,31 +115,80 @@ class TestFailureClassification:
 
 
 class TestAdkIsNotSwallowed:
-    """`ADKUnavailableError` exists to surface before the retry loop.
+    """A missing `google-adk` must not reach the client as `quota_exhausted`.
 
-    Its own docstring says so. The call sat inside the loop, so the loop's
-    `except Exception` turned it into a per-model failure and the call ended as
-    `quota_exhausted` — after burning every key and every pool member.
+    The import used to happen on `web_search` alone, so a client asking for
+    native grounding — the documented way to search on this endpoint — died with
+    "google-adk is required" even though nothing on that path imports it. These
+    pin the invariant behaviourally: the loader is only consulted when the ADK
+    branch is genuinely selected, and a Gemini model grounds without it.
     """
 
-    def test_a_missing_adk_raises_before_any_key_is_tried(self):
-        import inspect
-
+    def _no_adk(self, monkeypatch):
         from src.core.providers.gemini import manager as m
 
-        src = inspect.getsource(m.GeminiAPIManager.call_gemini)
-        load_line = src.index("_load_adk_runner()")
-        loop_line = src.index("for attempt in range")
-        assert load_line < loop_line, (
-            "the ADK import is back inside the retry loop")
+        def boom():
+            raise m.ADKUnavailableError("google-adk is required")
 
-    def test_the_stream_path_is_the_same(self):
+        monkeypatch.setattr(m, "_load_adk_runner", boom)
+        monkeypatch.setattr(m, "_ADK_CACHE", {}, raising=False)
+        return m
+
+    def test_a_missing_adk_is_never_raised_for_a_gemini_model(self, monkeypatch):
+        m = self._no_adk(monkeypatch)
+
+        # None means "ground natively", not "refuse the request".
+        assert m._adk_runner_for_search("gemini-3.5-flash", has_media=False) is None
+
+    def test_a_real_gemini_request_does_not_touch_the_runner(self, monkeypatch):
+        """The whole point: no ADK import on the native-grounding path."""
         import inspect
 
-        from src.core.providers.gemini import manager as m
+        m = self._no_adk(monkeypatch)
 
-        src = inspect.getsource(m.GeminiAPIManager.call_gemini_stream)
-        assert src.index("_load_adk_runner()") < src.index("for attempt in range")
+        # Resolution happens through the helper, which decides per model; the
+        # call sites must not reach for the runner on `web_search` alone.
+        for fn in (m.GeminiAPIManager.call_gemini,
+                   m.GeminiAPIManager.call_gemini_stream):
+            src = inspect.getsource(fn)
+            assert "_load_adk_runner() if web_search" not in src, (
+                f"{fn.__name__} still resolves the runner from web_search alone")
+            assert "for attempt in range" in src
+
+    def test_media_forces_the_runner_to_be_considered(self, monkeypatch):
+        """Grounding and media do not mix, so the runner is the fallback."""
+        m = self._no_adk(monkeypatch)
+
+        assert m._adk_runner_for_search("gemini-3.5-flash",
+                                        has_media=True) is None
+
+    def test_a_non_google_model_is_never_grounded_natively(self, monkeypatch):
+        m = self._no_adk(monkeypatch)
+
+        assert m._adk_runner_for_search("llama-3.1-70b", has_media=False) is None
+
+    def test_a_missing_adk_is_cached_rather_than_reimported(self, monkeypatch):
+        m = self._no_adk(monkeypatch)
+
+        calls = []
+
+        def counting():
+            calls.append(1)
+            raise m.ADKUnavailableError("google-adk is required")
+
+        monkeypatch.setattr(m, "_load_adk_runner", counting)
+        m._adk_runner_for_search("gemini-3.5-flash", has_media=False)
+        m._adk_runner_for_search("gemini-3.5-flash", has_media=False)
+
+        assert len(calls) == 1, "the failed import was retried on every request"
+
+    def test_the_loader_still_raises_a_typed_error(self):
+        from src.core.providers.gemini.manager import (
+            ADKUnavailableError, _load_adk_runner,
+        )
+
+        with pytest.raises(ADKUnavailableError):
+            _load_adk_runner()
 
 
 class TestSdkFieldsAreNotShipped:
