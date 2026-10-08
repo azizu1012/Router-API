@@ -282,3 +282,53 @@ class TestSearchToolDoesNotLeak:
         )
 
         assert find_intercepted([_ToolCall(name="get_weather")]) is None
+
+class TestPoolDisplayHasNoMemberList:
+    """The pool label is a name, not an inventory.
+
+    It used to read "Gemini Flash Pool (36↔35↔30↔25)". The client reading this
+    string needs the alias; the members are already listed in the dashboard's
+    pool panel and in MODEL_POOLS. Parenthetical version numbers also went
+    stale the moment a member was toggled.
+    """
+
+    def _display(self, alias):
+        from src.core.api_config import AVAILABLE_MODELS
+
+        return AVAILABLE_MODELS[alias]["display"]
+
+    def test_the_flash_pool_is_just_the_tier_name(self):
+        assert self._display("gemini-flash") == "Gemini Flash Pool"
+
+    def test_the_lite_pool_is_just_the_tier_name(self):
+        assert self._display("gemini-flash-lite") == "Gemini Flash Lite Pool"
+
+    def test_no_pool_label_carries_a_parenthetical(self):
+        from src.core.api_config import MODEL_POOLS
+
+        for pool in MODEL_POOLS:
+            assert "(" not in self._display(pool), (
+                f"{pool} label still lists its members: {self._display(pool)!r}")
+
+    def test_the_label_is_what_clients_receive(self):
+        from src.server.openai_server.routes.standard_routes import _model_entry
+
+        entry = _model_entry({"id": "gemini-flash",
+                              "display": self._display("gemini-flash")})
+
+        assert entry["display_name"] == "Gemini Flash Pool"
+
+    def test_an_env_override_still_wins(self):
+        """The escape hatch for anyone who wants a more specific label."""
+        import os
+
+        from src.core import api_config
+
+        os.environ["GEMINI_FLASH_DISPLAY"] = "Flash (custom label)"
+        try:
+            api_config.reload_model_config()
+            assert api_config.AVAILABLE_MODELS["gemini-flash"]["display"] == (
+                "Flash (custom label)")
+        finally:
+            del os.environ["GEMINI_FLASH_DISPLAY"]
+            api_config.reload_model_config()

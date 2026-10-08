@@ -146,16 +146,6 @@ MODEL_POOLS: Dict[str, Dict[str, Any]] = {
 }
 
 
-def _format_pool_member_label(m: Any) -> str:
-    lbl = str(m).replace("gemini-flash-", "").replace("gemini-", "")
-    if lbl in ("lite", "flash-lite"):
-        return "3.1"
-    if lbl.endswith("-lite"):
-        base = lbl[:-5]
-        return f"{base[0]}.{base[1]}" if len(base) == 2 and base.isdigit() else base
-    return lbl
-
-
 _SUNSET_MEMBERS = ("gemini-flash-25", "gemini-flash-25-lite")
 
 
@@ -230,11 +220,15 @@ def _recompute_pool_aggregates() -> None:
             if env_disp:
                 AVAILABLE_MODELS[pool_name]["display"] = env_disp
             else:
-                short_labels = [_format_pool_member_label(m) for m in active_pool_members(pool_name)]
-                sep = "↔"
-                joined_labels = sep.join(short_labels)
+                # Just the tier name. The member list used to be appended here as
+                # "Gemini Flash Pool (36↔35↔30↔25)", which is the one thing a
+                # client reading this string cannot use: it needs the alias, and
+                # the members are already listed in the dashboard's pool panel
+                # and in MODEL_POOLS. Override the label with
+                # GEMINI_FLASH_DISPLAY / GEMINI_FLASH_LITE_DISPLAY if you want
+                # something more specific.
                 title = "Gemini Flash Lite Pool" if "lite" in pool_name else "Gemini Flash Pool"
-                AVAILABLE_MODELS[pool_name]["display"] = f"{title} ({joined_labels})"
+                AVAILABLE_MODELS[pool_name]["display"] = title
 
 
 def merge_db_models() -> None:
