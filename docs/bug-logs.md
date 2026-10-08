@@ -1484,3 +1484,56 @@ cho tung thanh vien cua union `output` — 159 loi cho mot response hoan toan ho
 le. Phai validate **payload tren wire**. `tests/test_responses_conformance.py::
 TestSearchCitationsInTheEnvelope` do cai nay, va harness live kiem bang raw
 httpx chu khong phai SDK.
+
+---
+
+## Bug #33: `/v1/search` Loi Bi Long Hai Tang, Ly Do Khong Doc Duoc (2026-10-10)
+
+### Muc do
+Im lang theo hieu bieu. HTTP **400** dung, `error.message` dung — chi la nam sai
+cho, noi client tim.
+
+### Root cause
+
+Route dung `HTTPException(detail={"error": {...}})`. FastAPI bo mot dict `detail`
+vao them mot key `detail` nuaa:
+
+```json
+{"detail": {"error": {"message": "`query` parameter is required…",
+                       "type": "invalid_request_error"}}}
+```
+
+Trong khi **moi route khac** trong `completions_routes.py` deu
+`JSONResponse(content={"error": {...}})`, ra top-level. Client OpenAI-shaped doc
+`body["error"]["message"]` — o day `body["error"]` khong ton tai.
+
+Day la Bug #4 lap lai mot lan nua: nguyen han co that, chi nam ngoai noi client
+doc. Test cu chi assert `status_code == 400` nen khong bao gio bat duoc.
+
+### Fix
+Ca 400 va 500 chuyen sang `JSONResponse` cung convention voi phan con lai.
+
+### Test
+`tests/test_search_endpoint.py::TestTheErrorEnvelopeIsReachable` — 4 test, gan
+`body["error"]["message"]` va kiem `detail` **khong** con chua `error`.
+Mutation: revert ve `HTTPException` → 2 fail.
+
+### Them: results co chu nhung citations rong
+Grounding co the tra ve prose ma khong kem chunk, nen `results` 879 ky tu dien
+`citations: []`. Hop le — nhung im lang, va client nhin giong het mot lan search
+khong tim duoc gi. Nay la warning, khong doi hanh vi: `[Search Endpoint] query
+… produced N chars with 0 citations`. Khong bia them nguon, chi phan biet duoc
+hai truong hop khi nguoi bao cao thieu nguon.
+
+---
+
+## Ghi chu kiem chung: mutation phai **thuc su** ap dung
+
+Lan đầu mutation `HTTPException` bao "7 passed" — nghe nhu test khong co gia
+tri. Hoa ra `String.Replace` khong khop whitespace nên **mutant chua bao gio duoc
+ghi vao file**. `7 passed` do kiem chung **ma chua doi**.
+
+Mot test gia lap xanh y het nhung khong chung minh gi, va no im lang hon ca mot
+test do. Bay moi fix deu verify hai dieu: mutant co mat trong file khong, va
+revert duoc thi co test do. `pyflakes` + `ast.parse` tren mutant la bao dam
+khong phai.

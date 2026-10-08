@@ -152,7 +152,7 @@ async def web_search_endpoint(
     request: Request,
     authorization: str | None = Header(default=None),
     x_api_key: str | None = Header(default=None),
-) -> Dict[str, Any]:
+) -> Any:
     auth = _resolve_auth(authorization, x_api_key)
     account = _check_auth(auth)
 
@@ -163,9 +163,17 @@ async def web_search_endpoint(
 
     query = body.get("query")
     if not query or not isinstance(query, str) or not query.strip():
-        raise HTTPException(
+        # Returned as a JSONResponse rather than HTTPException: FastAPI wraps a
+        # dict detail in another `detail` key, so the message ended up at
+        # `body.detail.error.message` — two levels down from the
+        # `body.error.message` every other route here uses, and from what an
+        # OpenAI-shaped client reads.
+        return JSONResponse(
             status_code=400,
-            detail={"error": {"message": "`query` parameter is required and must be a non-empty string", "type": "invalid_request_error"}},
+            content={"error": {
+                "message": "`query` parameter is required and must be a "
+                           "non-empty string",
+                "type": "invalid_request_error"}},
         )
 
     search_engine = body.get("search_engine") or "auto"
@@ -183,10 +191,20 @@ async def web_search_endpoint(
         )
     except Exception as e:
         logger_web.error("[Search Endpoint] execute_hybrid_search failed: %s", e, exc_info=True)
-        raise HTTPException(
+        return JSONResponse(
             status_code=500,
-            detail={"error": {"message": f"Search failed: {str(e)}", "type": "api_error"}},
+            content={"error": {"message": f"Search failed: {str(e)}",
+                               "type": "api_error"}},
         )
+
+    if search_context and not combined_citations:
+        # The engine answered but returned no links. Legitimate — grounding can
+        # produce prose with no chunks — but silent, and it looks identical to a
+        # client to "the search returned nothing". Worth one line to tell the two
+        # apart when someone reports missing sources.
+        logger_web.warning(
+            "[Search Endpoint] query %r produced %d chars with 0 citations",
+            query.strip()[:120], len(search_context))
 
     return {
         "status": "success",
