@@ -179,7 +179,7 @@ def compute_usage(
     body: Dict[str, Any],
     total_input_tokens: int,
     output_tokens: int,
-) -> Dict[str, int]:
+) -> Dict[str, Any]:
     """Build an Anthropic-shaped usage block.
 
     Gemini has no prompt cache, so we cannot report real cache hits. What we *can*
@@ -187,6 +187,9 @@ def compute_usage(
     the four required fields consistently. When the client sent cache_control
     breakpoints we attribute the stable prefix to cache_read and the remainder to
     fresh input, which is the shape a real Anthropic response has.
+
+    Callers add `server_tool_use`, a nested object rather than a counter, so the
+    value type is not `int` alone.
     """
     total = max(0, int(total_input_tokens))
     usage = {
@@ -224,24 +227,113 @@ def thinking_signature(thinking_text: str) -> str:
 # its result in the response, but you don't handle execution."
 
 _SERVER_TOOL_PREFIX = "srvtoolu_"
+_DEFAULT_MAX_USES = 5
 
 
-def _server_tool_record(name: str, tc_id: str, args: Any,
-                        result: str) -> Dict[str, Any]:
+def _search_budget_left(limits: Dict[str, Any], used: int) -> bool:
+    """Whether another search is within the client's `max_uses`.
+
+    A client that omitted `max_uses` gets the API default of 5, which is also
+    where the recursive tool loop gives up, so the cap is a real bound either
+    way rather than an open-ended loop.
+    """
+    cap = limits.get("max_uses")
+    if cap is None:
+        cap = _DEFAULT_MAX_USES
+    return used < cap
+
+
+def server_search_limits(body: Dict[str, Any]) -> Dict[str, Any]:
+    """The web-search constraints the client declared on its tool definition.
+
+    `WebSearchTool20250305Param` carries `max_uses`, `allowed_domains` and
+    `blocked_domains`; the router runs the search itself, so these are the only
+    place the declared limits can be enforced.
+    """
+    allowed: Optional[List[str]] = None
+    blocked: Optional[List[str]] = None
+    max_uses: Optional[int] = None
+    for tool in body.get("tools") or []:
+        if not isinstance(tool, dict):
+            continue
+        if not str(tool.get("type") or "").startswith("web_search"):
+            continue
+        if tool.get("allowed_domains"):
+            allowed = [str(d).lower() for d in tool["allowed_domains"]]
+        if tool.get("blocked_domains"):
+            blocked = [str(d).lower() for d in tool["blocked_domains"]]
+        if tool.get("max_uses") is not None:
+            try:
+                max_uses = int(tool["max_uses"])
+            except (TypeError, ValueError):
+                max_uses = None
+        break
+    return {"max_uses": max_uses, "allowed_domains": allowed,
+            "blocked_domains": blocked}
+
+
+def _domain_of(url: str) -> str:
+    url = (url or "").lower()
+    for sep in ("://",):
+        if sep in url:
+            url = url.split(sep, 1)[1]
+    return url.split("/", 1)[0].split("?", 1)[0].split(":", 1)[0]
+
+
+def filter_citations(citations: List[Dict[str, Any]],
+                     limits: Dict[str, Any]) -> List[Dict[str, Any]]:
+    """Drop citations from domains the client excluded.
+
+    A domain restriction the router silently ignored would put results in the
+    answer that the client asked the provider never to surface.
+    """
+    allowed = limits.get("allowed_domains")
+    blocked = limits.get("blocked_domains")
+    if not allowed and not blocked:
+        return list(citations)
+    kept = []
+    for c in citations:
+        if not isinstance(c, dict) or not c.get("url"):
+            continue
+        host = _domain_of(c["url"])
+        if allowed and not any(host == d or host.endswith("." + d) for d in allowed):
+            continue
+        if blocked and any(host == d or host.endswith("." + d) for d in blocked):
+            continue
+        kept.append(c)
+    return kept
+
+
+def _server_tool_record(name: str, tc_id: str, args: Any, result: str,
+                        citations: Optional[List[Dict[str, Any]]] = None,
+                        error_code: Optional[str] = None,
+                        ) -> Dict[str, Any]:
     """Record one search the router ran, for the server-tool blocks."""
     query = ""
     if isinstance(args, dict):
         query = str(args.get("query") or args.get("url") or "")
+    text = result or ""
     return {
         "id": tc_id if str(tc_id).startswith(_SERVER_TOOL_PREFIX)
         else _SERVER_TOOL_PREFIX + str(tc_id),
         "name": "web_search" if name.lower().endswith("search") else "web_fetch",
         "query": query,
-        "result": result or "",
-        "failed": not (result or "").strip()
-        or (result or "").startswith(("Search error", "WebFetch error",
-                                      "Fetch error", "HTTP error")),
+        "result": text,
+        "citations": list(citations or []),
+        "failed": bool(error_code) or _search_failed(text),
+        "error_code": error_code,
     }
+
+
+def _search_failed(text: str) -> bool:
+    """A search that ran and matched nothing is not an error.
+
+    Anthropic distinguishes the two: an empty `content` list means the search
+    worked and found nothing; only a genuine failure produces an error object.
+    """
+    return (not (text or "").strip()
+            or (text or "").startswith(("Search error", "WebFetch error",
+                                        "Fetch error", "HTTP error")))
 
 
 def _server_tool_use_block(rec: Dict[str, Any]) -> Dict[str, Any]:
@@ -251,16 +343,60 @@ def _server_tool_use_block(rec: Dict[str, Any]) -> Dict[str, Any]:
 
 
 def _web_search_result_block(rec: Dict[str, Any]) -> Dict[str, Any]:
-    """The result block paired with a `server_tool_use` by `tool_use_id`."""
+    """The result block paired with a `server_tool_use` by `tool_use_id`.
+
+    Each result carries the real url and title of the page, and
+    `encrypted_content` holding the excerpt — which is what a later turn has to
+    send back so the search stays in context.
+    """
     if rec.get("failed"):
         return {"type": "web_search_tool_result", "tool_use_id": rec["id"],
                 "content": {"type": "web_search_tool_result_error",
-                            "error_code": "unavailable"}}
+                            "error_code": rec.get("error_code") or "unavailable"}}
+    citations = [c for c in (rec.get("citations") or [])
+                 if isinstance(c, dict) and c.get("url")]
+    if not citations:
+        # Searched and matched nothing: an empty list, not an error.
+        return {"type": "web_search_tool_result", "tool_use_id": rec["id"],
+                "content": []}
+    content = []
+    for c in citations:
+        # The search engines report a url and title per hit, not a per-result
+        # excerpt, so the excerpt handed back is the text the model read.
+        excerpt = c.get("snippet") or c.get("content") or rec.get("result") or ""
+        entry = {"type": "web_search_result",
+                 "url": c["url"],
+                 "title": c.get("title") or c["url"],
+                 "encrypted_content": excerpt}
+        if c.get("page_age"):
+            entry["page_age"] = c["page_age"]
+        content.append(entry)
     return {"type": "web_search_tool_result", "tool_use_id": rec["id"],
-            "content": [{"type": "web_search_result",
-                          "title": rec.get("query") or "Result",
-                          "url": rec.get("query") or "",
-                          "encrypted_content": rec.get("result") or ""}]}
+            "content": content}
+
+
+def _search_citations(records: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """`web_search_result_location` citations for the answering text block.
+
+    Citations are always on for Anthropic's web search, and they live on the text
+    that used them rather than in a block of their own.
+    """
+    out: List[Dict[str, Any]] = []
+    for rec in records:
+        for c in (rec.get("citations") or []):
+            if not isinstance(c, dict) or not c.get("url"):
+                continue
+            out.append({
+                "type": "web_search_result_location",
+                "url": c["url"],
+                "title": c.get("title") or c["url"],
+                # The router has no server-side encryption key to offer here,
+                # so this stands as an opaque handle the client echoes back.
+                "encrypted_index": rec["id"],
+                "cited_text": (c.get("snippet") or c.get("content")
+                               or rec.get("result") or "")[:150],
+            })
+    return out
 
 
 def estimate_input_tokens(body: Dict[str, Any]) -> int:

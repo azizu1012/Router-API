@@ -263,10 +263,10 @@ class TestNonStreamEnvelope:
             # Exactly what the route passes: chat usage, not a hand-built dict.
             _responses_usage({"prompt_tokens": 1, "completion_tokens": 2}),
         )
-        body["output_text"] = "hi"
 
         _models()["response.completed"].model_validate(
-            {"type": "response.completed", "sequence_number": 0, "response": body})
+            {"type": "response.completed", "sequence_number": 0, "response": body},
+            strict=True, extra="forbid")
 
     def test_renaming_is_shared_by_both_paths(self):
         """The stream and non-stream routes must not drift apart on usage."""
@@ -436,3 +436,74 @@ class TestNonStreamToolCalls:
                 "name": "f", "arguments": {"city": "Paris"}}}]}}]})
 
         assert json.loads(got[0]["arguments"]) == {"city": "Paris"}
+
+class TestSearchCitationsInTheEnvelope:
+    """A search-backed answer has to carry its sources, not just its text.
+
+    `_output_message` was called with no citations from either path, so every
+    search answer shipped `annotations: []` — a client had no way to tell where
+    the answer came from, which is the reason to ask for hosted search at all.
+    """
+
+    CITES = [{"title": "France", "url": "https://example.org/paris"},
+             {"title": "Facts", "url": "https://example.net/france"}]
+
+    def test_the_envelope_carries_the_citations(self):
+        pytest.importorskip("openai.types.responses")
+        from src.server.openai_server.routes.completions_routes import (
+            _output_message, _responses_envelope, _responses_usage,
+        )
+        import time
+
+        body = _responses_envelope(
+            "resp_1", "gemini-flash", "completed",
+            [_output_message("msg_1", "completed", "Paris.", self.CITES)],
+            int(time.time()),
+            _responses_usage({"prompt_tokens": 1, "completion_tokens": 2}),
+        )
+        _models()["response.completed"].model_validate(
+            {"type": "response.completed", "sequence_number": 0,
+             "response": body}, strict=True, extra="forbid")
+
+    def test_the_citations_are_present_in_the_output(self):
+        from src.server.openai_server.routes.completions_routes import (
+            _output_message,
+        )
+
+        item = _output_message("msg_1", "completed", "Paris.", self.CITES)
+
+        assert len(item["content"][0]["annotations"]) == 2
+        assert item["content"][0]["annotations"][0]["url"] == (
+            "https://example.org/paris")
+
+    def test_the_message_item_itself_validates_strictly(self):
+        pytest.importorskip("openai.types.responses")
+        from openai.types.responses import ResponseOutputMessage
+        from src.server.openai_server.routes.completions_routes import (
+            _output_message,
+        )
+
+        ResponseOutputMessage.model_validate(
+            _output_message("msg_1", "completed", "Paris.", self.CITES),
+            strict=True, extra="forbid")
+
+    def test_the_search_item_and_the_message_together_validate(self):
+        pytest.importorskip("openai.types.responses")
+        from openai.types.responses import Response
+        from src.server.openai_server.routes.completions_routes import (
+            _output_message, _responses_envelope, _responses_usage,
+            _web_search_call_item,
+        )
+        import time
+
+        record = {"id": "call_1", "name": "WebSearch", "type": "search",
+                  "query": "capital of France", "engine": "duckduckgo",
+                  "citations": self.CITES}
+        body = _responses_envelope(
+            "resp_1", "gemini-flash", "completed",
+            [_web_search_call_item("ws_1", record),
+             _output_message("msg_1", "completed", "Paris.", self.CITES)],
+            int(time.time()),
+            _responses_usage({"prompt_tokens": 1, "completion_tokens": 2}),
+        )
+        Response.model_validate(body, strict=True, extra="forbid")

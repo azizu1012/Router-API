@@ -20,6 +20,7 @@ A function tool the client owns is the opposite thing, and stays one: a real
 must answer.
 """
 
+import asyncio
 import json
 import os
 import sys
@@ -275,3 +276,468 @@ class TestSearchIsNeverAutomatic:
         assert src.count("web_search = True") == 1, (
             "search is switched on somewhere other than the tool the client "
             f"declared:\n{src}")
+
+# ── Spec fidelity: what the official models actually declare ────────────────
+#
+# The earlier gate in this file used `strict=True`, which only enforces types.
+# A payload carrying a field the spec does not declare passes it, so the router
+# shipped `search_engine` inside the action and the test was green. `extra=
+# "forbid"` is the check that actually rejects an undeclared field.
+
+ACTION_WITH_RESULTS = {
+    "id": "call_3", "name": "WebSearch", "type": "search",
+    "query": "capital of France",
+    "engine": "duckduckgo",
+    "citations": [{"title": "France", "url": "https://example.org/paris"},
+                  {"title": "Facts", "url": "https://example.net/france"}],
+}
+
+
+class TestActionMatchesTheDeclaredSpec:
+    def test_strict_alone_does_not_catch_an_undeclared_field(self):
+        """Why this file checks extra='forbid' and not just strict=True."""
+        pytest.importorskip("openai.types.responses")
+        from openai.types.responses import ResponseFunctionWebSearch
+
+        invented = {"id": "ws_1", "type": "web_search_call",
+                    "status": "completed",
+                    "action": {"type": "search", "query": "x",
+                               "search_engine": "duckduckgo"}}
+
+        ResponseFunctionWebSearch.model_validate(invented, strict=True)
+        with pytest.raises(Exception):
+            ResponseFunctionWebSearch.model_validate(invented, strict=True,
+                                                     extra="forbid")
+
+    def test_the_router_emits_no_undeclared_action_field(self):
+        pytest.importorskip("openai.types.responses")
+        from openai.types.responses import ResponseFunctionWebSearch
+        from src.server.openai_server.routes.completions_routes import (
+            _web_search_call_item,
+        )
+
+        ResponseFunctionWebSearch.model_validate(
+            _web_search_call_item("ws_1", ACTION_WITH_RESULTS),
+            strict=True, extra="forbid")
+
+    def test_the_action_lists_the_sources_it_read(self):
+        from src.server.openai_server.routes.completions_routes import (
+            _web_search_action,
+        )
+
+        action = _web_search_action(ACTION_WITH_RESULTS)
+
+        assert action["sources"] == [
+            {"type": "url", "url": "https://example.org/paris"},
+            {"type": "url", "url": "https://example.net/france"},
+        ]
+
+    def test_no_search_means_no_sources_key(self):
+        from src.server.openai_server.routes.completions_routes import (
+            _web_search_action,
+        )
+
+        action = _web_search_action({"type": "search", "query": "x"})
+
+        assert "sources" not in action
+        assert "search_engine" not in action
+
+
+class TestMessageCitations:
+    def test_a_search_backed_answer_carries_url_citations(self):
+        from src.server.openai_server.routes.completions_routes import (
+            _url_citations,
+        )
+
+        anns = _url_citations("Paris is the capital.", ACTION_WITH_RESULTS["citations"])
+
+        assert [a["type"] for a in anns] == ["url_citation", "url_citation"]
+        assert anns[0]["url"] == "https://example.org/paris"
+        assert anns[0]["title"] == "France"
+
+    def test_a_citation_spans_the_text_it_supports(self):
+        from src.server.openai_server.routes.completions_routes import (
+            _url_citations,
+        )
+
+        text = "Paris is the capital."
+        ann = _url_citations(text, ACTION_WITH_RESULTS["citations"])[0]
+
+        assert ann["start_index"] == 0
+        assert ann["end_index"] == len(text)
+
+    def test_no_search_means_no_annotations(self):
+        from src.server.openai_server.routes.completions_routes import (
+            _url_citations,
+        )
+
+        assert _url_citations("Paris is the capital.", []) == []
+
+    def test_the_annotations_validate_against_the_official_model(self):
+        pytest.importorskip("openai.types.responses")
+        from openai.types.responses.response_output_text import (
+            AnnotationURLCitation,
+        )
+        from src.server.openai_server.routes.completions_routes import (
+            _url_citations,
+        )
+
+        for ann in _url_citations("text", ACTION_WITH_RESULTS["citations"]):
+            AnnotationURLCitation.model_validate(ann, strict=True, extra="forbid")
+
+    def test_the_text_part_carries_them(self):
+        from src.server.openai_server.routes.completions_routes import (
+            _output_text_part,
+        )
+
+        part = _output_text_part("Paris.", ACTION_WITH_RESULTS["citations"])
+
+        assert len(part["annotations"]) == 2
+
+
+class TestAnthropicCitationsAndLimits:
+    def test_the_result_block_carries_the_real_url_not_the_query(self):
+        from src.api.claude_proxy.handler.anthropic_spec import (
+            _server_tool_record, _web_search_result_block,
+        )
+
+        rec = _server_tool_record("WebSearch", "srvtoolu_1",
+                                  {"query": "capital of France"},
+                                  "Paris is the capital.",
+                                  ACTION_WITH_RESULTS["citations"])
+
+        result = _web_search_result_block(rec)
+        assert result["content"][0]["url"] == "https://example.org/paris"
+        assert result["content"][0]["title"] == "France"
+        assert result["content"][0]["encrypted_content"] == "Paris is the capital."
+
+    def test_the_answering_text_carries_the_citations(self):
+        from src.api.claude_proxy.handler.anthropic_spec import (
+            _search_citations, _server_tool_record,
+        )
+
+        rec = _server_tool_record("WebSearch", "srvtoolu_1", {"query": "q"},
+                                  "body", ACTION_WITH_RESULTS["citations"])
+
+        cites = _search_citations([rec])
+
+        assert len(cites) == 2
+        assert cites[0]["type"] == "web_search_result_location"
+        assert cites[0]["url"] == "https://example.org/paris"
+        assert cites[0]["cited_text"] == "body"
+
+    def test_the_citation_validates_against_the_official_model(self):
+        pytest.importorskip("anthropic.types")
+        from anthropic.types import CitationsWebSearchResultLocation
+        from src.api.claude_proxy.handler.anthropic_spec import (
+            _search_citations, _server_tool_record,
+        )
+
+        rec = _server_tool_record("WebSearch", "srvtoolu_1", {"query": "q"},
+                                  "body", ACTION_WITH_RESULTS["citations"])
+
+        for cite in _search_citations([rec]):
+            CitationsWebSearchResultLocation.model_validate(cite,
+                                                            strict=True,
+                                                            extra="forbid")
+
+    def test_max_uses_is_read_off_the_client_tool(self):
+        from src.api.claude_proxy.handler.anthropic_spec import server_search_limits
+
+        limits = server_search_limits({"tools": [
+            {"type": "web_search_20250305", "name": "web_search",
+             "max_uses": 3}]})
+
+        assert limits["max_uses"] == 3
+
+    def test_an_omitted_max_uses_is_the_api_default(self):
+        from src.api.claude_proxy.handler.anthropic_spec import (
+            _search_budget_left, server_search_limits,
+        )
+
+        limits = server_search_limits({"tools": [
+            {"type": "web_search_20250305", "name": "web_search"}]})
+
+        assert limits["max_uses"] is None
+        assert _search_budget_left(limits, 4) is True
+        assert _search_budget_left(limits, 5) is False
+
+    def test_a_third_search_is_the_last_one_allowed(self):
+        from src.api.claude_proxy.handler.anthropic_spec import (
+            _search_budget_left, server_search_limits,
+        )
+
+        limits = server_search_limits({"tools": [
+            {"type": "web_search_20250305", "name": "web_search",
+             "max_uses": 3}]})
+
+        assert [ _search_budget_left(limits, i) for i in (0, 1, 2, 3) ] == [
+            True, True, True, False]
+
+    def test_a_blocked_domain_is_kept_out_of_the_answer(self):
+        from src.api.claude_proxy.handler.anthropic_spec import filter_citations
+
+        kept = filter_citations(ACTION_WITH_RESULTS["citations"],
+                               {"blocked_domains": ["example.net"]})
+
+        assert [c["url"] for c in kept] == ["https://example.org/paris"]
+
+    def test_a_subdomain_of_a_blocked_domain_is_kept_out_too(self):
+        from src.api.claude_proxy.handler.anthropic_spec import filter_citations
+
+        cits = [{"title": "a", "url": "https://news.example.net/x"}]
+
+        assert filter_citations(cits, {"blocked_domains": ["example.net"]}) == []
+
+    def test_only_the_allowed_domain_survives(self):
+        from src.api.claude_proxy.handler.anthropic_spec import filter_citations
+
+        kept = filter_citations(ACTION_WITH_RESULTS["citations"],
+                               {"allowed_domains": ["example.net"]})
+
+        assert [c["url"] for c in kept] == ["https://example.net/france"]
+
+    def test_no_restriction_keeps_everything(self):
+        from src.api.claude_proxy.handler.anthropic_spec import filter_citations
+
+        assert filter_citations(ACTION_WITH_RESULTS["citations"], {}) == (
+            ACTION_WITH_RESULTS["citations"])
+
+
+# ── The whole response, not just the pieces ────────────────────────────────
+#
+# Every check above validates one helper's output. This drives the real proxy
+# with a search the model asked for and validates the assembled Message against
+# the official model under strict=True *and* extra="forbid" — the two together
+# being the only combination that rejects both wrong types and undeclared fields.
+
+class _Message:
+    def __init__(self, content="", tool_calls=None):
+        self.content = content
+        self.tool_calls = tool_calls or []
+        self.reasoning_content = None
+        self.thought_signature = None
+
+
+class _Choice:
+    def __init__(self, msg):
+        self.message = msg
+        self.finish_reason = "stop"
+
+
+class _Response:
+    """Mirrors the chat-completion shape the proxy reads: resp.choices[0].message."""
+
+    def __init__(self, msg, prompt=10, completion=5):
+        self.usage = {"prompt_tokens": prompt, "completion_tokens": completion}
+        self.choices = [_Choice(msg)]
+
+
+def _scripted_model(*turns):
+    """A pool_manager stand-in that returns one scripted tool-call turn at a time."""
+    state = {"i": 0}
+
+    async def call_nonstream(**kwargs):
+        turn = turns[min(state["i"], len(turns) - 1)]
+        state["i"] += 1
+        return {"response": _Response(turn), "api_key": "k-123456",
+                "model_id": "gemini-3.5-flash", "input_tokens": 100,
+                "reservation": {}}
+
+    return call_nonstream
+
+
+SEARCH_TOOL = {"type": "web_search_20250305", "name": "web_search",
+               "max_uses": 3}
+
+
+def _websearch_call(id_="call_1"):
+    return {"id": id_, "type": "function",
+            "function": {"name": "WebSearch",
+                         "arguments": '{"query": "capital of France"}'}}
+
+
+@pytest.fixture
+def search_backed(monkeypatch):
+    """Run the Anthropic non-stream proxy over a turn that searches, twice.
+
+    The first turn asks for a search and the router runs it; the second answers.
+    """
+    import src.api.claude_proxy.handler.proxy_nonstream as ns
+    from src.api.claude_proxy import claude_proxy
+    from src.core.providers import search_manager
+
+    async def fake_search(queries, **kwargs):
+        return ("Paris is the capital of France.", ACTION_WITH_RESULTS["citations"])
+
+    async def fake_log_usage(*a):
+        return None
+
+    monkeypatch.setattr(ns.pool_manager, "call_nonstream",
+                        _scripted_model(_Message(tool_calls=[_websearch_call()]),
+                                        _Message("Paris is the capital.")))
+    monkeypatch.setattr(search_manager, "execute_hybrid_search", fake_search)
+    monkeypatch.setattr(ns, "log_usage", fake_log_usage, raising=False)
+
+    body = {"model": "gemini-flash",
+            "messages": [{"role": "user", "content": "capital of France?"}],
+            "tools": [SEARCH_TOOL]}
+    return asyncio.run(claude_proxy.create_message(body))
+
+
+class TestTheAssembledMessageIsValid:
+    def test_the_whole_message_validates_against_the_official_model(
+            self, search_backed):
+        pytest.importorskip("anthropic.types")
+        from anthropic.types import Message
+
+        Message.model_validate(search_backed, strict=True, extra="forbid")
+
+    def test_the_blocks_appear_in_the_declared_order(self, search_backed):
+        types = [b["type"] for b in search_backed["content"]]
+
+        assert types == ["server_tool_use", "web_search_tool_result", "text"]
+
+    def test_the_result_block_names_the_page_it_came_from(self, search_backed):
+        result = next(b for b in search_backed["content"]
+                      if b["type"] == "web_search_tool_result")
+
+        assert result["content"][0]["url"] == "https://example.org/paris"
+        assert result["content"][0]["title"] == "France"
+
+    def test_the_answer_carries_the_citations(self, search_backed):
+        text_block = next(b for b in search_backed["content"]
+                          if b["type"] == "text")
+
+        assert [c["type"] for c in text_block["citations"]] == [
+            "web_search_result_location"] * 2
+        assert text_block["citations"][0]["url"] == "https://example.org/paris"
+
+    def test_the_usage_counts_the_search(self, search_backed):
+        assert search_backed["usage"]["server_tool_use"] == {
+            "web_search_requests": 1, "web_fetch_requests": 0}
+
+    def test_the_stop_reason_is_end_turn(self, search_backed):
+        assert search_backed["stop_reason"] == "end_turn"
+
+    def test_no_client_tool_use_block_is_emitted(self, search_backed):
+        """The router ran the search, so the client is not asked to answer it."""
+        assert not [b for b in search_backed["content"]
+                    if b["type"] == "tool_use"]
+
+
+class TestRefusedSearchesAreNotCounted:
+    """A search the cap refused is an attempt, not a search.
+
+    `max_uses_exceeded` was stored as the result text, and nothing recognised it
+    as an error, so the attempt was reported as a completed search: `usage`
+    said four searches with `max_uses=3`, and the result block was built as a
+    success carrying an empty content list.
+    """
+
+    def _refused(self):
+        from src.api.claude_proxy.handler.anthropic_spec import (
+            _server_tool_record, _web_search_result_block,
+        )
+
+        rec = _server_tool_record("WebSearch", "srvtoolu_9", {"query": "q"},
+                                  "max_uses_exceeded", [], "max_uses_exceeded")
+
+        return rec, _web_search_result_block(rec)
+
+    def test_the_attempt_is_marked_failed(self):
+        rec, _ = self._refused()
+
+        assert rec["failed"] is True
+
+    def test_the_result_block_reports_the_declared_error_code(self):
+        _, block = self._refused()
+
+        assert block["content"] == {
+            "type": "web_search_tool_result_error",
+            "error_code": "max_uses_exceeded"}
+
+    def test_the_error_code_is_one_the_sdk_declares(self):
+        import typing
+        from anthropic.types import WebSearchToolResultErrorCode
+
+        _, block = self._refused()
+
+        assert block["content"]["error_code"] in typing.get_args(
+            WebSearchToolResultErrorCode)
+
+    def test_a_search_that_found_nothing_is_not_an_error(self):
+        """Distinct case: ran, matched nothing. Anthropic says content: []."""
+        from src.api.claude_proxy.handler.anthropic_spec import (
+            _server_tool_record, _web_search_result_block,
+        )
+
+        rec = _server_tool_record("WebSearch", "srvtoolu_8", {"query": "q"},
+                                  "No search results found.", [])
+        block = _web_search_result_block(rec)
+
+        assert rec["failed"] is False
+        assert block["content"] == []
+
+    def test_the_usage_skips_a_refused_attempt(self, monkeypatch):
+        import src.api.claude_proxy.handler.proxy_nonstream as ns
+        from src.api.claude_proxy import claude_proxy
+        from src.core.providers import search_manager
+
+        calls = {"n": 0}
+
+        async def only_once(queries, **kwargs):
+            calls["n"] += 1
+            if calls["n"] > 1:
+                raise AssertionError("a search ran past max_uses=1")
+            return ("Paris.", ACTION_WITH_RESULTS["citations"])
+
+        async def fake_log_usage(*a):
+            return None
+
+        monkeypatch.setattr(ns.pool_manager, "call_nonstream",
+                            _scripted_model(
+                                _Message(tool_calls=[_websearch_call("c1")]),
+                                _Message(tool_calls=[_websearch_call("c2")]),
+                                _Message("Answered from what I had.")))
+        monkeypatch.setattr(search_manager, "execute_hybrid_search", only_once)
+        monkeypatch.setattr(ns, "log_usage", fake_log_usage, raising=False)
+
+        body = {"model": "gemini-flash",
+                "messages": [{"role": "user", "content": "q"}],
+                "tools": [dict(SEARCH_TOOL, max_uses=1)]}
+        msg = asyncio.run(claude_proxy.create_message(body))
+
+        assert calls["n"] == 1, "the search past the cap still ran"
+        assert msg["usage"]["server_tool_use"] == {"web_search_requests": 1,
+                                                   "web_fetch_requests": 0}
+
+    def test_the_refused_attempt_reaches_the_client_as_an_error(self,
+                                                               monkeypatch):
+        import src.api.claude_proxy.handler.proxy_nonstream as ns
+        from src.api.claude_proxy import claude_proxy
+        from src.core.providers import search_manager
+
+        async def only_once(queries, **kwargs):
+            return ("Paris.", ACTION_WITH_RESULTS["citations"])
+
+        async def fake_log_usage(*a):
+            return None
+
+        monkeypatch.setattr(ns.pool_manager, "call_nonstream",
+                            _scripted_model(
+                                _Message(tool_calls=[_websearch_call("c1")]),
+                                _Message(tool_calls=[_websearch_call("c2")]),
+                                _Message("Answered.")))
+        monkeypatch.setattr(search_manager, "execute_hybrid_search", only_once)
+        monkeypatch.setattr(ns, "log_usage", fake_log_usage, raising=False)
+
+        body = {"model": "gemini-flash",
+                "messages": [{"role": "user", "content": "q"}],
+                "tools": [dict(SEARCH_TOOL, max_uses=1)]}
+        msg = asyncio.run(claude_proxy.create_message(body))
+
+        codes = [b["content"]["error_code"] for b in msg["content"]
+                 if b["type"] == "web_search_tool_result"
+                 and isinstance(b["content"], dict)]
+        assert codes == ["max_uses_exceeded"]

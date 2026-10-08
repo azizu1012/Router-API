@@ -129,36 +129,49 @@ def _responses_envelope(rid: str, model: str, status: str, output: list,
     }
 
 
-def _output_text_part(text: str) -> dict:
-    return {"type": "output_text", "text": text, "annotations": [], "logprobs": []}
+def _output_text_part(text: str, citations: list | None = None) -> dict:
+    return {"type": "output_text", "text": text,
+            "annotations": _url_citations(text, citations or []),
+            "logprobs": []}
 
 
-def _output_message(item_id: str, status: str, text: str) -> dict:
+def _output_message(item_id: str, status: str, text: str,
+                    citations: list | None = None) -> dict:
     return {"id": item_id, "type": "message", "status": status,
-            "role": "assistant", "content": [_output_text_part(text)]}
+            "role": "assistant",
+            "content": [_output_text_part(text, citations)]}
 
 
 def _web_search_action(record: dict) -> dict:
     """The action object inside a `web_search_call` item.
 
-    The docs define `search` and `open_page`; `find_in_page` also exists for
-    reasoning models. Only `search` carries queries.
+    `ActionSearch` declares exactly `type`, `queries`, `query` and `sources`;
+    `sources` entries are `{type: "url", url}`. Anything outside that set fails
+    validation under strict=True, so the engine name the router used internally
+    has no home here.
     """
     if record.get("type") == "open_page":
         return {"type": "open_page", "url": record.get("url", "")}
     action: dict = {"type": "search"}
+    queries = record.get("queries")
+    if isinstance(queries, list) and queries:
+        action["queries"] = [str(q) for q in queries]
     if record.get("query"):
         action["query"] = record["query"]
-    if record.get("engine"):
-        action["search_engine"] = record["engine"]
+    sources = [{"type": "url", "url": c["url"]}
+               for c in (record.get("citations") or [])
+               if isinstance(c, dict) and c.get("url")]
+    if sources:
+        action["sources"] = sources
     return action
 
 
 def _web_search_call_item(call_id: str, record: dict) -> dict:
     """A `web_search_call` output item.
 
-    `status` is `failed` when the search did not produce results, which is how
-    a client can tell an empty search apart from one that ran.
+    `status` is `failed` when the search did not run, which is how a client
+    tells an empty search apart from one that was attempted. A search that ran
+    and matched nothing is `completed`, not `failed`.
     """
     failed = bool(record.get("error")) or not record.get("query")
     return {
@@ -167,6 +180,31 @@ def _web_search_call_item(call_id: str, record: dict) -> dict:
         "status": "failed" if failed else "completed",
         "action": _web_search_action(record),
     }
+
+
+def _url_citations(text: str, citations: list) -> list:
+    """Citation annotations for a message that used search results.
+
+    OpenAI attaches `url_citation` annotations to the text part, each spanning a
+    character range of it. Without them a client has no way to show where an
+    answer came from, which is the whole point of the hosted tool.
+    """
+    if not text or not citations:
+        return []
+    out = []
+    for c in citations:
+        if not isinstance(c, dict) or not c.get("url"):
+            continue
+        out.append({
+            "type": "url_citation",
+            "url": c["url"],
+            "title": c.get("title") or c["url"],
+            # The whole message is attributed to every source: the router does
+            # not know which span of the answer a given page supports.
+            "start_index": 0,
+            "end_index": len(text),
+        })
+    return out
 
 
 async def _responses_sse_stream(chunks, model: str = "",
@@ -205,7 +243,6 @@ async def _responses_sse_stream(chunks, model: str = "",
     next_index = 0
     tools: dict[int, dict] = {}
     output: list = []
-    search_trace: list = []
 
     def envelope(status, u=None):
         return _responses_envelope(rid, model, status, output, created, u)
@@ -346,6 +383,8 @@ async def _responses_sse_stream(chunks, model: str = "",
                 seq += 1
 
     text = "".join(parts)
+    cites = [c for r in searches for c in (r.get("citations") or [])
+             if isinstance(c, dict)]
     if msg_open:
         yield _responses_event(
             "response.output_text.done", seq,
@@ -356,10 +395,10 @@ async def _responses_sse_stream(chunks, model: str = "",
         yield _responses_event(
             "response.content_part.done", seq,
             item_id=msg_id, output_index=msg_index, content_index=0,
-            part=_output_text_part(text),
+            part=_output_text_part(text, cites),
         )
         seq += 1
-        item = _output_message(msg_id, "completed", text)
+        item = _output_message(msg_id, "completed", text, cites)
         yield _responses_event(
             "response.output_item.done", seq,
             output_index=msg_index, item=item,
@@ -694,8 +733,10 @@ async def responses(
     for record in trace:
         call_id = record.get("id") or f"ws_{uuid.uuid4().hex}"
         output.append(_web_search_call_item(call_id, record))
+    cites = [c for r in trace for c in (r.get("citations") or [])
+             if isinstance(c, dict)]
     if text:
-        output.append(_output_message(item_id, "completed", text))
+        output.append(_output_message(item_id, "completed", text, cites))
     # A tool turn carries no text, so building the envelope from the text alone
     # returned an empty output and the client was told it had been answered.
     for tc in _extract_response_tool_calls(result):
@@ -711,13 +752,13 @@ async def responses(
             "arguments": tc.get("arguments") or "",
         })
 
-    return {
-        **_responses_envelope(
-            rid, result.get("model") or body.get("model", ""), "completed",
-            output, int(time.time()), _responses_usage(usage),
-        ),
-        "output_text": text,
-    }
+    # `output_text` is deliberately absent: it is a convenience property the
+    # OpenAI SDK computes from `output`, not a field the API sends. Shipping it
+    # would be a field the official model rejects under extra="forbid".
+    return _responses_envelope(
+        rid, result.get("model") or body.get("model", ""), "completed",
+        output, int(time.time()), _responses_usage(usage),
+    )
 
 
 @app.post("/v1/messages")

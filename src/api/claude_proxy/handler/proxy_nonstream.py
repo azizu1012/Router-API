@@ -24,6 +24,10 @@ from .anthropic_spec import (
     _server_tool_record,
     _server_tool_use_block,
     _web_search_result_block,
+    _search_citations,
+    server_search_limits,
+    filter_citations,
+    _search_budget_left,
 )
 from .compaction import _pre_compact_and_truncate
 
@@ -104,6 +108,11 @@ class ClaudeProxyNonstreamMixin:
         # Searches the router ran for the model, reported as
         # server-tool blocks instead of client tool_use blocks.
         server_tool_calls: list = []
+        # `max_uses`, `allowed_domains` and `blocked_domains` are declared on the
+        # client's tool definition, so honouring them is part of speaking the
+        # protocol rather than a nicety: a client that set max_uses=3 expects
+        # three searches, and one that blocked a domain expects it kept out.
+        search_limits = server_search_limits(body)
         output_tokens = 0
         text = ""
         thought = None
@@ -197,7 +206,18 @@ class ClaudeProxyNonstreamMixin:
                     args = {}
 
             tool_result = ""
-            if name in ("web_search", "WebSearch"):
+            search_citations: list = []
+            search_error: str | None = None
+            searches_used = sum(1 for r in server_tool_calls
+                                if r["name"] == "web_search")
+            if name in ("web_search", "WebSearch") and not _search_budget_left(
+                    search_limits, searches_used):
+                # Anthropic hands the model an error result rather than running
+                # the search past the cap, so the model can still answer.
+                tool_result = "max_uses_exceeded"
+                search_citations = []
+                search_error = "max_uses_exceeded"
+            elif name in ("web_search", "WebSearch"):
                 query = args.get("query", "")
                 logger.info("[Claude Proxy Intercept - WebSearch] executing query=%r", query[:160])
                 try:
@@ -218,11 +238,16 @@ class ClaudeProxyNonstreamMixin:
                         if unique_links:
                             result_lines.append("\n**Sources / Citations:**\n" + "\n".join(unique_links))
                         tool_result = "\n".join(result_lines)
+                        search_citations = combined_citations
                     else:
                         tool_result = "No search results found."
                 except Exception as e:
                     tool_result = f"Search error: {e}"
                     logger.warning("[Claude Proxy Intercept - WebSearch] query failed: %s", e)
+            if search_citations:
+                search_citations = filter_citations(search_citations, search_limits)
+                if not search_citations:
+                    tool_result = "No search results found."
 
             elif name in ("web_fetch", "WebFetch"):
                 url = args.get("url", "")
@@ -235,6 +260,9 @@ class ClaudeProxyNonstreamMixin:
                             if resp_fetch.status == 200:
                                 raw = await resp_fetch.text()
                                 tool_result = raw[:8000]
+                                search_citations = [{"url": url,
+                                                     "title": url,
+                                                     "snippet": tool_result[:500]}]
                             else:
                                 tool_result = f"HTTP error {resp_fetch.status}"
                 except Exception as e:
@@ -272,7 +300,8 @@ class ClaudeProxyNonstreamMixin:
             # The router ran this search itself, so the caller sees Anthropic's
             # hosted-tool shape rather than a client tool_use it must answer.
             server_tool_calls.append(
-                _server_tool_record(name, tc_id, args, tool_result)
+                _server_tool_record(name, tc_id or "", args, tool_result,
+                                    search_citations, search_error)
             )
             recursion_depth += 1
 
@@ -280,21 +309,23 @@ class ClaudeProxyNonstreamMixin:
         # Searches the router ran on the model's behalf, reported in Anthropic's
         # hosted-tool shape rather than as a client `tool_use` the caller would
         # be obliged to answer.
-        for rec in server_tool_calls:
-            content_blocks.append(
-                _server_tool_use_block(rec)
-            )
-            content_blocks.append(
-                _web_search_result_block(rec)
-            )
         if thought:
             content_blocks.append({
                 "type": "thinking",
                 "thinking": thought,
                 "signature": thinking_signature(thought),
             })
+        for rec in server_tool_calls:
+            content_blocks.append(_server_tool_use_block(rec))
+            content_blocks.append(_web_search_result_block(rec))
         if text:
-            content_blocks.append({"type": "text", "text": text})
+            text_block = {"type": "text", "text": text}
+            # Citations ride on the text that used them, which is where
+            # Anthropic puts them.
+            cites = _search_citations(server_tool_calls)
+            if cites:
+                text_block["citations"] = cites
+            content_blocks.append(text_block)
 
         if isinstance(msg, dict):
             raw_tool_calls = msg.get("tool_calls")
@@ -345,6 +376,15 @@ class ClaudeProxyNonstreamMixin:
 
         client_input_tokens = estimate_input_tokens(body)
         usage = compute_usage(body, client_input_tokens, output_tokens)
+        # Anthropic bills server-side searches separately and reports the count
+        # here; a client reconciling its own spend needs the real number.
+        ran_search = sum(1 for r in server_tool_calls
+                         if r["name"] == "web_search" and not r.get("failed"))
+        ran_fetch = sum(1 for r in server_tool_calls
+                        if r["name"] == "web_fetch" and not r.get("failed"))
+        if ran_search or ran_fetch:
+            usage["server_tool_use"] = {"web_search_requests": ran_search,
+                                        "web_fetch_requests": ran_fetch}
 
         # Persist usage so Claude Code traffic shows up in the dashboard.
         try:

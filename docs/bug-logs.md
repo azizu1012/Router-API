@@ -1254,3 +1254,125 @@ Xac nhan bang SDK that qua HTTP that:
 - OpenAI: `output=['web_search_call','message']`, status=completed, action=search
 - Anthropic: blocks `['server_tool_use','web_search_tool_result',...,'text']`,
   `stop_reason=end_turn`
+---
+
+## Bug #28: `strict=True` Khong Phai Cong Gate — Hosted Search Van Sai Spec Sau Khi Da "Xanh" (2026-10-10)
+
+### Muc do
+Client van nhan duoc cau tra loi **va** nhan day du metadata sai. Khong frame nao
+bi loai, khong field bat buoc nao thieu. Cac mau cau hinh protocol sai hon doc
+nay deu **validate duoc** — nen mot test xanh khong chung minh gi ca.
+
+### Root cause
+
+`a440dcb` sua hosted search cho khop OpenAI/Anthropic va them test validate bang
+model chinh thuc cua SDK. Doi chieu SDK that cho thay pydantic co **hai** co che
+khuac nhau, va test chi dung co che thu hai:
+
+| Co che | Chan gi |
+|---|---|
+| `strict=True` | Sai **kieu** du lieu — string thay vi int |
+| `extra="forbid"` | Field **khong khai bao** trong spec |
+
+`ActionSearch` khai bao `type`, `queries`, `query`, `sources`. Router ship them
+`search_engine` — mot ten field internal, khong nam trong spec nao:
+
+```python
+action["search_engine"] = record["engine"]   # -> 'duckduckgo'
+```
+
+`ResponseFunctionWebSearch.model_validate(item, strict=True)` **PASS**. Chi khi
+them `extra="forbid"` moi REJECT. Test cu goi `strict=True` va xanh — no kiem
+dung thu ma khong chan gi.
+
+### Vì sao đây là loại bug khó nhất trong loạt này
+
+`docs/bug-logs.md` đã lặp lại một luật suốt 27 bug: *silent success* — code
+chạy đúng, response hợp lệ, chỉ là hành vi sai. Lần này nặng hơn, vì **test
+cũng xanh**. Một regression test chỉ chứng minh điều mà nó kiểm, và test này
+kiểm sai thứ.
+
+### Fix
+
+| Sai lech | Truoc | Sau |
+|---|---|---|
+| Field tu chế trong action | `search_engine: "duckduckgo"` | bo; chi `type`/`query`/`queries`/`sources` |
+| Nguon cua bai viet | khong co | `sources: [{type:"url", url}]` tu citations |
+| Citation tren cau tra loi | `annotations: []` luon | `AnnotationURLCitation` `{url, title, start_index, end_index}` |
+| `output_text` tren wire | ship o top-level response | bo — SDK tu tinh tu `output` |
+
+`output_text` la **computed property** cua SDK:
+
+```python
+@property
+def output_text(self) -> str:
+    """Convenience property that aggregates all `output_text` items..."""
+```
+
+API khong gui field nay. Bo di khong lam SDK mat gi: client doc `.output_text` va
+SDK tu tinh. Test cu them `body["output_text"] = "hi"` roi validate — **chinh
+do la** lam no pass khi route ship mot field ngoai spec.
+
+### Test
+- `test_strict_alone_does_not_catch_an_undeclared_field` — pin ca hai co che
+  tach biet. Comment ghi ro vi sao file nay dung `extra="forbid"`.
+- Gate moi theo ma duong that: `ResponseFunctionWebSearch.model_validate(dumped,
+  strict=True, extra="forbid")` tren payload **tu SDK client doc lai**, khong phai
+  tren dict tay dung.
+
+---
+
+## Bug #29: `max_uses` Chi Doc, Khong Tinh — Cap Cua Client Bi Ve Qua Va Usage Dem Sai (2026-10-10)
+
+### Muc do
+Mot client dat `max_uses: 3` nhan **`usage.web_search_requests = 4`**. Client
+dang tu so sanh chi phi cua minh se thay mot so lieu ma khong ai giai thich duoc.
+
+### Root cause
+
+`WebSearchTool20250305Param` khai bao `max_uses`, `allowed_domains`,
+`blocked_domains`. Ca **ba** deu bi bo qua — router tu chay search nen day la
+cho duy nhat noi co the lam chung.
+
+Va loi cu hon nam o cho phat sinh so lieu: attempt bi cap chan **van duoc ghi vao
+`server_tool_calls`** voi `result = "max_uses_exceeded"`, ma khong gi doc ra
+`error_code` nen khong bi coi la failed:
+
+```python
+if rec.get("failed"):                      # False — "max_uses_exceeded" khong
+    ...error_code: "unavailable"           # khop danh sach duoi
+```
+
+Hai he qua cung luc:
+1. `usage.server_tool_use` dem 4 search cho 3 lan duoc phep.
+2. Block tra ve co `content: []` — hinh dang cua **search thanh cong ma khong
+   tim duoc gi**, khong phai cua mot attempt bi tu choi.
+
+### Fix
+`_server_tool_record` nhan `error_code` explicit. Attempt bi choi ghi
+`"max_uses_exceeded"` — mot gia tri co that trong
+`WebSearchToolResultErrorCode` cua SDK. So search **chay thu** moi tinh vao
+`usage`; so **attempt** van giu trong blocks de client thay het.
+
+Anthropic phan biet hai truong hop va router cung phai phan biet:
+
+| Tinh huong | `content` |
+|---|---|
+| Chay, khong co ket qua | `[]` |
+| Bi choi vi `max_uses` | `{"type": "web_search_tool_result_error", "error_code": "max_uses_exceeded"}` |
+
+### Bài học về cách kiem chung
+Check hien dau tien so `usage.web_search_requests` voi **so block** — hai so
+cung xuat phat tu mot cho sai nen chung khop nhau. Chi khi tach *"search da
+chay"* (result la list) khoi *"attempt bi choi"* (result la error object) thi
+sai lech moi lo ra. Mot kiem chung doc hai bien cung sai gia tri thi chung ta
+khong kiem chung gi ca.
+
+### Test
+`tests/test_hosted_search_shape.py::TestRefusedSearchesAreNotCounted` — 6 test.
+Bam lai tung fix: bo `error_code` → 5 fail; hardcode `"unavailable"` → 2 fail.
+
+### Khac biet ro rang
+`encrypted_content` cua Anthropic la du lieu **provider-side da ma hoa**. Router
+khong the tai tao encryption that, nen no gui excerpt model da doc. Day la gioi
+han cua mot gateway, va no duoc ghi ra day thay vi gia lao duoc ma hoa that.
