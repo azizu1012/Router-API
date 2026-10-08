@@ -1580,6 +1580,12 @@ DuckDuckGo nhieu nguon hon, text gap doi, nhanh gap 15–20 lan.
 ### Fix
 - `charge_account_quota()` tach rieng, chi goi trong nhanh Google — nhanh nao
   that su co model call moi bi tinh tien.
+- Mac dinh `/v1/search` doi sang `duckduckgo`. Do la ca hai yeu cau cua thay
+  doi: nhanh hon 15×, khong ton quota, nen **doan sai cung khong ton gi**.
+  Mac dinh `auto` thi client khong chon gi ca, con router chon cai dat nhat.
+- Engine **sai** thi tra 400 kem danh sach hop le. Truoc do engine la rơi qua
+  moi nhanh va tra 200 voi `results` rong — khong phan biet duoc voi mot search
+  that su khong ra gi.
 - `search_engine` bat buoc tren `/v1/search`. Thong bao loi nen ra het engine
   kem chi ro cai nao ton quota, de client khong can doc docs moi chon dung.
 
@@ -1588,7 +1594,8 @@ suy dien.
 
 ### Test
 `TestOnlyTheGroundedSearchSpendsQuota` — 2 test, don lap, khong can cham
-luong thuc. `TestTheEngineMustBeNamed` — 3 test gan 400 + noi dung thong bao.
+luong thuc. `TestTheEngineDefault` — 5 test: mac dinh la `duckduckgo`, mac
+dinh khong bi tinh tien, engine sai bi 400, va engine explicit duoc hon.
 
 ### Khac biet can ro
 `auto` **van con** va van ton quota neu Google tra loi. No chi con la lua chon

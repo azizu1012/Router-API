@@ -164,14 +164,13 @@ class TestTheErrorEnvelopeIsReachable:
                     if "0 citations" in str(c)]
 
 
-class TestTheEngineMustBeNamed:
-    """No implicit `auto`.
+class TestTheEngineDefault:
+    """The default is DuckDuckGo, and a wrong engine is refused.
 
-    `auto` ran Google grounding first, which is both the slower engine (measured
-    ~90s against ~5s for DuckDuckGo) and the one that spends the account's
-    quota. A caller who never thought about it was paying, slowly, for a search
-    they had not chosen — the same reasoning that removed the implicit search
-    tool from the chat dialects.
+    `auto` used to be the default and it ran Google grounding first: ~90s
+    against ~5s, fewer sources, and it spends the account's quota. So a caller
+    who expressed no preference was paying, slowly, for a search they had not
+    chosen. DuckDuckGo is the safe floor because it costs nothing either way.
     """
 
     def _post(self, body):
@@ -184,25 +183,64 @@ class TestTheEngineMustBeNamed:
                                headers={"Authorization": "Bearer test-key"})
 
     @pytest.mark.anyio
-    async def test_a_missing_engine_is_refused(self):
-        r = self._post({"query": "x"})
+    async def test_no_engine_still_runs_a_search(self):
+        r = self._post({"query": "capital of France"})
 
-        assert r.status_code == 400
-        assert "search_engine" in r.json()["error"]["message"]
+        assert r.status_code == 200, f"HTTP {r.status_code}: {r.text[:160]}"
 
     @pytest.mark.anyio
-    async def test_the_message_lists_the_choices(self):
-        msg = self._post({"query": "x"}).json()["error"]["message"]
+    async def test_the_default_engine_is_not_charged(self):
+        """The default must be the one that spends no quota."""
+        import src.core.providers.search_manager as sm
+
+        seen = []
+        original = sm.execute_hybrid_search
+
+        async def spy(*a, **kw):
+            seen.append(kw.get("search_engine"))
+            return ("text", [{"title": "T", "url": "https://e.com"}])
+
+        sm.execute_hybrid_search = spy
+        try:
+            self._post({"query": "capital of France"})
+        finally:
+            sm.execute_hybrid_search = original
+
+        assert seen == ["duckduckgo"], seen
+
+    @pytest.mark.anyio
+    async def test_an_unknown_engine_is_refused(self):
+        r = self._post({"query": "x", "search_engine": "bing"})
+
+        assert r.status_code == 400
+        assert "duckduckgo" in r.json()["error"]["message"]
+
+    @pytest.mark.anyio
+    async def test_the_error_names_every_valid_engine(self):
+        msg = self._post({"query": "x", "search_engine": "bing"}) \
+            .json()["error"]["message"]
 
         for engine in ("duckduckgo", "google_grounding", "auto"):
             assert engine in msg, f"{engine} not offered to the client"
 
     @pytest.mark.anyio
-    async def test_it_says_which_engine_costs_quota(self):
-        msg = self._post({"query": "x"}).json()["error"]["message"].lower()
+    async def test_an_explicit_engine_is_honoured(self):
+        import src.core.providers.search_manager as sm
 
-        assert "quota" in msg, (
-            "the client cannot tell which engine spends the account's budget")
+        seen = []
+        original = sm.execute_hybrid_search
+
+        async def spy(*a, **kw):
+            seen.append(kw.get("search_engine"))
+            return ("text", [])
+
+        sm.execute_hybrid_search = spy
+        try:
+            self._post({"query": "x", "search_engine": "google_grounding"})
+        finally:
+            sm.execute_hybrid_search = original
+
+        assert seen == ["google_grounding"], seen
 
 
 class TestOnlyTheGroundedSearchSpendsQuota:

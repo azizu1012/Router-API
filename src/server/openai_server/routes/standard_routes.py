@@ -177,17 +177,22 @@ async def web_search_endpoint(
         )
 
     search_engine = body.get("search_engine")
-    if not search_engine or not isinstance(search_engine, str):
-        # No implicit default. `auto` meant Google grounding first, which is both
-        # the slower engine (~90s against ~5s) and the one that spends the
-        # account's quota, so a caller who had not thought about it was paying
-        # for a search they had not chosen. Same principle as the hosted tools:
-        # the client says which engine it wants.
+    if not search_engine:
+        # Default to DuckDuckGo: measured ~5s against ~90s for grounding, more
+        # sources, and it spends no account quota — so a caller who expressed no
+        # preference gets the cheap fast one. `auto` was the old default and it
+        # started with the slow, quota-spending engine, which meant paying for a
+        # search nobody had chosen.
+        search_engine = "duckduckgo"
+    elif not isinstance(search_engine, str) or search_engine not in (
+            "duckduckgo", "google_grounding", "auto"):
+        # A wrong engine used to fall through every branch and return an empty
+        # result with a 200 — indistinguishable from a search that found nothing.
         return JSONResponse(
             status_code=400,
             content={"error": {
-                "message": "`search_engine` is required and must be one of: "
-                           "'duckduckgo' (free, spends no Gemini quota), "
+                "message": "Unknown `search_engine`. Valid values are "
+                           "'duckduckgo' (default; free, no Gemini quota), "
                            "'google_grounding' (grounded, spends account quota), "
                            "'auto' (grounded first, then falls back)",
                 "type": "invalid_request_error"}},

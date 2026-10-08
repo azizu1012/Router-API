@@ -170,16 +170,16 @@ An app that drives its own loop should prefer `POST /v1/search`: it costs no Gem
 quota and does not spend a second model call re-reading the conversation. The
 in-chat tool exists for clients that cannot drive their own loop.
 
-`POST /v1/search` requires `search_engine` — there is no default:
+`POST /v1/search` defaults to `duckduckgo`, and accepts any of:
 
 | `search_engine` | Cost | Measured latency |
 |---|---|---|
-| `duckduckgo` | no Gemini quota | ~5s |
+| `duckduckgo` (default) | no Gemini quota | ~5s |
 | `google_grounding` | spends the account's RPM/TPM/RPD | ~90s |
 | `auto` | spends the account's quota if Google answers | slowest |
 
 On the same queries DuckDuckGo returned more sources and roughly twice the prose
-at a fifteenth of the latency, so the free path is the one to reach for. Only
+at a fifteenth of the latency, so it is the floor a request falls back to. Only
 `google_grounding` calls a model, and only it is charged against the account.
 
 ---
