@@ -233,6 +233,30 @@ def _looks_like_api_traffic(path: str) -> bool:
 
 
 @app.middleware("http")
+async def http_access_log_middleware(request: Request, call_next):
+    """Log every inbound request's method, path and status.
+
+    Every other log line in this app sits below the middleware stack, so a
+    request rejected by a guard -- 401 from auth, 404 from the SPA catch-all, 429
+    from the rate limiter -- produced no trace at all. "Nothing in the log" then
+    reads as "the client never called", which is the opposite of what a guard
+    rejecting a request means, and it sent the debugging in the wrong direction
+    more than once here.
+    """
+    method = request.scope.get("method", "GET")
+    path = request.scope.get("path", "/")
+    try:
+        response = await call_next(request)
+    except Exception:
+        logger.warning("[Access] %s %s -> EXCEPTION", method, path, exc_info=True)
+        raise
+    status = response.status_code
+    if status >= 400:
+        logger.warning("[Access] %s %s -> %d", method, path, status)
+    return response
+
+
+@app.middleware("http")
 async def security_middleware(request: Request, call_next):
     # Body size limit
     cl = request.headers.get("content-length")
