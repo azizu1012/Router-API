@@ -27,6 +27,7 @@
 - Không commit `.env`, `usage.db`, `logs/`
 - DB dùng SQLite qua `src/backend/_db.py`
 - Dùng logger có sẵn: `from src.core.config_n_logg.logger import logger_system/logger_proxy/logger_keys/logger_api/logger_keepalive`
+- Khi viết test integration gửi request vào API (`/v1/...`), **đừng assert cứng `200`** nếu chưa mock rate limiter/pool. DB trống trên CI (dùng `temp_db`) sẽ làm capacity=0, request bị giới hạn và trả về `429` hoặc `503`. Hãy assert loại trừ (`not in (404, 405)`) hoặc mock limit cẩn thận.
 
 ## 5. Luồng request & file map (đọc trước khi planning)
 
