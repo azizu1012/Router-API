@@ -105,6 +105,76 @@ async def cors_middleware(request: Request, call_next):
     return response
 
 @app.middleware("http")
+async def static_mount_fallback_middleware(request: Request, call_next):
+    """Keep API traffic out of the frontend's catch-all mount.
+
+    The SPA is served by ``app.mount("", StaticFiles(...))``, and a mount with an
+    empty path matches *every* request. Two consequences, both of which produced
+    an error that pointed at the wrong thing:
+
+    - ``POST /v1/messages/`` answered ``405 Method Not Allowed``. Starlette
+      returns 405 for a partial method match and only tries the trailing-slash
+      redirect afterwards; the mount is a full match, so the redirect branch was
+      never reached and StaticFiles rejected the POST.
+    - ``GET /health/`` answered a bare 404 instead of redirecting to ``/health``.
+
+    So a client that appends a slash, or a base URL that already ends in ``/v1``,
+    gets "Method Not Allowed" on a route that is plainly registered. Stripping
+    the slash here fixes both shapes instead of describing them.
+
+    Anything that still looks like API traffic but matched nothing gets a real
+    answer with the path echoed back, rather than StaticFiles' plain 404 — a
+    misconfigured ANTHROPIC_BASE_URL is the most likely cause of reaching here.
+    """
+    path = request.scope.get("path", "/")
+
+    if len(path) > 1 and path.endswith("/"):
+        stripped = path.rstrip("/")
+        if _matches_an_api_route(stripped, request.scope.get("method", "GET")):
+            request.scope["path"] = stripped
+            path = stripped
+
+    response = await call_next(request)
+
+    if response.status_code in (404, 405) and _looks_like_api_traffic(path):
+        return JSONResponse(
+            status_code=404,
+            content={"error": {
+                "message": f"No route for {request.scope.get('method','')} {path}. "
+                           "If this is a client setup problem, ANTHROPIC_BASE_URL "
+                           "should be the server root without a trailing slash "
+                           "and without /v1 — the client appends /v1/messages "
+                           "itself.",
+                "type": "invalid_request_error",
+            }},
+        )
+    return response
+
+
+def _api_route_paths() -> set[str]:
+    """Paths registered on the app, excluding the catch-all mounts."""
+    return {
+        getattr(route, "path", "") for route in app.router.routes
+        if getattr(route, "methods", None) and getattr(route, "path", "")
+    }
+
+
+def _matches_an_api_route(path: str, method: str) -> bool:
+    for route in app.router.routes:
+        methods = getattr(route, "methods", None)
+        if not methods:                   # a Mount or WebSocket route
+            continue
+        if getattr(route, "path", "") == path and method in methods:
+            return True
+    return False
+
+
+def _looks_like_api_traffic(path: str) -> bool:
+    return path.startswith(("/v1/", "/v1beta/", "/v1alpha/", "/messages",
+                           "/opencode/"))
+
+
+@app.middleware("http")
 async def security_middleware(request: Request, call_next):
     # Body size limit
     cl = request.headers.get("content-length")

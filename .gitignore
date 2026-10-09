@@ -76,6 +76,7 @@ tests/*
 !tests/test_hosted_search_shape.py
 !tests/test_security_no_secret_leak.py
 !tests/test_error_status_mapping.py
+!tests/test_catch_all_mount.py
 
 # The CI scanner is tracked; the rest of scripts/ is local tooling.
 !scripts/
