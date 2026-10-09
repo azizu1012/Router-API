@@ -1,4 +1,5 @@
 import asyncio
+import secrets
 import time
 from typing import Any, Dict, Optional
 
@@ -33,7 +34,7 @@ from src.backend.key_status import (
 from src.backend.endpoints import list_endpoints_db
 from src.core.usage_logger import get_stats, get_top_keys
 from .app_init import app
-from .auth_session import _make_session_token, _require_dashboard
+from .auth_session import _make_session_token, _require_dashboard, _require_admin
 
 def _calculate_financial_savings(summary: list) -> dict:
     total_prompt = 0
@@ -107,7 +108,11 @@ async def dashboard_login(request: Request):
 
     # Legacy path: a raw auth_key still logs in, so existing clients keep working.
     if key and not username:
-        if config.AUTH_TOKEN and key == config.AUTH_TOKEN:
+        # Constant-time, like find_account_by_key() already does. This was the one
+        # credential comparison in the auth path still using ==.
+        if config.AUTH_TOKEN and secrets.compare_digest(
+            key.encode("utf-8"), config.AUTH_TOKEN.encode("utf-8")
+        ):
             account = {
                 "account_id": "admin",
                 "name": "Administrator",
@@ -750,20 +755,27 @@ async def get_model_pools_api(request: Request):
 
 
 @app.get("/api/stats")
-async def usage_stats(days: int = 30):
+async def usage_stats(request: Request, days: int = 30):
+    _require_admin(request)
     stats = await get_stats(days)
     top_keys = await get_top_keys(days)
     
     try:
         accs = await asyncio.to_thread(list_accounts_db, True)
-        prefix_to_acc = {}
+        prefix_to_name = {}
         for a in accs:
             ak = a.get("auth_key", "")
             prefix = ak[-8:] if len(ak) >= 8 else ak
-            prefix_to_acc[prefix] = {
-                "name": a.get("name", "Unknown"),
-                "full_key": ak
-            }
+            # Only the name is kept. This endpoint used to stash the whole
+            # master key here and ship it as "full_key"; that is a credential
+            # in a payload the dashboard polls every few seconds and holds in
+            # browser state, so one screenshot of the analysis tab was a list
+            # of master keys. Master keys are also quota-exempt, so holding one
+            # is a full privilege escalation — not just a disclosure.
+            # An operator who genuinely needs a key asks for it by account name
+            # through GET /dashboard/admin/accounts/recovery, which is admin
+            # only and takes two deliberate clicks in the UI.
+            prefix_to_name[prefix] = a.get("name", "Unknown")
         
         enriched_top_keys = []
         for tk in top_keys:
@@ -772,24 +784,19 @@ async def usage_stats(days: int = 30):
                 enriched_top_keys.append({
                     **tk,
                     "account_name": "System / Anonymous",
-                    "full_key": "anonymous"
+                    "key_masked": "anonymous"
                 })
                 continue
                 
             suffix = pref[-8:] if len(pref) >= 8 else pref
-            acc_info = prefix_to_acc.get(suffix, {})
-            
-            if acc_info:
-                name = acc_info.get("name", "Unknown")
-                full_key = acc_info.get("full_key", f"sk-...{suffix}")
-            else:
+            name = prefix_to_name.get(suffix)
+            if name is None:
                 name = "Auto Session"
-                full_key = pref if pref.startswith("sk-") else f"sk-...{pref}"
-                
+            
             enriched_top_keys.append({
                 **tk,
                 "account_name": name,
-                "full_key": full_key
+                "key_masked": f"sk-...{suffix}",
             })
         top_keys = enriched_top_keys
     except Exception as e:

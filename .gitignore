@@ -74,11 +74,13 @@ tests/*
 !tests/test_native_gemini_errors.py
 !tests/test_uncovered_routes.py
 !tests/test_hosted_search_shape.py
+!tests/test_security_no_secret_leak.py
 
 # The CI scanner is tracked; the rest of scripts/ is local tooling.
 !scripts/
 scripts/*
 !scripts/scan_secrets.py
+!scripts/scan_security.py
 
 # ─── Dev utilities ───
 clean_cache.bat

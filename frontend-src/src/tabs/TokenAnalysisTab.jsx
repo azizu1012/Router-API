@@ -123,7 +123,7 @@ export default function TokenAnalysisTab() {
                     </span>
                     <span className="font-bold text-sm text-base-content">{k.account_name}</span>
                     <code className="text-xs text-primary/80 bg-primary/5 px-2 py-0.5 rounded border border-primary/10 font-semibold select-all">
-                      {k.full_key}
+                      {k.key_masked}
                     </code>
                   </div>
                   <div className="text-xs font-semibold text-base-content/70">

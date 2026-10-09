@@ -1,4 +1,5 @@
 """Shared helpers for admin endpoints — environment / DB key management."""
+import secrets
 import uuid
 
 from src.core.config_n_logg import ENV_PATH
@@ -28,7 +29,8 @@ def remove_key_from_env(api_key: str) -> bool:
     for line in lines:
         if "=" in line and not line.strip().startswith("#"):
             parts = line.split("=", 1)
-            if parts[1].strip() == api_key:
+            if secrets.compare_digest(parts[1].strip().encode("utf-8"),
+                                api_key.encode("utf-8")):
                 found = True
                 continue
         new_lines.append(line)

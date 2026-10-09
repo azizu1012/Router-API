@@ -1600,3 +1600,132 @@ dinh khong bi tinh tien, engine sai bi 400, va engine explicit duoc hon.
 ### Khac biet can ro
 `auto` **van con** va van ton quota neu Google tra loi. No chi con la lua chon
 tuy bien, khong con la mac dinh.
+
+---
+
+## Bug #35: `/api/stats` Rò Rỉ Master Key — Lần 2, Vì Guard Đúng Vẫn Chưa Đủ (2026-10-10)
+
+### Muc do
+Nghiêm trọng nhất trong loạt này. Master key miễn **toàn bộ** quota (mục 6 cua
+`account_auth.md`), nên đọc được một cái là leo thang đặc quyền trọn vẹn.
+
+### Trieu chung
+`GET /api/stats` khong co auth. Route bo sung usage stats bang cach ghep
+`usage_logs.auth_key_prefix` (8 ky tu cuoi) voi `accounts.auth_key`, roi tra
+`full_key` — **master key nguyen van**.
+
+Do la mot lo chuoi, va moi link deu dung ve:
+
+| File | Dong | Vai tro |
+|---|---|---|
+| `auth.py` | 197 | `_auth_key_prefix()` = `account["auth_key"][-8:]` |
+| `account_manager.py` | 55-57 | login bang master key → `auth_key` giu nguyen master key |
+| `account_manager.py` | 70 | login bang child token → `auth_key` **bi thay** bang token da compose |
+| `dashboard_routes.py` | 763-766 | map 8 ky tu cuoi → `full_key: ak` |
+
+Dong 70 la thu giai thich tai sao du lieu that khong lo: `usage.db` cua chinh
+repo nay co **0/20** prefix trung voi master key, vi moi request deu dung child
+token. Nguoi han khong thay vi chi doc code.
+
+### Chung minh bang HTTP that
+```
+GET /api/stats   (khong header Authorization)   ->   HTTP 200
+{"key_prefix": "6VjIPHDk", "account_name": "admin1",
+ "full_key": "sk-8ANvyqoV-aZHnybv4vZREoK1e4IzO2vCp846VjIPHDk"}
+>>> admin master key handed out: True
+```
+
+### Vua co auth, van lo
+Fix dau tien them `_require_dashboard(request)`. **Khong du**, va day la phan
+kho nhat cua bug nay:
+
+```python
+def _require_dashboard(request):
+    payload = _verify_session_token(token)
+    if not payload:
+        raise HTTPException(401)
+    return payload          # <-- khong xem tier
+
+def _require_admin(request):            # ngay canh ben, da co san
+    payload = _require_dashboard(request)
+    if payload.get("tier") != "admin":
+        raise HTTPException(403)
+```
+
+`/api/stats` in ra **moi account**. Bat buoc session chi chung minh "co mat
+khau dung" — khong chung minh "la ai". Do la chuyen **authentication** sang
+**authorization**, va chi mot test dang nhap bang tier yeu moi phan biet duoc:
+
+```
+[anonymous]     HTTP 401   leak=False
+[free login]    HTTP 200   tier=free
+[free -> stats] HTTP 200   >>> admin master key visible to FREE user: True
+```
+
+### Fix
+- `_require_admin` thay cho `_require_dashboard`.
+- Bo `full_key` khoi payload; tra `key_masked` = `sk-...{suffix}`. Khong doi
+  ten field ma chi doi gia tri — mot ten field cu giong no se lam nguoi doc
+  sau tu hieu rang gia tri do van la credential.
+- `/api/ping-model` len `_require_admin`: no goi custom endpoint bang chinh
+  `auth_key` cua endpoint do, nen user tier thap co the dot quota cua operator.
+- Hai so sanh credential con lai chuyen sang `secrets.compare_digest`:
+  `dashboard_routes.py` (duong login legacy, noi duy nhat trong duong auth con
+  dung `==`) va `admin/helpers.py`.
+
+### Vì sao UI van dung duoc
+`TokenAnalysisTab` hien `k.full_key` de gan ten cho tung key. Sau khi mask,
+`account_name` van o ngay canh nen chuc nang phan tich giu nguyen. Muon xem
+key that: `GET /dashboard/admin/accounts/recovery`, admin only, UI bat nhan 2
+lan — dung nguyen tac da viet trong `account_auth.md` muc 8b: "bang accounts la
+thu admin chup man hinh, nen mot tam anh chup la mot danh sach credential".
+
+### Scanner: `scripts/scan_security.py`
+Bai test chan ha nghiem loi do la mot lan sua. Bai chan **lan sau** la scanner,
+va no phai khong bao do. Ba rule, tat ca AST:
+
+1. `unauthenticated-route` — route khong co guard nao reachable.
+2. `weak-guard-for-account-wide-data` — tra du lieu cua account khac chi voi
+   guard caller-scoped. **Phai co** guard admin **hoac** handler tu check tier.
+3. `credential-in-payload` — dict literal chua credential, va no di vao
+   container roi container do ra khoi ham.
+
+Rule 3 phai theo data-flow, khong duoc chi nhin `return`. Hai shape that:
+
+```python
+return {"rows": rows}                  # container thoat ra
+rows.append({"full_key": ak})           # credential da vao container
+```
+
+Va hinh thuc **rebind** ma chinh handler goc dung:
+```python
+enriched_top_keys.append({..., "full_key": full_key})
+top_keys = enriched_top_keys            # doi ten roi moi tra
+return {..., "top_keys": top_keys}
+```
+Alias phai resolve **sau** khi quet het, khong trong luc quet — neu resolve
+trong luc quet thi ket qua phu thuoc thu tu dong, va source nay resolve sai.
+
+### Ba false positive da lo, va vi sao
+Tool bao do thi tool bi tat. Moi truong hop deu phai co ly do:
+
+| False positive | Vi sao that | Cach lo |
+|---|---|---|
+| `/dashboard/login` | Tao `{"auth_key":...}` lam **ban ghi noi bo**, chi tra `token/name/tier` | Chi kiem credential **that thoat** khoi ham |
+| `generateContent` (6 route) | Khong goi guard, nhung delegate `_handle_gemini_native` **co goi** | Resolve guard qua 3 tang delegate |
+| `password == '1234'` | So sanh voi hang so de hoi "co phai default khong", khong phai doan | Bo qua khi mot ben la literal/ALL_CAPS |
+
+`/dashboard/login` con nhe hon: `{"name": account.get("name")}` la **chon
+field**, khong phai dua ca account ra ngoai. Ten dung lam `attr.value` cua
+`Attribute` thi khong dem.
+
+### Mutation
+Bai fix loi 4 test do va scanner bao 2 finding. Unmask rieng `full_key` (giu
+nguyen `_require_admin`) thi scanner van bat bang `credential-in-payload` — tức
+hai rule doc lap nhau, khong trung nhau.
+
+### Test
+`tests/test_security_no_secret_leak.py` — 11 test, chay app that tren DB tam.
+Trong do co 4 test nap cho scanner mot file **co lo** de chung minh no con
+bat: neu scanner mat kha nang phat hien thi no phai do, vi scanner xanh
+chung minh co gi ca.

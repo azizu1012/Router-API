@@ -920,6 +920,11 @@ async def anthropic_messages(
 
 @app.post("/api/ping-model")
 async def ping_model(request: Request):
+    # Admin only: this spends the operator's custom-endpoint quota by calling it
+    # with that endpoint's own auth_key. Any logged-in tier could otherwise use it
+    # as a free metered proxy.
+    from .auth_session import _require_admin
+    _require_admin(request)
     from src.core.providers.gemini_facade import acompletion
 
     body = await request.json()
