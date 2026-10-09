@@ -103,6 +103,7 @@ pyrightconfig.json
 
 # ─── Local Claude Code config ───
 .claude/settings.local.json
+.claude/
 
 # ─── Scratch / temp files ───
 scratch/
