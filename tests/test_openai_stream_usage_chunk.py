@@ -26,17 +26,97 @@ sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")
 
 
 @pytest.fixture()
-def client(temp_db):
+def client(temp_db, stub_provider):
     """The real app on the throwaway db from conftest's temp_db.
 
     temp_db owns the file's lifetime. Rolling my own mkstemp here meant
     unlinking a db whose handle the app still held, which fails on Windows.
+
+    Depends on stub_provider so the stream comes from a fixed response instead of
+    a live Gemini call. What is under test is the route's frame assembly — which
+    chunk carries usage, which carries an empty choices array, what terminates
+    the stream — and that logic is unchanged by who produced the text. A live
+    call also made this file the only one in the suite that could not run in CI.
     """
     from fastapi.testclient import TestClient
     from src.server.openai_server.routes.app_init import app
 
     with TestClient(app) as c:
         yield c
+
+
+@pytest.fixture()
+def stub_provider(temp_db, monkeypatch):
+    """Make the route reach a provider, and make that provider a fixed stream.
+
+    temp_db is requested explicitly even though ``client`` also asks for it.
+    Without it this fixture is free to run before temp_db has redirected
+    ``src.backend._db``, and register_keys_in_db() then writes key_status and
+    key_penalties rows into the developer's real usage.db — which conftest's
+    guard catches, and which only happens in a clean checkout.
+
+    Two things stood between this file and a hermetic run:
+
+    - No Gemini keys. ``execute_stream`` reserves one before it calls anything,
+      so with none registered the route answered 503 before the provider was
+      ever reached — which is correct behaviour, and is why the stream came back
+      empty rather than failing. Registering a dummy key satisfies the
+      reservation; the stub below means it is never used.
+    - A live upstream call. Patched at PoolManager rather than at the HTTP
+      client, so the route, the dialect conversion and the frame assembly all
+      still execute. Mocking httpx would leave the decision under test untouched.
+
+    The chunk is object-shaped, not a dict: ``execute_stream`` reads
+    ``chunk.choices[0].delta`` by attribute. A dict here yields a stream that
+    looks empty rather than one that fails, which is worse to debug.
+    """
+    import src.api.opencode_proxy.handler.stream_executor as se
+    from src.backend.key_status import register_keys_in_db
+    from src.core.config_n_logg import config as config_mod
+    from src.core.router import router
+    from tests.test_stream_impl_seams import Chunk, Delta, item
+
+    # Three things stood between this file and a hermetic run.
+
+    # 1. No Gemini keys. execute_stream reserves one before calling anything, so
+    #    with none registered the route answered 503 before the provider was
+    #    reached — correct behaviour, and why the stream came back empty rather
+    #    than failing.
+    #
+    # 2. No key_status row. Patching config alone is not enough:
+    #    calculate_key_capacities_by_pool() sums over router._key_status, which
+    #    is built from the database, so with no rows the pool's capacity was 0
+    #    and _apply_account_limit rejected every request with
+    #    "tokens per minute limit exceeded" before the provider was called.
+    #    That is the whole reason this file passed on a machine with a real
+    #    .env and failed in CI: local keys meant real capacity.
+    #
+    # 3. A live upstream call. Patched at PoolManager rather than at the HTTP
+    #    client, so the route, the dialect conversion and the frame assembly all
+    #    still execute. Mocking httpx would leave the decision untouched.
+    #
+    # The chunk is object-shaped, not a dict: execute_stream reads
+    # chunk.choices[0].delta by attribute. A dict here yields a stream that looks
+    # empty rather than one that fails, which is worse to debug.
+    monkeypatch.setattr(config_mod, "GEMINI_API_KEYS", ["sk-test-dummy-key-for-ci"])
+    register_keys_in_db(config_mod.GEMINI_API_KEYS)
+    router.refresh_keys()
+
+    # calculate_key_capacities_by_pool caches per pool for a second. A previous
+    # test file can warm that cache while the key list is still empty, so the
+    # registered key would be ignored for up to a second — long enough for the
+    # whole test to see capacity 0 and a spurious 429.
+    from src.core.limits.account_limiter import capacity as cap_mod
+
+    cap_mod._key_capacities_pool_cache.clear()
+    cap_mod._key_capacities_pool_cache_ts.clear()
+
+    async def fake_call_stream(**kwargs):
+        yield item(Chunk(Delta(content="hi")))
+        yield item(Chunk(Delta(), finish_reason="stop"))
+
+    monkeypatch.setattr(se.pool_manager, "call_stream", fake_call_stream)
+    return fake_call_stream
 
 
 def _key(client):

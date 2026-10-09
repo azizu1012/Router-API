@@ -1729,3 +1729,112 @@ hai rule doc lap nhau, khong trung nhau.
 Trong do co 4 test nap cho scanner mot file **co lo** de chung minh no con
 bat: neu scanner mat kha nang phat hien thi no phai do, vi scanner xanh
 chung minh co gi ca.
+
+---
+
+## Bug #36: CI Do — Nguyên Nhân Không Phải Thiếu Dữ Liệu (2026-10-10)
+
+### Muc do
+Không phải bug production. Nhưng nó che giấu đúng thứ nguy hiểm nhất: **11 test
+pass trên máy tôi và đỏ trên CI**, và lý do là máy tôi có `usage.db` còn sót.
+
+### Bieu hien
+`ci.yml` chay lai lan dau:
+```
+11 failed, 861 passed, 25 skipped, 11 warnings, 1 error in 89.26s
+```
+
+### Tai sao khong phai thieu mock data
+Y tuong dau la "them mock data cho CI". Do la cach **sai**. Commit mot
+`usage.db` nhị phân se:
+- lech voi `schema.py` theo thoi gian ma khong ai biet,
+- bi ghi de ngay khi bat ky test nao ghi vao no,
+- trong giong du lieu mau nhung thuc ra la tai khoan that cua nguoi viet.
+
+Dieu can sua la **test doc trang thai ma chi ton tai o may cua nguoi viet**.
+Ca ba nhom lỗi deu cung mot kieu.
+
+### 1. Thieu schema (`no such table: accounts`)
+`usage.db` bi gitignore. `_db.py` chi bootstrap `key_status` va
+`custom_endpoints` luc import — phan con lai do `init_config_tables()` tao, ma
+`main.py` goi va pytest thi khong.
+
+Do la ly do file pass o may: no co san `usage.db` voi `accounts` va
+`account_keys` trong do. Mot file bi gitignore khong bao gio chay theo code.
+
+Fix: session fixture trong `conftest.py` goi `init_config_tables()` mot lan.
+
+### 2. Thieu `ROUTER_API_PASSWORD_KEY`
+`set_password_db` chi ghi ban `password_enc` khi key duoc dat, nen test
+recovery thay `None` tren checkout sach (2 fail). May co key trong `.env`.
+
+Fix: session fixture dat gia tri `test-only-not-a-real-key` khi env var rong.
+
+### 3. `test_openai_stream_usage_chunk` goi Gemini that (4 fail)
+La file **duy nhất** trong toan bo suite goi provider that — nen cung la file
+duy nhat khong chay duoc trong CI.
+
+Mock chi mot ban, va phai dung cho ca hai:
+```python
+monkeypatch.setattr(config_mod, "GEMINI_API_KEYS", ["sk-test-dummy-key-for-ci"])
+register_keys_in_db(config_mod.GEMINI_API_KEYS)
+router.refresh_keys()
+```
+Chi patch config la **khong du**. `calculate_key_capacities_by_pool()` cong don
+tren `router._key_status`, va dict do duoc dung tu DB. Khong co row thi
+capacity = 0, roi `_apply_account_limit` het 429 *"tokens per minute limit
+exceeded"* **truoc khi** provider duoc goi.
+
+Va cache 1 giay cua capacity can xoa, neu test truoc lam nong no o luc key
+list con rong.
+
+Chunk gia phai co hinh dang **object**, khong phai dict:
+```python
+chunk = item["chunk"]
+delta = chunk.choices[0].delta if chunk.choices else None
+```
+Dict o day tao ra stream **rong** chu khong phai stream loi — kho chay hon.
+
+### Bug thật tim ra khi sua: 429 bi bao thanh 503
+`_apply_account_limit` nem `HTTPException(429, ...)`. Route bat no nhu
+`Exception` thuong roi tu suy lai status tu `str(e)`:
+
+```python
+if msg.startswith("quota_exhausted") or "rate_limited" in msg.lower():   # khong khop
+...
+return JSONResponse(status_code=503, content={"error": {"message":
+        "Service temporarily unavailable", ...}})
+```
+
+Message that la *"Account rate limit exceeded: tokens per minute limit
+exceeded"* — khong khop nhanh nao, nen ra 503.
+
+**503 nghiem trong hon thong bao sai.** No bao client "server hong", va client
+retry 503 ngay lap tuc. Mot lan cham luu bien thanh bao loi re-tra dam vao
+chinh pool dang day. 429 la trang thai duy nhat nghia la *"chinh lai bi chan,
+hay cho"*.
+
+Fix: `HTTPException` da co san status + body dung, khong suy lai lai. Them
+`_error_type()` cho truong hop `detail` khong phai dict, va bang phai phu het
+moi 4xx ma route co the nem — mot code 4xx thieu entry se im lang thanh
+`api_error`, ma client loc theo type se tinh no la loi server va retry.
+
+### Mot fixture tu ghi vao DB that
+`stub_provider` goi `register_keys_in_db` ma **khong** khai bao `temp_db`, nen
+no duoc phep chay truoc khi `_db` bi tro ve file tam. Key do ghi vao `usage.db`
+that. Guard trong `conftest.py` bat duoc — va chi bat trong checkout sach.
+
+Fix: khai bao `temp_db` ro rang trong chinh fixture do, de thu tu khong con la
+hy vong.
+
+### Bai hoc ve cach xac nhan
+Lo sai nay khong the thay bang `pytest` tren may. May co `.env` co key that,
+co `usage.db` co schema, nen **hai** nguon can thiet biu dien cung luc deu
+co do. Chi mot `git clone` moi + `pytest` moi phai ra.
+
+Clone sach chay lai: **903 passed**, 0 loi, khong `.env`, khong network.
+
+### Test
+- `tests/test_error_status_mapping.py` — 6 test moi.
+- `conftest.py` — 2 session fixture.
+- `test_openai_stream_usage_chunk.py` — mock provider, 4/4 xanh.

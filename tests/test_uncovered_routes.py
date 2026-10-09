@@ -318,8 +318,11 @@ class TestPoolDisplayHasNoMemberList:
 
         assert entry["display_name"] == "Gemini Flash Pool"
 
-    def test_an_env_override_still_wins(self):
-        """The escape hatch for anyone who wants a more specific label."""
+    def test_an_env_override_still_wins(self, temp_db):
+        """The escape hatch for anyone who wants a more specific label.
+
+        temp_db because reload_model_config() writes through sync_env_to_db().
+        """
         import os
 
         from src.core import api_config

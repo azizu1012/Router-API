@@ -15,6 +15,16 @@ from src.server.openai_server.auth import _resolve_auth, _check_auth, _apply_acc
 from .app_init import app
 
 
+def _error_type(status_code: int) -> str:
+    """The OpenAI error type that goes with an HTTP status."""
+    return {400: "invalid_request_error",
+            401: "authentication_error",
+            403: "permission_error",
+            404: "invalid_request_error",
+            429: "rate_limit_error",
+            }.get(status_code, "api_error")
+
+
 def _extract_response_text(result: dict) -> str:
     """Extract text content from an OpenAI-format response dict."""
     choices = result.get("choices", [])
@@ -525,6 +535,21 @@ async def chat_completions(
         if is_sub_agent_request(body, is_opencode=False):
             logger_api.info("Intercepted sub-agent chat_completion error: %s, returning simulated response", e)
             return handle_sub_agent_error(body, e, format_type="openai")
+
+        # An HTTPException already carries the right status and body. Re-deriving
+        # one from str(e) threw the reason away: _apply_account_limit raises 429
+        # with "Account rate limit exceeded: tokens per minute limit exceeded",
+        # which matches none of the branches below, so a rate-limited client was
+        # told "Service temporarily unavailable". 503 tells a client to retry
+        # immediately, so that turned one rate limit into a retry storm.
+        if isinstance(e, HTTPException):
+            detail = e.detail
+            if isinstance(detail, dict) and "error" in detail:
+                return JSONResponse(status_code=e.status_code, content=detail)
+            return JSONResponse(
+                status_code=e.status_code,
+                content={"error": {"message": str(detail), "type": _error_type(e.status_code)}},
+            )
 
         msg = str(e)
         if msg.startswith("bad_request"):

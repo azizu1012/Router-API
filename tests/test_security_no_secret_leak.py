@@ -329,7 +329,7 @@ class TestTheAccountsListDoesNotCarryRawKeys:
         admin, tok = _make_account("boss8", "admin", "adminpw")
 
         r = app_client.get(
-            f"/dashboard/admin/accounts/master-key?name=boss8",
+            "/dashboard/admin/accounts/master-key?name=boss8",
             headers={"X-Dashboard-Token": tok})
 
         assert r.status_code == 200

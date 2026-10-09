@@ -75,6 +75,7 @@ tests/*
 !tests/test_uncovered_routes.py
 !tests/test_hosted_search_shape.py
 !tests/test_security_no_secret_leak.py
+!tests/test_error_status_mapping.py
 
 # The CI scanner is tracked; the rest of scripts/ is local tooling.
 !scripts/

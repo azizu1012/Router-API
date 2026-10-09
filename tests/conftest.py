@@ -31,6 +31,11 @@ TABLES = ('accounts', 'account_keys', 'account_credentials', 'invite_codes',
 
 
 def _row_counts(path):
+    """Row counts per table, or a sentinel if the file is absent.
+
+    Absence is data, not an excuse to skip: a missing usage.db that turns into a
+    20 KB file full of tables is still a change to the developer's database.
+    """
     if not os.path.exists(path):
         return None
     con = sqlite3.connect(f'file:{path}?mode=ro', uri=True)
@@ -47,7 +52,53 @@ def _row_counts(path):
 
 
 @pytest.fixture(scope='session', autouse=True)
-def _real_database_is_not_a_scratchpad():
+def _schema_exists_before_any_test():
+    """Give the suite a database to run against.
+
+    Not mock data — a real SQLite file with the real schema, created once.
+
+    This suite used to pass on a developer's machine and fail in CI for one
+    reason: ``usage.db`` was already sitting in the working copy. It contains
+    the tables ``accounts`` and ``account_keys`` were queried from, so every test
+    that touched account storage found them. A fresh checkout has no such file,
+    and ``src/backend/_db.py`` only bootstraps ``key_status`` and
+    ``custom_endpoints`` at import — everything else is created by
+    ``init_config_tables()``, which ``main.py`` calls and pytest never did.
+
+    The symptom was three ``no such table: accounts`` errors. The cause was not
+    missing fixtures but a missing file that happened to be gitignored, so it
+    could never travel with the code.
+
+    A committed ``usage.db`` would be worse: a binary blob that drifts from
+    schema.py, is silently rewritten by any test that writes to it, and looks
+    like sample data while actually being someone's real accounts.
+    """
+    from src.backend import schema as schema_mod
+
+    schema_mod.init_config_tables()
+
+
+@pytest.fixture(scope='session', autouse=True)
+def _password_recovery_is_testable():
+    """Set a recovery key for the session if the operator has not.
+
+    ``set_password_db`` only writes the reversible ``password_enc`` copy when
+    ROUTER_API_PASSWORD_KEY is set, so the recovery tests asserted ``None`` in a
+    clean checkout and passed in a working copy that had a key in ``.env``.
+    A fixed non-secret value is enough; nothing decrypts anything real here.
+    """
+    key = 'test-only-not-a-real-key'
+    if not os.environ.get('ROUTER_API_PASSWORD_KEY'):
+        os.environ['ROUTER_API_PASSWORD_KEY'] = key
+        yield
+        del os.environ['ROUTER_API_PASSWORD_KEY']
+    else:
+        yield
+
+
+@pytest.fixture(scope='session', autouse=True)
+def _real_database_is_not_a_scratchpad(_schema_exists_before_any_test,
+                                        _password_recovery_is_testable):
     """Fail if the suite changed usage.db.
 
     Autouse and session-scoped, so it wraps every test in the run. Comparing
