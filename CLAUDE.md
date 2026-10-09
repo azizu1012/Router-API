@@ -20,6 +20,7 @@ Lý do và lịch sử: `docs/bug-logs.md` Bug #6.
 - Always query CodeGraph MCP tools to resolve symbol definitions and understand code topology before falling back to heavy grep commands.
 - Không commit `.env`, `usage.db`, `logs/`
 - DB dùng SQLite qua `src/backend/_db.py`
+- Khi viết test integration (nhất là test routing), **đừng assert cứng `200`** nếu chưa mock rate limiter/pool. DB trống trên CI sẽ làm request bị trả về `429` (do capacity=0) hoặc `503`. Hãy assert loại trừ (`not in (404, 405)`) hoặc mock cẩn thận.
 - Dùng logger:
 
 | Ngữ cảnh | Import |

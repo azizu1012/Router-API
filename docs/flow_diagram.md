@@ -34,6 +34,7 @@ Router API v2 acts as an intelligent, high-availability LLM gateway and proxy. I
 |   * completions_routes.py (/v1/chat/completions, /v1/messages, /v1/completions, /v1/responses)   |
 |   * opencode_routes.py    (/opencode/v1/chat/completions)                                        |
 |   * gemini_routes.py      (/v1beta/models/*:generateContent, :streamGenerateContent)             |
+|   * mcp_routes            (/mcp cho Model Context Protocol Server)                               |
 |   * dashboard_routes.py   (/dashboard/login, /me, /my/keys, /register, /stats, /endpoints)       |
 |   * admin/                (accounts.py, endpoints.py, keys.py, models.py, settings.py)           |
 |   * ws_routes.py          (WebSocket /dashboard/ws -> logs & telemetry broadcasting)             |
@@ -301,7 +302,7 @@ Router API v2 implements a two-tier token hierarchy, separating administrative r
    * POST /opencode/v1/      translated to XML            models/*:stream       * CRUD /dashboard/admin/
      chat/completions      * 4s keepalive ping            GenerateContent              accounts/*
    * (opencode_proxy)        engine                     * (pass_through)        * WS   /dashboard/ws
-   |                       |                            |                       |
+   * GET/POST /mcp         |                            |                       |
    +-----------+-----------+                            |                       |
                |                                        |                       |
                v                                        v                       v

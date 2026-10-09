@@ -1838,3 +1838,77 @@ Clone sach chay lai: **903 passed**, 0 loi, khong `.env`, khong network.
 - `tests/test_error_status_mapping.py` — 6 test moi.
 - `conftest.py` — 2 session fixture.
 - `test_openai_stream_usage_chunk.py` — mock provider, 4/4 xanh.
+
+---
+
+## Bug #37: MCP Server Khong Chay — 4 Tang Qua Nhau (2026-10-10)
+
+### Muc do
+Da cong bo, `/mcp` tra 200 voi JSON hien thi "server dang chay" trong khi khong
+co tool nao. Khong log, khong trace, khong status sai — dung loai silent ma
+project gap nhieu lan.
+
+### Tang 1: goi ham khong ton tai
+Agent truoc goi `mcp_engine.get_starlette_app()`. API that la
+`streamable_http_app()`. `except Exception` nuot loi, `/mcp` roi ve route
+discovery cu — mot JSON hop le nhin nhu dang chay.
+
+### Tang 2: route cua SDK khong con nhan POST
+Sau khi mount dung, `POST /mcp` van 405. SDK tao route:
+
+```python
+Route(streamable_http_path, endpoint=streamable_http_app)   # khong truyen methods
+```
+
+Starlette 1.2 doi default `methods` tu `None` ("moi method") sang `["GET"]`.
+POST — tuc la toan bo JSON-RPC — thanh partial match va 405 **truoc khi** endpoint
+duoc goi. Do la xung dot that giua `mcp==2.3.0` va `starlette==1.2.1`.
+
+Vay lai `Method Not Allowed` tren mot endpoint viet ra de nhan POST — loi ten sai
+hoan toan, tro ve mot route co that.
+
+Fix: gan lai verbs cho route (`GET/POST/DELETE`) sau khi build. Khong ha pin
+`starlette`, vi mot SDK khong nen keo dung mot dependency dung chung.
+
+### Tang 3: lifespan cua sub-app khong bao chay
+`Mount.handle(scope, receive, send)` khong co tham so `lifespan`. SDK mo task
+group trong `lifespan`, nen moi tool call chet "Task group is not initialized".
+
+Nhung nhap no trong startup handler cung sai, theo he khac: anyio yeu cau task
+group vao va ra **cung mot task**, nen `_exit` lai nem *"Attempted to exit cancel
+scope in a different task than it was entered in"* luc dong vong lap.
+
+Fix: task nen rieng giu lifespan, huy khi shutdown.
+
+### Tang 4: mount khong match duong dan goc
+`app.mount("/mcp")` chi match `/mcp/...`, **khong** match `/mcp` — nen client
+POST `/mcp` rơi xuong StaticFiles va 405. Vay lai mot tang cua cung trieu
+chung, va la nguyen thuong gap nhat khi client cau hinh `/mcp`.
+
+Fix: middleware ghi lai `/mcp` -> `/mcp/`. Khong dung 307, vi client se phai
+phat lai POST co body va khong phai MCP client nao cung theo doi.
+
+### Mot loi nua bi bo qua
+Route `GET /mcp` discovery cu **partial match** POST `/mcp` va chan truoc mount.
+Da xoa no, chuyen thanh fallback chi khi SDK khong co — truoc do no chinh la
+thu pham cua 405 o tang 4.
+
+### `mcp_only`
+Mot account chi dung duoc MCP. Co so o `token_limit_middleware` — mot noi duy
+nhat moi request di qua, ke ca request den qua mount `/mcp`. Do do **can exemption
+cho chinh `/mcp`**, neu khong account do bi khoa o cua cua chinh no.
+
+Khong dung lai `web_search_enabled`: cot do duoc ghi va hien thi nhung khong noi
+nao doc de chan, va dao y nghia la mot lua chon doc rat de nham. Cot moi
+`mcp_only` re, tu giai thich, khong dung logic cu.
+
+### Test
+`tests/test_mcp_server.py` — 12 test. Chay bang MCP client that
+(`streamable_http_client`) de xac nhan `tools/list` tra ve `search_web`.
+
+Bao gom test quan trong nhat: `test_but_its_own_door_stays_open` — account
+`mcp_only` bi 403 o `/v1/messages` **nhung** van 200 o `/mcp`. Khong co test do,
+lo "chan nham cua" se khong ai thay.
+
+Mutation: bo verbs -> 4 test do; route GET-only -> 1 do; bo gate `mcp_only` -> 2
+do; bo mount -> 5 do. 922 test xanh.

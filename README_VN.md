@@ -184,6 +184,7 @@ tại cho client không tự điều phối được.
 | `POST` | `/v1/models/{id}:generateContent` | Gemini native (pass-through) |
 | `GET` | `/v1/models` | OpenAI **và** Anthropic schema superset |
 | `POST` | `/v1/search`, `/search` | Router |
+| `POST`| `/mcp` | MCP Server — tool `search_web`, Bearer token |
 | `GET` | `/dashboard/*` | Dashboard API |
 | `WS` | `/dashboard/ws` | Live dashboard stream |
 | `GET` | `/health`, `/preflight` | Ops |

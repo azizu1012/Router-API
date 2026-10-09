@@ -13,3 +13,8 @@ google-adk>=2.3.0
 # Already present transitively via google-genai, but a direct import that is not
 # declared is a dependency waiting to break on the next upgrade of that package.
 cryptography>=42.0.0
+
+# Model Context Protocol (MCP) server for the search tool.
+# Pinned: the transport/auth APIs used here (token_verifier, streamable_http_app,
+# TransportSecuritySettings) only exist in 2.x.
+mcp==2.3.0

@@ -39,7 +39,7 @@ router_api/
     │   └── router/               # APIRouter, ModelPool, KeyResolver
     ├── backend/                  # Tầng DB SQLite
     ├── console/                  # CLI admin
-    └── server/                   # FastAPI Server, routes, WebSocket Manager
+    └── server/                   # FastAPI Server, routes (kể cả /mcp cho Web Search), WebSocket Manager
 ```
 
 ## 3. Các Thành Phần Chính & Vai Trò

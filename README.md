@@ -197,6 +197,7 @@ at a fifteenth of the latency, so it is the floor a request falls back to. Only
 | `POST` | `/v1/models/{id}:generateContent` | Gemini native (pass-through) |
 | `GET` | `/v1/models` | OpenAI **and** Anthropic schema superset |
 | `POST` | `/v1/search`, `/search` | Router |
+| `POST`| `/mcp` | MCP Server — tool `search_web`, Bearer token |
 | `GET` | `/dashboard/*` | Dashboard API |
 | `WS` | `/dashboard/ws` | Live dashboard stream |
 | `GET` | `/health`, `/preflight` | Ops |

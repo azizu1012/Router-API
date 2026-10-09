@@ -16,6 +16,56 @@ from ...stats_pusher import stats_pusher
 app = FastAPI(title="Router API v2", version="2.0.0")
 
 
+# Paths that mean "this account asked for the MCP tool and nothing else".
+# An mcp_only account is refused on every model route and allowed through here;
+# without this exemption the block would close its own front door, because this
+# middleware also runs for requests arriving via the /mcp mount.
+MCP_PATH_PREFIX = "/mcp"
+
+# Everything that reaches a model. Enumerated rather than pattern-matched so a
+# new route is refused by default instead of quietly becoming reachable.
+_MODEL_PATHS = (
+    "/v1/messages", "/messages", "/v1/chat/completions", "/v1/completions",
+    "/v1/responses", "/opencode/", "/v1beta/", "/v1alpha/", "/v1/models/",
+)
+
+
+def _is_model_route(path: str) -> bool:
+    if path.startswith(MCP_PATH_PREFIX):
+        return False
+    stripped = path.rstrip("/") or "/"
+    return any(stripped == p.rstrip("/") or stripped.startswith(p)
+               for p in _MODEL_PATHS)
+
+
+@app.middleware("http")
+async def mcp_only_middleware(request: Request, call_next):
+    """Refuse model traffic for an account marked mcp_only.
+
+    One check here rather than one per route: this middleware already resolves
+    the account for every request, and the model routes are spread across four
+    files including the Gemini passthrough — five separate edits would drift.
+    """
+    path = request.scope.get("path", "/")
+    if not _is_model_route(path):
+        return await call_next(request)
+
+    account = getattr(request.state, "auth_account", None)
+    if account and account.get("mcp_only") and not account.get("token_key_id"):
+        # Only a whole account can be mcp_only. A token minted under it stays a
+        # normal API credential, so an operator can hand out a scoped one by
+        # choosing not to set the flag.
+        return JSONResponse(
+            status_code=403,
+            content={"error": {
+                "message": "This account is restricted to the MCP search tool "
+                           "and cannot call models.",
+                "type": "permission_error",
+            }},
+        )
+    return await call_next(request)
+
+
 @app.middleware("http")
 async def token_limit_middleware(request: Request, call_next):
     """Apply per-token concurrency / RPM / TPM / RPD to authenticated API routes.
@@ -127,6 +177,14 @@ async def static_mount_fallback_middleware(request: Request, call_next):
     misconfigured ANTHROPIC_BASE_URL is the most likely cause of reaching here.
     """
     path = request.scope.get("path", "/")
+
+    # The MCP transport lives at the root of a sub-app mounted at /mcp, and a
+    # mount only matches "/mcp/..." — never "/mcp" itself. Clients post to
+    # /mcp. Rewrite rather than redirect: a 307 makes the client replay a
+    # JSON-RPC POST, and not every MCP client follows one carrying a body.
+    if path == MCP_PATH_PREFIX:
+        request.scope["path"] = path + "/"
+        path = request.scope["path"]
 
     if len(path) > 1 and path.endswith("/"):
         stripped = path.rstrip("/")
@@ -262,6 +320,12 @@ async def _init_usage_db():
     init_config_tables()
     migrate_from_json()
     await init_db()
+    try:
+        from src.server.openai_server import mcp_routes
+        await mcp_routes.start_mcp_session()
+    except Exception as mcp_err:
+        # The API must still serve without MCP.
+        logger.error("[Startup] MCP session failed to start: %s", mcp_err)
 
     # Reset active requests for all API keys on startup to clear any counts left hanging from a previous crash/restart
     try:

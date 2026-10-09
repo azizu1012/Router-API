@@ -50,6 +50,7 @@ def create_account_db(
     tier: str = "free",
     search_engine: str = "auto",
     web_search_enabled: bool = False,
+    mcp_only: bool = False,
 ) -> Dict[str, Any]:
     clean = str(name or "").strip()
     if not clean:
@@ -79,6 +80,7 @@ def create_account_db(
         "tpm": int(config.DEFAULT_ACCOUNT_TPM if tpm is None else tpm),
         "rpd": int(config.DEFAULT_ACCOUNT_RPD if rpd is None else rpd),
         "web_search_enabled": web_search_enabled,
+        "mcp_only": mcp_only,
         "search_engine": search_engine or "auto",
         "created_at": now,
         "updated_at": now,
@@ -88,11 +90,12 @@ def create_account_db(
         try:
             c.execute(
                 """INSERT INTO accounts
-                   (account_id, name, auth_key, enabled, tier, rpm, tpm, rpd, web_search_enabled, search_engine, created_at, updated_at)
-                   VALUES (?,?,?,?,?,?,?,?,?,?,?,?)""",
+                   (account_id, name, auth_key, enabled, tier, rpm, tpm, rpd, web_search_enabled, search_engine, mcp_only, created_at, updated_at)
+                   VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)""",
                 (account["account_id"], account["name"], account["auth_key"],
                  1, account["tier"], account["rpm"], account["tpm"], account["rpd"],
-                 1 if account["web_search_enabled"] else 0, account["search_engine"], account["created_at"], account["updated_at"]),
+                 1 if account["web_search_enabled"] else 0, account["search_engine"],
+                1 if account.get("mcp_only") else 0, account["created_at"], account["updated_at"]),
             )
             c.commit()
         finally:
@@ -110,7 +113,7 @@ def update_account_db(name: str, **updates: Any) -> Dict[str, Any]:
         c = _conn()
         try:
             c.execute(
-                """UPDATE accounts SET auth_key=?, enabled=?, tier=?, rpm=?, tpm=?, rpd=?, web_search_enabled=?, search_engine=?, updated_at=?
+                """UPDATE accounts SET auth_key=?, enabled=?, tier=?, rpm=?, tpm=?, rpd=?, web_search_enabled=?, search_engine=?, mcp_only=?, updated_at=?
                    WHERE name=?""",
                 (updates.get("auth_key", existing["auth_key"]),
                  1 if updates.get("enabled", existing["enabled"]) else 0,
@@ -120,6 +123,7 @@ def update_account_db(name: str, **updates: Any) -> Dict[str, Any]:
                  updates.get("rpd", existing["rpd"]),
                  1 if updates.get("web_search_enabled", existing.get("web_search_enabled", 0)) else 0,
                  updates.get("search_engine", existing.get("search_engine", "auto")),
+                  1 if updates.get("mcp_only", existing.get("mcp_only", 0)) else 0,
                  updates["updated_at"], clean),
             )
             c.commit()

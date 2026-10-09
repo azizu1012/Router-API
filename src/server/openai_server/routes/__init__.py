@@ -9,6 +9,13 @@ from . import admin as admin  # admin/ package (keys, endpoints, accounts)
 from . import opencode_routes as opencode_routes
 from . import ws_routes as ws_routes
 from src.server.pass_through_server.routes import gemini_routes as gemini_routes
+from src.server.openai_server import mcp_routes as mcp_routes
+
+# MCP before the frontend mount, for the same reason the comment below gives:
+# the static mount matches every path, so whichever is registered first wins.
+# Registered after, /mcp would be answered by StaticFiles — which is exactly how
+# POST /mcp came back 405 instead of reaching the MCP server.
+mcp_routes.mount_mcp(app)
 
 # Mount static frontend LAST so API routes take priority
 FRONTEND_DIR = Path(__file__).resolve().parent.parent.parent.parent / "frontend"

@@ -48,14 +48,6 @@ async def preflight(
     return run_preflight()
 
 
-@app.get("/mcp")
-async def mcp_discovery():
-    return {
-        "servers": [],
-        "notifications": False,
-        "roots": [],
-    }
-
 
 # Anthropic and OpenAI disagree on the model-list schema: Anthropic wants
 # `type`/`display_name`/`created_at`/`lifecycle`, OpenAI wants

@@ -155,6 +155,16 @@ def init_config_tables() -> None:
             except Exception:
                 pass
 
+            # Migration: add mcp_only to accounts.
+            # An mcp_only account may use the MCP search tool and nothing else:
+            # every model route is refused for it. Enforced in
+            # token_limit_middleware, which is the one place every request passes
+            # through — including requests arriving via the /mcp mount.
+            try:
+                c.execute("ALTER TABLE accounts ADD COLUMN mcp_only INTEGER DEFAULT 0")
+            except Exception:
+                pass
+
             # Migration: add search_engine to accounts
             try:
                 c.execute("ALTER TABLE accounts ADD COLUMN search_engine TEXT DEFAULT 'auto'")
