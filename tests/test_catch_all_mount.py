@@ -86,6 +86,35 @@ class TestAMisconfiguredBaseUrlSaysSo:
         assert r.json()["error"]["type"] == "invalid_request_error"
 
 
+class TestTheConfiguredBaseUrlItselfAnswers:
+    """``ANTHROPIC_BASE_URL`` is what the client probes before sending anything.
+
+    9router's docs tell users to set it to ``http://host:20128/v1``, and that is
+    the shape in wide use. Claude Code fetched the configured base URL, got the
+    SPA catch-all's bare 404, and reported it as "There's an issue with the
+    selected model" -- an inference request was never sent, so nothing about the
+    pool, the keys or the model could be the cause.
+    """
+
+    @pytest.mark.parametrize("path", ["/v1", "/v1/"])
+    def test_the_base_url_answers(self, client, path):
+        r = client.get(path, headers=_headers())
+
+        assert r.status_code == 200, f"got {r.status_code} for {path}"
+
+    @pytest.mark.parametrize("path", ["/v1", "/v1/"])
+    def test_it_returns_the_model_list(self, client, path):
+        r = client.get(path, headers=_headers())
+
+        body = r.json()
+        assert body["object"] == "list"
+        assert any(m["id"] == "gemini-flash" for m in body["data"])
+
+    def test_it_still_requires_a_credential(self, client):
+        """Answering the probe must not turn it into an open endpoint."""
+        assert client.get("/v1").status_code in (401, 403)
+
+
 class TestTheDashboardStillServesTheFrontend:
     def test_the_spa_is_not_broken_by_the_guard(self, client):
         """The mount stays; only API-shaped paths are intercepted."""

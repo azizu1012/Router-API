@@ -84,13 +84,7 @@ def _model_entry(m: Dict[str, Any]) -> Dict[str, Any]:
     return entry
 
 
-@app.get("/v1/models")
-async def list_models(
-    authorization: str | None = Header(default=None),
-    x_api_key: str | None = Header(default=None),
-) -> Dict[str, Any]:
-    auth = _resolve_auth(authorization, x_api_key)
-    _check_auth(auth)
+def _models_payload() -> Dict[str, Any]:
     entries = [_model_entry(m) for m in router.list_models()]
     return {
         "object": "list",
@@ -99,6 +93,34 @@ async def list_models(
         "first_id": entries[0]["id"] if entries else None,
         "last_id": entries[-1]["id"] if entries else None,
     }
+
+
+@app.get("/v1")
+@app.get("/v1/")
+async def api_root(
+    authorization: str | None = Header(default=None),
+    x_api_key: str | None = Header(default=None),
+) -> Dict[str, Any]:
+    """The configured base URL itself has to answer.
+
+    9router's docs tell users to set ANTHROPIC_BASE_URL to "http://host/v1",
+    and Claude Code probes that exact URL before it sends anything. Without a
+    route here the SPA catch-all returns a bare 404, and a client that cannot
+    reach its gateway reports it as a model problem rather than a network one.
+    """
+    auth = _resolve_auth(authorization, x_api_key)
+    _check_auth(auth)
+    return _models_payload()
+
+
+@app.get("/v1/models")
+async def list_models(
+    authorization: str | None = Header(default=None),
+    x_api_key: str | None = Header(default=None),
+) -> Dict[str, Any]:
+    auth = _resolve_auth(authorization, x_api_key)
+    _check_auth(auth)
+    return _models_payload()
 
 
 @app.get("/v1/models/{model_id:path}")
