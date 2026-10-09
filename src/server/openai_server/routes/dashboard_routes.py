@@ -514,18 +514,27 @@ async def dashboard_accounts(request: Request):
     payload = _require_dashboard(request)
     is_admin = payload.get("tier") == "admin"
     accs = await asyncio.to_thread(list_accounts_db, True)
+    
+    def mask_key(k: str) -> str:
+        if not k: return ""
+        return f"{k[:3]}...{k[-4:]}" if len(k) > 10 else "***"
+        
     if is_admin:
         # Admin only. Whether somebody still owes a password change is not
         # something one account should learn about another's, so the flag is
         # merged in here rather than exposed on list_accounts_db for everyone.
         from src.backend.account_keys import list_password_flags_db
         flags = await asyncio.to_thread(list_password_flags_db)
-        return {
-            "accounts": [
-                {**dict(a), "must_change_password": bool(flags.get(a["account_id"], 0))}
-                for a in accs
-            ]
-        }
+        
+        safe_admin = []
+        for a in accs:
+            d = dict(a)
+            if "auth_key" in d:
+                d["auth_key_masked"] = mask_key(d.pop("auth_key"))
+            d["must_change_password"] = bool(flags.get(a["account_id"], 0))
+            safe_admin.append(d)
+            
+        return {"accounts": safe_admin}
     else:
         safe = [{k: v for k, v in a.items() if k != "auth_key"} for a in accs]
         return {"accounts": safe}

@@ -2,7 +2,8 @@
 from fastapi import Request, HTTPException
 
 from ..app_init import app
-from ..auth_session import _require_admin, _require_dashboard
+from ..auth_session import _require_admin
+from ..credential_reveal import reveals_credential
 
 from src.backend.account_keys import (
     DEFAULT_MAX_CONCURRENCY,
@@ -490,6 +491,39 @@ async def admin_account_recovery(request: Request, name: str):
                       "Đặt lại mật khẩu để tạo bản mới.",
         }
     return {"name": clean, "password": plain, "available": True}
+
+
+@app.get("/dashboard/admin/accounts/master-key")
+@reveals_credential
+async def admin_account_master_key(request: Request, name: str):
+    """Read one account's master key, for the operator.
+
+    Separate from the account listing on purpose. The listing is polled every few
+    seconds and held in browser state, so a credential in it means one screenshot
+    of the accounts tab is a list of quota-exempt keys — which is exactly how
+    ``/dashboard/accounts`` shipped raw ``auth_key`` for every account.
+
+    Asking for it by name is the difference between an operator reading the key
+    they were looking for and a whole table leaking to whoever sees the screen.
+    Admin-only, and it says so plainly when the account has no key.
+    """
+    _require_admin(request)
+    clean = str(name or "").strip()
+    if not clean:
+        raise HTTPException(status_code=400, detail="name is required")
+
+    import asyncio
+    from src.backend.accounts import find_account_by_name
+
+    acct = await asyncio.to_thread(find_account_by_name, clean)
+    if not acct:
+        raise HTTPException(status_code=404, detail="Account not found")
+
+    key = str(acct.get("auth_key") or "")
+    if not key:
+        return {"name": clean, "auth_key": None, "available": False,
+                "reason": "Tài khoản này chưa có master key."}
+    return {"name": clean, "auth_key": key, "available": True}
 
 
 @app.post("/dashboard/admin/accounts/require-password-change")

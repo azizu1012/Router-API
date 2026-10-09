@@ -302,3 +302,108 @@ class TestTheScannerIsCleanOnTheRealRoutes:
 
         assert not critical, "\n".join(
             f"  [{f.severity}] {f.rule} {f.file}:{f.line} {f.where}" for f in findings)
+
+class TestTheAccountsListDoesNotCarryRawKeys:
+    """The list is polled every few seconds and lives in browser state.
+
+    It shipped ``auth_key`` for every account until it was masked, which made a
+    screenshot of the accounts tab a list of quota-exempt credentials. Masking
+    it is right, but it removed the field the copy button read, so the button
+    stopped working with no error anywhere — the page still rendered, HTTP was
+    still 200. Both halves are pinned here.
+    """
+
+    def test_admin_list_has_the_mask_and_not_the_key(self, app_client):
+        admin, tok = _make_account("boss7", "admin", "adminpw")
+
+        r = app_client.get("/dashboard/accounts", headers={"X-Dashboard-Token": tok})
+        row = r.json()["accounts"][0]
+
+        assert r.status_code == 200
+        assert admin["auth_key"] not in r.text
+        assert "auth_key" not in row, "the field was renamed, not re-valued"
+        assert row["auth_key_masked"].endswith(admin["auth_key"][-4:])
+
+    def test_the_copy_button_has_a_route_to_call(self, app_client):
+        """What AccountDetailPanel.jsx does when the admin presses Copy."""
+        admin, tok = _make_account("boss8", "admin", "adminpw")
+
+        r = app_client.get(
+            f"/dashboard/admin/accounts/master-key?name=boss8",
+            headers={"X-Dashboard-Token": tok})
+
+        assert r.status_code == 200
+        assert r.json()["available"] is True
+        assert r.json()["auth_key"] == admin["auth_key"]
+
+    def test_a_free_account_cannot_reach_the_key(self, app_client):
+        _make_account("boss9", "admin", "adminpw")
+        _make_account("dev9", "free", "devpw")
+        tok = app_client.post("/dashboard/login",
+                              json={"username": "dev9", "password": "devpw"}
+                              ).json()["token"]
+
+        r = app_client.get("/dashboard/admin/accounts/master-key?name=boss9",
+                           headers={"X-Dashboard-Token": tok})
+
+        assert r.status_code == 403
+
+    def test_an_unknown_account_is_a_404(self, app_client):
+        _, tok = _make_account("boss10", "admin", "adminpw")
+
+        r = app_client.get("/dashboard/admin/accounts/master-key?name=nobody",
+                           headers={"X-Dashboard-Token": tok})
+
+        assert r.status_code == 404
+
+    def test_no_poll_endpoint_still_carries_a_raw_key(self, app_client):
+        """The sweep, now including the admin-tier listing."""
+        admin, tok = _make_account("boss11", "admin", "adminpw")
+
+        for path in ("/dashboard/accounts", "/api/stats", "/dashboard/keys"):
+            r = app_client.get(path, headers={"X-Dashboard-Token": tok})
+            assert admin["auth_key"] not in r.text, f"{path} leaked the master key"
+
+
+class TestTheRevealMarkerIsNotABlanketPass:
+    """@reveals_credential exempts the shape, not the privilege.
+
+    Without this, the marker is just a way to switch the scanner off, and the
+    next person to copy it onto a broad listing inherits the original bug.
+    """
+
+    def _rules(self, source, tmp_path):
+        from scripts.scan_security import audit
+        target = tmp_path / "routes.py"
+        target.write_text(source, encoding="utf-8")
+        return {f.rule for f in audit([target])}
+
+    def test_marked_and_admin_only_is_clean(self, tmp_path):
+        src = '''
+from fastapi import Request
+from ..credential_reveal import reveals_credential
+from ..auth_session import _require_admin
+
+
+@app.get("/dashboard/admin/accounts/master-key")
+@reveals_credential
+async def show(request: Request, name: str):
+    _require_admin(request)
+    return {"auth_key": "sk-secret"}
+'''
+        assert self._rules(src, tmp_path) == set()
+
+    def test_marked_but_not_admin_only_is_a_finding(self, tmp_path):
+        src = '''
+from fastapi import Request
+from ..credential_reveal import reveals_credential
+from ..auth_session import _require_dashboard
+
+
+@app.get("/dashboard/peek")
+@reveals_credential
+async def peek(request: Request):
+    _require_dashboard(request)
+    return {"auth_key": "sk-secret"}
+'''
+        assert "credential-reveal-without-admin-guard" in self._rules(src, tmp_path)

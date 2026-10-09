@@ -344,12 +344,30 @@ def audit(paths: list[Path]) -> list[Finding]:
                 "never branches on tier; add _require_admin, or an explicit tier "
                 "check that strips what a non-admin must not see"))
 
-        # R3 — a credential on its way into a response body
-        for key in sorted(returned_credential_keys(index, node)):
+# R3 — a credential on its way into a response body. A handler marked
+        # with @reveals_credential is exempt, but only while it stays
+        # admin-only: the marker exempts the shape, not the privilege, and
+        # "show me the key" is still escalation if a free user can ask.
+        marked = any(
+            isinstance(d, ast.Name) and d.id == "reveals_credential"
+            for d in node.decorator_list
+        )
+        exempt = marked and ADMIN_GUARDS.intersection(guards)
+        if marked and not exempt:
             findings.append(Finding(
-                "credential-in-payload", "critical", rel, node.lineno, where,
-                f"response dict carries '{key}'; a polled or screenshotted payload "
-                "should carry a masked value and a separate deliberate reveal"))
+                "credential-reveal-without-admin-guard", "critical",
+                rel, node.lineno, where,
+                "marked @reveals_credential but only calls "
+                f"{sorted(guards)}; returning a secret is not "
+                "less sensitive per privilege level"))
+
+        if not exempt:
+            for key in sorted(returned_credential_keys(index, node)):
+                findings.append(Finding(
+                    "credential-in-payload", "critical", rel, node.lineno, where,
+                    f"response carries '{key}'; a polled or screenshotted payload "
+                    "should carry a masked value and a separate deliberate "
+                    "reveal (see @reveals_credential)"))
 
     findings.extend(check_cors(paths))
     findings.extend(check_compare_digest(paths))

@@ -112,9 +112,17 @@ export default function AccountDetailPanel({ account, token, refreshTab, notify,
   });
 
   const copyMasterKey = async () => {
-    if (!account.auth_key) { notify('Tài khoản này không có master key.', 'error'); return; }
+    // The list endpoint ships a mask, not the key: it is polled every few
+    // seconds and a screenshot of this tab would otherwise be a list of
+    // quota-exempt credentials. The real value is fetched by name, on demand.
     try {
-      await navigator.clipboard.writeText(account.auth_key);
+      const res = await api(`/dashboard/admin/accounts/master-key?name=${encodeURIComponent(name)}`, {}, token);
+      if (!res?.available || !res?.auth_key) {
+        notify(res?.reason || 'Tài khoản này không có master key.', 'error');
+        return;
+      }
+      onSecret({ title: `Master Key của ${name}`, value: res.auth_key });
+      await navigator.clipboard.writeText(res.auth_key);
       notify('Đã copy master key vào clipboard.', 'success');
     } catch {
       notify('Trình duyệt chặn clipboard.', 'error');
@@ -226,6 +234,9 @@ export default function AccountDetailPanel({ account, token, refreshTab, notify,
 
           <div className="rounded-xl bg-base-200/30 border border-base-content/5 p-4 space-y-3">
             <div className="text-[11px] font-bold uppercase tracking-wider text-base-content/50">Master key</div>
+            <code className="block text-xs font-semibold select-all break-all text-base-content/70">
+              {account.auth_key_masked || '—'}
+            </code>
             <div className="flex flex-wrap gap-2">
               <button onClick={copyMasterKey} className="btn btn-xs btn-ghost border border-base-content/15 gap-1 font-bold normal-case">
                 <Copy className="w-3 h-3" /> Copy
