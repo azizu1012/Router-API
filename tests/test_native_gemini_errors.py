@@ -187,18 +187,41 @@ class TestAdkIsNotSwallowed:
             ADKUnavailableError, _load_adk_runner,
         )
         import sys
-        monkeypatch.setitem(sys.modules, "src.core.providers.adk_runner", None)
-        # Mock it so that the import statement fails
-        real_import = __import__
-        def mock_import(name, *args, **kwargs):
-            if name == "src.core.providers.adk_runner":
-                raise RuntimeError("mocked missing adk")
-            return real_import(name, *args, **kwargs)
 
-        monkeypatch.setattr("builtins.__import__", mock_import)
+        # _load_adk_runner does: from src.core.providers import adk_runner
+        # On CI google-adk is installed so adk_runner.py loads fine and the
+        # function never raises.
+        #
+        # To make it raise we must stop Python from finding adk_runner as an
+        # already-loaded submodule of src.core.providers.  Two steps:
+        #   1. Remove the cached module so Python cannot just return it.
+        #   2. Delete the attribute from the parent package so the `from ...
+        #      import adk_runner` path re-executes the submodule — which will
+        #      hit the RuntimeError at module level because we also hide the
+        #      google.adk dependency.
+        import src.core.providers as providers_pkg
 
-        with pytest.raises(ADKUnavailableError):
-            _load_adk_runner()
+        saved_mod = sys.modules.pop("src.core.providers.adk_runner", None)
+        saved_attr = getattr(providers_pkg, "adk_runner", None)
+        if hasattr(providers_pkg, "adk_runner"):
+            monkeypatch.delattr(providers_pkg, "adk_runner")
+
+        # Block google.adk so re-executing adk_runner.py hits its top-level
+        # RuntimeError("google-adk is required …").
+        saved_adk = sys.modules.pop("google.adk", None)
+        monkeypatch.setitem(sys.modules, "google.adk", None)
+
+        try:
+            with pytest.raises(ADKUnavailableError):
+                _load_adk_runner()
+        finally:
+            # Restore everything so later tests are unaffected.
+            if saved_mod is not None:
+                sys.modules["src.core.providers.adk_runner"] = saved_mod
+            if saved_attr is not None:
+                setattr(providers_pkg, "adk_runner", saved_attr)
+            if saved_adk is not None:
+                sys.modules["google.adk"] = saved_adk
 
 
 class TestSdkFieldsAreNotShipped:
