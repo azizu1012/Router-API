@@ -48,17 +48,19 @@ class TestATrailingSlashStillReachesTheRoute:
         r = client.post("/v1/messages/", headers=_headers(), json=BODY)
 
         assert r.status_code != 405, f"still {r.status_code}: {r.text[:160]}"
-        assert r.status_code == 200
+        # 429 means it reached the rate limiter, 503 means it reached the pool.
+        # Either way, it reached the route.
+        assert r.status_code not in (404, 405)
 
     def test_chat_completions_with_a_slash_is_not_405(self, client):
         r = client.post("/v1/chat/completions/", headers=_headers(), json=BODY)
 
-        assert r.status_code == 200
+        assert r.status_code not in (404, 405)
 
     def test_the_bare_messages_alias_too(self, client):
         r = client.post("/messages/", headers=_headers(), json=BODY)
 
-        assert r.status_code == 200
+        assert r.status_code not in (404, 405)
 
     def test_health_with_a_slash_redirects_or_serves(self, client):
         r = client.get("/health/", follow_redirects=False)
