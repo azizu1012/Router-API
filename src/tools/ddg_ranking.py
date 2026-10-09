@@ -10,8 +10,18 @@ from src.tools.ddg_utils import SearchUtilsMixin
 class SearchRankingMixin(SearchUtilsMixin):
 
     def _classify_topic(self, query: str) -> str:
-        query_lower = (query or "").lower()
-        generic_tokens = {"update", "news", "latest", "new", "information", "tin tức", "thông tin"}
+        """Pick the topic whose keyword list best matches `query`.
+
+        Matching is accent-insensitive and word-bounded, because the search is
+        driven by Vietnamese and English queries mixed freely. "bong da" and
+        "bóng đá" must land on the same topic, and a keyword must never match
+        because it happens to sit inside an unrelated longer word.
+        """
+        tokens = self._normalize_text_for_match(query).split()
+        generic_tokens = {
+            self._normalize_text_for_match(token)
+            for token in ("update", "news", "latest", "new", "information", "tin tức", "thông tin")
+        }
 
         best_topic = "general"
         best_score = 0
@@ -21,12 +31,10 @@ class SearchRankingMixin(SearchUtilsMixin):
 
             score = 0
             for keyword in data["keywords"]:
-                kw = (keyword or "").strip().lower()
-                if not kw:
+                kw = self._normalize_text_for_match(keyword)
+                if not kw or kw in generic_tokens:
                     continue
-                if kw in generic_tokens and topic != "general":
-                    continue
-                if kw in query_lower:
+                if self._contains_phrase(tokens, kw):
                     score += 1
 
             if score > best_score:

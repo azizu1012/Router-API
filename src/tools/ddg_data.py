@@ -11,8 +11,16 @@ class SearchDataMixin:
             "suffixes": ["update", "release date", "patch notes", "roadmap", "leaks", "speculation", "official", "tin tức"]
         },
         "tech": {
-            "keywords": ['tech', 'công nghệ', 'ai', 'ios', 'android', 'app', 'software', 'hardware', 'card màn hình', 'cpu', 'laptop', 'phone'],
-            "suffixes": ["review", "release date", "news", "vs", "benchmark", "specs", "đánh giá", "tin tức"]
+            "keywords": ['tech', 'công nghệ', 'ai', 'ios', 'android', 'app', 'software', 'hardware', 'card màn hình', 'cpu', 'laptop', 'phone',
+                         'python', 'rust', 'golang', 'javascript', 'typescript', 'java', 'kotlin', 'swift', 'php', 'ruby', 'c++', 'c#', '.net',
+                         'node', 'npm', 'deno', 'bun', 'react', 'vue', 'angular', 'next.js', 'django', 'flask', 'fastapi', 'spring',
+                         'lập trình', 'ngôn ngữ lập trình', 'code', 'coding', 'programming', 'developer', 'devops', 'fullstack', 'backend', 'frontend',
+                         'api', 'sdk', 'framework', 'library', 'thư viện', 'github', 'gitlab', 'docker', 'kubernetes', 'terraform',
+                         'database', 'cơ sở dữ liệu', 'sql', 'postgres', 'mysql', 'mongodb', 'redis', 'compiler', 'bug', 'release notes', 'changelog',
+                         'pytorch', 'torch', 'tensorflow', 'numpy', 'pandas', 'django rest', 'machine learning', 'deep learning', 'llm',
+                         'documentation', 'tài liệu', 'tutorial', 'hướng dẫn', 'source code', 'mã nguồn', 'repository', 'open source', 'mã nguồn mở'],
+            "suffixes": ["review", "release date", "news", "vs", "benchmark", "specs", "đánh giá", "tin tức",
+                         "documentation", "tutorial", "changelog", "release notes", "tài liệu", "hướng dẫn", "so sánh"]
         },
         "science": {
             "keywords": ['science', 'khoa học', 'space', 'vũ trụ', 'nasa', 'discovery', 'research', 'nghiên cứu', 'y tế'],

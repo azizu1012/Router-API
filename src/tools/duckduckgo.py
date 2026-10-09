@@ -35,6 +35,10 @@ class AdvancedSearchManager(SearchRankingMixin):
         self.min_quality_sources = int(os.getenv("SEARCH_MIN_QUALITY_SOURCES", "1"))
         self.time_sensitive_min_quality_sources = int(os.getenv("SEARCH_TIME_SENSITIVE_MIN_QUALITY_SOURCES", "2"))
         self.search_web_mode = (os.getenv("SEARCH_WEB_MODE", "grounded")).strip().lower()
+        # Internal value stays "grounded" so existing SEARCH_WEB_MODE=grounded keeps
+        # working; "deep_read" is the honest name (it reads pages, not Google).
+        if self.search_web_mode == "deep_read":
+            self.search_web_mode = "grounded"
         if self.search_web_mode not in {"grounded", "fast"}:
             self.search_web_mode = "grounded"
         self.search_grounded_top_links = int(os.getenv("SEARCH_GROUNDED_TOP_LINKS", "3"))

@@ -140,6 +140,15 @@ class ClaudeProxyStreamMixin:
         """
         openai_messages, openai_tools = _convert_messages(body)
 
+        # Same line as the non-stream path. A stream writes different log lines
+        # than a non-stream, so instrumenting only one of them makes "no log
+        # entry" mean nothing -- which is exactly the case worth logging.
+        logger.info(
+            "[Claude Stream] requested model=%r msgs=%d tools=%d",
+            body.get("model"), len(body.get("messages") or []),
+            len(body.get("tools") or []),
+        )
+
         from src.api.opencode_proxy.handler.websearch import should_enable_web_search
         from src.api.opencode_proxy.handler.proxy import _WEBSEARCH_TOOL_DEF, _resolve_thinking_config, _extract_thinking_params
         from src.core.sub_agent_detect import is_sub_agent_body

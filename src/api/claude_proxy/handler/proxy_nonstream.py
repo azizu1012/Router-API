@@ -104,6 +104,15 @@ class ClaudeProxyNonstreamMixin:
         stop_sequences = sampling_params.get("stop_sequences")
 
         recursion_depth = 0
+        # The model id the client asked for, before any resolution. Every model
+        # path that ends in "this model doesn't work" needs this line: the id
+        # never reaches the log otherwise, because a failed call writes nothing
+        # to usage_logs and the traceback names the pool, not the request.
+        logger.info(
+            "[Claude NonStream] requested model=%r stream=%s msgs=%d tools=%d",
+            body.get("model"), bool(body.get("stream")),
+            len(body.get("messages") or []), len(body.get("tools") or []),
+        )
         # Searches the router ran for the model, reported as
         # server-tool blocks instead of client tool_use blocks.
         server_tool_calls: list = []

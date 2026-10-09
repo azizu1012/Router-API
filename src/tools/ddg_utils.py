@@ -10,6 +10,12 @@ from urllib.parse import urlparse, urlunparse, parse_qsl, urlencode
 
 from src.tools.ddg_data import SearchDataMixin
 
+# "đ" is a standalone letter, not a base letter plus a combining mark, so NFKD
+# leaves it alone and the [^a-z0-9] filter then deletes it as if it were
+# punctuation -- which splits the word in two ("bóng đá" -> "bong a"). "ơ" and
+# "ư" do decompose, so only this one needs folding by hand.
+_VIETNAMESE_FOLD = str.maketrans({"đ": "d", "Đ": "d"})
+
 
 class SearchUtilsMixin(SearchDataMixin):
 
@@ -61,17 +67,35 @@ class SearchUtilsMixin(SearchDataMixin):
         return ".".join(labels[-2:])
 
     def _normalize_query_tokens(self, text: str) -> List[str]:
-        normalized = unicodedata.normalize("NFKD", (text or "").lower())
+        normalized = (text or "").lower().translate(_VIETNAMESE_FOLD)
+        normalized = unicodedata.normalize("NFKD", normalized)
         normalized = "".join(ch for ch in normalized if not unicodedata.combining(ch))
         normalized = re.sub(r"[^a-z0-9\s]", " ", normalized)
         tokens = [t for t in normalized.split() if len(t) > 2]
         return tokens
 
     def _normalize_text_for_match(self, text: str) -> str:
-        normalized = unicodedata.normalize("NFKD", (text or "").lower())
+        normalized = (text or "").lower().translate(_VIETNAMESE_FOLD)
+        normalized = unicodedata.normalize("NFKD", normalized)
         normalized = "".join(ch for ch in normalized if not unicodedata.combining(ch))
         normalized = re.sub(r"[^a-z0-9\s]", " ", normalized)
         return re.sub(r"\s+", " ", normalized).strip()
+
+    def _contains_phrase(self, tokens: List[str], phrase: str) -> bool:
+        """True when `phrase` appears as a contiguous run of `tokens`.
+
+        Word-boundary matching on purpose: substring matching made "ai" hit
+        inside "hai" and "api" hit inside "rapid". Both sides must already be
+        normalised, so "c++" compares as "c" and "torch.compile" as two words.
+        """
+        parts = phrase.split()
+        span = len(parts)
+        if not span or span > len(tokens):
+            return False
+        for i in range(len(tokens) - span + 1):
+            if tokens[i:i + span] == parts:
+                return True
+        return False
 
     def _query_overlap_count(self, query: str, text: str) -> int:
         q_tokens = set(self._normalize_query_tokens(query))
