@@ -637,8 +637,14 @@ async def completions(
                 headers=response_headers,
             )
         result = await opencode_proxy.chat_completion(chat_body, account=account, is_opencode=False)
-    except HTTPException:
-        raise
+    except HTTPException as e:
+        detail = e.detail
+        if isinstance(detail, dict) and "error" in detail:
+            return JSONResponse(status_code=e.status_code, content=detail)
+        return JSONResponse(
+            status_code=e.status_code,
+            content={"error": {"message": str(detail), "type": _error_type(e.status_code)}},
+        )
     except Exception as e:
         # Log before mapping to a status. The client only ever sees a generic
         # 503, so without this the cause exists nowhere: the response says
@@ -739,8 +745,14 @@ async def responses(
                 headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
             )
         result = await opencode_proxy.chat_completion(chat_body, account=account, is_opencode=False)
-    except HTTPException:
-        raise
+    except HTTPException as e:
+        detail = e.detail
+        if isinstance(detail, dict) and "error" in detail:
+            return JSONResponse(status_code=e.status_code, content=detail)
+        return JSONResponse(
+            status_code=e.status_code,
+            content={"error": {"message": str(detail), "type": _error_type(e.status_code)}},
+        )
     except Exception as e:
         # Log before mapping to a status. The client only ever sees a generic
         # 503, so without this the cause exists nowhere: the response says
@@ -915,7 +927,12 @@ async def anthropic_messages(
         if is_sub_agent_request(body, is_opencode=False):
             logger_api.info("Intercepted sub-agent anthropic_messages HTTPException: %s, returning simulated response", e)
             return handle_sub_agent_error(body, e, format_type="anthropic")
-        raise
+        detail = e.detail
+        err = detail.get("error", {}) if isinstance(detail, dict) else {}
+        return JSONResponse(
+            status_code=e.status_code,
+            content={"type": "error", "error": {"type": err.get("type", "api_error"), "message": err.get("message", str(detail))}},
+        )
     except Exception as e:
         logger_api.error("anthropic_messages unexpected error: %s", e, exc_info=True)
         if is_sub_agent_request(body, is_opencode=False):

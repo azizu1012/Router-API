@@ -182,10 +182,20 @@ class TestAdkIsNotSwallowed:
 
         assert len(calls) == 1, "the failed import was retried on every request"
 
-    def test_the_loader_still_raises_a_typed_error(self):
+    def test_the_loader_still_raises_a_typed_error(self, monkeypatch):
         from src.core.providers.gemini.manager import (
             ADKUnavailableError, _load_adk_runner,
         )
+        import sys
+        monkeypatch.setitem(sys.modules, "src.core.providers.adk_runner", None)
+        # Mock it so that the import statement fails
+        real_import = __import__
+        def mock_import(name, *args, **kwargs):
+            if name == "src.core.providers.adk_runner":
+                raise RuntimeError("mocked missing adk")
+            return real_import(name, *args, **kwargs)
+
+        monkeypatch.setattr("builtins.__import__", mock_import)
 
         with pytest.raises(ADKUnavailableError):
             _load_adk_runner()

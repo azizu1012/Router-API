@@ -7,7 +7,7 @@ from src.core.limits import gemini_rate_limiter
 from src.core.router import router
 
 @pytest.mark.anyio
-async def test_transient_rate_limit_adds_penalty_and_counts_stats():
+async def test_transient_rate_limit_adds_penalty_and_counts_stats(temp_db):
     # Clear active penalties and reset transient counters
     gemini_rate_limiter._score_penalties.clear()
     gemini_rate_limiter._transient_429_count = 0
@@ -70,7 +70,7 @@ async def test_transient_rate_limit_adds_penalty_and_counts_stats():
 
 
 @pytest.mark.anyio
-async def test_dynamic_cooldowns_and_alignments():
+async def test_dynamic_cooldowns_and_alignments(temp_db):
     from src.core.config_n_logg import config
     from src.core.limits.gemini_rate_limiter import get_seconds_until_pacific_midnight, PENALTY_MAP
     

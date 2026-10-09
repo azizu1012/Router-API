@@ -659,6 +659,7 @@ class TestRefusedSearchesAreNotCounted:
 
     def test_the_error_code_is_one_the_sdk_declares(self):
         import typing
+        pytest.importorskip("anthropic")
         from anthropic.types import WebSearchToolResultErrorCode
 
         _, block = self._refused()
