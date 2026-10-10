@@ -157,6 +157,9 @@ class ClaudeProxyStreamMixin:
         ):
             openai_tools.append(_WEBSEARCH_TOOL_DEF)
             logger.info("[WebSearch] Injected WebSearch tool for Claude stream")
+            
+        from src.core.compaction_detect import strip_tools_for_compaction
+        strip_tools_for_compaction(body, openai_messages, openai_tools, is_claude_or_opencode=True)
 
         model_alias = router.resolve_model_alias(body.get("model", "")) or config.DEFAULT_MODEL_ALIAS
         await _pre_compact_and_truncate(body, openai_messages, openai_tools, model_alias)

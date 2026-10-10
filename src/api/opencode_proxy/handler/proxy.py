@@ -295,6 +295,10 @@ class OpenCodeProxy:
         """
         model_alias = await self._resolve_alias(body, account=account, is_opencode=is_opencode)
         messages, tools = body.get("messages", []), list(body.get("tools", []))
+        
+        from src.core.compaction_detect import strip_tools_for_compaction
+        strip_tools_for_compaction(body, messages, tools, is_claude_or_opencode=is_opencode)
+        
         messages, tools = self._inject_websearch_tool(body, messages, tools, account)
 
         thinking_config = _resolve_thinking_config(body, model_alias)
@@ -365,6 +369,10 @@ class OpenCodeProxy:
         """
         model_alias = await self._resolve_alias(body, account=account, is_opencode=is_opencode)
         messages, tools = body.get("messages", []), list(body.get("tools", []))
+        
+        from src.core.compaction_detect import strip_tools_for_compaction
+        strip_tools_for_compaction(body, messages, tools, is_claude_or_opencode=is_opencode)
+        
         messages, tools = self._inject_websearch_tool(body, messages, tools, account)
 
         async for chunk in execute_stream(

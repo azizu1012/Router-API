@@ -85,6 +85,9 @@ class ClaudeProxyNonstreamMixin:
         ):
             openai_tools.append(_WEBSEARCH_TOOL_DEF)
             logger.info("[WebSearch] Injected WebSearch tool for Claude non-stream")
+            
+        from src.core.compaction_detect import strip_tools_for_compaction
+        strip_tools_for_compaction(body, openai_messages, openai_tools, is_claude_or_opencode=True)
 
         model_alias = router.resolve_model_alias(body.get("model", "")) or config.DEFAULT_MODEL_ALIAS
 
@@ -328,6 +331,14 @@ class ClaudeProxyNonstreamMixin:
                             "name": name,
                             "input": args if isinstance(args, dict) else {},
                         })
+                        
+        has_text = any(b.get("type") == "text" for b in content_blocks)
+        has_tool = any(b.get("type") == "tool_use" for b in content_blocks)
+        if not has_text:
+            if thought and not has_tool:
+                content_blocks.append({"type": "text", "text": thought})
+            else:
+                content_blocks.append({"type": "text", "text": ""})
 
         stop_reason, stop_sequence = map_stop_reason(
             finish_reason,

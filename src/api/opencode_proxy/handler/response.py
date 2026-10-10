@@ -110,6 +110,8 @@ def build_response(
         msg["reasoning_content"] = thinking
     if tool_calls:
         msg["tool_calls"] = tool_calls
+    if not text and thinking and not tool_calls:
+        msg["content"] = thinking
     if ts:
         msg["thought_signature"] = ts
     return {
