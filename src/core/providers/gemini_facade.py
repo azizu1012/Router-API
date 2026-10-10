@@ -510,17 +510,41 @@ async def acompletion(**kwargs: Any) -> Any:
     # ── PATH 2: Custom endpoint (OpenAI SDK format) ──────────────────────────
     if api_base:
         from .custom_endpoint_client import CustomEndpointStreamGen, call_custom_nonstream
+        from .anthropic_wire import is_anthropic_format
+        
         merged = dict(extra_body or {})
+        is_anth = is_anthropic_format(api_format)
         
         # OpenAI-compatible endpoints spell it "stop" (string or list).
         if stop_sequences:
             merged.setdefault("stop", stop_sequences[0] if len(stop_sequences) == 1 else list(stop_sequences))
         
         thinking = kwargs.get("thinking")
-        if thinking:
-            merged["thinking"] = thinking
-        if reasoning_effort:
-            merged["reasoning_effort"] = reasoning_effort
+        
+        if is_anth:
+            # Destination is Anthropic
+            # Prevent reasoning_effort from leaking into Anthropic body
+            merged.pop("reasoning_effort", None)
+            
+            if thinking:
+                # Client sent Anthropic thinking, pass it verbatim.
+                # We absolutely MUST NOT synthesize a thinking block from reasoning_effort
+                # or thinking_config here. If we guess {"type": "enabled"} and the endpoint 
+                # is Claude 4.7+, it returns 400. If we guess {"type": "adaptive"} and the 
+                # endpoint is Claude <= 4.5, it returns 400. If the model is an older version 
+                # that doesn't support thinking at all, it returns 400.
+                merged["thinking"] = thinking
+        else:
+            # Destination is OpenAI-compatible
+            # Prevent thinking block from leaking into OpenAI body
+            merged.pop("thinking", None)
+            
+            if reasoning_effort:
+                # Client sent OpenAI reasoning_effort natively. Pass it verbatim.
+                # Do NOT synthesize reasoning_effort if the client didn't ask for it
+                # because standard models like gpt-4o, vLLM, or Ollama reject it with 400.
+                merged["reasoning_effort"] = reasoning_effort
+
         if top_k is not None:
             merged["top_k"] = top_k
         if top_p is not None:

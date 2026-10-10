@@ -184,14 +184,16 @@ Client gõ "suy nghĩ kỹ tới mức nào" bằng bốn cách khác nhau, như
 
 | Client gửi | Nguồn | → Đích: Gemini 3 | → Đích: Gemini 2.5 | → Đích: Custom OpenAI | → Đích: Custom Anthropic |
 |---|---|---|---|---|---|
-| `output_config.effort` | Anthropic Messages API (Claude Code) | `thinking_level` | `thinking_budget` | `reasoning_effort` | `thinking` block nguyên bản |
-| `thinking.budget_tokens` | Anthropic thinking block | xem bảng ngưỡng | `thinking_budget` | `reasoning_effort` | `thinking` block nguyên bản |
-| `reasoning_effort` | OpenAI Chat Completions | `thinking_level` | `thinking_budget` | `reasoning_effort` nguyên bản | tự động dịch sang `thinking` |
-| `thinking_level` | field riêng của router | trực tiếp | `thinking_budget` | `reasoning_effort` | dịch sang `thinking` |
+| `output_config.effort` | Anthropic Messages API (Claude Code) | `thinking_level` | `thinking_budget` | KHÔNG GỬI GÌ | KHÔNG GỬI GÌ |
+| `thinking.budget_tokens` | Anthropic thinking block | xem bảng ngưỡng | `thinking_budget` | KHÔNG GỬI GÌ | `thinking` block nguyên bản |
+| `reasoning_effort` | OpenAI Chat Completions | `thinking_level` | `thinking_budget` | `reasoning_effort` nguyên bản | KHÔNG GỬI GÌ |
+| `thinking_level` | field riêng của router | trực tiếp | `thinking_budget` | KHÔNG GỬI GÌ | KHÔNG GỬI GÌ |
 
-### Tôn Trọng Endpoint Đích (Pass-through)
-- **Đích Anthropic**: Router **bảo toàn nguyên văn** chuỗi JSON `thinking` mà client gửi thay vì tự phán đoán. Lý do: Anthropic đang trong giai đoạn chuyển giao giữa Claude 4.6 (dùng `{"type": "enabled"}`) và Claude 4.7+ (bắt buộc `{"type": "adaptive"}`, từ chối `enabled` bằng lỗi 400). Router không thể biết Custom Endpoint chạy phiên bản nào, nên truyền nguyên bản là cách an toàn duy nhất để không gây lỗi.
-- **Đích OpenAI**: Bất kể client gọi bằng chuẩn Anthropic hay chuẩn OpenAI, thông số tư duy sẽ được chuyển đổi tự động thành `reasoning_effort` và gửi qua `extra_body` đến Custom Endpoint.
+### Tôn Trọng Endpoint Đích (Pass-through) và Rủi Ro Cross-Mapping
+- **Custom Endpoint như một hộp đen**: Router không thể biết Endpoint đích chạy model gì (gpt-4o không hỗ trợ `reasoning_effort`, Claude 3.5 không hỗ trợ `adaptive`, vLLM có thể từ chối các field lạ). Việc Router tự động dịch chéo (ví dụ dịch từ `reasoning_effort` sang `{"type": "enabled"}`) sẽ ngay lập tức khiến các model này văng lỗi HTTP 400 Bad Request, dẫn tới việc Custom Endpoint bị Circuit Breaker đóng băng 120s ngay từ request đầu tiên ("chưa làm gì đã báo Hệ thống quá tải tạm thời").
+- **Nguyên tắc "Chỉ Pass-through"**: 
+  - **Đích Anthropic**: Router **bảo toàn nguyên văn** chuỗi JSON `thinking` mà client gửi thay vì tự phán đoán. Nếu Client không gửi `thinking` block, tuyệt đối không tự chế block này. Router tự động xóa `reasoning_effort` (nếu Client là OpenAI) để tránh lỗi 400.
+  - **Đích OpenAI**: Router truyền nguyên bản `reasoning_effort`. Tuyệt đối không tự chế `reasoning_effort` nếu Client không yêu cầu. Router tự động xóa `thinking` block (nếu Client là Anthropic) để tránh lỗi 400.
 
 ### Gộp Cho Gemini
 Gemini 3 nhận enum `minimal/low/medium/high`; Gemini 2.5 chỉ có `thinking_budget` nên level được quy đổi qua `low=1024`, `medium=2048`, `high=4096`.
