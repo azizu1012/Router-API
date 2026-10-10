@@ -125,7 +125,8 @@ class TestTheRouterPicksTheDeclaredDialect:
                 api_format="anthropic",
             )
         assert calls[0]["url"] == "https://ep.example/v1/messages"
-        assert calls[0]["body"]["messages"][0]["content"] == "chao"
+        assert calls[0]["body"]["messages"][0]["content"] == [
+            {"type": "text", "text": "chao"}]
         assert resp.choices[0].message.content == "chao ban"
 
     @pytest.mark.anyio

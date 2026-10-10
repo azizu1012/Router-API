@@ -7,6 +7,7 @@ from typing import Any, Dict, List, Optional, TYPE_CHECKING
 import aiohttp
 
 from src.core.config_n_logg.logger import logger_api as logger
+from .anthropic_wire import is_anthropic_format
 from src.server.websocket_manager import ws_manager
 from src.backend.endpoints import (
     list_endpoints_db,
@@ -117,8 +118,11 @@ class CustomEndpointManager:
 
     # ── CRUD ─────────────────────────────────────────────────────
 
-    def add(self, name: str, base_url: str, auth_key: str) -> Dict[str, Any]:
+    def add(self, name: str, base_url: str, auth_key: str,
+            api_format: str = "openai") -> Dict[str, Any]:
         r = add_endpoint_db(name, base_url, auth_key)
+        if api_format and api_format != "openai":
+            r = update_endpoint_db(name, api_format=api_format) or r
         self._invalidate_cache()
         return r
 
@@ -253,30 +257,34 @@ class CustomEndpointManager:
 
     # ── Model fetching ───────────────────────────────────────────
 
-    async def _probe_chat_endpoint(self, base: str, auth_key: str) -> bool:
-        headers = {
-            "Authorization": f"Bearer {auth_key}",
-            "Content-Type": "application/json",
-        }
-        payload = {
-            "model": "test",
-            "messages": [{"role": "user", "content": "hi"}],
-            "max_tokens": 1,
-            "stream": False,
-        }
+    async def _probe_chat_endpoint(self, base: str, auth_key: str,
+                                   api_format: str = "openai") -> bool:
+        if is_anthropic_format(api_format):
+            from .custom_endpoint_client import anthropic_headers, anthropic_messages_url
+            url = anthropic_messages_url(base)
+            headers = anthropic_headers(auth_key)
+            payload = {"model": "test", "max_tokens": 1,
+                       "messages": [{"role": "user", "content": "hi"}]}
+        else:
+            url = f"{base}/chat/completions"
+            headers = {"Authorization": f"Bearer {auth_key}",
+                       "Content-Type": "application/json"}
+            payload = {"model": "test",
+                       "messages": [{"role": "user", "content": "hi"}],
+                       "max_tokens": 1, "stream": False}
         try:
             async with aiohttp.ClientSession(headers=headers) as session:
                 async with session.post(
-                    f"{base}/chat/completions",
+                    url,
                     json=payload,
                     timeout=aiohttp.ClientTimeout(total=5),
                 ) as resp:
                     if resp.status in (200, 400, 404):
                         return True
-                    logger.warning("Chat probe %s/chat/completions returned HTTP %d", base, resp.status)
+                    logger.warning("Chat probe %s returned HTTP %d", url, resp.status)
                     return False
         except Exception as e:
-            logger.warning("Chat probe failed for %s: %s", base, e)
+            logger.warning("Chat probe failed for %s: %s", url, e)
             return False
 
     async def _try_fetch_models(self, base_url: str, auth_key: str) -> dict:
@@ -416,7 +424,8 @@ class CustomEndpointManager:
         data = result["data"]
 
         if verify_chat:
-            ok = await self._probe_chat_endpoint(base, ep["auth_key"])
+            ok = await self._probe_chat_endpoint(base, ep["auth_key"],
+                                                     ep.get("api_format") or "openai")
             if not ok:
                 logger.warning("Chat endpoint probe failed for %s (base=%s), models may still work", name, base)
 

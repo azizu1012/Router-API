@@ -33,9 +33,21 @@ def _wizard_add_endpoint() -> None:
         m = _re.match(r'https?://([^.]+)', url)
         name = m.group(1) if m else f"ep_{secrets.token_hex(3)}"
 
+    # Ask before verifying: an Anthropic-compatible endpoint has no
+    # /chat/completions to probe, so probing first proves the wrong thing.
+    print("\n  API format — endpoint thuộc chủ nó, chọn đúng cái họ nói:")
+    print("    1) openai     → /chat/completions")
+    print("    2) anthropic  → /v1/messages")
+    try:
+        fmt_pick = input("  Format [1]: ").strip()
+    except (EOFError, KeyboardInterrupt):
+        fmt_pick = "1"
+    api_format = "anthropic" if fmt_pick in ("2", "a", "anthropic") else "openai"
+    print(f"  Using: {api_format}")
+
     print("\n  ▶ Verifying endpoint...")
     try:
-        _custom_endpoint_manager.add(name, url, auth_key)
+        _custom_endpoint_manager.add(name, url, auth_key, api_format=api_format)
         models = asyncio.run(_custom_endpoint_manager.fetch_models(name))
         print(f"  ✅ Connected! Found {len(models)} models (endpoint: {name}).")
     except Exception as e:

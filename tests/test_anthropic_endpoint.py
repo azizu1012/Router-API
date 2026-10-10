@@ -193,9 +193,127 @@ class TestTheRequestIsAlwaysAcceptedByAnthropic:
             "m", [{"role": "user", "content": "x"}],
             extra_body={"messages": [{"role": "user", "content": "evil"}],
                         "model": "other", "system": "hijack"})
-        assert body["messages"][0]["content"] == "x"
+        # Content is always emitted as blocks. Anthropic accepts a bare string
+        # too, but a string cannot carry an image, and one message in the middle
+        # of a conversation switching between the two shapes is how a picture
+        # ends up silently dropped.
+        assert body["messages"][0]["content"] == [{"type": "text", "text": "x"}]
         assert body["model"] == "m"
         assert body.get("system") != "hijack"
+
+
+class TestImagesSurvive:
+    """Flattening content to text is how the picture disappears: a request
+    still returns 200, the answer just ignores what the user pointed at."""
+
+    def test_an_openai_data_url_becomes_a_base64_source(self):
+        body = openai_to_anthropic_body("m", [{"role": "user", "content": [
+            {"type": "text", "text": "so do?"},
+            {"type": "image_url",
+             "image_url": {"url": "data:image/png;base64,iVBORw0KGgo="}},
+        ]}])
+        blocks = body["messages"][0]["content"]
+        assert blocks[0] == {"type": "text", "text": "so do?"}
+        assert blocks[1] == {"type": "image", "source": {
+            "type": "base64", "media_type": "image/png", "data": "iVBORw0KGgo="}}
+
+    def test_a_remote_url_becomes_a_url_source(self):
+        body = openai_to_anthropic_body("m", [{"role": "user", "content": [
+            {"type": "image_url", "image_url": {"url": "https://x.example/a.png"}}]}])
+        assert body["messages"][0]["content"][0] == {
+            "type": "image", "source": {"type": "url", "url": "https://x.example/a.png"}}
+
+    def test_an_anthropic_image_block_passes_through_untouched(self):
+        native = {"type": "image", "source": {
+            "type": "base64", "media_type": "image/jpeg", "data": "AAA"}}
+        body = openai_to_anthropic_body(
+            "m", [{"role": "user", "content": [native]}])
+        assert body["messages"][0]["content"][0] == native
+
+    def test_jpg_is_normalised_because_anthropic_rejects_it(self):
+        """`image/jpg` is the common non-standard label and it is a 400 upstream
+        (hermes-agent#55432). Media types are an enum, not free text."""
+        body = openai_to_anthropic_body("m", [{"role": "user", "content": [
+            {"type": "image_url",
+             "image_url": {"url": "data:image/jpg;base64,QUJD"}}]}])
+        assert body["messages"][0]["content"][0]["source"]["media_type"] == "image/jpeg"
+
+    @pytest.mark.parametrize("label,expected", [
+        ("image/jpeg", "image/jpeg"), ("image/png", "image/png"),
+        ("image/gif", "image/gif"), ("image/webp", "image/webp"),
+        ("image/jpg", "image/jpeg"),
+    ])
+    def test_every_supported_media_type_lands_on_its_enum_value(self, label, expected):
+        body = openai_to_anthropic_body("m", [{"role": "user", "content": [
+            {"type": "image_url",
+             "image_url": {"url": f"data:{label};base64,QUJD"}}]}])
+        assert body["messages"][0]["content"][0]["source"]["media_type"] == expected
+
+    def test_an_image_reaching_a_tool_result_is_kept(self):
+        """The spec allows tool_result content to be blocks, so a tool that
+        returns a picture keeps it."""
+        body = openai_to_anthropic_body("m", [
+            {"role": "user", "content": "screenshot?"},
+            {"role": "tool", "tool_call_id": "c1", "content": [
+                {"type": "image_url",
+                 "image_url": {"url": "data:image/png;base64,iVBORw0KGgo="}}]},
+        ])
+        block = body["messages"][-1]["content"][0]
+        assert block["type"] == "tool_result"
+        assert block["content"][0]["type"] == "image"
+
+    def test_tool_result_stays_a_string_when_there_is_only_text(self):
+        body = openai_to_anthropic_body("m", [
+            {"role": "tool", "tool_call_id": "c1", "content": "18C"}])
+        assert body["messages"][-1]["content"][0]["content"] == "18C"
+
+    def test_a_tool_result_stays_ahead_of_an_image(self):
+        """Anthropic requires tool_result first in the user turn."""
+        body = openai_to_anthropic_body("m", [
+            {"role": "user", "content": [
+                {"type": "image_url",
+                 "image_url": {"url": "data:image/png;base64,iVBORw0KGgo="}}]},
+            {"role": "tool", "tool_call_id": "c1", "content": "18C"},
+        ])
+        types = [b["type"] for b in body["messages"][-1]["content"]]
+        assert types.index("tool_result") < types.index("image")
+
+    def test_an_unreadable_image_url_drops_that_part_not_the_whole_message(self):
+        body = openai_to_anthropic_body("m", [{"role": "user", "content": [
+            {"type": "text", "text": "keep me"},
+            {"type": "image_url", "image_url": {"url": ""}}]}])
+        assert body["messages"][0]["content"] == [{"type": "text", "text": "keep me"}]
+
+
+class TestToolChoiceIsSpelledTheWayAnthropicSpellsIt:
+    """OpenAI's `required` has no Anthropic equivalent as a string, and its
+    named-function object has no meaning there at all. Both are a 400."""
+
+    @pytest.mark.parametrize("openai_value,expected", [
+        ("auto", {"type": "auto"}),
+        ("none", {"type": "none"}),
+        ("required", {"type": "any"}),
+    ])
+    def test_string_spellings(self, openai_value, expected):
+        body = openai_to_anthropic_body(
+            "m", [{"role": "user", "content": "x"}],
+            tools=[{"type": "function", "function": {"name": "f"}}],
+            extra_body={"tool_choice": openai_value})
+        assert body["tool_choice"] == expected
+
+    def test_a_named_function_becomes_a_tool_choice(self):
+        body = openai_to_anthropic_body(
+            "m", [{"role": "user", "content": "x"}],
+            tools=[{"type": "function", "function": {"name": "f"}}],
+            extra_body={"tool_choice": {"type": "function",
+                                        "function": {"name": "f"}}})
+        assert body["tool_choice"] == {"type": "tool", "name": "f"}
+
+    def test_no_tool_choice_field_when_the_client_sent_none(self):
+        body = openai_to_anthropic_body(
+            "m", [{"role": "user", "content": "x"}],
+            tools=[{"type": "function", "function": {"name": "f"}}])
+        assert "tool_choice" not in body
 
 
 class TestTheResponseComesBackAsOpenAI:

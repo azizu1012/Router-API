@@ -40,8 +40,125 @@ def is_anthropic_format(value: Any) -> bool:
     return normalize_api_format(value) == API_FORMAT_ANTHROPIC
 
 
+# Anthropic accepts exactly these four. `image/jpg` is the common non-standard
+# label in the wild and it is rejected with a 400, so it is normalised here
+# rather than forwarded verbatim (hermes-agent#55432).
+ANTHROPIC_IMAGE_TYPES = {
+    "image/jpeg": "image/jpeg",
+    "image/jpg": "image/jpeg",
+    "image/png": "image/png",
+    "image/gif": "image/gif",
+    "image/webp": "image/webp",
+}
+ANTHROPIC_DEFAULT_IMAGE_TYPE = "image/png"
+
+
+def _image_block_from_url(url: Any) -> Optional[Dict[str, Any]]:
+    """OpenAI carries an image as a URL that may be a data URL.
+
+    Anthropic splits that in two: an inline payload wants a media_type beside
+    the bytes, a remote one wants the url. Collapsing both into the plain text
+    that came before silently threw the picture away.
+    """
+    if not isinstance(url, str) or not url.strip():
+        return None
+    url = url.strip()
+    if url.startswith("data:"):
+        header, _, payload = url.partition(",")
+        if not payload:
+            return None
+        media = header[len("data:"):].split(";", 1)[0].strip().lower()
+        if not media:
+            media = ANTHROPIC_DEFAULT_IMAGE_TYPE
+        return {
+            "type": "image",
+            "source": {
+                "type": "base64",
+                "media_type": ANTHROPIC_IMAGE_TYPES.get(media, media),
+                "data": payload,
+            },
+        }
+    return {"type": "image", "source": {"type": "url", "url": url}}
+
+
+def _to_anthropic_blocks(content: Any) -> List[Dict[str, Any]]:
+    """Translate OpenAI message content into Anthropic content blocks.
+
+    Anything already shaped like an Anthropic block is kept, so a client that
+    speaks Anthropic reaches an Anthropic endpoint untouched. An unrecognised
+    part is dropped rather than stringified: its text was never there, and
+    sending a placeholder would answer the wrong question with confidence.
+    """
+    if content is None:
+        return []
+    if isinstance(content, str):
+        return [{"type": "text", "text": content}] if content else []
+    if not isinstance(content, list):
+        return [{"type": "text", "text": str(content)}]
+
+    blocks: List[Dict[str, Any]] = []
+    for part in content:
+        if isinstance(part, str):
+            if part:
+                blocks.append({"type": "text", "text": part})
+            continue
+        if not isinstance(part, dict):
+            continue
+        ptype = part.get("type")
+
+        if ptype in ("text", "input_text"):
+            text = part.get("text") or ""
+            if text:
+                blocks.append({"type": "text", "text": str(text)})
+            continue
+
+        if ptype == "refusal":
+            text = part.get("refusal") or ""
+            if text:
+                blocks.append({"type": "text", "text": str(text)})
+            continue
+
+        if ptype == "image_url":
+            raw = part.get("image_url") or {}
+            url = raw.get("url") if isinstance(raw, dict) else raw
+            block = _image_block_from_url(url)
+            if block:
+                blocks.append(block)
+            continue
+
+        if ptype in ("input_image", "image"):
+            raw = part.get("image_url") or part.get("image") or part.get("source")
+            url = raw.get("url") if isinstance(raw, dict) else raw
+            if isinstance(part.get("source"), dict) and ptype == "image":
+                blocks.append(part)  # already Anthropic
+                continue
+            block = _image_block_from_url(url)
+            if block:
+                blocks.append(block)
+            continue
+
+        if ptype == "file":
+            blocks.append({"type": "document", "source": {
+                "type": "base64",
+                "media_type": part.get("media_type") or "application/pdf",
+                "data": part.get("file_data") or part.get("data") or "",
+            }})
+            continue
+
+        # Anthropic-native blocks travel through unchanged.
+        if ptype in ("image", "document", "tool_use", "tool_result", "thinking"):
+            blocks.append(part)
+            continue
+
+    return blocks
+
+
 def _text_of(content: Any) -> str:
-    """Flatten OpenAI content, which is a string or a list of typed parts."""
+    """Text only, for fields the spec types as a string.
+
+    Never use this on message content: an image has no text to flatten to, and
+    using it here is what made pictures disappear.
+    """
     if isinstance(content, str):
         return content
     if isinstance(content, list):
@@ -63,14 +180,17 @@ def _tool_result_block(msg: Dict[str, Any]) -> Optional[Dict[str, Any]]:
         return None
     call_id = msg.get("tool_call_id") or msg.get("id") or ""
     body = msg.get("content")
-    if isinstance(body, str):
-        parsed: Any = body
+    # The spec allows tool_result content to be blocks, not only a string, so
+    # a tool that returns a picture keeps it.
+    blocks = _to_anthropic_blocks(body)
+    if blocks and any(b.get("type") != "text" for b in blocks):
+        content: Any = blocks
     else:
-        parsed = _text_of(body)
+        content = _text_of(body)
     return {
         "type": "tool_result",
         "tool_use_id": str(call_id or ""),
-        "content": parsed if isinstance(parsed, str) else str(parsed),
+        "content": content,
     }
 
 
@@ -117,6 +237,38 @@ def _tool_schema(tool: Dict[str, Any]) -> Optional[Dict[str, Any]]:
     }
 
 
+def _tool_choice(value: Any) -> Optional[Dict[str, Any]]:
+    """OpenAI and Anthropic both gate tool use, and spell it differently.
+
+    OpenAI: "auto" | "none" | "required" | {"type": "function", "function": {"name": ...}}
+    Anthropic: {"type": "auto" | "any" | "none" | "tool", "name": ...}
+
+    Forwarding OpenAI's spelling verbatim is a 400: "required" is not an
+    Anthropic value, and the named-function shape has no meaning there.
+    """
+    if value is None:
+        return None
+    if isinstance(value, str):
+        spelling = {"none": "none", "auto": "auto", "required": "any"}.get(value, "auto")
+        return {"type": spelling}
+    if not isinstance(value, dict):
+        return None
+
+    # Responses-style typed choice, which OpenAI also accepts.
+    vtype = value.get("type")
+    if vtype in ("auto", "any", "none"):
+        return {"type": vtype}
+    if vtype in ("required", "any"):
+        return {"type": "any"}
+
+    fn = value.get("function")
+    if isinstance(fn, dict) and fn.get("name"):
+        return {"type": "tool", "name": fn["name"]}
+    if value.get("name"):
+        return {"type": "tool", "name": value["name"]}
+    return None
+
+
 def openai_to_anthropic_body(
     model: str,
     messages: List[Dict[str, Any]],
@@ -137,9 +289,16 @@ def openai_to_anthropic_body(
         block = _tool_result_block(msg)
         if block is not None:
             # Anthropic puts a tool result inside the next user turn rather
-            # than in a turn of its own.
+            # than in a turn of its own, and it has to lead that turn. Appending
+            # it puts it behind any image the user sent, which is a 400.
             if converted and converted[-1]["role"] == "user":
-                converted[-1]["content"].append(block)
+                content = converted[-1]["content"]
+                if not isinstance(content, list):
+                    content = _to_anthropic_blocks(content)
+                at = 0
+                while at < len(content) and content[at].get("type") == "tool_result":
+                    at += 1
+                converted[-1]["content"] = content[:at] + [block] + content[at:]
             else:
                 converted.append({"role": "user", "content": [block]})
             continue
@@ -151,10 +310,7 @@ def openai_to_anthropic_body(
             continue
 
         if role == "assistant":
-            parts: List[Dict[str, Any]] = []
-            text = _text_of(msg.get("content"))
-            if text:
-                parts.append({"type": "text", "text": text})
+            parts: List[Dict[str, Any]] = _to_anthropic_blocks(msg.get("content"))
             for tc in msg.get("tool_calls") or []:
                 block = _tool_call_block(tc)
                 if block:
@@ -162,23 +318,26 @@ def openai_to_anthropic_body(
             converted.append({"role": "assistant", "content": parts or [{"type": "text", "text": ""}]})
             continue
 
-        converted.append({"role": "user", "content": _text_of(msg.get("content"))})
+        user_blocks = _to_anthropic_blocks(msg.get("content"))
+        if user_blocks:
+            converted.append({"role": "user", "content": user_blocks})
 
     # Two user turns in a row is invalid in Anthropic; merge rather than fail.
+    # tool_result blocks have to stay at the front of the turn: the spec puts
+    # them before anything else, and a picture sent ahead of one is a 400.
     merged: List[Dict[str, Any]] = []
     for turn in converted:
         if merged and merged[-1]["role"] == turn["role"] == "user":
             prev = merged[-1]["content"]
             cur = turn["content"]
-            if isinstance(prev, list) and isinstance(cur, list):
-                merged[-1]["content"] = prev + cur
-            elif isinstance(prev, list):
-                merged[-1]["content"] = prev + [{"type": "text", "text": _text_of(cur)}]
-            else:
-                merged[-1]["content"] = [
-                    {"type": "text", "text": _text_of(prev)},
-                    {"type": "text", "text": _text_of(cur)},
-                ]
+            if not isinstance(prev, list):
+                prev = _to_anthropic_blocks(prev)
+            if not isinstance(cur, list):
+                cur = _to_anthropic_blocks(cur)
+            results = [b for b in prev + cur
+                       if isinstance(b, dict) and b.get("type") == "tool_result"]
+            rest = [b for b in prev + cur if b not in results]
+            merged[-1]["content"] = results + rest
             continue
         merged.append(turn)
 
@@ -200,15 +359,25 @@ def openai_to_anthropic_body(
     if anthropic_tools:
         body["tools"] = anthropic_tools
 
+    # An OpenAI client that set tool_choice gets it in extra_body. (The router
+    # does not currently forward it from the chat paths at all -- that is a
+    # separate gap -- but an endpoint reached through extra_body gets the
+    # correct spelling rather than a value Anthropic will reject.)
+    passthrough = dict(extra_body or {})
+    raw_choice = passthrough.pop("tool_choice", None)
+    if raw_choice is not None:
+        mapped = _tool_choice(raw_choice)
+        if mapped is not None:
+            body["tool_choice"] = mapped
+
     # The OpenAI name for a stop sequence is "stop"; Anthropic renamed it, and
     # an unknown field is a 400 rather than something quietly ignored.
-    passthrough = dict(extra_body or {})
     if "stop" in passthrough and "stop_sequences" not in body:
         stop = passthrough.pop("stop")
         body["stop_sequences"] = [stop] if isinstance(stop, str) else list(stop or [])
 
     for key, value in passthrough.items():
-        if key not in ("messages", "model", "stream", "tools", "system"):
+        if key not in ("messages", "model", "stream", "tools", "system", "tool_choice"):
             body[key] = value
     return body
 
