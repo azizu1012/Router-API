@@ -510,13 +510,24 @@ async def acompletion(**kwargs: Any) -> Any:
     # ── PATH 2: Custom endpoint (OpenAI SDK format) ──────────────────────────
     if api_base:
         from .custom_endpoint_client import CustomEndpointStreamGen, call_custom_nonstream
+        merged = dict(extra_body or {})
+        
         # OpenAI-compatible endpoints spell it "stop" (string or list).
-        if stop_sequences and not isinstance(extra_body, dict):
-            extra_body = {}
         if stop_sequences:
-            merged = dict(extra_body or {})
             merged.setdefault("stop", stop_sequences[0] if len(stop_sequences) == 1 else list(stop_sequences))
-            extra_body = merged
+        
+        thinking = kwargs.get("thinking")
+        if thinking:
+            merged["thinking"] = thinking
+        if reasoning_effort:
+            merged["reasoning_effort"] = reasoning_effort
+        if top_k is not None:
+            merged["top_k"] = top_k
+        if top_p is not None:
+            merged["top_p"] = top_p
+            
+        extra_body = merged if merged else None
+
         if stream:
             return CustomEndpointStreamGen(
                 api_base=api_base, api_key=api_key, model=model_id,

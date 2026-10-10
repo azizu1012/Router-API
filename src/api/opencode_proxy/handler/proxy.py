@@ -172,6 +172,14 @@ def _client_sampling_params(body: Dict[str, Any]) -> Dict[str, Any]:
     if isinstance(top_p, (int, float)) and not isinstance(top_p, bool):
         out["top_p"] = max(0.0, min(1.0, float(top_p)))
 
+    top_k = body.get("top_k")
+    if isinstance(top_k, int) and not isinstance(top_k, bool):
+        out["top_k"] = top_k
+        
+    reasoning_effort = body.get("reasoning_effort")
+    if isinstance(reasoning_effort, str) and reasoning_effort:
+        out["reasoning_effort"] = reasoning_effort
+
     return out
 
 

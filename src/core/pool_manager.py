@@ -397,7 +397,7 @@ class PoolManager:
                                 "temperature": temperature,
                                 "stream": True,
                                 "tools": tools,
-                                "thinking_config": member_tc if not is_custom else None,
+                                "thinking_config": member_tc,
                             }
                             if sampling_params:
                                 kwargs.update(sampling_params)
@@ -653,7 +653,7 @@ class PoolManager:
                     "temperature": temperature,
                     "stream": is_stream,
                     "tools": tools,
-                    "thinking_config": member_tc if not is_custom else None,
+                    "thinking_config": member_tc,
                 }
                 if sampling_params:
                     kwargs.update(sampling_params)
