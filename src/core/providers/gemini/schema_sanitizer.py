@@ -65,8 +65,33 @@ def _clean_required(obj: dict) -> None:
             del obj["required"]
 
 
+def _normalize_array_items(obj: dict) -> None:
+    """Make ``items`` a single schema node, which is all Gemini accepts.
+
+    JSON Schema also permits the draft-4 tuple form, ``"items": [...]``, and
+    clients emit a bare ``"items": {}``. Gemini reads the array as the item
+    schema and rejects the whole request with::
+
+        ...items.items: missing field
+
+    An array of schemas collapses to its first entry, since that is the one
+    Gemini can represent; an empty one is dropped rather than guessed at.
+    """
+    items = obj.get("items")
+    if isinstance(items, list):
+        first = next((i for i in items if isinstance(i, dict)), None)
+        if first is None:
+            obj.pop("items", None)
+        else:
+            obj["items"] = first
+    elif isinstance(items, dict) and not items:
+        # An empty object carries no type, which is the field Gemini says is
+        # missing. A string is the least committal placeholder.
+        obj["items"] = {"type": "string"}
+
+
 def _strip_unsupported(obj: dict) -> None:
-    """Recursively remove unsupported JSON Schema keywords (mutates in-place)."""
+    """Remove unsupported JSON Schema keywords from one node (mutates in-place)."""
     if not isinstance(obj, dict):
         return
     for k in list(obj.keys()):
@@ -74,27 +99,45 @@ def _strip_unsupported(obj: dict) -> None:
             del obj[k]
         elif k.startswith("x-"):
             del obj[k]
-        elif isinstance(obj[k], dict):
-            _strip_unsupported(obj[k])
-        elif isinstance(obj[k], list):
-            for item in obj[k]:
-                if isinstance(item, dict):
-                    _strip_unsupported(item)
+
+
+def _walk(node, visit) -> None:
+    """Apply `visit` to every schema node, depth-first."""
+    if isinstance(node, list):
+        for item in node:
+            _walk(item, visit)
+        return
+    if not isinstance(node, dict):
+        return
+    visit(node)
+    for value in list(node.values()):
+        if isinstance(value, (dict, list)):
+            _walk(value, visit)
 
 
 def _sanitize_schema_for_gemini(schema: dict) -> dict:
-    """Clean JSON Schema for Gemini API compatibility. Returns new dict, does NOT mutate input."""
+    """Clean JSON Schema for Gemini API compatibility. Returns new dict, does NOT mutate input.
+
+    Every pass runs at every depth. Running them only at the root left nested
+    schemas untouched, and a tool whose schema nests two arrays deep was then
+    rejected by the API with INVALID_ARGUMENT -- a 400 that named a path inside
+    the tool's own schema rather than anything the caller could act on.
+    """
     if not isinstance(schema, dict):
         return schema
 
     import copy
     cleaned = copy.deepcopy(schema)
 
-    _convert_const_to_enum(cleaned)
-    _convert_enum_values_to_strings(cleaned)
-    _flatten_type_array(cleaned)
-    _ensure_object_type(cleaned)
-    _strip_unsupported(cleaned)
-    _clean_required(cleaned)
+    def _fix(node: dict) -> None:
+        _convert_const_to_enum(node)
+        _convert_enum_values_to_strings(node)
+        _flatten_type_array(node)
+        _ensure_object_type(node)
+        _strip_unsupported(node)
+        _clean_required(node)
+        _normalize_array_items(node)
+
+    _walk(cleaned, _fix)
 
     return cleaned

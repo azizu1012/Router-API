@@ -79,6 +79,7 @@ tests/*
 !tests/test_catch_all_mount.py
 !tests/test_mcp_server.py
 !tests/test_topic_classification.py
+!tests/test_schema_sanitizer.py
 
 # The CI scanner is tracked; the rest of scripts/ is local tooling.
 !scripts/
