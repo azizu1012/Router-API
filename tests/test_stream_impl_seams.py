@@ -113,7 +113,7 @@ class Harness:
             "model": "gemini-flash",
             "messages": [{"role": "user", "content": "hi"}],
         })
-        self.body["include_thoughts"] = include_thoughts
+        self.body["include_thoughts"] = include_thoughts  # type: ignore
         self.input_tokens = input_tokens
 
     def run(self):

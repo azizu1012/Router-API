@@ -905,9 +905,11 @@ class TestTheStreamedSearchUsesTheHostedShape:
             [_SChunk(_SDelta("Paris."), finish_reason="stop")],
         ])
 
-        cites = [d["delta"]["citation"] for n, d in events
-                 if n == "content_block_delta"
-                 and d["delta"].get("type") == "citations_delta"]
+        cites = []
+        for n, d in events:
+            if n == "content_block_delta" and d["delta"].get("type") == "citations_delta":
+                cites.append(d["delta"]["citation"])
+        
         assert cites, "the streamed answer cites nothing"
         assert cites[0]["type"] == "web_search_result_location"
         assert cites[0]["url"] == "https://example.org/paris"

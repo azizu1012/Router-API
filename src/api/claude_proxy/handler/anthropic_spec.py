@@ -60,6 +60,15 @@ def extract_sampling_params(body: Dict[str, Any]) -> Dict[str, Any]:
     if choice:
         out.update(choice)
 
+    # thinking travels verbatim. Anthropic is mid-migration between
+    # {"type":"enabled","budget_tokens":N} and {"type":"adaptive"}, and each form
+    # is a 400 on models that support the other one. Deciding here would mean
+    # guessing which model a third-party endpoint runs, so the field is carried
+    # unchanged and each target decides for itself.
+    thinking = body.get("thinking")
+    if isinstance(thinking, dict) and thinking.get("type"):
+        out["thinking"] = thinking
+
     return out
 
 

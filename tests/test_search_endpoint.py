@@ -254,13 +254,13 @@ class TestOnlyTheGroundedSearchSpendsQuota:
     def _charged(self, engine):
         import asyncio
 
-        import src.core.limits.account_limiter as al
+        from src.core.limits.account_limiter import account_limiter as al
         from src.core.providers.search_manager import execute_hybrid_search
 
         charged = []
 
-        async def fake_acquire(effective, tokens, pool, *a, **kw):
-            charged.append(pool)
+        async def fake_acquire(account, estimated_tokens, pool_type="flash", *a, **kw):
+            charged.append(pool_type)
             return True, "ok"
 
         async def ddg(query):

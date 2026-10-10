@@ -398,7 +398,7 @@ class GeminiAPIManager:
                             async def __anext__(self):
                                 try:
                                     chunk_dict = await self.generator.__anext__()
-                                    return adk.MockGenerateContentResponse(chunk_dict)
+                                    return adk.MockGenerateContentResponse(chunk_dict)  # type: ignore
                                 except StopAsyncIteration:
                                     raise StopAsyncIteration
 

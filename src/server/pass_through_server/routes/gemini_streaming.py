@@ -123,6 +123,6 @@ async def stream_custom_endpoint_native(
         temperature=temperature,
         top_p=top_p,
         auth_key_prefix=auth_key_prefix,
-        api_format=api_format,
+        api_format=api_format,  # type: ignore
     ):
         yield chunk

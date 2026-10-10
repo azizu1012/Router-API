@@ -109,7 +109,12 @@ def _to_anthropic_blocks(content: Any) -> List[Dict[str, Any]]:
         if ptype in ("text", "input_text"):
             text = part.get("text") or ""
             if text:
-                blocks.append({"type": "text", "text": str(text)})
+                block: Dict[str, Any] = {"type": "text", "text": str(text)}
+                # The cache marker rides on the block, so rebuilding the block
+                # without it would throw away the reason the block exists.
+                if part.get("_cache_control"):
+                    block["_cache_control"] = True
+                blocks.append(block)
             continue
 
         if ptype == "refusal":
@@ -269,6 +274,10 @@ def _tool_choice(value: Any) -> Optional[Dict[str, Any]]:
     return None
 
 
+def _cache_marker() -> Dict[str, Any]:
+    return {"type": "ephemeral"}
+
+
 def openai_to_anthropic_body(
     model: str,
     messages: List[Dict[str, Any]],
@@ -281,7 +290,7 @@ def openai_to_anthropic_body(
     extra_body: Optional[Dict[str, Any]] = None,
 ) -> Dict[str, Any]:
     """Build an Anthropic /v1/messages body from the canonical OpenAI shape."""
-    system_chunks: List[str] = []
+    system_chunks: List[Any] = []
     converted: List[Dict[str, Any]] = []
 
     for msg in messages or []:
@@ -304,9 +313,9 @@ def openai_to_anthropic_body(
             continue
 
         if role == "system" or role == "developer":
-            text = _text_of(msg.get("content"))
-            if text:
-                system_chunks.append(text)
+            system_blocks = _to_anthropic_blocks(msg.get("content"))
+            if system_blocks:
+                system_chunks.append(system_blocks)
             continue
 
         if role == "assistant":
@@ -349,7 +358,32 @@ def openai_to_anthropic_body(
         "stream": bool(stream),
     }
     if system_chunks:
-        body["system"] = "\n\n".join(system_chunks)
+        # Blocks carry a cache_control marker; plain text does not. Anthropic's
+        # system accepts either, so the block form is used only when it says
+        # something the string form cannot.
+        needs_blocks = any(
+            isinstance(c, list) and any("_cache_control" in b for b in c)
+            for c in system_chunks
+        )
+        if needs_blocks:
+            merged_system: List[Dict[str, Any]] = []
+            for chunk in system_chunks:
+                if isinstance(chunk, list):
+                    for block in chunk:
+                        clean = {k: v for k, v in block.items() if not k.startswith("_")}
+                        if block.get("_cache_control") and "cache_control" not in clean:
+                            clean["cache_control"] = _cache_marker()
+                        merged_system.append(clean)
+                elif chunk:
+                    merged_system.append({"type": "text", "text": chunk})
+            body["system"] = merged_system
+        else:
+            # No markers anywhere, so the compact string form is enough and
+            # keeps the payload smaller for an endpoint that does not cache.
+            body["system"] = "\n\n".join(
+                "".join(b.get("text", "") for b in c if isinstance(b, dict))
+                for c in system_chunks if isinstance(c, list)
+            )
     if temperature is not None:
         body["temperature"] = temperature
     if top_p is not None:
@@ -364,6 +398,16 @@ def openai_to_anthropic_body(
     # separate gap -- but an endpoint reached through extra_body gets the
     # correct spelling rather than a value Anthropic will reject.)
     passthrough = dict(extra_body or {})
+    # thinking is forwarded exactly as the client wrote it, never synthesised.
+    # Anthropic is mid-migration on this field: {"type":"enabled","budget_tokens":
+    # N} is deprecated on 4.6 and rejected with a 400 on 4.7+, while
+    # {"type":"adaptive"} is rejected on 4.5 and earlier. Which one is valid
+    # depends on the model behind an endpoint the router cannot see, so the
+    # only safe move is not to guess.
+    thinking = passthrough.pop("thinking", None)
+    if isinstance(thinking, dict) and thinking.get("type"):
+        body["thinking"] = thinking
+
     raw_choice = passthrough.pop("tool_choice", None)
     if raw_choice is not None:
         mapped = _tool_choice(raw_choice)

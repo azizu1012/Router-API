@@ -260,7 +260,15 @@ def _convert_messages(body: Dict[str, Any]) -> Tuple[List[Dict[str, Any]], List[
 
     openai_messages: List[Dict[str, Any]] = []
     system_instruction = body.get("system", "")
+    system_cache_blocks = False
     if isinstance(system_instruction, list):
+        # A cache_control marker lives on the block, so joining the blocks into
+        # one string throws away the thing that makes them worth separating.
+        # Anthropic renders tools -> system -> messages, so a marker on the last
+        # system block caches everything above it too.
+        system_cache_blocks = any(
+            isinstance(b, dict) and b.get("cache_control") for b in system_instruction
+        )
         system_instruction = "\n".join([str(item.get("text", "")) for item in system_instruction if isinstance(item, dict)])
     if isinstance(system_instruction, str) and system_instruction.strip():
         import logging
@@ -278,7 +286,16 @@ def _convert_messages(body: Dict[str, Any]) -> Tuple[List[Dict[str, Any]], List[
                 "your training data, ALWAYS call WebSearch in preference to writing "
                 "scripts or using curl."
             )
-        openai_messages.append({"role": "system", "content": cleaned})
+        if system_cache_blocks:
+            # Carried as a block so the marker survives to an endpoint that
+            # speaks the same dialect; still read as plain text everywhere else.
+            openai_messages.append({
+                "role": "system",
+                "content": [{"type": "text", "text": cleaned,
+                             "_cache_control": True}],
+            })
+        else:
+            openai_messages.append({"role": "system", "content": cleaned})
 
     seen_tool_calls = set()
     tool_name_map: Dict[str, str] = {}
