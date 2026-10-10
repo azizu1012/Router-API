@@ -27,10 +27,9 @@ def strip_tools_for_compaction(body: Dict[str, Any], messages: List[Dict[str, An
         )
         
         # Claude Code and OpenCode usually make non-streaming requests for compaction.
-        # If it's non-streaming, has tools, and the client is claude/opencode, it's highly likely a compaction.
-        is_non_stream_compaction = is_claude_or_opencode and not body.get("stream")
-        
-        if is_explicit_compaction or is_non_stream_compaction:
+        # However, stripping tools purely based on non-streaming breaks valid non-stream tool calls.
+        # So we only strip if the prompt explicitly asks for a summary/compaction.
+        if is_explicit_compaction:
             tools.clear()
             if "tool_choice" in body:
                 del body["tool_choice"]
