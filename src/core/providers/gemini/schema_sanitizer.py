@@ -23,7 +23,7 @@ UNSUPPORTED_SCHEMA_FIELDS = frozenset({
     "examples",  # plural — SDK chỉ supports singular "example"
     "exclusiveMinimum", "exclusiveMaximum",
     "$comment",
-    "allOf",
+    "allOf", "anyOf", "oneOf", "$ref", "$defs",
 })
 OPENAI_EXTRA_SCHEMA_FIELDS = UNSUPPORTED_SCHEMA_FIELDS
 
@@ -101,8 +101,53 @@ def _strip_unsupported(obj: dict) -> None:
             del obj[k]
 
 
+def _flatten_union(obj: dict) -> None:
+    """Collapse ``anyOf`` / ``oneOf`` to the branch that carries a type.
+
+    Deleting the keyword outright leaves a node with no ``type``, and Gemini
+    answers ``missing field`` -- documented as google/adk-python#1807. A
+    ``$ref`` is dropped the same way, but here it points at ``definitions``,
+    which the unsupported pass removes, so dropping the ref alone would trade one
+    rejection for another.
+
+    Pydantic writes ``Optional[X]`` as ``{"anyOf": [X, {"type": "null"}]}``,
+    which is the case that shows up in practice: the null branch is skipped and
+    X wins.
+    """
+    for union in ("anyOf", "oneOf"):
+        branches = obj.get(union)
+        if not isinstance(branches, list) or not branches:
+            continue
+        chosen = next(
+            (b for b in branches
+             if isinstance(b, dict) and "type" in b and b.get("type") != "null"),
+            None,
+        )
+        if chosen is not None:
+            for key, value in chosen.items():
+                obj.setdefault(key, value)
+        obj.pop(union, None)
+
+    obj.pop("$ref", None)
+
+
+def _ensure_a_type(obj: dict) -> None:
+    """Last resort: a node with nothing to infer a type from gets ``string``.
+
+    Runs after the other passes so it only sees nodes they could not resolve,
+    such as ``{}`` or a bare ``{"description": ...}``.
+    """
+    if "type" not in obj and "properties" not in obj and "enum" not in obj:
+        obj["type"] = "string"
+
+
 def _walk(node, visit) -> None:
-    """Apply `visit` to every schema node, depth-first."""
+    """Apply `visit` to every schema node, depth-first.
+
+    ``properties`` maps a field name to a schema, so the dict itself is not a
+    node and its keys must not be treated as one. Walking into it directly is
+    how a ``{"description": ...}`` sibling ends up being given a bogus type.
+    """
     if isinstance(node, list):
         for item in node:
             _walk(item, visit)
@@ -110,7 +155,13 @@ def _walk(node, visit) -> None:
     if not isinstance(node, dict):
         return
     visit(node)
-    for value in list(node.values()):
+    props = node.get("properties")
+    if isinstance(props, dict):
+        for sub in props.values():
+            _walk(sub, visit)
+    for key, value in node.items():
+        if key in ("properties", "definitions", "$defs"):
+            continue
         if isinstance(value, (dict, list)):
             _walk(value, visit)
 
@@ -130,6 +181,7 @@ def _sanitize_schema_for_gemini(schema: dict) -> dict:
     cleaned = copy.deepcopy(schema)
 
     def _fix(node: dict) -> None:
+        _flatten_union(node)
         _convert_const_to_enum(node)
         _convert_enum_values_to_strings(node)
         _flatten_type_array(node)
@@ -137,6 +189,7 @@ def _sanitize_schema_for_gemini(schema: dict) -> dict:
         _strip_unsupported(node)
         _clean_required(node)
         _normalize_array_items(node)
+        _ensure_a_type(node)
 
     _walk(cleaned, _fix)
 

@@ -120,6 +120,85 @@ class TestArrayItems:
         assert out["properties"]["a"]["items"]["properties"]["b"]["type"] == "string"
 
 
+class TestUnionsAreFlattenedNotDeleted:
+    """anyOf/oneOf carry the type. Deleting them leaves a typeless node.
+
+    google/adk-python#1807: Pydantic writes `Optional[X]` as
+    `{"anyOf": [X, {"type": "null"}]}` and the API answers `missing field`.
+    """
+
+    def test_any_of_supplies_the_type(self):
+        out = clean({"type": "object", "properties": {"path": {
+            "anyOf": [{"type": "string"},
+                      {"type": "array", "items": {"type": "string"}}]}}})
+
+        node = out["properties"]["path"]
+        assert node["type"] == "string"
+        assert "anyOf" not in node
+
+    def test_optional_collapses_to_the_non_null_branch(self):
+        out = clean({"type": "object", "properties": {"a": {
+            "anyOf": [{"type": "integer"}, {"type": "null"}]}}})
+
+        assert out["properties"]["a"]["type"] == "integer"
+
+    def test_one_of_collapses_too(self):
+        out = clean({"type": "object", "properties": {"m": {
+            "oneOf": [{"type": "string"}, {"type": "integer"}]}}})
+
+        assert out["properties"]["m"]["type"] == "string"
+        assert "oneOf" not in out["properties"]["m"]
+
+    def test_an_explicit_type_wins_over_the_union(self):
+        out = clean({"type": "object", "properties": {"a": {
+            "type": "boolean", "anyOf": [{"type": "string"}]}}})
+
+        assert out["properties"]["a"]["type"] == "boolean"
+
+
+class TestReferencesDoNotSurviveAsDangling:
+    """`definitions` is stripped, so a surviving $ref points at nothing."""
+
+    def test_a_ref_node_still_gets_a_type(self):
+        out = clean({"type": "object",
+                     "properties": {"a": {"$ref": "#/$defs/Alpha"},
+                                    "b": {"type": "string"}},
+                     "definitions": {"Alpha": {"type": "object"}}})
+
+        assert "type" in out["properties"]["a"]
+        assert "$ref" not in out["properties"]["a"]
+
+    def test_definitions_are_removed(self):
+        out = clean({"type": "object",
+                     "properties": {"a": {"type": "string"}},
+                     "definitions": {"Alpha": {"type": "object"}}})
+
+        assert "definitions" not in out
+
+
+class TestEveryNodeEndsUpWithAType:
+    """The rule the API states in its own 400 body."""
+
+    def test_an_empty_object_becomes_a_string(self):
+        out = clean({"type": "object", "properties": {
+            "opts": {"type": "object", "properties": {"deep": {}}}}})
+
+        assert out["properties"]["opts"]["properties"]["deep"]["type"] == "string"
+
+    def test_a_description_only_node_becomes_a_string(self):
+        out = clean({"type": "object",
+                     "properties": {"freeform": {"description": "anything"}}})
+
+        assert out["properties"]["freeform"]["type"] == "string"
+
+    def test_the_properties_map_itself_is_not_given_a_type(self):
+        """`properties` maps names to schemas; treating it as a node would
+        invent a type on the field called "properties"."""
+        out = clean({"type": "object", "properties": {"a": {"type": "string"}}})
+
+        assert "type" not in out["properties"]
+
+
 class TestTheInputIsNotMutated:
     def test_the_caller_keeps_its_own_schema(self):
         schema = {"type": "object", "properties": {"a": {"const": "x"}}}
