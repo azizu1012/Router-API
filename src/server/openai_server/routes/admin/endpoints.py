@@ -13,19 +13,61 @@ async def admin_add_endpoint(request: Request):
         name = str(body.get("name", "")).strip()
         base_url = str(body.get("base_url", "")).strip()
         auth_key = str(body.get("auth_key", "")).strip()
+        api_format = str(body.get("api_format") or "openai").strip().lower()
     except Exception:
         raise HTTPException(status_code=400, detail="Invalid JSON")
     if not name or not base_url or not auth_key:
         raise HTTPException(status_code=400, detail="name, base_url, and auth_key are required")
+    if api_format not in ("openai", "anthropic"):
+        raise HTTPException(
+            status_code=400,
+            detail="api_format must be 'openai' or 'anthropic'",
+        )
 
     from src.backend.endpoints import add_endpoint_db
     try:
         ep = add_endpoint_db(name, base_url, auth_key)
+        if api_format != "openai":
+            from src.backend.endpoints import update_endpoint_db
+            from src.core.providers import _custom_endpoint_manager
+
+            ep = update_endpoint_db(name, api_format=api_format) or ep
+            _custom_endpoint_manager._invalidate_cache()
         from src.core.providers import _custom_endpoint_manager
         await _custom_endpoint_manager.fetch_models(ep["name"])
         return {"status": "success", "endpoint": ep}
     except Exception as e:
         raise HTTPException(status_code=400, detail=str(e))
+
+
+@app.post("/dashboard/admin/endpoints/format")
+async def admin_set_endpoint_format(request: Request):
+    """Change which wire format an endpoint speaks.
+
+    The endpoint belongs to whoever paid for it, so this is the admin declaring
+    the owner's dialect, not overriding it.
+    """
+    _require_admin(request)
+    try:
+        body = await request.json()
+        name = str(body.get("name", "")).strip()
+        api_format = str(body.get("api_format") or "").strip().lower()
+    except Exception:
+        raise HTTPException(status_code=400, detail="Invalid JSON")
+    if api_format not in ("openai", "anthropic"):
+        raise HTTPException(
+            status_code=400,
+            detail="api_format must be 'openai' or 'anthropic'",
+        )
+
+    from src.backend.endpoints import update_endpoint_db
+    from src.core.providers import _custom_endpoint_manager
+
+    ep = update_endpoint_db(name, api_format=api_format)
+    if not ep:
+        raise HTTPException(status_code=404, detail=f"Endpoint '{name}' not found")
+    _custom_endpoint_manager._invalidate_cache()
+    return {"status": "success", "endpoint": ep}
 
 
 @app.post("/dashboard/admin/endpoints/delete")

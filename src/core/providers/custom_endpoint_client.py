@@ -16,6 +16,8 @@ from typing import Any, AsyncIterator, Dict, List, Optional
 
 import aiohttp
 
+from .anthropic_wire import is_anthropic_format
+
 TIMEOUT = 120
 
 # ── Custom pool rate limiting ────────────────────────────────────────────
@@ -111,7 +113,36 @@ def _build_payload(
     return payload
 
 
-async def call_custom_nonstream(
+def anthropic_messages_url(api_base: str) -> str:
+    """Join an endpoint's base URL with /v1/messages exactly once.
+
+    Operators paste base URLs both as ``https://host`` and as
+    ``https://host/v1``. Naive concatenation produces ``/v1/v1/messages`` for
+    the second form, which is the same trap this router already had to defend
+    against on its own client-facing routes.
+    """
+    base = (api_base or "").rstrip("/")
+    if base.endswith("/v1"):
+        return base + "/messages"
+    return base + "/v1/messages"
+
+
+def anthropic_headers(api_key: str) -> Dict[str, str]:
+    """Send the key both ways.
+
+    Anthropic's own API reads x-api-key; a lot of self-hosted proxies in front
+    of it read Authorization. Sending both is harmless and avoids making the
+    admin guess which one their provider wants.
+    """
+    return {
+        "Content-Type": "application/json",
+        "x-api-key": api_key,
+        "Authorization": f"Bearer {api_key}",
+        "anthropic-version": "2023-06-01",
+    }
+
+
+async def call_anthropic_nonstream(
     api_base: str,
     api_key: str,
     model: str,
@@ -121,7 +152,85 @@ async def call_custom_nonstream(
     tools: Optional[List[Dict[str, Any]]] = None,
     extra_body: Optional[Dict[str, Any]] = None,
 ) -> Any:
+    """POST Anthropic-format to a custom endpoint. Returns a SimpleNamespace
+    shaped like the OpenAI response, so every caller above is unchanged."""
+    from .anthropic_wire import openai_to_anthropic_body, anthropic_to_openai_message
+
+    url = anthropic_messages_url(api_base)
+    payload = openai_to_anthropic_body(
+        model, messages,
+        max_tokens=max_tokens, temperature=temperature,
+        stream=False, tools=tools, extra_body=extra_body,
+    )
+    payload.pop("stream", None)
+
+    async with aiohttp.ClientSession(headers=anthropic_headers(api_key)) as session:
+        async with session.post(
+            url, json=payload, timeout=aiohttp.ClientTimeout(total=TIMEOUT)
+        ) as response:
+            if response.status >= 400:
+                body_text = await response.text()
+                raise RuntimeError(f"Custom endpoint HTTP {response.status}: {body_text[:500]}")
+            data = await response.json()
+
+    return _openai_namespace(anthropic_to_openai_message(data), model)
+
+
+def _openai_namespace(data: Dict[str, Any], fallback_model: str) -> Any:
+    """Wrap a chat.completion dict in the attribute shape callers already use."""
+    resp = types.SimpleNamespace()
+    resp.id = data.get("id") or f"chatcmpl-{id(data)}"
+    resp.object = data.get("object", "chat.completion")
+    resp.created = data.get("created", 0)
+    resp.model = data.get("model") or fallback_model
+    resp.usage = data.get("usage")
+
+    choices = []
+    for c in data.get("choices", []) or []:
+        msg_dict = c.get("message", {}) or {}
+        msg = types.SimpleNamespace()
+        msg.content = msg_dict.get("content", "") or ""
+        msg.role = msg_dict.get("role", "assistant")
+        msg.reasoning_content = msg_dict.get("reasoning_content")
+        tool_calls = []
+        for tc in msg_dict.get("tool_calls", []) or []:
+            tc_obj = types.SimpleNamespace()
+            tc_obj.id = tc.get("id", "")
+            tc_obj.type = tc.get("type", "function")
+            tc_obj.function = types.SimpleNamespace()
+            tc_obj.function.name = (tc.get("function") or {}).get("name", "")
+            tc_obj.function.arguments = (tc.get("function") or {}).get("arguments", "")
+            tool_calls.append(tc_obj)
+        msg.tool_calls = tool_calls or None
+
+        choice = types.SimpleNamespace()
+        choice.message = msg
+        choice.finish_reason = c.get("finish_reason", "stop")
+        choice.index = c.get("index", 0)
+        choices.append(choice)
+
+    resp.choices = choices
+    return resp
+
+
+async def call_custom_nonstream(
+    api_base: str,
+    api_key: str,
+    model: str,
+    messages: List[Dict[str, Any]],
+    temperature: Optional[float] = None,
+    max_tokens: Optional[int] = None,
+    tools: Optional[List[Dict[str, Any]]] = None,
+    extra_body: Optional[Dict[str, Any]] = None,
+    api_format: str = "openai",
+) -> Any:
     """POST OpenAI-format to custom endpoint. Returns SimpleNamespace response."""
+    if is_anthropic_format(api_format):
+        return await call_anthropic_nonstream(
+            api_base, api_key, model, messages,
+            temperature=temperature, max_tokens=max_tokens,
+            tools=tools, extra_body=extra_body,
+        )
     url = f"{api_base.rstrip('/')}/chat/completions"
     headers = {
         "Content-Type": "application/json",
@@ -183,6 +292,7 @@ class CustomEndpointStreamGen:
         messages: List[Dict[str, Any]], temperature: Optional[float] = None,
         max_tokens: Optional[int] = None, tools: Optional[List[Dict[str, Any]]] = None,
         extra_body: Optional[Dict[str, Any]] = None,
+        api_format: str = "openai",
     ):
         self._api_base = api_base
         self._api_key = api_key
@@ -192,6 +302,7 @@ class CustomEndpointStreamGen:
         self._max_tokens = max_tokens
         self._tools = tools
         self._extra_body = extra_body
+        self._api_format = api_format
         self._sse_gen: Optional[AsyncIterator[Dict[str, Any]]] = None
         self._buf: List[dict] = []
         self._started = False
@@ -199,6 +310,9 @@ class CustomEndpointStreamGen:
         self._response: Optional[Any] = None
 
     async def _start(self) -> None:
+        if is_anthropic_format(self._api_format):
+            await self._start_anthropic()
+            return
         url = f"{self._api_base.rstrip('/')}/chat/completions"
         headers = {
             "Content-Type": "application/json",
@@ -224,6 +338,63 @@ class CustomEndpointStreamGen:
         except Exception:
             await self._cleanup()
             raise
+
+    async def _start_anthropic(self) -> None:
+        """Anthropic-compatible endpoints speak a typed event stream.
+
+        The events are translated to OpenAI chunks here so that __anext__ and
+        everything above it stay unaware of which dialect the owner runs.
+        """
+        from .anthropic_wire import openai_to_anthropic_body
+
+        url = anthropic_messages_url(self._api_base)
+        payload = openai_to_anthropic_body(
+            self._model, self._messages,
+            max_tokens=self._max_tokens, temperature=self._temperature,
+            stream=True, tools=self._tools, extra_body=self._extra_body,
+        )
+
+        self._session = aiohttp.ClientSession(headers=anthropic_headers(self._api_key))
+        try:
+            resp = await self._session.post(
+                url, json=payload, timeout=aiohttp.ClientTimeout(total=TIMEOUT)
+            )
+            if resp.status >= 400:
+                body_text = await resp.text()
+                await self._cleanup()
+                raise RuntimeError(f"Custom endpoint HTTP {resp.status}: {body_text[:500]}")
+            self._response = resp
+            self._sse_gen = self._parse_anthropic_stream(resp)
+            self._started = True
+        except Exception:
+            await self._cleanup()
+            raise
+
+    async def _parse_anthropic_stream(self, response: Any) -> AsyncIterator[Dict[str, Any]]:
+        from .anthropic_wire import anthropic_event_to_openai_delta
+
+        buffer = ""
+        async for chunk_bytes in response.content:
+            buffer += chunk_bytes.decode("utf-8", errors="replace")
+            while "\n" in buffer:
+                line, buffer = buffer.split("\n", 1)
+                trimmed = line.strip()
+                if not trimmed.startswith("data:"):
+                    continue
+                data_str = trimmed[5:].strip()
+                if not data_str or data_str == "[DONE]":
+                    continue
+                try:
+                    event = json.loads(data_str)
+                except json.JSONDecodeError:
+                    continue
+                chunk = anthropic_event_to_openai_delta(event)
+                if chunk is None:
+                    continue
+                chunk.setdefault("id", f"chatcmpl-{id(event)}")
+                chunk.setdefault("created", 0)
+                chunk.setdefault("model", self._model)
+                yield chunk
 
     async def _cleanup(self) -> None:
         if self._response:

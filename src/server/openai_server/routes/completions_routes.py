@@ -990,6 +990,7 @@ async def ping_model(request: Request):
             messages=[{"role": "user", "content": "OK"}],
             api_key=target["auth_key"],
             api_base=target["base_url"],
+            api_format=target.get("api_format") or "openai",
             max_tokens=5,
             temperature=0,
             stream=False,

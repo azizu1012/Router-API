@@ -33,6 +33,7 @@ def init_config_tables() -> None:
                     enabled_models TEXT DEFAULT '[]',
                     account_id TEXT DEFAULT '',
                     fallback INTEGER DEFAULT 0,
+                    api_format TEXT DEFAULT 'openai',
                     pool_assignments TEXT DEFAULT '{}',
                     updated_at TEXT
                 );
@@ -180,6 +181,14 @@ def init_config_tables() -> None:
             # Migration: add disabled_models to custom_endpoints
             try:
                 c.execute("ALTER TABLE custom_endpoints ADD COLUMN disabled_models TEXT DEFAULT '[]'")
+            except Exception:
+                pass
+
+            # Migration: add api_format to custom_endpoints.
+            # An endpoint is owned by whoever paid for it, so this records which
+            # wire format that owner speaks rather than assuming OpenAI.
+            try:
+                c.execute("ALTER TABLE custom_endpoints ADD COLUMN api_format TEXT DEFAULT 'openai'")
             except Exception:
                 pass
 

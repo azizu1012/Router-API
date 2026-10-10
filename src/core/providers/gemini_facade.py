@@ -395,6 +395,7 @@ async def acompletion(**kwargs: Any) -> Any:
     reasoning_effort: Optional[str] = kwargs.get("reasoning_effort")
     thinking_config: Optional[dict] = kwargs.get("thinking_config")
     extra_body: Optional[dict] = kwargs.get("extra_body", {})
+    api_format: str = kwargs.get("api_format") or "openai"
     stop_sequences: Optional[list] = kwargs.get("stop_sequences")
     top_p: Optional[float] = kwargs.get("top_p")
     top_k: Optional[int] = kwargs.get("top_k")
@@ -416,11 +417,13 @@ async def acompletion(**kwargs: Any) -> Any:
                 api_base=api_base, api_key=api_key, model=model_id,
                 messages=messages, temperature=temperature,
                 max_tokens=max_tokens, tools=tools, extra_body=extra_body,
+                api_format=api_format,
             )
         return await call_custom_nonstream(
             api_base=api_base, api_key=api_key, model=model_id,
             messages=messages, temperature=temperature,
             max_tokens=max_tokens, tools=tools, extra_body=extra_body,
+            api_format=api_format,
         )
 
     # ── PATH 1: Gemini (GenAI SDK via key pool) ──────────────────────────────

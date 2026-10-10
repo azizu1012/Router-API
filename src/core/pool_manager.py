@@ -659,6 +659,9 @@ class PoolManager:
                     kwargs.update(sampling_params)
                 if is_custom:
                     kwargs["api_base"] = reservation["api_base"]
+                    # The endpoint owner declares which dialect their API speaks;
+                    # defaulting to OpenAI keeps every pre-existing endpoint working.
+                    kwargs["api_format"] = reservation.get("api_format") or "openai"
                     if extra_body:
                         kwargs["extra_body"] = extra_body
 

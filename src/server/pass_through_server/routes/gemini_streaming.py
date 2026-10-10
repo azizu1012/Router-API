@@ -110,6 +110,7 @@ async def stream_custom_endpoint_native(
     temperature: float,
     top_p: float,
     auth_key_prefix: str,
+    api_format: str = "openai",
 ) -> AsyncIterator[bytes]:
     from src.core.providers.custom_endpoint_genai_adapter import stream_custom_as_genai
 
@@ -122,5 +123,6 @@ async def stream_custom_endpoint_native(
         temperature=temperature,
         top_p=top_p,
         auth_key_prefix=auth_key_prefix,
+        api_format=api_format,
     ):
         yield chunk

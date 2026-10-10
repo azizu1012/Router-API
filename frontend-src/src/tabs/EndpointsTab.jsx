@@ -14,6 +14,7 @@ export default function EndpointsTab() {
   const [newName, setNewName] = useState('');
   const [newUrl, setNewUrl] = useState('');
   const [newKey, setNewKey] = useState('');
+  const [newFormat, setNewFormat] = useState('openai');
   const [showAddForm, setShowAddForm] = useState(false);
   const [addMsg, setAddMsg] = useState({ text: '', type: '' });
   const [isSubmitting, setIsSubmitting] = useState(false);
@@ -34,9 +35,9 @@ export default function EndpointsTab() {
     try {
       await api('/dashboard/admin/endpoints/add', {
         method: 'POST',
-        body: JSON.stringify({ name: newName.trim(), base_url: newUrl.trim(), auth_key: newKey.trim() || undefined })
+        body: JSON.stringify({ name: newName.trim(), base_url: newUrl.trim(), auth_key: newKey.trim() || undefined, api_format: newFormat })
       }, token);
-      setNewName(''); setNewUrl(''); setNewKey('');
+      setNewName(''); setNewUrl(''); setNewKey(''); setNewFormat('openai');
       setAddMsg({ text: t('msg_ep_added', lang) || 'Đã thêm Endpoint thành công!', type: 'success' });
       refreshTab();
       setShowAddForm(false);
@@ -136,6 +137,16 @@ export default function EndpointsTab() {
               <label className="label py-1"><span className="label-text text-[11px] font-bold text-base-content/60 uppercase">Auth Key (Optional)</span></label>
               <input type="password" value={newKey} onChange={(e) => setNewKey(e.target.value)} placeholder="sk-or-..." className="input input-bordered input-sm text-xs w-full" autoComplete="off" />
             </div>
+            <div className="form-control">
+              <label className="label py-1"><span className="label-text text-[11px] font-bold text-base-content/60 uppercase">Định Dạng API</span></label>
+              <select value={newFormat} onChange={(e) => setNewFormat(e.target.value)} className="select select-bordered select-sm text-xs w-full">
+                <option value="openai">OpenAI-compatible — /chat/completions</option>
+                <option value="anthropic">Anthropic-compatible — /v1/messages</option>
+              </select>
+              <span className="text-[10px] text-base-content/50 mt-1 leading-snug">
+                Endpoint thuộc về người trả tiền. Chọn đúng định dạng API đó nói — router dịch giúp client, không sửa request của họ.
+              </span>
+            </div>
             <div className="sm:col-span-3 flex gap-3 justify-end">
               <button type="button" onClick={() => setShowAddForm(false)} className="btn btn-ghost btn-sm font-bold">Hủy</button>
               <button type="submit" disabled={isSubmitting} className="btn btn-primary btn-sm font-bold">
@@ -200,6 +211,22 @@ export default function EndpointsTab() {
                           <span className={`w-2.5 h-2.5 rounded-full shrink-0 ${isEnabled ? 'bg-success' : 'bg-error'}`}></span>
                           <strong className="text-sm text-base-content font-extrabold">{ep.name}</strong>
                           <span className="text-xs font-mono text-base-content/50 truncate max-w-[150px] sm:max-w-xs" title={ep.base_url}>{ep.base_url}</span>
+                          <select
+                            value={ep.api_format || 'openai'}
+                            onChange={async (e) => {
+                              const fmt = e.target.value;
+                              try {
+                                await api('/dashboard/admin/endpoints/format', { method: 'POST', body: JSON.stringify({ name: ep.name, api_format: fmt }) }, token);
+                                setEpMsg(ep.name, `✅ Đã đổi sang định dạng ${fmt}`, 'success');
+                                refreshTab();
+                              } catch (err) { setEpMsg(ep.name, `❌ Lỗi: ${err.message}`, 'error'); }
+                            }}
+                            className="select select-bordered select-xs font-bold text-[10px] shrink-0"
+                            title="Định dạng API của endpoint này"
+                          >
+                            <option value="openai">OpenAI</option>
+                            <option value="anthropic">Anthropic</option>
+                          </select>
                           {accountName && (
                             <span className="badge badge-sm badge-success font-extrabold text-[10px] uppercase">{accountName}</span>
                           )}

@@ -41,6 +41,7 @@ CREATE TABLE IF NOT EXISTS custom_endpoints (
     enabled_models TEXT DEFAULT '[]',
     account_id TEXT DEFAULT '',
     fallback INTEGER DEFAULT 0,
+    api_format TEXT DEFAULT 'openai',
     pool_assignments TEXT DEFAULT '{}',
     updated_at TEXT
 );

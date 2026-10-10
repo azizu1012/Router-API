@@ -60,8 +60,9 @@ async def stream_custom_as_genai(
     temperature: float,
     top_p: float,
     auth_key_prefix: str = "",
+    api_format: str = "openai",
 ) -> AsyncIterator[bytes]:
-    """Stream OpenAI custom endpoint chunks formatted as Gemini native SSE bytes."""
+    """Stream custom endpoint chunks formatted as Gemini native SSE bytes."""
     gen = CustomEndpointStreamGen(
         api_base=api_base,
         api_key=api_key,
@@ -69,6 +70,7 @@ async def stream_custom_as_genai(
         messages=messages,
         temperature=temperature,
         max_tokens=max_tokens,
+        api_format=api_format,
     )
     
     full_text = ""

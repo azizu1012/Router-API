@@ -13,6 +13,8 @@ def _endpoint_row(r) -> Dict[str, Any]:
     d["enabled"] = bool(d["enabled"])
     d["fallback"] = bool(d.get("fallback", 0))
     d["account_id"] = d.get("account_id") or ""
+    # An endpoint belongs to whoever paid for it; openai unless told otherwise.
+    d["api_format"] = (d.get("api_format") or "openai").strip().lower()
     d["pool_assignments"] = json.loads(d.get("pool_assignments") or "{}")
     return d
 
@@ -64,6 +66,7 @@ def add_endpoint_db(name: str, base_url: str, auth_key: str) -> Dict[str, Any]:
         "disabled_models": [],
         "enabled_models": [],
         "account_id": "",
+        "api_format": "openai",
         "fallback": False,
         "pool_assignments": {},
         "updated_at": datetime.utcnow().isoformat(),
@@ -138,7 +141,7 @@ def update_endpoint_db(name: str, **updates: Any) -> Optional[Dict[str, Any]]:
     ep = get_endpoint_db(name)
     if not ep:
         return None
-    allowed = {"base_url", "auth_key", "enabled", "models", "disabled_models", "enabled_models", "account_id", "fallback", "pool_assignments"}
+    allowed = {"base_url", "auth_key", "enabled", "models", "disabled_models", "enabled_models", "account_id", "fallback", "pool_assignments", "api_format"}
     merged = {k: v for k, v in updates.items() if k in allowed}
     ep.update(merged)
     with _LOCK:
@@ -146,7 +149,7 @@ def update_endpoint_db(name: str, **updates: Any) -> Optional[Dict[str, Any]]:
         try:
             c.execute(
                 """UPDATE custom_endpoints SET base_url=?, auth_key=?, enabled=?, models=?, disabled_models=?, enabled_models=?,
-                   account_id=?, fallback=?, pool_assignments=?, updated_at=? WHERE name=?""",
+                      account_id=?, fallback=?, pool_assignments=?, api_format=?, updated_at=? WHERE name=?""",
                 (ep["base_url"], ep["auth_key"],
                  1 if ep.get("enabled", True) else 0,
                  json.dumps(ep.get("models") or []),
@@ -155,6 +158,7 @@ def update_endpoint_db(name: str, **updates: Any) -> Optional[Dict[str, Any]]:
                  ep.get("account_id", ""),
                  1 if ep.get("fallback", False) else 0,
                  json.dumps(ep.get("pool_assignments") or {}),
+                 ep.get("api_format") or "openai",
                  datetime.utcnow().isoformat(), name),
             )
             c.commit()

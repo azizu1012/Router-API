@@ -54,6 +54,7 @@ async def _resolve_model(body: Dict[str, Any], pool_alias_override: Optional[str
                         "model_id": target_model,
                         "provider": "custom",
                         "api_base": ep["base_url"],
+"api_format": ep.get("api_format") or "openai",
                     }
                 except Exception as e:
                     logger.warning("[MemberOverride] %s error: %s, falling back to Gemini", ep_name, e)
@@ -98,6 +99,7 @@ async def _resolve_model(body: Dict[str, Any], pool_alias_override: Optional[str
                         "model_id": target_model,
                         "provider": "custom",
                         "api_base": ep["base_url"],
+"api_format": ep.get("api_format") or "openai",
                     }
                 except Exception as e:
                     logger.warning("[AccountEndpoint] %s ping error (%s), trying next endpoint", ep_name, e)
@@ -128,6 +130,7 @@ async def _resolve_model(body: Dict[str, Any], pool_alias_override: Optional[str
                         "model_id": target_model,
                         "provider": "custom",
                         "api_base": ep["base_url"],
+"api_format": ep.get("api_format") or "openai",
                     }
                 except Exception as e:
                     logger.warning("[CustomPoolEndpoint] %s ping error: %s", ep_name, e)
@@ -181,6 +184,7 @@ async def _resolve_model(body: Dict[str, Any], pool_alias_override: Optional[str
             "model_id": fb_model,
             "provider": "custom",
             "api_base": fb_ep["base_url"],
+"api_format": fb_ep.get("api_format") or "openai",
         }
 
     if router.is_global_cooldown_active():
