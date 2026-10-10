@@ -68,22 +68,42 @@ class TestATrailingSlashStillReachesTheRoute:
         assert r.status_code in (200, 307), f"got {r.status_code}"
 
 
-class TestAMisconfiguredBaseUrlSaysSo:
-    def test_a_doubled_v1_prefix_explains_itself(self, client):
-        """A base URL ending in /v1 makes the client send /v1/v1/messages."""
+class TestADoubledV1PrefixIsServedNotRefused:
+    """A base URL ending in /v1 produces /v1/v1/messages.
+
+    This used to answer 404 with a message telling the operator to fix their
+    base URL. That was right advice and the wrong fix: 9router's docs hand out
+    exactly this base URL shape, so it is the shape people copy, and their
+    server serves it. Refusing it means adopting someone else's documentation
+    and rejecting it at the door.
+
+    The earlier reasoning that "Claude Code never sends anything, so /v1 cannot
+    be the cause" was wrong twice over: the client did send, and the 404 came
+    from a middleware whose logger writes to system.log, so proxy.log stayed
+    empty and looked like silence.
+    """
+
+    def test_the_doubled_prefix_reaches_the_route(self, client):
         r = client.post("/v1/v1/messages", headers=_headers(), json=BODY)
 
-        assert r.status_code == 404
-        message = r.json()["error"]["message"]
-        assert "ANTHROPIC_BASE_URL" in message
-        assert "/v1/v1/messages" in message
+        assert r.status_code not in (404, 405), f"still {r.status_code}: {r.text[:160]}"
 
-    def test_it_is_a_404_not_a_405(self, client):
-        """405 is what made this confusing: it names a method, not a path."""
-        r = client.post("/v1/models", headers=_headers(), json=BODY)
+    def test_it_is_not_silently_answered_by_the_spa(self, client):
+        """The SPA answers 200 for unknown paths, so status alone proves little."""
+        r = client.post("/v1/v1/messages", headers=_headers(), json=BODY)
 
-        assert r.status_code == 404
-        assert r.json()["error"]["type"] == "invalid_request_error"
+        # A message from the route, not index.html from the catch-all mount.
+        assert "text/html" not in r.headers.get("content-type", "")
+
+    def test_a_single_v1_still_works(self, client):
+        r = client.post("/v1/messages", headers=_headers(), json=BODY)
+
+        assert r.status_code not in (404, 405)
+
+    def test_the_warmup_probe_answers(self, client):
+        """Claude Code probes it at startup; with a /v1 base it lands on /v1/api/hello."""
+        assert client.get("/api/hello").status_code == 200
+        assert client.get("/v1/api/hello").status_code == 200
 
 
 class TestTheConfiguredBaseUrlItselfAnswers:

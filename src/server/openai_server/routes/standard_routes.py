@@ -95,6 +95,18 @@ def _models_payload() -> Dict[str, Any]:
     }
 
 
+@app.api_route("/api/hello", methods=["GET", "HEAD"])
+@app.api_route("/v1/api/hello", methods=["GET", "HEAD"])
+async def connection_warmup() -> Dict[str, Any]:
+    """Claude Code's connection-warming probe.
+
+    Docs say a gateway may reject it without breaking anything, but with a base
+    URL ending in "/v1" it arrives as "/v1/api/hello", and a 404 there is one
+    more thing that reads like a broken endpoint rather than a routine probe.
+    """
+    return {"ok": True}
+
+
 @app.get("/v1")
 @app.get("/v1/")
 async def api_root(

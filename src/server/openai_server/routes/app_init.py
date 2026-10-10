@@ -178,6 +178,16 @@ async def static_mount_fallback_middleware(request: Request, call_next):
     """
     path = request.scope.get("path", "/")
 
+    # A base URL ending in "/v1" makes the client append "/v1/messages" to a
+    # path that already carries one. 9router documents that base URL shape, so
+    # this is the shape people copy, and a gateway that answers it has to serve
+    # it: /v1/v1/messages -> /v1/messages. Rewriting rather than redirecting,
+    # because a 307 would make the client replay a request body.
+    if path.startswith("/v1/v1"):
+        collapsed = "/v1" + path[len("/v1/v1"):]
+        request.scope["path"] = collapsed
+        path = collapsed
+
     # The MCP transport lives at the root of a sub-app mounted at /mcp, and a
     # mount only matches "/mcp/..." — never "/mcp" itself. Clients post to
     # /mcp. Rewrite rather than redirect: a 307 makes the client replay a
