@@ -96,12 +96,19 @@ def _build_payload(
     max_tokens: Optional[int] = None,
     tools: Optional[List[Dict[str, Any]]] = None,
     extra_body: Optional[Dict[str, Any]] = None,
+    tool_choice: Any = None,
+    parallel_tool_calls: Optional[bool] = None,
 ) -> Dict[str, Any]:
     payload: Dict[str, Any] = {
         "model": model,
         "messages": messages,
         "stream": stream,
     }
+    # Both are already in the spelling an OpenAI-compatible endpoint reads.
+    if tool_choice is not None:
+        payload["tool_choice"] = tool_choice
+    if parallel_tool_calls is not None:
+        payload["parallel_tool_calls"] = parallel_tool_calls
     if temperature is not None:
         payload["temperature"] = temperature
     if max_tokens is not None:
@@ -151,16 +158,20 @@ async def call_anthropic_nonstream(
     max_tokens: Optional[int] = None,
     tools: Optional[List[Dict[str, Any]]] = None,
     extra_body: Optional[Dict[str, Any]] = None,
+    tool_choice: Any = None,
 ) -> Any:
     """POST Anthropic-format to a custom endpoint. Returns a SimpleNamespace
     shaped like the OpenAI response, so every caller above is unchanged."""
     from .anthropic_wire import openai_to_anthropic_body, anthropic_to_openai_message
 
     url = anthropic_messages_url(api_base)
+    passthrough = dict(extra_body or {})
+    if tool_choice is not None:
+        passthrough["tool_choice"] = tool_choice
     payload = openai_to_anthropic_body(
         model, messages,
         max_tokens=max_tokens, temperature=temperature,
-        stream=False, tools=tools, extra_body=extra_body,
+        stream=False, tools=tools, extra_body=passthrough,
     )
     payload.pop("stream", None)
 
@@ -223,20 +234,23 @@ async def call_custom_nonstream(
     tools: Optional[List[Dict[str, Any]]] = None,
     extra_body: Optional[Dict[str, Any]] = None,
     api_format: str = "openai",
+    tool_choice: Any = None,
+    parallel_tool_calls: Optional[bool] = None,
 ) -> Any:
     """POST OpenAI-format to custom endpoint. Returns SimpleNamespace response."""
     if is_anthropic_format(api_format):
         return await call_anthropic_nonstream(
             api_base, api_key, model, messages,
             temperature=temperature, max_tokens=max_tokens,
-            tools=tools, extra_body=extra_body,
+            tools=tools, extra_body=extra_body, tool_choice=tool_choice,
         )
     url = f"{api_base.rstrip('/')}/chat/completions"
     headers = {
         "Content-Type": "application/json",
         "Authorization": f"Bearer {api_key}",
     }
-    payload = _build_payload(model, messages, False, temperature, max_tokens, tools, extra_body)
+    payload = _build_payload(model, messages, False, temperature, max_tokens, tools,
+                          extra_body, tool_choice, parallel_tool_calls)
 
     async with aiohttp.ClientSession(headers=headers) as session:
         async with session.post(
@@ -293,7 +307,11 @@ class CustomEndpointStreamGen:
         max_tokens: Optional[int] = None, tools: Optional[List[Dict[str, Any]]] = None,
         extra_body: Optional[Dict[str, Any]] = None,
         api_format: str = "openai",
+        tool_choice: Any = None,
+        parallel_tool_calls: Optional[bool] = None,
     ):
+        self._tool_choice = tool_choice
+        self._parallel_tool_calls = parallel_tool_calls
         self._api_base = api_base
         self._api_key = api_key
         self._model = model
@@ -321,6 +339,7 @@ class CustomEndpointStreamGen:
         payload = _build_payload(
             self._model, self._messages, True,
             self._temperature, self._max_tokens, self._tools, self._extra_body,
+            self._tool_choice, self._parallel_tool_calls,
         )
 
         self._session = aiohttp.ClientSession(headers=headers)
@@ -348,10 +367,13 @@ class CustomEndpointStreamGen:
         from .anthropic_wire import openai_to_anthropic_body
 
         url = anthropic_messages_url(self._api_base)
+        passthrough = dict(self._extra_body or {})
+        if self._tool_choice is not None:
+            passthrough["tool_choice"] = self._tool_choice
         payload = openai_to_anthropic_body(
             self._model, self._messages,
             max_tokens=self._max_tokens, temperature=self._temperature,
-            stream=True, tools=self._tools, extra_body=self._extra_body,
+            stream=True, tools=self._tools, extra_body=passthrough,
         )
 
         self._session = aiohttp.ClientSession(headers=anthropic_headers(self._api_key))

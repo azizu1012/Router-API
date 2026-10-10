@@ -64,7 +64,9 @@ class TestExtractToolChoice:
         assert extract_tool_choice({"tool_choice": {"type": "auto"}})["tool_choice"] == "auto"
 
     def test_any(self):
-        assert extract_tool_choice({"tool_choice": {"type": "any"}})["tool_choice"] == "any"
+        # Anthropic says `any`; OpenAI, which is the canonical internal
+        # spelling, says `required`. Forwarding `any` is a 400 everywhere else.
+        assert extract_tool_choice({"tool_choice": {"type": "any"}})["tool_choice"] == "required"
 
     def test_none(self):
         assert extract_tool_choice({"tool_choice": {"type": "none"}})["tool_choice"] == "none"
@@ -75,7 +77,16 @@ class TestExtractToolChoice:
 
     def test_disable_parallel_propagates(self):
         out = extract_tool_choice({"tool_choice": {"type": "auto", "disable_parallel_tool_use": True}})
-        assert out["disable_parallel_tool_use"] is True
+        assert out["parallel_tool_calls"] is False
+
+    def test_parallel_defaults_to_absent_rather_than_true(self):
+        """Sending parallel_tool_calls=True to an endpoint that does not know
+        the field is a 400; leaving it unset lets each provider default."""
+        out = extract_tool_choice({"tool_choice": {"type": "auto"}})
+        assert "parallel_tool_calls" not in out
+
+    def test_unknown_kind_produces_nothing(self):
+        assert extract_tool_choice({"tool_choice": {"type": "whatever"}}) == {}
 
     def test_absent_tool_choice(self):
         assert extract_tool_choice({}) == {}

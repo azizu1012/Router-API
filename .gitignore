@@ -84,6 +84,8 @@ tests/*
 !tests/test_anthropic_endpoint.py
 !tests/test_anthropic_endpoint_routing.py
 !tests/test_endpoint_format_probe.py
+!tests/test_tool_choice_routing.py
+!tests/test_tool_choice_wire.py
 
 # The CI scanner is tracked; the rest of scripts/ is local tooling.
 !scripts/

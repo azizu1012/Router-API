@@ -53,19 +53,29 @@ def extract_sampling_params(body: Dict[str, Any]) -> Dict[str, Any]:
     if isinstance(top_k, int) and not isinstance(top_k, bool) and top_k > 0:
         out["top_k"] = top_k
 
+    # tool_choice rides the same channel. It was previously read only to strip
+    # the tools list on `none`; nothing ever told the provider which mode the
+    # client asked for, so `any` and a forced tool were both no-ops.
+    choice = extract_tool_choice(body)
+    if choice:
+        out.update(choice)
+
     return out
 
 
 def extract_tool_choice(body: Dict[str, Any]) -> Dict[str, Any]:
-    """Translate Anthropic `tool_choice` into Gemini/OpenAI `tool_config` shape.
+    """Translate Anthropic `tool_choice` into the canonical OpenAI spelling.
+
+    OpenAI is the internal shape, so this converts rather than passing through:
+    Anthropic says `any` where OpenAI says `required`, and names a tool with
+    `{"type": "tool", "name": ...}` where OpenAI nests it under `function`.
+    Forwarding the Anthropic spelling is a 400 on every other provider.
 
     Anthropic values:
-      {"type": "auto"}                       -> AUTO
-      {"type": "any"}                        -> ANY
-      {"type": "tool", "name": "X"}          -> forced X
+      {"type": "auto"}                       -> "auto"
+      {"type": "any"}                        -> "required"
       {"type": "none"}                       -> drop tools entirely
-
-    Returns dict with either {"tool_choice": "auto"|"any"|"none"|{"name": ...}} or {}.
+      {"type": "tool", "name": "X"}          -> forced X
     """
     tc = body.get("tool_choice")
     if not isinstance(tc, dict):
@@ -73,21 +83,27 @@ def extract_tool_choice(body: Dict[str, Any]) -> Dict[str, Any]:
 
     kind = tc.get("type")
     disable_parallel = bool(tc.get("disable_parallel_tool_use"))
+    out: Dict[str, Any] = {}
 
     if kind == "auto":
-        return {"tool_choice": "auto", "disable_parallel_tool_use": disable_parallel}
-    if kind == "any":
-        return {"tool_choice": "any", "disable_parallel_tool_use": disable_parallel}
-    if kind == "none":
-        return {"tool_choice": "none"}
-    if kind == "tool":
+        out["tool_choice"] = "auto"
+    elif kind == "any":
+        out["tool_choice"] = "required"
+    elif kind == "none":
+        out["tool_choice"] = "none"
+    elif kind == "tool":
         name = tc.get("name")
         if isinstance(name, str) and name:
-            return {
-                "tool_choice": {"type": "function", "function": {"name": name}},
-                "disable_parallel_tool_use": disable_parallel,
-            }
-    return {}
+            out["tool_choice"] = {"type": "function", "function": {"name": name}}
+    else:
+        return {}
+
+    # Anthropic spells it inside tool_choice; OpenAI has a separate flag, and
+    # Gemini has neither. Carrying it as a sibling lets each target translate
+    # into whatever it does have.
+    if disable_parallel:
+        out["parallel_tool_calls"] = False
+    return out
 
 
 def apply_tool_choice_to_tools(tool_choice: Dict[str, Any], tools: List[Dict[str, Any]]) -> List[Dict[str, Any]]:

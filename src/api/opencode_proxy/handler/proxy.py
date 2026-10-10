@@ -140,6 +140,37 @@ def _extract_thinking_params(body: Dict[str, Any]) -> Dict[str, Any]:
     return {"thinking_level": "low", "include_thoughts": True}
 
 
+def _client_sampling_params(body: Dict[str, Any]) -> Dict[str, Any]:
+    """Carry the client's own request fields down to the provider.
+
+    An OpenAI client already speaks the canonical spelling, so these go through
+    untouched and each provider translates them at its own boundary. They were
+    dropped before: `tool_choice` never reached any provider, so a client asking
+    for a forced tool got an automatic one and no error saying otherwise.
+    """
+    out: Dict[str, Any] = {}
+
+    choice = body.get("tool_choice")
+    if choice is not None:
+        out["tool_choice"] = choice
+
+    parallel = body.get("parallel_tool_calls")
+    if isinstance(parallel, bool):
+        out["parallel_tool_calls"] = parallel
+
+    stop = body.get("stop")
+    if isinstance(stop, str) and stop:
+        out["stop_sequences"] = [stop]
+    elif isinstance(stop, list) and stop:
+        out["stop_sequences"] = [str(s) for s in stop if isinstance(s, str)]
+
+    top_p = body.get("top_p")
+    if isinstance(top_p, (int, float)) and not isinstance(top_p, bool):
+        out["top_p"] = max(0.0, min(1.0, float(top_p)))
+
+    return out
+
+
 def _resolve_thinking_config(body: Dict[str, Any], model_id: str) -> Dict[str, Any]:
     """Convert request thinking params → GenAI SDK thinking_config dict."""
     from src.core.providers.gemini_thinking import resolve_thinking_config
@@ -280,6 +311,9 @@ class OpenCodeProxy:
                 account=account,
                 extra_body=None,
                 thinking_params=thinking_params,
+                # This client already speaks the canonical spelling, so it rides
+                # straight through rather than being re-derived per dialect.
+                sampling_params=_client_sampling_params(body),
             )
 
         from src.api.opencode_proxy.handler.search_intercept import (

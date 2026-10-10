@@ -36,6 +36,61 @@ def _extract_system_text(system_instruction: Optional[Dict]) -> Optional[str]:
     return "\n".join(texts) or None
 
 
+def _gemini_tool_config(tool_choice: Any) -> Optional[Dict[str, Any]]:
+    """Build Gemini's FunctionCallingConfig from the canonical OpenAI choice.
+
+    Gemini has no "call this exact function" primitive. Its documented way to
+    force one is mode ANY plus allowed_function_names holding that single name
+    (cloud.google.com FunctionCallingConfig), so a forced tool becomes ANY with
+    a one-entry allowlist rather than being dropped.
+
+    Anything with a mode but no tools is ignored: a config with no declarations
+    to choose from is a request the API rejects.
+    """
+    if tool_choice is None:
+        return None
+
+    mode: Optional[str] = None
+    names: List[str] = []
+
+    if isinstance(tool_choice, str):
+        mode = {"none": "NONE", "auto": "AUTO", "required": "ANY"}.get(tool_choice)
+    elif isinstance(tool_choice, dict):
+        fn = tool_choice.get("function")
+        if isinstance(fn, dict) and fn.get("name"):
+            mode = "ANY"
+            names.append(str(fn["name"]))
+        elif tool_choice.get("name"):
+            mode = "ANY"
+            names.append(str(tool_choice["name"]))
+        else:
+            ttype = tool_choice.get("type")
+            if ttype in ("auto", "any", "none"):
+                mode = {"auto": "AUTO", "any": "ANY", "none": "NONE"}[ttype]
+            elif ttype == "required":
+                mode = "ANY"
+            # OpenAI's allowed_tools choice: an allowlist plus its own mode. Each
+            # entry is {"type": "function", "name": ...} with the name at the top
+            # level, not nested under function.
+            allowed = tool_choice.get("allowed_tools")
+            if isinstance(allowed, list):
+                for entry in allowed:
+                    if isinstance(entry, str):
+                        names.append(entry)
+                    elif isinstance(entry, dict) and entry.get("name"):
+                        names.append(str(entry["name"]))
+                declared = tool_choice.get("mode")
+                mode = {"auto": "AUTO", "required": "ANY",
+                        "any": "ANY", "none": "NONE"}.get(str(declared), "ANY")
+
+    if not mode:
+        return None
+    cfg: Dict[str, Any] = {"mode": mode}
+    if names and mode == "ANY":
+        cfg["allowed_function_names"] = names
+    return {"function_calling_config": cfg}
+
+
 def _build_sdk_config(
     system_instruction: Optional[Dict],
     temperature: Optional[float],
@@ -43,7 +98,8 @@ def _build_sdk_config(
     tools: Optional[list],
     thinking_config: Optional[Dict],
     generation_config: Optional[Dict] = None,
-) -> Dict[str, Any]:
+    tool_choice: Any = None,
+    ) -> Dict[str, Any]:
     """Build GenerateContentConfig kwargs dict for GenAI SDK calls."""
     cfg: Dict[str, Any] = {}
     sys_text = _extract_system_text(system_instruction)
@@ -57,6 +113,10 @@ def _build_sdk_config(
         cfg["tools"] = tools
     if thinking_config:
         cfg["thinking_config"] = thinking_config
+    if tools:
+        tool_config = _gemini_tool_config(tool_choice)
+        if tool_config:
+            cfg["tool_config"] = tool_config
     if generation_config:
         for k, v in generation_config.items():
             if k not in cfg:
@@ -396,6 +456,8 @@ async def acompletion(**kwargs: Any) -> Any:
     thinking_config: Optional[dict] = kwargs.get("thinking_config")
     extra_body: Optional[dict] = kwargs.get("extra_body", {})
     api_format: str = kwargs.get("api_format") or "openai"
+    tool_choice = kwargs.get("tool_choice")
+    parallel_tool_calls = kwargs.get("parallel_tool_calls")
     stop_sequences: Optional[list] = kwargs.get("stop_sequences")
     top_p: Optional[float] = kwargs.get("top_p")
     top_k: Optional[int] = kwargs.get("top_k")
@@ -417,13 +479,15 @@ async def acompletion(**kwargs: Any) -> Any:
                 api_base=api_base, api_key=api_key, model=model_id,
                 messages=messages, temperature=temperature,
                 max_tokens=max_tokens, tools=tools, extra_body=extra_body,
-                api_format=api_format,
+                api_format=api_format, tool_choice=tool_choice,
+                parallel_tool_calls=parallel_tool_calls,
             )
         return await call_custom_nonstream(
             api_base=api_base, api_key=api_key, model=model_id,
             messages=messages, temperature=temperature,
             max_tokens=max_tokens, tools=tools, extra_body=extra_body,
-            api_format=api_format,
+            api_format=api_format, tool_choice=tool_choice,
+            parallel_tool_calls=parallel_tool_calls,
         )
 
     # ── PATH 1: Gemini (GenAI SDK via key pool) ──────────────────────────────
@@ -440,6 +504,7 @@ async def acompletion(**kwargs: Any) -> Any:
     sdk_config = _build_sdk_config(
         system_instruction, temperature, max_tokens, gemini_tools, processed_tc,
         generation_config=generation_config or None,
+        tool_choice=kwargs.get("tool_choice"),
     )
 
     if stream:
