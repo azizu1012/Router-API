@@ -86,6 +86,13 @@ def classify(exc: Any) -> str:
     # 1. Check HTTP Status Code first (extremely precise)
     if code == 400:
         if "failed_precondition" not in lowered and status != "FAILED_PRECONDITION":
+            # Google reports a dead key as 400 + INVALID_ARGUMENT, not 401, so
+            # the 400 rule owns this error and used to hand it back as
+            # bad_request. A bad_request retries the same key; invalid_key
+            # freezes it for an hour. Retrying a key Google has rejected is how
+            # one request burned twelve attempts before it got anywhere.
+            if is_invalid_key_simple(message):
+                return "invalid_key"
             return "bad_request"
     elif code == 401:
         return "invalid_key"
@@ -112,6 +119,8 @@ def classify(exc: Any) -> str:
             return "project_denied"
         return "permission_denied"
     elif status == "INVALID_ARGUMENT":
+        if is_invalid_key_simple(message):
+            return "invalid_key"
         return "bad_request"
     elif status == "UNAVAILABLE":
         return "unavailable"
@@ -167,6 +176,8 @@ def is_invalid_key_simple(text: str) -> bool:
     lowered = (text or "").lower()
     return any(t in lowered for t in [
         "api key invalid", "api_key_invalid", "invalid api key",
+        # Google's wording for a rejected key, and it arrives as HTTP 400.
+        "api key not valid", "pass a valid api key",
         "401", "unauthorized", "api key not found",
     ])
 
