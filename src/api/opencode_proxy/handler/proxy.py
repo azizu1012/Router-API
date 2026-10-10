@@ -154,6 +154,10 @@ def _client_sampling_params(body: Dict[str, Any]) -> Dict[str, Any]:
     if choice is not None:
         out["tool_choice"] = choice
 
+    fmt = body.get("response_format")
+    if isinstance(fmt, dict) and fmt.get("type"):
+        out["response_format"] = fmt
+
     parallel = body.get("parallel_tool_calls")
     if isinstance(parallel, bool):
         out["parallel_tool_calls"] = parallel

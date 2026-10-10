@@ -17,6 +17,8 @@ import asyncio
 import types
 from typing import Any, AsyncIterator, Dict, List, Optional
 
+from src.core.config_n_logg.logger import logger_system as logger
+
 _SAFETY_SETTINGS_OFF = [
     {"category": "HARM_CATEGORY_HATE_SPEECH",       "threshold": "OFF"},
     {"category": "HARM_CATEGORY_DANGEROUS_CONTENT",  "threshold": "OFF"},
@@ -91,6 +93,42 @@ def _gemini_tool_config(tool_choice: Any) -> Optional[Dict[str, Any]]:
     return {"function_calling_config": cfg}
 
 
+def _gemini_response_format(value: Any) -> Optional[Dict[str, Any]]:
+    """Map OpenAI's response_format onto Gemini's response mime type and schema.
+
+    A client asking for structured JSON got free-form text back and nothing in
+    the log said why: response_format was read nowhere in the router.
+
+    Gemini spells it in two pieces rather than one object, and its responseSchema
+    is the restricted Schema subset rather than free JSON Schema, so the schema
+    goes through the same sanitiser tool declarations get.
+    """
+    if not isinstance(value, dict):
+        return None
+    kind = value.get("type")
+
+    if kind == "json_object":
+        return {"response_mime_type": "application/json"}
+
+    if kind in ("json_schema", "json"):
+        spec = value.get("json_schema")
+        # Some clients inline the schema instead of nesting it.
+        if isinstance(spec, dict) and "schema" not in spec:
+            spec = {"schema": spec}
+        out: Dict[str, Any] = {"response_mime_type": "application/json"}
+        if isinstance(spec, dict) and isinstance(spec.get("schema"), dict):
+            try:
+                from .gemini.schema_sanitizer import _sanitize_schema_for_gemini
+                out["response_schema"] = _sanitize_schema_for_gemini(spec["schema"])
+            except Exception:
+                # A schema we cannot translate is better than no request at all;
+                # the mime type alone still asks the model for JSON.
+                logger.warning("[ResponseFormat] schema could not be sanitized")
+        return out
+
+    return None
+
+
 def _build_sdk_config(
     system_instruction: Optional[Dict],
     temperature: Optional[float],
@@ -99,6 +137,7 @@ def _build_sdk_config(
     thinking_config: Optional[Dict],
     generation_config: Optional[Dict] = None,
     tool_choice: Any = None,
+    response_format: Any = None,
     ) -> Dict[str, Any]:
     """Build GenerateContentConfig kwargs dict for GenAI SDK calls."""
     cfg: Dict[str, Any] = {}
@@ -117,6 +156,9 @@ def _build_sdk_config(
         tool_config = _gemini_tool_config(tool_choice)
         if tool_config:
             cfg["tool_config"] = tool_config
+    response = _gemini_response_format(response_format)
+    if response:
+        cfg.update(response)
     if generation_config:
         for k, v in generation_config.items():
             if k not in cfg:
@@ -458,6 +500,7 @@ async def acompletion(**kwargs: Any) -> Any:
     api_format: str = kwargs.get("api_format") or "openai"
     tool_choice = kwargs.get("tool_choice")
     parallel_tool_calls = kwargs.get("parallel_tool_calls")
+    response_format = kwargs.get("response_format")
     stop_sequences: Optional[list] = kwargs.get("stop_sequences")
     top_p: Optional[float] = kwargs.get("top_p")
     top_k: Optional[int] = kwargs.get("top_k")
@@ -481,6 +524,7 @@ async def acompletion(**kwargs: Any) -> Any:
                 max_tokens=max_tokens, tools=tools, extra_body=extra_body,
                 api_format=api_format, tool_choice=tool_choice,
                 parallel_tool_calls=parallel_tool_calls,
+                response_format=response_format,
             )
         return await call_custom_nonstream(
             api_base=api_base, api_key=api_key, model=model_id,
@@ -488,6 +532,7 @@ async def acompletion(**kwargs: Any) -> Any:
             max_tokens=max_tokens, tools=tools, extra_body=extra_body,
             api_format=api_format, tool_choice=tool_choice,
             parallel_tool_calls=parallel_tool_calls,
+            response_format=response_format,
         )
 
     # ── PATH 1: Gemini (GenAI SDK via key pool) ──────────────────────────────
@@ -505,6 +550,7 @@ async def acompletion(**kwargs: Any) -> Any:
         system_instruction, temperature, max_tokens, gemini_tools, processed_tc,
         generation_config=generation_config or None,
         tool_choice=kwargs.get("tool_choice"),
+        response_format=kwargs.get("response_format"),
     )
 
     if stream:

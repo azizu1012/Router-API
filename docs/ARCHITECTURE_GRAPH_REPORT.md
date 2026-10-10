@@ -1,20 +1,26 @@
-# ARCHITECTURE GRAPH REPORT
+# ARCHITECTURE GRAPH REPORT (Corrected & Comprehensive)
 
 ## SECTION 1: System Overview (TL;DR)
-Hệ thống là một Router API (FastAPI) đóng vai trò API Gateway và Load Balancer cho các mô hình LLM (Gemini, Claude, OpenAI). Kiến trúc cốt lõi sử dụng mô hình Concurrent Worker Pool (`ModelPool`) kết hợp với Circuit Breaker (`PoolManager`) và Rate Limiting khắt khe (`GeminiRateLimiter` và `EffectiveLimits`). Các Endpoint tùy chỉnh cũng được xử lý như các first-class citizen thông qua `CustomEndpointManager` và cơ chế Pool assignments. Dữ liệu trạng thái, cấu hình và lịch sử usage được persist xuống SQLite (`usage.db`). Hệ thống ưu tiên tính Resilience (tự phục hồi, retry, đóng băng key hỏng) và kiểm soát Concurrency (slot-based acquire).
+Hệ thống là một Router API (FastAPI) đóng vai trò API Gateway và Load Balancer cho LLM. Nó không chỉ proxy mà còn xử lý cực kỳ sâu logic Resilience (chống chịu lỗi).
+Trái tim của hệ thống bao gồm:
+1) **PoolManager**: Điều phối luồng retry và chọn endpoint/key.
+2) **ModelPool**: Quản lý slot-based concurrent workers qua `asyncio.Lock()`.
+3) **KeyResolverMixin**: Tránh nghẽn bằng thuật toán **Double Random** (Timing Jitter và chọn Top 50% keys).
+4) **GeminiFacade**: Cổng dispatch thực tế đến API gốc, tự động dịch định dạng.
+Hệ thống sử dụng **2 DB SQLite độc lập**: `usage.db` cho cấu hình/trạng thái và `usage_logs.db` để lưu metrics/token counts (tách biệt để tránh I/O block).
 
 ## SECTION 2: Complete File Audit Manifest
 | Directory / Group | Role / Primary Responsibility | Count | Status |
 | :--- | :--- | :--- | :--- |
-| `src/server/` | Setup FastAPI, Middleware, Config server | 33 | Scanned (100%) |
-| `src/api/` | Proxy Route / Handler / Controllers | 21 | Scanned (100%) |
-| `src/core/router/` | Router & Model Pool (`ModelPool`) | 4 | Scanned (100%) |
-| `src/core/limits/` | Quota / Rate Limiting (`GeminiRateLimiter`) | 9 | Scanned (100%) |
-| `src/core/providers/`| Custom Endpoints, ADK Runners | 8 | Scanned (100%) |
-| `src/core/` (other) | Core Business Logic (`PoolManager`) | 29 | Scanned (100%) |
-| `src/backend/` | SQLite Data Access Layer | 10 | Scanned (100%) |
-| `src/logical_HQ_translator/`| HQ Logic Translation (Peer of Core) | 7 | Scanned (100%) |
-| `scripts/`, `main.py`, v.v. | Application Components & Tools | 13 | Scanned (100%) |
+| `src/server/` | Setup FastAPI, WebSocket, RBAC Logging | 33 | Scanned (100%) |
+| `src/api/` | Proxy Route / Handler (`claude_proxy`, v.v) | 21 | Scanned (100%) |
+| `src/core/router/` | `APIRouter`, `KeyResolver`, `ModelPool` | 4 | Scanned (100%) |
+| `src/core/limits/` | Quota & Tokens (`GeminiRateLimiter`) | 9 | Scanned (100%) |
+| `src/core/providers/`| `gemini_facade`, `adk_runner`, Custom Endpoints| 8 | Scanned (100%) |
+| `src/core/` (other) | `PoolManager`, Accounts, System Config | 29 | Scanned (100%) |
+| `src/backend/` | SQLite DAL (`_db.py`, `key_status.py`) | 10 | Scanned (100%) |
+| `src/logical_HQ_translator/`| Translation peer of Core | 7 | Scanned (100%) |
+| `scripts/`, `main.py`, v.v. | Application Components | 13 | Scanned (100%) |
 *(Tổng cộng 134 tệp mã nguồn python, đã verify toàn bộ danh sách `manifest.txt`)*
 
 ## SECTION 3: Visual Flow & Architecture Diagrams
@@ -22,108 +28,108 @@ Hệ thống là một Router API (FastAPI) đóng vai trò API Gateway và Load
 ### 1. High-Level System Flow
 ```mermaid
 flowchart TD
-    Client((Client)) -->|HTTP / JSON / SSE| Server[FastAPI App <br> src/server]
-    Server -->|Auth & Validate| Proxy[API Handlers <br> src/api]
+    Client((Client)) --> Server[FastAPI App <br> src/server]
+    Server --> Proxy[API Handlers <br> src/api]
     Proxy --> PoolMgr[Pool Manager <br> src/core/pool_manager.py]
     PoolMgr --> Router[Global Router <br> src/core/router/core/router.py]
-    Router --> ModelPool[ModelPool <br> src/core/router/pool.py]
-    ModelPool --> Limiter[GeminiRateLimiter <br> src/core/limits]
-    Limiter --> DB[(SQLite WAL <br> usage.db)]
-    PoolMgr --> AdkRunner[ADK Runner & Dispatch <br> src/core/providers]
-    AdkRunner --> External((External LLM APIs))
+    
+    Router --> KeyResolver[KeyResolverMixin <br> Double Random Algorithm]
+    KeyResolver --> BackendKey[(usage.db <br> Key Status)]
+    
+    PoolMgr --> ModelPool[ModelPool <br> Slot-based Locks]
+    PoolMgr --> Facade[Gemini Facade / Custom Endpoint <br> Main Dispatch]
+    Facade --> External((External LLM APIs))
+    
+    Facade -.->|Log Async| Metrics[(usage_logs.db <br> Token Metrics)]
+    
+    subgraph Optional (Only for Search Grounding)
+    Facade -.-> AdkRunner[adk_runner.py]
+    end
 ```
 
 ### 2. Layered Component Dependency Graph
 ```mermaid
 graph LR
-    API[src/api/ Proxy Handlers] --> Core[src/core/]
+    API[Proxy Handlers] --> Core[src/core/]
     API --> HQ[src/logical_HQ_translator/]
-    Core --> CoreLimits[src/core/limits]
-    Core --> CoreRouter[src/core/router]
-    Core --> CoreProviders[src/core/providers]
-    CoreLimits --> Backend[src/backend/ _db.py]
+    Core --> CoreLimits[Limits]
+    Core --> CoreRouter[Router & Pool]
+    Core --> CoreProviders[Providers / Facade]
+    
+    CoreLimits --> Backend[src/backend/]
     CoreRouter --> Backend
-    HQ --> Backend
     CoreProviders --> Backend
+    HQ --> Backend
 ```
 
-### 3. Sequence Diagram (Request Handling & Resilience)
+### 3. Sequence Diagram (Request Handling & Double Random)
 ```mermaid
 sequenceDiagram
-    participant C as Client
     participant Proxy as API Proxy
     participant PM as PoolManager
     participant MP as ModelPool
-    participant RL as RateLimiter
-    participant Ext as External API
+    participant KR as KeyResolver
+    participant Facade as GeminiFacade
+    participant Ext as LLM API
     
-    C->>Proxy: POST /v1/chat/completions
     Proxy->>PM: call_stream(...)
-    PM->>MP: acquire(timeout)
-    MP-->>PM: member (key or custom endpoint)
-    PM->>RL: acquire_quota(tokens)
-    alt Quota Exceeded / Transient Error
-        RL-->>PM: false (or Error)
-        PM->>PM: apply_error_penalty(member)
-        PM->>MP: release(member)
-        PM->>MP: acquire(skip=exhausted)
-        MP-->>PM: new member
-    else Quota OK
-        PM->>Ext: API Call (ADKRunner)
-        Ext-->>PM: Response Stream
-        PM-->>Proxy: Stream Iterator
-        Proxy-->>C: SSE Events
-        PM->>MP: release(member)
+    PM->>MP: acquire()
+    MP->>KR: Select Key (Top 50% Random)
+    KR-->>MP: Selected Member
+    MP-->>PM: Member ID
+    
+    PM->>Facade: Dispatch(Payload)
+    Facade->>Ext: API Call (Native / OpenAI-compat)
+    
+    alt 429 / 503 Transient Error
+        Ext-->>Facade: Error
+        Facade-->>PM: Raise Exception
+        PM->>PM: Apply Jitter (Random 20%) & Freeze
+        PM->>MP: release(Member)
+        PM->>MP: acquire(skip=Member)
+    else Success
+        Ext-->>Facade: Stream
+        Facade-->>PM: Normalized Stream
+        PM-->>Proxy: Send to Client
+        PM->>MP: release(Member)
     end
 ```
 
 ## SECTION 4: Top Node Deep-Dives
 
-#### [N1] `src/core/pool_manager.py` — PoolManager
-- **Inputs:** `model_alias`, `messages`, `tools`, `account` (từ Proxy).
-- **Outputs:** `response` (JSON hoặc AsyncGenerator cho stream), `api_key` đã sử dụng.
-- **Calls:** `router.resolve_pool()`, `pool.acquire()`, `self._resolve_and_call()`, `endpoint_manager.mark_endpoint_success/failure()`.
-- **Called By:** `proxy_stream.py`, `proxy_nonstream.py`, `proxy.py` (Opencode).
-- **Core Logic & Mechanics:** Trái tim của hệ thống Retry và Circuit Breaking. Xin cấp phát một thành viên từ `ModelPool`. Nếu thành viên đó gặp lỗi (Transient/429/500), áp dụng hình phạt (penalty/freeze), giải phóng slot, và thử xin slot khác trong giới hạn `max_retry_seconds`.
+#### [N1] `src/core/router/core/key_resolver.py` — KeyResolverMixin
+- **Inputs:** `_key_status` in-memory.
+- **Outputs:** Lựa chọn Key tối ưu.
+- **Core Logic:** Tránh "Thundering Herd" bằng thuật toán **Double Random**: 1) Cắt Top 50% key khỏe nhất và chọn ngẫu nhiên bằng `random.choice`. 2) Áp dụng Timing Jitter (lệch pha ±20% thời gian retry) khi bị block.
 
 #### [N2] `src/core/router/pool.py` — ModelPool
-- **Inputs:** `pool_config`, `custom_endpoint_members`.
-- **Outputs:** `member` string (tên endpoint hoặc key_id).
-- **Calls:** `asyncio.Condition`, `asyncio.Lock`.
-- **Called By:** `PoolManager`, `GlobalRouter`.
-- **Core Logic & Mechanics:** Quản lý Slot-based concurrency (mỗi thành viên có số slot nhất định = số request đồng thời cho phép). `acquire()` block bằng `Condition.wait()` cho tới khi có slot trống. Tránh overload lên các endpoint.
+- **Inputs:** `pool_config`.
+- **Outputs:** Slot an toàn.
+- **Core Logic:** Không dùng `Condition.wait()`, mà dùng `asyncio.Lock()` độc lập cho TỪNG member. Nếu member đang bận (lock bị khóa), sẽ lập tức thử member khác, hoặc sleep `50ms` rồi thử lại cho đến khi hết timeout. Cơ chế này siêu nhanh và tránh deadlock.
 
-#### [N3] `src/core/limits/gemini_rate_limiter.py` — GeminiRateLimiter
-- **Inputs:** `model_alias`, `reserved_tokens`.
-- **Outputs:** `bool` (có được phép gọi API không).
-- **Calls:** DB quota fetch, `time.time()`.
-- **Called By:** `ADKRunner`, `PoolManager`.
-- **Core Logic & Mechanics:** Giám sát Requests Per Minute (RPM), Tokens Per Minute (TPM), Requests Per Day (RPD). Duy trì cache bằng `collections.deque` để trượt window nhanh chóng. Reset tự động theo giờ Pacific.
+#### [N3] `src/core/providers/gemini_facade.py` — GeminiFacade
+- **Inputs:** Normalized Payload từ Proxy.
+- **Outputs:** Kết nối Native/OpenAI-compat tới nhà cung cấp.
+- **Core Logic:** Trái tim Dispatch thực tế (không phải `adk_runner.py`). Nó tự động phiên dịch (Strip/Convert) parameters, tool calls để bắn thẳng tới Gemini SDK thuần hoặc HTTP Custom Endpoint.
 
-#### [N4] `src/core/providers/custom_endpoint_manager.py` — CustomEndpointManager
-- **Inputs:** Cấu hình endpoint từ Admin/DB.
-- **Outputs:** Danh sách mô hình hỗ trợ (`fetch_models`), trạng thái health (Circuit Breaker).
-- **Calls:** HTTP (aiohttp) để probe `/models`.
-- **Called By:** `ModelPool`, `PoolManager`.
-- **Core Logic & Mechanics:** Quản lý vòng đời custom endpoint, tự động probe `/models` và chat dummy. Đóng băng (`_circuit_breaker`) nếu rớt mạng liên tục, tích hợp trơn tru vào chung một `ModelPool` với các API Key.
+#### [N4] `src/backend/_db.py` & `usage_logs.db` — Dual Database System
+- **Core Logic:** Tách biệt triệt để I/O.
+  - `usage.db`: Lưu config, quota (bảo vệ bởi `threading.RLock`).
+  - `usage_logs.db`: Lưu telemetry vi mô (token counts). Được ghi bằng background thread bất đồng bộ (flush mỗi 5 giây), nhờ đó luồng request chính không bao giờ bị nghẽn do log I/O.
+- Đồng bộ 2 chiều: File `.env` là Source of Truth, mọi thay đổi tự kích hoạt `sync_env_to_db` ghi vào `usage.db`.
 
 ## SECTION 5: Identified Vulnerabilities, Risks & Silent Anti-Patterns
-| Severity | Location (File / Function) | Issue Description & Impact | Recommended Remediation |
+| Severity | Location | Issue Description | Recommended Remediation |
 | :--- | :--- | :--- | :--- |
-| Medium | `src/backend/_db.py` | Sử dụng SQLite connection chung cho mọi traffic. Nếu pool lớn, I/O bound sẽ gây Timeout trên ThreadPool. | Đảm bảo bật WAL mode và config `PRAGMA synchronous=NORMAL`. Cân nhắc dùng `aiosqlite`. |
-| Low/Medium | `src/core/pool_manager.py` | Lặp vô tận (`while time.time() - start_time < timeout`) nếu không cẩn thận khi sleep giữa các retry (mặc định ngắt khi hết timeout hoặc hết thành viên). | Đảm bảo backoff (có yield `await asyncio.sleep`) để trả control về event loop nếu bị kiệt quệ key. |
-| Low | `CustomEndpointManager` | Probe timeout fix cứng `5s`. | Tham số hóa vào `.env` hoặc db configuration để linh hoạt với các endpoint chậm. |
+| Medium | `src/backend/_db.py` | Dùng `threading.RLock` chung cho SQLite: an toàn trong Single-Worker (tiến trình đơn), nhưng sẽ nổ `database is locked` nếu chạy Uvicorn Multi-Worker. | Dùng `filelock` liên tiến trình, hoặc cấu hình Uvicorn 1 worker. |
+| Low | `adk_runner.py` | Gắn cứng vào main flow dễ dính 500 do SDK Google bị lỗi (Bug #25). | Giữ nguyên cô lập như hiện tại: chỉ trigger khi thật sự có lệnh Search Grounding. |
 
 ## SECTION 6: Blind Spot Verification & Unchecked Dependencies
-- **Layer Violation Check**: `tests/test_layering.py` đảm bảo `src/core/` không bao giờ import ngược lên `src/api/` hoặc `src/server/`. (Pass)
-- **Config**: Tệp `.env` không bị hardcode trong source, secrets được load qua `os.getenv`.
-- **DB Migrations**: Khởi tạo bằng lệnh `CREATE TABLE IF NOT EXISTS` tĩnh.
-- **Tests**: (Cảnh báo lưu ý) Các integration test cần phải giả lập/mock limits, vì DB trống sẽ làm trả về 429 hoặc 503 ngay lập tức. (Ghi nhớ từ `MEMORY.md`).
-- **Dead Code**: Không phát hiện module mồ côi (tất cả file trong `src/api/` đều được bind vào `FastAPI app` trong `src/server/router_setup.py`).
+- **DB Migrations**: Schema SQLite tự tạo lúc import (xử lý rất rủi ro nếu khác định dạng `schema.py`). Đã có test `test_schema_bootstrap.py` chặn điều này.
+- **Logs Streaming**: WebSocket logs có RBAC rõ ràng, chống User thường xem kênh `keys` (chỉ Admin).
+- **DuckDuckGo Tools**: Chặn gọi Google Grounding khi config `duckduckgo` để tiết kiệm 100% quota LLM (cơ chế Client Override).
 
 ## SECTION 7: Execution Metrics Summary
 - **Total Source Files Scanned**: 134 / 134 (100%)
-- **Core Modules / Layers**: 5 Tầng chính (Server, Proxy API, Logic Core, HQ Translator, DAL Backend).
-- **Entry Points / Routes**: `main.py` -> `src/server/` chứa toàn bộ middleware/hook.
-- **Persisted Tables / Entities**: 1 Data File (`usage.db`), quản lý Token Usage, Endpoints, Account Keys, Limits.
-- **Verification Status**: Zero files skipped. Toàn bộ logic lõi (Routing, Pooling, Limiting, CustomEndpointManager) đều đã được đối chiếu với source code thực tế (refactored architecture) thay vì chỉ dựa vào tài liệu tĩnh.
+- **Core Architecture Models**: Dual-DB SQLite, Slot-based Concurrency, Double Random Key Selection.
+- **Verification Status**: Toàn bộ luồng Dispatch & Persistence được xác minh chéo với Document cập nhật (Đã sửa sai lầm từ thuật toán Blocking cũ sang `asyncio.Lock` và thuật toán `Double Random`).
