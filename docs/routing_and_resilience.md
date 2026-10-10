@@ -178,24 +178,29 @@ Hàm `get_key_priority` kết hợp tất cả các yếu tố này để tạo 
 
 ---
 
-## 9. Effort → Thinking Level
+## 9. Effort → Thinking Level và Sự Tôn Trọng Dialect Đích (Cross-Mapping)
 
-Client gõ "suy nghĩ kỹ tới mức nào" bằng bốn cách khác nhau, nhưng tất cả đều có một ý nghĩa. Tầng proxy gộp cả bốn về một `thinking_level` duy nhất thay vì bỏ qua cái nào.
+Client gõ "suy nghĩ kỹ tới mức nào" bằng bốn cách khác nhau, nhưng tất cả đều có một ý nghĩa. Tầng proxy gộp cả bốn về một `thinking_level` duy nhất cho Gemini, nhưng **truyền nguyên bản** khi đích đến là Custom Endpoint để tôn trọng mô hình của bên thứ ba.
 
-| Client gửi | Nguồn | → Gemini 3 | → Gemini 2.5 |
-|---|---|---|---|
-| `output_config.effort` | Anthropic Messages API (Claude Code) | `thinking_level` | `thinking_budget` |
-| `thinking.budget_tokens` | Anthropic thinking block | xem bảng ngưỡng | `thinking_budget` |
-| `reasoning_effort` | OpenAI Chat Completions | `thinking_level` | `thinking_budget` |
-| `thinking_level` | field riêng của router | trực tiếp | `thinking_budget` |
+| Client gửi | Nguồn | → Đích: Gemini 3 | → Đích: Gemini 2.5 | → Đích: Custom OpenAI | → Đích: Custom Anthropic |
+|---|---|---|---|---|---|
+| `output_config.effort` | Anthropic Messages API (Claude Code) | `thinking_level` | `thinking_budget` | `reasoning_effort` | `thinking` block nguyên bản |
+| `thinking.budget_tokens` | Anthropic thinking block | xem bảng ngưỡng | `thinking_budget` | `reasoning_effort` | `thinking` block nguyên bản |
+| `reasoning_effort` | OpenAI Chat Completions | `thinking_level` | `thinking_budget` | `reasoning_effort` nguyên bản | tự động dịch sang `thinking` |
+| `thinking_level` | field riêng của router | trực tiếp | `thinking_budget` | `reasoning_effort` | dịch sang `thinking` |
 
+### Tôn Trọng Endpoint Đích (Pass-through)
+- **Đích Anthropic**: Router **bảo toàn nguyên văn** chuỗi JSON `thinking` mà client gửi thay vì tự phán đoán. Lý do: Anthropic đang trong giai đoạn chuyển giao giữa Claude 4.6 (dùng `{"type": "enabled"}`) và Claude 4.7+ (bắt buộc `{"type": "adaptive"}`, từ chối `enabled` bằng lỗi 400). Router không thể biết Custom Endpoint chạy phiên bản nào, nên truyền nguyên bản là cách an toàn duy nhất để không gây lỗi.
+- **Đích OpenAI**: Bất kể client gọi bằng chuẩn Anthropic hay chuẩn OpenAI, thông số tư duy sẽ được chuyển đổi tự động thành `reasoning_effort` và gửi qua `extra_body` đến Custom Endpoint.
+
+### Gộp Cho Gemini
 Gemini 3 nhận enum `minimal/low/medium/high`; Gemini 2.5 chỉ có `thinking_budget` nên level được quy đổi qua `low=1024`, `medium=2048`, `high=4096`.
 
 **Vì sao phải gộp.** `max` không phải từ nào Gemini có, nhưng cả Anthropic lẫn OpenAI đều dùng nó cho đỉnh của thang đo — nên nó hợp nhất về `high`. Một effort bị bỏ qua không phải chuyện vô hại: `low` đến nơi như `high` tốn latency và token ở **mọi** lượt gọi, và người dùng không có cách nào biết vì response vẫn hợp lệ.
 
-Thứ tự ưu tiên: `thinking_level` riêng → `output_config.effort` → `thinking.budget_tokens` → `reasoning_effort`. `thinking: {"type": "disabled"}` là ngoại lệ duy nhất được giữ nguyên — nó tắt thinking thay vì hạ mức.
+Thứ tự ưu tiên khi chuyển đổi cho Gemini: `thinking_level` riêng → `output_config.effort` → `thinking.budget_tokens` → `reasoning_effort`. `thinking: {"type": "disabled"}` là ngoại lệ duy nhất được giữ nguyên — nó tắt thinking thay vì hạ mức.
 
-Ngưỡng `budget_tokens`:
+Ngưỡng `budget_tokens` khi chuyển sang Gemini 3:
 
 | Ngưỡng | Level |
 |---|---|

@@ -1912,3 +1912,29 @@ lo "chan nham cua" se khong ai thay.
 
 Mutation: bo verbs -> 4 test do; route GET-only -> 1 do; bo gate `mcp_only` -> 2
 do; bo mount -> 5 do. 922 test xanh.
+
+---
+
+## Bug #38: `thinking` Bị Ép Kiểu & System `cache_control` Mất Marker Trên API Dịch (2026-10-10)
+
+### Mức độ
+Nghiêm trọng đối với người dùng sử dụng Custom Endpoint chuẩn Anthropic (Claude 4.7+) hoặc muốn bảo toàn tính năng cache nội dung (Prompt Caching). Request bị chối (400) hoặc không kích hoạt được tính năng tiết kiệm của provider gốc.
+
+### Mô tả
+1. **Lỗi `thinking` 400**: Claude 4.6 dùng `{"type": "enabled", "budget_tokens": 1024}`, nhưng Claude 4.7 trở lên bắt buộc dùng `{"type": "adaptive"}` và ném 400 nếu truyền `enabled`. Chiều ngược lại, bản 4.5 ném lỗi 400 nếu dùng `adaptive`. Router cũ đã can thiệp tự động, điều này dẫn tới 50% tỉ lệ gặp lỗi 400 tuỳ thuộc vào Endpoint ẩn phía dưới là phiên bản Claude nào.
+2. **Lỗi `cache_control` bị nuốt**: Router parse System message, nếu nó là list object chứa text (do user gắn thẻ `cache_control` cho từng đoạn), nó sẽ nối bằng `\n\n.join(...)`. Thao tác này vứt sạch các thẻ metadata `cache_control`!
+
+### Root cause
+- Sự thiếu thông tin về model đích: Custom Endpoint hoạt động như hộp đen, Router không bao giờ biết nó chạy bản Claude 4.6 hay 4.7.
+- Tối ưu hóa chuỗi (Stringification): Hàm `_clean_system_prompt` và `openai_to_anthropic_body` tự động làm phẳng (flatten) tất cả các list chứa nội dung `system` thành string để dễ parse. Marker `cache_control` vốn gắn vào block object, biến thành string = vứt thùng rác.
+
+### Fix
+1. **Bảo tồn Pass-Through cho Thinking**: Không suy diễn `thinking` mode khi đích đến là Anthropic nữa. Nếu Client đưa cái gì lên (`adaptive` hoặc `enabled`), Router chỉ giải nén nó vào `extra_body` hoặc móc thẳng vào payload và truyền nguyên đai nguyên kiện sang đích. 
+2. **Cập nhật Logic Truyền Cross-Mapping**: Nếu Client gọi bằng OpenAI-Format (`reasoning_effort="high"`), nó tự động map vào `extra_body` và truyền xuống.
+3. **Bảo tồn System Blocks**: Hàm `message_converter.py` quét danh sách blocks, nếu có `cache_control`, nó giữ nguyên mảng và bọc lại bằng cờ nội bộ `_cache_control`. Đến tầng giao thức dây (wire layer) `anthropic_wire.py`, nó sẽ giữ các object riêng rẽ chứa `cache_control: {"type": "ephemeral"}` và không bị gộp thành chuỗi.
+
+### Test
+`tests/test_anthropic_roundtrip.py` — 13 bài test bao trọn:
+- Mọi nội dung `thinking` phải đi tới cuối ống mà không bị lệch 1 byte nào.
+- Dù System truyền theo khối, chỉ tối đa 4 marker `cache_control` được áp dụng (luật của Anthropic).
+- Nếu không có thẻ `cache_control`, hệ thống vẫn tự động gộp text cho nhẹ payload.
