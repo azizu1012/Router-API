@@ -68,17 +68,20 @@ def _clean_required(obj: dict) -> None:
 def _normalize_array_items(obj: dict) -> None:
     """Make ``items`` a single schema node, which is all Gemini accepts.
 
-    JSON Schema also permits the draft-4 tuple form, ``"items": [...]``, and
-    clients emit a bare ``"items": {}``. Gemini reads the array as the item
-    schema and rejects the whole request with::
+    JSON Schema also permits the draft-4 tuple form, ``"items": [...]``, a
+    boolean schema, ``"items": true``, and clients emit a bare ``"items": {}``.
+    Gemini reads the first as an empty item schema and rejects the request with::
 
         ...items.items: missing field
 
     An array of schemas collapses to its first entry, since that is the one
-    Gemini can represent; an empty one is dropped rather than guessed at.
+    Gemini can represent; an empty one is dropped rather than guessed at. A
+    boolean carries no shape to preserve, so it becomes a string.
     """
     items = obj.get("items")
-    if isinstance(items, list):
+    if isinstance(items, bool):
+        obj["items"] = {"type": "string"}
+    elif isinstance(items, list):
         first = next((i for i in items if isinstance(i, dict)), None)
         if first is None:
             obj.pop("items", None)
@@ -87,6 +90,27 @@ def _normalize_array_items(obj: dict) -> None:
     elif isinstance(items, dict) and not items:
         # An empty object carries no type, which is the field Gemini says is
         # missing. A string is the least committal placeholder.
+        obj["items"] = {"type": "string"}
+
+
+def _ensure_array_items(obj: dict) -> None:
+    """Give a ``type: array`` node an ``items``, which Gemini treats as required.
+
+    Gemini reports the omission as ``...items.items: missing field``, naming the
+    items of the *item*, so the path reads one level deeper than the node that is
+    actually at fault. A tool declaring ``where`` as an array of arrays with the
+    inner shape unstated -- ``{"type": "array", "items": {"type": "array"}}`` --
+    produced exactly that, two properties down.
+
+    Runs last, so it also covers an ``items`` that only became an array after
+    ``$ref`` was dropped.
+    """
+    if obj.get("type") != "array":
+        return
+    items = obj.get("items")
+    if not isinstance(items, dict):
+        # A boolean or a dropped $ref carries no shape; {"type": "string"} is the
+        # one that always validates.
         obj["items"] = {"type": "string"}
 
 
@@ -129,6 +153,19 @@ def _flatten_union(obj: dict) -> None:
         obj.pop(union, None)
 
     obj.pop("$ref", None)
+
+    # A bare `true` / `false` where a schema belongs is legal JSON Schema and
+    # meaningless to Gemini, wherever it appears: items, a property, a branch.
+    props = obj.get("properties")
+    if isinstance(props, dict):
+        for name, value in list(props.items()):
+            if isinstance(value, bool):
+                props[name] = {"type": "string"}
+    for key in ("anyOf", "oneOf", "allOf"):
+        branches = obj.get(key)
+        if isinstance(branches, list):
+            obj[key] = [{"type": "string"} if isinstance(b, bool) else b
+                         for b in branches]
 
 
 def _ensure_a_type(obj: dict) -> None:
@@ -190,6 +227,7 @@ def _sanitize_schema_for_gemini(schema: dict) -> dict:
         _clean_required(node)
         _normalize_array_items(node)
         _ensure_a_type(node)
+        _ensure_array_items(node)
 
     _walk(cleaned, _fix)
 

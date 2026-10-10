@@ -85,11 +85,17 @@ class TestArrayItems:
 
         assert out["properties"]["a"]["items"] == {"type": "string"}
 
-    def test_an_empty_items_array_is_dropped(self):
+    def test_an_empty_items_array_collapses_to_one_shape(self):
+        """An empty tuple carries no shape, so the array guarantee below supplies it.
+
+        This used to assert `items` was dropped outright, which is exactly the
+        node Gemini rejects -- the drop is still what happens first, but the
+        array guarantee then puts a valid shape back.
+        """
         out = clean({"type": "object", "properties": {"a": {
             "type": "array", "items": []}}})
 
-        assert "items" not in out["properties"]["a"]
+        assert out["properties"]["a"]["items"] == {"type": "string"}
 
     def test_the_reported_shape_is_accepted(self):
         """The exact nesting from the 400: properties -> query -> where -> items."""
@@ -197,6 +203,146 @@ class TestEveryNodeEndsUpWithAType:
         out = clean({"type": "object", "properties": {"a": {"type": "string"}}})
 
         assert "type" not in out["properties"]
+
+
+class TestBooleanSchemas:
+    """JSON Schema allows `true` / `false` anywhere a schema goes. Gemini has
+    no such thing, and answers with the same `items.items: missing field`.
+
+    This was the shape actually on the wire: a Claude Code tool declared
+    `"items": true` two levels under `properties`, so the API named
+    `properties[query].properties[where].items.items` and every layer of the
+    gateway blamed something else.
+    """
+
+    def test_items_true_becomes_a_schema(self):
+        out = clean({"type": "object", "properties": {"q": {"type": "object", "properties": {
+            "w": {"type": "array", "items": True}}}}})
+
+        assert out["properties"]["q"]["properties"]["w"]["items"] == {"type": "string"}
+
+    def test_items_false_becomes_a_schema(self):
+        out = clean({"type": "object", "properties": {"q": {"type": "object", "properties": {
+            "w": {"type": "array", "items": False}}}}})
+
+        assert out["properties"]["q"]["properties"]["w"]["items"] == {"type": "string"}
+
+    def test_a_nested_boolean_item_is_normalised(self):
+        """The exact path from the 400: where.items.items."""
+        out = clean({"type": "object", "properties": {"query": {"type": "object", "properties": {
+            "where": {"type": "array",
+                      "items": {"type": "array", "items": True}}}}}})
+
+        where = out["properties"]["query"]["properties"]["where"]
+        assert where["items"]["items"] == {"type": "string"}
+
+    def test_a_boolean_property_value_becomes_a_schema(self):
+        out = clean({"type": "object", "properties": {
+            "flag": True, "other": False, "name": {"type": "string"}}})
+
+        assert out["properties"]["flag"] == {"type": "string"}
+        assert out["properties"]["other"] == {"type": "string"}
+        assert out["properties"]["name"] == {"type": "string"}
+
+    def test_a_boolean_inside_a_union_becomes_a_schema(self):
+        # _flatten_union drops anyOf and copies the chosen branch across, so the
+        # guarantee is the surviving node carries a type and no boolean remains.
+        out = clean({"type": "object", "properties": {"a": {
+            "anyOf": [True, {"type": "string"}]}}})
+
+        node = out["properties"]["a"]
+        assert node.get("type") == "string"
+        assert "anyOf" not in node
+
+    def test_no_boolean_survives_anywhere(self):
+        def any_bool(node):
+            if isinstance(node, bool):
+                return True
+            if isinstance(node, dict):
+                return any(any_bool(v) for v in node.values())
+            if isinstance(node, list):
+                return any(any_bool(v) for v in node)
+            return False
+
+        out = clean({"type": "object", "properties": {"q": {"type": "object", "properties": {
+            "w": {"type": "array", "items": True},
+            "list": {"type": "array", "items": [{"type": "array", "items": False}]},
+            "flag": True,
+            "union": {"allOf": [True, {"type": "string"}]}}}}})
+
+        assert not any_bool(out)
+
+
+class TestEveryArrayHasItems:
+    """`type: array` without `items` is rejected the same way.
+
+    Gemini names the *item's* items, so the reported path sits one level deeper
+    than the node actually at fault -- which is why every layer of the gateway
+    blamed something else while fixing ``items: true``. The node at fault here
+    is `where`, two properties down; the log pointed at `where.items.items`.
+    """
+
+    def test_an_array_property_gains_items(self):
+        out = clean({"type": "object", "properties": {"where": {"type": "array"}}})
+
+        assert out["properties"]["where"]["items"] == {"type": "string"}
+
+    def test_an_array_of_arrays_gains_the_inner_shape(self):
+        """The exact shape behind `properties[query].properties[where].items.items`."""
+        out = clean({"type": "object", "properties": {"query": {"type": "object", "properties": {
+            "where": {"type": "array", "items": {"type": "array"}}}}}})
+
+        where = out["properties"]["query"]["properties"]["where"]
+        assert where["items"]["items"] == {"type": "string"}
+
+    def test_three_arrays_deep_all_gain_items(self):
+        out = clean({"type": "object", "properties": {"query": {"type": "object", "properties": {
+            "where": {"type": "array", "items": {
+                "type": "array", "items": {"type": "array"}}}}}}})
+
+        where = out["properties"]["query"]["properties"]["where"]
+        assert where["items"]["items"]["items"] == {"type": "string"}
+
+    def test_a_root_array_gains_items(self):
+        assert clean({"type": "array"})["items"] == {"type": "string"}
+
+    def test_an_array_whose_ref_was_dropped_resolves_to_a_shape(self):
+        """A dropped `$ref` leaves `{}`, which becomes a string, not an array.
+
+        So this one needs no `items` of its own -- the point is that nothing is
+        left dangling for Gemini to reject.
+        """
+        out = clean({"type": "object", "properties": {"where": {
+            "type": "array", "items": {"$ref": "#/definitions/F"}}}})
+
+        assert out["properties"]["where"]["items"] == {"type": "string"}
+
+    def test_a_declared_shape_is_left_alone(self):
+        out = clean({"type": "object", "properties": {
+            "where": {"type": "array", "items": {"type": "string", "description": "k"}}}})
+
+        assert out["properties"]["where"]["items"] == {
+            "type": "string", "description": "k"}
+
+    def test_no_array_anywhere_is_left_without_items(self):
+        def arrays(node):
+            if not isinstance(node, dict):
+                return []
+            out = [node] if node.get("type") == "array" else []
+            for v in (node.get("properties") or {}).values():
+                out += arrays(v)
+            if isinstance(node.get("items"), dict):
+                out += arrays(node["items"])
+            return out
+
+        out = clean({"type": "object", "properties": {"query": {"type": "object", "properties": {
+            "a": {"type": "array"},
+            "b": {"type": "array", "items": {"type": "array"}},
+            "c": {"type": "array", "items": True},
+            "d": {"type": "array", "items": {"$ref": "#/definitions/F"}},
+            "e": {"type": "array", "items": [{"type": "array"}]}}}}})
+
+        assert not [n for n in arrays(out) if not isinstance(n.get("items"), dict)]
 
 
 class TestTheInputIsNotMutated:

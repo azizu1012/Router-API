@@ -481,6 +481,11 @@ class PoolManager:
             for attempt in range(config.MAX_RETRIES):
                 api_key_val = None
                 model_id_val = None
+                # Bound before the try: `_resolve_model` is inside it, so a failure
+                # there left `reservation` / `is_custom` unbound and the handler
+                # below raised NameError instead of the real error.
+                reservation: dict = {}
+                is_custom = False
                 try:
                     max_output = min(int(max_tokens or config.MAX_OUTPUT_TOKENS), config.MAX_OUTPUT_TOKENS)
                     estimated_tokens = len(str(messages)) // 4 + max_output
@@ -529,6 +534,8 @@ class PoolManager:
                                 "input_tokens": estimated_tokens,
                                 "reservation": reservation
                             }
+                        if is_custom:
+                            endpoint_manager.mark_endpoint_success(reservation.get("name", model_alias_val))
                         return
                     finally:
                         if api_key_val:
@@ -536,6 +543,17 @@ class PoolManager:
                 except Exception as e:
                     reason = _classify_error(e)
                     logger.warning("[PoolManager] Standalone stream attempt %d failed: %s", attempt, e)
+
+                    # A custom endpoint has no key to rotate -- the endpoint *is*
+                    # the pool member -- so the circuit breaker is the only thing
+                    # that stops the next request from picking a dead one. This
+                    # branch had no mark_endpoint_failure call, so it retried the
+                    # same broken endpoint the full budget on every request while
+                    # the pool path tripped the breaker beside it.
+                    if is_custom:
+                        endpoint_manager.mark_endpoint_failure(reservation.get("name", model_alias_val))
+                        raise
+
                     if reason in TRANSIENT_REASONS:
                         count_transient_error(reason)
                         if reason == "rate_limit":
