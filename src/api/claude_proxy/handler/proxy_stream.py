@@ -310,6 +310,11 @@ class ClaudeProxyStreamMixin:
             thinking_index = start_block_index
             output_chars = 0
             input_tokens = 0
+            # Gemini reports real token counts on the final chunk's `usage`.
+            # Counting emitted characters instead under-reports every turn
+            # whose text never reached the client (thoughts stripped, tool
+            # turns, SAFETY stops) — an 8k-token reply logged as 1.
+            provider_output_tokens = 0
             finish_reason = "end_turn"
             tool_buffers: Dict[int, Dict[str, Any]] = {}
             accumulated_text = []
@@ -330,15 +335,13 @@ class ClaudeProxyStreamMixin:
                 call_custom_endpoint_passthrough,
             )
 
-            # Only resolve custom endpoint on first call (not recursion)
-            custom_ep = None
-            if recursion_depth == 0:
-                custom_ep = await resolve_custom_endpoint_for_request(
-                    account=account,
-                    account_key_id=account.get("token_key_id") or account.get("key_id") if account else None,
-                    requested_model=body.get("model", ""),
-                    alias_info=body.get("_alias_info"),
-                )
+            # ponytail: resolve custom endpoint at all recursion depths; tool turns must stay on the same endpoint
+            custom_ep = await resolve_custom_endpoint_for_request(
+                account=account,
+                account_key_id=account.get("token_key_id") or account.get("key_id") if account else None,
+                requested_model=body.get("model", ""),
+                alias_info=body.get("_alias_info"),
+            )
 
             if custom_ep:
                 # Custom endpoint: pure passthrough stream, no pool, no retry
@@ -477,6 +480,11 @@ class ClaudeProxyStreamMixin:
                             output_chars += len(ctx_warn)
 
                 chunk = item["chunk"]
+                # Read usage before the choices guard: Gemini's final chunk can
+                # carry usage with no delta alongside it.
+                usage = getattr(chunk, "usage", None)
+                if isinstance(usage, dict) and usage.get("completion_tokens"):
+                    provider_output_tokens = int(usage["completion_tokens"])
                 if not chunk.choices:
                     continue
                 delta = chunk.choices[0].delta
@@ -818,7 +826,8 @@ class ClaudeProxyStreamMixin:
                             yield _sse("content_block_stop", {"type": "content_block_stop", "index": next_block_idx})
                         next_block_idx += 1
 
-                output_tokens = max(1, output_chars // 4) + len(tool_buffers) * 50
+                output_tokens = max(provider_output_tokens,
+                                    max(1, output_chars // 4) + len(tool_buffers) * 50)
                 final_stop_reason, final_stop_sequence = map_stop_reason(
                     finish_reason if finish_reason != "tool_use" else "tool_calls",
                     has_tool_calls=bool(tool_buffers),

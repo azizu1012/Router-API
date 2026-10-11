@@ -18,6 +18,8 @@ import json
 import time
 from typing import Any, Dict, List, Optional
 
+from src.core.config_n_logg.logger import logger_proxy
+
 
 def parse_gemini_chunk(chunk: Dict[str, Any], state: Dict[str, Any]) -> List[Dict[str, Any]]:
     """
@@ -42,10 +44,17 @@ def parse_gemini_chunk(chunk: Dict[str, Any], state: Dict[str, Any]) -> List[Dic
         List[Dict[str, Any]]: Một danh sách các dictionary delta ở định dạng OpenAI.
     """
     response = chunk.get("response", chunk)
-    if not response or not response.get("candidates"):
+    if not response:
         return []
 
-    candidate = response["candidates"][0]
+    candidates = response.get("candidates") or []
+    if not candidates:
+        # A blocked prompt has no candidate at all — only `promptFeedback`.
+        # Returning [] here swallowed the reason, so the turn ended looking
+        # like an empty answer and logged `output_tokens=1`.
+        return _blocked_chunks(response, chunk, state)
+
+    candidate = candidates[0]
     content = candidate.get("content", {})
     results: List[Dict[str, Any]] = []
 
@@ -185,6 +194,43 @@ def parse_gemini_nonstream(response: Dict[str, Any], model_alias: str) -> Dict[s
         "choices": [{"index": 0, "message": message, "finish_reason": finish_reason}],
         "usage": usage,
     }
+
+
+def _blocked_chunks(
+    response: Dict[str, Any],
+    chunk: Dict[str, Any],
+    state: Dict[str, Any],
+) -> List[Dict[str, Any]]:
+    """A turn Gemini refused before generating: report the reason, not silence.
+
+    `promptFeedback.blockReason` arrives with no candidate attached, so the
+    caller had nothing to read and the client saw an empty 200. Surfacing it as
+    `content_filter` — the enum value that means "withheld" — is what lets the
+    layers above log why a turn produced nothing.
+
+    Empty when there is no `promptFeedback` at all (a genuinely empty keepalive
+    frame), so a heartbeat does not manufacture a finish reason.
+    """
+    feedback = response.get("promptFeedback") or {}
+    reason = str(feedback.get("blockReason") or "").strip()
+    if not reason:
+        return []
+
+    if not state.get("message_id"):
+        state["message_id"] = response.get("responseId", f"msg_{id(chunk)}")
+        state["model"] = response.get("modelVersion", "gemini")
+        state["function_index"] = 0
+        state["block_reason"] = reason
+
+    _extract_usage(response, chunk, state)
+    logger_proxy.warning(
+        "[GeminiBlocked] prompt refused before generation: blockReason=%s",
+        reason,
+    )
+    final = _make_chunk(state, {}, "safety")
+    if state.get("usage"):
+        final["usage"] = state["usage"]
+    return [final]
 
 
 def _make_chunk(state: Dict[str, Any], delta: Dict[str, Any], finish_reason: Optional[str]) -> Dict[str, Any]:

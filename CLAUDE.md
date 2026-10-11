@@ -38,3 +38,8 @@ Các quy tắc và kiến trúc liên quan đến Pool & Key được mô tả c
 - Pool hiện tại là concurrent worker pool (`src/core/router/pool.py`) — ModelPool singleton với slot-based `acquire`/`release`, lock-protected. Custom endpoint là first-class member của pool thông qua `pool_assignments`.
 - Model ngoài `MODEL_POOLS` chạy standalone mode (không qua pool acquire/release).
 - `pool_manager.py` hiện tại 581 dòng.
+
+<!-- claude-reflect: learned rules (saved from the band; edit freely) -->
+## Learned rules
+- Implement robust key rotation that automatically switches keys on failure rather than returning errors, and ensure core functionality survives agent failures without relying solely on 9router.
+<!-- end claude-reflect -->
