@@ -290,14 +290,14 @@ class SearchRankingMixin(SearchUtilsMixin):
 
         deep_lines = []
         if self.search_web_mode == "grounded":
-            evidence_max = getattr(self, "search_evidence_max_chars", 1200)
+            evidence_max = getattr(self, "search_evidence_max_chars", 2500)
             for rec in display_records[:self.search_grounded_top_links]:
                 evidence = rec.get("evidence", "")
                 if not evidence:
                     continue
                 title = rec.get("title") or "Không có tiêu đề"
                 url = rec.get("url") or ""
-                snippet = evidence[:evidence_max].strip()
+                snippet = self._extract_query_highlight(evidence, query, evidence_max)
                 if snippet:
                     deep_lines.append(f"- {title} ([đọc nội dung](<{url}>)): {snippet}")
 

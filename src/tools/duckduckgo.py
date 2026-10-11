@@ -41,11 +41,12 @@ class AdvancedSearchManager(SearchRankingMixin):
             self.search_web_mode = "grounded"
         if self.search_web_mode not in {"grounded", "fast"}:
             self.search_web_mode = "grounded"
-        self.search_grounded_top_links = int(os.getenv("SEARCH_GROUNDED_TOP_LINKS", "5"))
-        self.search_top_results_limit = int(os.getenv("SEARCH_TOP_RESULTS_LIMIT", "8"))
-        self.deep_read_top_links = int(os.getenv("SEARCH_DEEP_READ_TOP_LINKS", "5"))
-        self.deep_read_max_chars = int(os.getenv("SEARCH_DEEP_READ_MAX_CHARS", "4000"))
-        self.search_evidence_max_chars = int(os.getenv("SEARCH_EVIDENCE_MAX_CHARS", "1200"))
+        # ponytail: defaults 8 grounded links / 10 results / 8000 deep read / 2500 evidence chars; override via SEARCH_* env vars
+        self.search_grounded_top_links = int(os.getenv("SEARCH_GROUNDED_TOP_LINKS", "8"))
+        self.search_top_results_limit = int(os.getenv("SEARCH_TOP_RESULTS_LIMIT", "10"))
+        self.deep_read_top_links = int(os.getenv("SEARCH_DEEP_READ_TOP_LINKS", "8"))
+        self.deep_read_max_chars = int(os.getenv("SEARCH_DEEP_READ_MAX_CHARS", "8000"))
+        self.search_evidence_max_chars = int(os.getenv("SEARCH_EVIDENCE_MAX_CHARS", "2500"))
         self.exa_use_autoprompt = os.getenv("SEARCH_EXA_AUTOPROMPT", "false").lower() == "true"
         self.search_semantic_cache_enabled = os.getenv("SEARCH_SEMANTIC_CACHE_ENABLED", "true").lower() in {"1", "true", "yes", "on"}
         self.search_general_cache_ttl_seconds = int(os.getenv("SEARCH_GENERAL_CACHE_TTL_SEC", "21600"))

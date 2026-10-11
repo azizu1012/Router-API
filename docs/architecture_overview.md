@@ -148,6 +148,32 @@ Hệ thống Router API được thiết kế như một lớp trừu tượng, 
     *   **Gán cho Pool/Tài khoản:** Custom endpoint là first-class pool member thông qua `pool_assignments`. Khi gán endpoint vào pool (VD: `endpoint assign my-provider pool gemini-flash:flash`), model của endpoint trở thành member của pool đó, được ModelPool quản lý slot concurrency như các Gemini members khác. Nếu model không có trong `MODEL_POOLS`, endpoint fallback về standalone mode (không qua pool acquire/release).
     *   **Xử lý Payload khi Fallback:** Khi một yêu cầu ban đầu đi qua các Proxy Layer (ClaudeProxy hoặc OpenCodeProxy), nó đã được dịch về một định dạng payload nội bộ dùng chung. Nếu `PoolManager` chọn một Custom Endpoint và sau đó Custom Endpoint này báo lỗi và hệ thống fallback về bể API Key của Gemini nội bộ, `GeminiFacade` (`src/core/providers/gemini_facade.py`) sẽ nhận lại đúng payload gốc của hệ thống. `GeminiFacade` chịu trách nhiệm tái cấu trúc payload (Strip/Convert các tham số đặc thù của OpenAI như `response_format` hay cấu trúc `tools` dạng function call) sang cấu hình tương thích với Gemini SDK/HTTP native một cách tự động. Logic này được triển khai trong các hàm phụ trợ của `gemini_facade.py` (ví dụ: `_sdk_acompletion` cho Gemini native, `_http_acompletion` cho OpenAI-compatible), đảm bảo cấu trúc `tool_calls` và các tham số khác được dịch đúng cách.
 
+### 3.10. Web Search & Evidence Pipeline (`src/tools/` & `src/api/opencode_proxy/handler/`)
+*   **Vai trò:** Cung cấp khả năng tìm kiếm web grounded (`search_with_citations`, `web_search`) tốc độ cao, trích dẫn chính xác nguồn tin và bằng chứng chi tiết mà không phụ thuộc vào dịch vụ trả phí bên ngoài.
+*   **Thứ tự ưu tiên công cụ tìm kiếm (Engine Precedence):**
+    *   `google_grounding`: Dùng sub-agent Gemini gọi Google Search Grounding native.
+    *   `duckduckgo`: Local search qua DDGS và tải trang bất đồng bộ song song (`asyncio.gather`), không tiêu tốn quota key Gemini.
+    *   `auto`: Ưu tiên Google Grounding cho các yêu cầu có tool web_search rõ ràng, tự động fallback về DuckDuckGo khi quota cạn.
+*   **Trích xuất cấu trúc Markdown (Markdown-first Extraction - `ddg_utils.py`):**
+    *   Hàm `_extract_main_text` phân tích DOM HTML qua BeautifulSoup và chuyển đổi thành Markdown có cấu trúc:
+        *   Thẻ tiêu đề `h1..h6` thành `# Heading`.
+        *   Thẻ danh sách `li` thành Markdown bullet `- Item`.
+        *   Bảng HTML (`table`, `tr`, `th`, `td`) thành Markdown Table `| Col1 | Col2 |`.
+        *   Giữ khoảng cách phân đoạn `\n\n` rõ ràng, lọc bỏ triệt để cookie/ads/scripts.
+*   **Trích xuất Highlight thông minh (Query-Density Centered Window - `ddg_utils.py` & `ddg_ranking.py`):**
+    *   Hàm `_extract_query_highlight` quét mật độ từ khóa của truy vấn trên từng đoạn văn trong tài liệu.
+    *   Chọn đoạn văn có điểm số trùng khớp cao nhất làm tâm và mở rộng vùng lân cận cho đến khi đạt ngưỡng ký tự bằng chứng (`search_evidence_max_chars`).
+    *   Điều này khắc phục nhược điểm cắt cụt từ đầu trang (`text[:max]`), tạo ra đoạn trích xuất bám sát ngữ cảnh câu hỏi tương đương cơ chế "Highlights" của Exa.
+*   **Cấu hình linh hoạt qua biến môi trường (`duckduckgo.py`):**
+    *   `SEARCH_GROUNDED_TOP_LINKS`: Số liên kết web tải sâu song song (mặc định: `8`).
+    *   `SEARCH_TOP_RESULTS_LIMIT`: Số lượng kết quả tìm kiếm tối đa (mặc định: `10`).
+    *   `SEARCH_DEEP_READ_MAX_CHARS`: Giới hạn ký tự tối đa khi cào sâu một trang (mặc định: `8000`).
+    *   `SEARCH_EVIDENCE_MAX_CHARS`: Độ dài đoạn trích xuất bằng chứng cho mỗi nguồn (mặc định: `2500`).
+*   **Quy tắc bảo vệ cho Agent kế nhiệm:**
+    *   **KHÔNG** nén văn bản cào về thành plain-text một dòng bằng `re.sub(r"\s+", " ", text)` (sẽ làm mất bảng, danh sách và cấu trúc mà LLM cần).
+    *   **KHÔNG** đổi logic trích đoạn về `evidence[:evidence_max]` từ đầu trang (sẽ dính rác header/menu/intro).
+    *   Giữ nguyên chữ ký hàm `search_with_citations(query: str) -> Tuple[str, List[Dict[str, str]]]`.
+
 **Luồng chung:** Tất cả các proxy đều ủy quyền cho `PoolManager`. `PoolManager` sau đó sử dụng `APIRouter` để giải quyết key và `gemini_facade` để thực hiện cuộc gọi API thực tế đến Gemini hoặc Custom Endpoint, và cuối cùng xử lý phản hồi trước khi trả về cho proxy để định dạng lại cho client.
 
 ## 4. Luồng Yêu Cầu API Tổng Quan

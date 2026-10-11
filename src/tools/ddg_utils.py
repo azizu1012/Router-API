@@ -30,19 +30,80 @@ class SearchUtilsMixin(SearchDataMixin):
 
     def _extract_main_text(self, html_text: str) -> str:
         soup = BeautifulSoup(html_text, 'lxml')
-        
+
         # Loại bỏ các thẻ không cần thiết
         for tag in soup(["script", "style", "noscript", "svg", "form", "button", "header", "footer", "nav", "aside"]):
             tag.decompose()
-            
+
         # Tìm nội dung chính
         content = soup.find("article") or soup.find("main") or soup.body
         if not content:
             return ""
-            
-        text = content.get_text(separator=' ')
+
+        # ponytail: markdown formatting for headings, tables and lists; upgrade when HTML needs full AST parser
+        for h in content.find_all(["h1", "h2", "h3", "h4", "h5", "h6"]):
+            level = int(h.name[1]) if len(h.name) > 1 and h.name[1].isdigit() else 2
+            h.replace_with(f"\n\n{'#' * level} {h.get_text().strip()}\n")
+
+        for tr in content.find_all("tr"):
+            cells = [td.get_text().strip() for td in tr.find_all(["td", "th"])]
+            if cells:
+                tr.replace_with("\n| " + " | ".join(cells) + " |\n")
+
+        for li in content.find_all("li"):
+            li.replace_with(f"\n- {li.get_text().strip()}")
+
+        for p in content.find_all("p"):
+            p.replace_with(f"\n\n{p.get_text().strip()}\n")
+
+        text = content.get_text()
         text = re.sub(r"\b(cookie policy|accept cookies|subscribe|advertisement|all rights reserved)\b", " ", text, flags=re.IGNORECASE)
-        return re.sub(r"\s+", " ", text).strip()
+        text = re.sub(r"[ \t]+", " ", text)
+        text = re.sub(r"\n{3,}", "\n\n", text)
+        return text.strip()
+
+    def _extract_query_highlight(self, text: str, query: str, max_chars: int = 2500) -> str:
+        """Extract the most relevant excerpt window centered around query keyword density."""
+        if len(text) <= max_chars:
+            return text.strip()
+
+        tokens = [t.lower() for t in re.findall(r"\w+", query) if len(t) > 2]
+        if not tokens:
+            return text[:max_chars].strip()
+
+        paragraphs = [p.strip() for p in text.split("\n\n") if p.strip()]
+        if not paragraphs:
+            return text[:max_chars].strip()
+
+        scores = [sum(1 for t in tokens if t in p.lower()) for p in paragraphs]
+        best_idx = max(range(len(scores)), key=lambda idx: scores[idx])
+
+        if scores[best_idx] == 0:
+            return text[:max_chars].strip()
+
+        start, end = best_idx, best_idx + 1
+        curr_len = len(paragraphs[best_idx])
+
+        while curr_len < max_chars:
+            expanded = False
+            if start > 0:
+                prev_len = len(paragraphs[start - 1]) + 2
+                if curr_len + prev_len <= max_chars:
+                    start -= 1
+                    curr_len += prev_len
+                    expanded = True
+            if end < len(paragraphs):
+                next_len = len(paragraphs[end]) + 2
+                if curr_len + next_len <= max_chars:
+                    end += 1
+                    curr_len += next_len
+                    expanded = True
+            if not expanded:
+                break
+
+        prefix = "... " if start > 0 else ""
+        suffix = " ..." if end < len(paragraphs) else ""
+        return prefix + "\n\n".join(paragraphs[start:end]) + suffix
 
     def _normalize_domain(self, url: str) -> str:
         try:
