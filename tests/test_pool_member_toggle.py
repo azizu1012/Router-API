@@ -35,12 +35,11 @@ from src.core import api_config
 
 
 FLASH_36 = "gemini-flash-36"
-FLASH_35 = "gemini-flash-35"
+FLASH_38 = "gemini-flash-38"
 
-# flash-37 and flash-38 need a paid Google tier and this project's keys are
-# free-tier, so the suite never touches them — asking for one would only prove
-# the key is rejected. 36 is the member under test; 35 stands in as a neighbour
-# that has to stay on.
+# flash-37 and flash-38 need a paid Google tier (or deprecated/capacity constrained)
+# and flash-35 is deprecated, so both 35 and 37 are kept off.
+# 36 is the member under test; 38 stands in as an active neighbour.
 
 
 @pytest.fixture(autouse=True)
@@ -105,24 +104,28 @@ class TestSwitchIsHonoured:
 
     def test_unflagged_model_still_enabled(self, flag_member):
         flag_member(FLASH_36, False)
-        assert api_config.is_model_enabled(FLASH_35) is True
+        assert api_config.is_model_enabled(FLASH_38) is True
+
+    def test_deprecated_models_remain_disabled(self):
+        """35 and 37 are deprecated by Google and disabled in real config."""
+        assert api_config.is_model_enabled("gemini-flash-35") is False
+        assert api_config.is_model_enabled("gemini-flash-37") is False
+        active = api_config.active_pool_members("gemini-flash")
+        assert "gemini-flash-35" not in active
+        assert "gemini-flash-37" not in active
 
 
 # ── pool membership ─────────────────────────────────────────────────────────
 
 class TestActivePoolMembers:
     def test_disabled_member_drops_out(self, flag_member):
-        # This machine may already have it switched off — that is the feature
-        # working. Turn it on so the test measures the transition, not the local
-        # config.
-        flag_member(FLASH_36, True)
         before = api_config.active_pool_members("gemini-flash")
         assert FLASH_36 in before
 
         flag_member(FLASH_36, False)
 
         assert FLASH_36 not in api_config.active_pool_members("gemini-flash")
-        assert FLASH_35 in api_config.active_pool_members("gemini-flash")
+        assert FLASH_38 in api_config.active_pool_members("gemini-flash")
 
     def test_re_enabling_puts_it_back(self, flag_member):
         flag_member(FLASH_36, True)
@@ -206,9 +209,9 @@ class TestModelPoolCacheIsInvalidated:
 class TestModelListing:
     @pytest.fixture(autouse=True)
     def _visible(self):
-        """flash-36 ships hidden and may be switched off locally; make it a
+        """flash-30 ships hidden; make it a
         plain listed model so the test measures `enabled`, not the defaults."""
-        cfg = api_config.AVAILABLE_MODELS[FLASH_35]
+        cfg = api_config.AVAILABLE_MODELS[FLASH_38]
         was_hidden = cfg.get("hidden", False)
         cfg["hidden"] = False
         cfg["enabled"] = True
@@ -219,22 +222,22 @@ class TestModelListing:
         from src.core.router.core.router import router
 
         ids_before = [m["id"] for m in router.list_models()]
-        assert FLASH_35 in ids_before
+        assert FLASH_38 in ids_before
 
-        flag_member(FLASH_35, False)
+        flag_member(FLASH_38, False)
         ids_after = [m["id"] for m in router.list_models()]
 
         # The pool alias stays: it is how clients reach the remaining members.
         assert "gemini-flash" in ids_after
-        assert FLASH_35 not in ids_after
+        assert FLASH_38 not in ids_after
 
     def test_hidden_flag_is_independent(self, flag_member):
         from src.core.router.core.router import router
 
-        assert FLASH_35 in [m["id"] for m in router.list_models()]
-        flag_member(FLASH_35, False)
+        assert FLASH_38 in [m["id"] for m in router.list_models()]
+        flag_member(FLASH_38, False)
         ids = [m["id"] for m in router.list_models()]
-        assert FLASH_35 not in ids
+        assert FLASH_38 not in ids
 
 
 # ── aggregate limits ────────────────────────────────────────────────────────
@@ -551,7 +554,7 @@ class TestToggleEndpoint:
         assert r.status_code == 200
         by_alias = {m["alias"]: m for m in r.json()["models"]}
         assert by_alias[FLASH_36]["enabled"] is False
-        assert by_alias[FLASH_35]["enabled"] is True
+        assert by_alias[FLASH_38]["enabled"] is True
 
     def test_the_pool_payload_splits_declared_from_active(self, client):
         session = _admin_session()

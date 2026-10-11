@@ -18,6 +18,7 @@ two. Point the offending test at the `temp_db` fixture to satisfy it.
 """
 import os
 import sqlite3
+import time
 
 import pytest
 
@@ -35,6 +36,19 @@ def _row_counts(path):
 
     Absence is data, not an excuse to skip: a missing usage.db that turns into a
     20 KB file full of tables is still a change to the developer's database.
+
+    key_penalties is counted differently, and deliberately. `db_clean_expired_
+    penalties` deletes `WHERE expires <= now` on a timer, so a suite that runs
+    longer than a penalty's lifetime sweeps the developer's expired rows on its
+    way past — the row count drops and the guard fires on the app cleaning up
+    after itself. Nothing is lost: the next real request would have deleted the
+    same row. So what this table actually has to protect is the rows that still
+    mean something. A penalty a test leaves behind with a live `expires` is a
+    penalty that suppresses a real key's score, and that still trips the guard.
+
+    The cost is stated rather than hidden: a test that inserts an already-expired
+    penalty is invisible here. That is the same class of state as the sweep
+    removes, so it would not survive the next real request either.
     """
     if not os.path.exists(path):
         return None
@@ -43,7 +57,12 @@ def _row_counts(path):
         out = {}
         for t in TABLES:
             try:
-                out[t] = con.execute(f'SELECT count(*) FROM {t}').fetchone()[0]
+                if t == 'key_penalties':
+                    out[t] = con.execute(
+                        'SELECT count(*) FROM key_penalties WHERE expires > ?',
+                        (time.time(),)).fetchone()[0]
+                else:
+                    out[t] = con.execute(f'SELECT count(*) FROM {t}').fetchone()[0]
             except sqlite3.Error:
                 out[t] = None      # table absent; nothing to compare
         return out

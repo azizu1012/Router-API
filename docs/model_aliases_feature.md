@@ -15,7 +15,7 @@ Model Aliases cho phép "spoof" tên model để bypass client SDK validation. C
 ### 1. Database Schema
 
 ```sql
--- migrations/007_model_aliases.sql
+-- src/backend/schema.py — created automatically by init_config_tables() at startup
 CREATE TABLE IF NOT EXISTS model_aliases (
     alias_id INTEGER PRIMARY KEY AUTOINCREMENT,
     account_id TEXT NOT NULL,
@@ -342,11 +342,11 @@ Currently no caching. Future optimization:
 
 ## Migration Path
 
-### Step 1: Apply Database Migration
+### Step 1: Create the Table
 
-```bash
-sqlite3 usage.db < migrations/007_model_aliases.sql
-```
+Không cần chạy migration thủ công. Bảng `model_aliases` được khai báo trong
+`src/backend/schema.py` và tạo tự động bởi `init_config_tables()` khi server
+khởi động — kể cả trên DB hoàn toàn trống.
 
 ### Step 2: Register Routes
 

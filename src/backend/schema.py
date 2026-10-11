@@ -37,6 +37,10 @@ def init_config_tables() -> None:
                     pool_assignments TEXT DEFAULT '{}',
                     updated_at TEXT
                 );
+                -- Member-owned endpoint lookup (endpoints.py: get_endpoint_by_account_db,
+                -- get_endpoints_by_account_db). Both filter on account_id + enabled.
+                CREATE INDEX IF NOT EXISTS idx_custom_endpoints_account
+                    ON custom_endpoints(account_id, enabled);
                 CREATE TABLE IF NOT EXISTS oauth_clients (
                     client_id TEXT PRIMARY KEY,
                     encrypted_secret TEXT NOT NULL,
