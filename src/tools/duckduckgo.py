@@ -41,10 +41,11 @@ class AdvancedSearchManager(SearchRankingMixin):
             self.search_web_mode = "grounded"
         if self.search_web_mode not in {"grounded", "fast"}:
             self.search_web_mode = "grounded"
-        self.search_grounded_top_links = int(os.getenv("SEARCH_GROUNDED_TOP_LINKS", "3"))
-        self.search_top_results_limit = int(os.getenv("SEARCH_TOP_RESULTS_LIMIT", "5"))
-        self.deep_read_top_links = int(os.getenv("SEARCH_DEEP_READ_TOP_LINKS", "2"))
-        self.deep_read_max_chars = int(os.getenv("SEARCH_DEEP_READ_MAX_CHARS", "1800"))
+        self.search_grounded_top_links = int(os.getenv("SEARCH_GROUNDED_TOP_LINKS", "5"))
+        self.search_top_results_limit = int(os.getenv("SEARCH_TOP_RESULTS_LIMIT", "8"))
+        self.deep_read_top_links = int(os.getenv("SEARCH_DEEP_READ_TOP_LINKS", "5"))
+        self.deep_read_max_chars = int(os.getenv("SEARCH_DEEP_READ_MAX_CHARS", "4000"))
+        self.search_evidence_max_chars = int(os.getenv("SEARCH_EVIDENCE_MAX_CHARS", "1200"))
         self.exa_use_autoprompt = os.getenv("SEARCH_EXA_AUTOPROMPT", "false").lower() == "true"
         self.search_semantic_cache_enabled = os.getenv("SEARCH_SEMANTIC_CACHE_ENABLED", "true").lower() in {"1", "true", "yes", "on"}
         self.search_general_cache_ttl_seconds = int(os.getenv("SEARCH_GENERAL_CACHE_TTL_SEC", "21600"))
@@ -121,15 +122,16 @@ class AdvancedSearchManager(SearchRankingMixin):
 
         start_ts = datetime.now().timestamp()
         try:
+            fetch_limit = max(5, self.search_top_results_limit)
             def _do_search():
                 with ddgs_cls() as ddgs:
                     if timelimit:
-                        return list(ddgs.text(query, max_results=5, timelimit=timelimit))
-                    return list(ddgs.text(query, max_results=5))
+                        return list(ddgs.text(query, max_results=fetch_limit, timelimit=timelimit))
+                    return list(ddgs.text(query, max_results=fetch_limit))
 
             results = await asyncio.to_thread(_do_search)
             items: List[Dict[str, str]] = []
-            for item in results[:5]:
+            for item in results[:fetch_limit]:
                 url_raw = item.get("href") or item.get("url") or ""
                 normalized_url = self._normalize_url(url_raw)
                 if not normalized_url or self._is_blocked_domain(normalized_url):
