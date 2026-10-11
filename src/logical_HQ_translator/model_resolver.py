@@ -22,15 +22,24 @@ def _retry_delay(attempt: int) -> float:
     return random.uniform(0.5, 3.0)
 
 async def _resolve_model(body: Dict[str, Any], pool_alias_override: Optional[str] = None, account: Optional[Dict[str, Any]] = None, estimated_tokens: int = 0, retry_attempt: int = 0, pool_mode: bool = False, member_override: Optional[str] = None) -> Tuple[str, str, str, str, Dict[str, Any]]:
-    """Resolve model for Gemini pool only.
+    """Resolve model alias and acquire an available Gemini API key.
 
-    Custom endpoints are now handled separately by custom_endpoint_passthrough.py,
-    not through this resolver or pool_manager.
+    Resolves target model alias (using account-specific alias if provided) and
+    reserves a key through APIRouter.reserve_key using the Double Random algorithm.
+    Custom endpoints are routed via custom_endpoint_passthrough.py; if standard Gemini
+    keys are frozen in standalone mode, legacy fallback custom endpoints can be engaged.
 
-    This function only handles:
-    - Member override in pool mode (Gemini members only)
-    - Gemini key reservation
-    - Fallback custom endpoint (legacy, should be removed after full refactor)
+    Args:
+        body: Request payload dictionary containing model name.
+        pool_alias_override: Optional explicit pool alias override.
+        account: Authenticated account details for quota and per-account aliases.
+        estimated_tokens: Estimated token count for rate limiter check.
+        retry_attempt: Current retry attempt index.
+        pool_mode: Whether running in pool worker mode (True) or standalone mode (False).
+        member_override: Specific member model to use.
+
+    Returns:
+        Tuple of (model_alias, actual_model_id, api_key, model_identifier, reservation_dict)
     """
     if pool_alias_override:
         model_alias = pool_alias_override
