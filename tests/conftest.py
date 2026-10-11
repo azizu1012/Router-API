@@ -58,9 +58,14 @@ def _row_counts(path):
         for t in TABLES:
             try:
                 if t == 'key_penalties':
-                    out[t] = con.execute(
-                        'SELECT count(*) FROM key_penalties WHERE expires > ?',
-                        (time.time(),)).fetchone()[0]
+                    # Snapshot active penalty pkeys. Comparing existing keys and ignoring
+                    # TTL expiration avoids false alarms from natural expiration during test runs.
+                    out[t] = set(
+                        row[0] for row in con.execute(
+                            'SELECT penalty_id FROM key_penalties WHERE expires > ?',
+                            (time.time(),)
+                        ).fetchall()
+                    )
                 else:
                     out[t] = con.execute(f'SELECT count(*) FROM {t}').fetchone()[0]
             except sqlite3.Error:
@@ -129,11 +134,18 @@ def _real_database_is_not_a_scratchpad(_schema_exists_before_any_test,
     after = _row_counts(REAL_DB)
     if before is None or after is None:
         return
-    changed = {
-        t: (before.get(t), after.get(t))
-        for t in TABLES
-        if before.get(t) != after.get(t)
-    }
+    changed = {}
+    for t in TABLES:
+        b = before.get(t)
+        a = after.get(t)
+        if t == 'key_penalties':
+            # Only trigger guard if the suite added unexpected penalty rows to the real DB
+            if isinstance(b, set) and isinstance(a, set):
+                added = a - b
+                if added:
+                    changed[t] = f"added unexpected rows: {added}"
+        elif b != a:
+            changed[t] = (b, a)
     assert not changed, (
         f"the test suite wrote to {REAL_DB}: {changed}. "
         "Tests must not touch the real database — use the temp_db fixture, which "

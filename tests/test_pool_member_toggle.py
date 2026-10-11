@@ -39,7 +39,8 @@ FLASH_38 = "gemini-flash-38"
 
 # flash-37 and flash-38 need a paid Google tier (or deprecated/capacity constrained)
 # and flash-35 is deprecated, so both 35 and 37 are kept off.
-# 36 is the member under test; 38 stands in as an active neighbour.
+# 36 is the member under test; the test fixtures dynamically ensure an active
+# neighbour exists regardless of what is configured in usage.db.
 
 
 @pytest.fixture(autouse=True)
@@ -90,6 +91,18 @@ def flag_member():
     api_config._recompute_pool_aggregates()
 
 
+@pytest.fixture
+def pinned_flash_members(flag_member):
+    """Pin FLASH_36 and FLASH_38 as enabled for tests requiring an active neighbour.
+
+    Leaves other models untouched (respecting disabled state for 35/37) while
+    guaranteeing that turning FLASH_36 off still leaves FLASH_38 active.
+    """
+    flag_member(FLASH_36, True)
+    flag_member(FLASH_38, True)
+    api_config._recompute_pool_aggregates()
+
+
 # ── the switch itself ───────────────────────────────────────────────────────
 
 class TestSwitchIsHonoured:
@@ -102,7 +115,7 @@ class TestSwitchIsHonoured:
         flag_member(FLASH_36, False)
         assert api_config.is_model_enabled(FLASH_36) is False
 
-    def test_unflagged_model_still_enabled(self, flag_member):
+    def test_unflagged_model_still_enabled(self, flag_member, pinned_flash_members):
         flag_member(FLASH_36, False)
         assert api_config.is_model_enabled(FLASH_38) is True
 
@@ -120,7 +133,7 @@ class TestSwitchIsHonoured:
 # ── pool membership ─────────────────────────────────────────────────────────
 
 class TestActivePoolMembers:
-    def test_disabled_member_drops_out(self, flag_member):
+    def test_disabled_member_drops_out(self, flag_member, pinned_flash_members):
         before = api_config.active_pool_members("gemini-flash")
         assert FLASH_36 in before
 
@@ -211,7 +224,7 @@ class TestModelPoolCacheIsInvalidated:
 class TestModelListing:
     @pytest.fixture(autouse=True)
     def _visible(self):
-        """flash-30 ships hidden; make it a
+        """flash-38 ships hidden; make it a
         plain listed model so the test measures `enabled`, not the defaults."""
         cfg = api_config.AVAILABLE_MODELS[FLASH_38]
         was_hidden = cfg.get("hidden", False)
