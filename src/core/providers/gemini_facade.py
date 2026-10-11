@@ -545,7 +545,9 @@ async def acompletion(**kwargs: Any) -> Any:
                 # because standard models like gpt-4o, vLLM, or Ollama reject it with 400.
                 merged["reasoning_effort"] = reasoning_effort
 
-        if top_k is not None:
+        if top_k is not None and is_anth:
+            # Only Anthropic (and Gemini natively) officially support top_k.
+            # Standard OpenAI endpoints reject it with 400.
             merged["top_k"] = top_k
         if top_p is not None:
             merged["top_p"] = top_p

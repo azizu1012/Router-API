@@ -87,6 +87,7 @@ tests/*
 !tests/test_tool_choice_routing.py
 !tests/test_tool_choice_wire.py
 !tests/test_response_format.py
+!tests/test_model_spoofing.py
 
 # The CI scanner is tracked; the rest of scripts/ is local tooling.
 !scripts/

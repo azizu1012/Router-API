@@ -84,8 +84,87 @@ def _model_entry(m: Dict[str, Any]) -> Dict[str, Any]:
     return entry
 
 
-def _models_payload() -> Dict[str, Any]:
+def _models_payload(account: Dict[str, Any] | None = None) -> Dict[str, Any]:
+    """Build models list including pool models and user's aliases.
+
+    If account is provided, include:
+    - Pool models (Gemini)
+    - User's model aliases (spoofed names)
+    - User's custom endpoint models (only those NOT aliased)
+
+    Key behavior: If a custom endpoint model has an alias, only show the alias name,
+    not the original model name. This allows users to fully spoof custom endpoint models.
+    """
+    # Start with pool models
     entries = [_model_entry(m) for m in router.list_models()]
+
+    # Add user's aliases and custom endpoint models
+    if account:
+        account_id = account.get("account_id")
+
+        # Get user's aliases
+        from src.backend import model_aliases
+        aliases = model_aliases.list_aliases_db(account_id=account_id, enabled_only=True)
+
+        # Build a map of which models are aliased (to hide original names)
+        aliased_models = set()
+        for alias in aliases:
+            if alias.get("target_endpoint"):
+                # This alias points to a custom endpoint model
+                aliased_models.add((alias["target_model"], alias["target_endpoint"]))
+
+        for alias in aliases:
+            # Add alias as a "virtual model"
+            alias_entry = {
+                "id": alias["alias_name"],
+                "object": "model",
+                "type": "model",
+                "created": alias.get("created_at", 0),
+                "created_at": _ANTHROPIC_EPOCH,
+                "owned_by": "alias",
+                "display_name": alias["alias_name"],
+                "display": alias["alias_name"],
+                "lifecycle": "active",
+                "max_tokens": config.MAX_OUTPUT_TOKENS,
+                # Metadata to help clients understand this is an alias
+                "_alias_target": alias["target_model"],
+                "_alias_endpoint": alias.get("target_endpoint"),
+            }
+
+            # Only add if not already in list (avoid duplicates)
+            if not any(e["id"] == alias["alias_name"] for e in entries):
+                entries.append(alias_entry)
+
+        # Add custom endpoint models (but skip those that are aliased)
+        from src.backend import endpoints
+        user_endpoints = [
+            ep for ep in endpoints.list_endpoints_db()
+            if ep.get("account_id") == account_id and ep.get("enabled")
+        ]
+
+        for ep in user_endpoints:
+            ep_models = ep.get("enabled_models") or ep.get("models") or []
+            for model in ep_models:
+                # Skip if this model is aliased (user wants to hide original name)
+                if (model, ep["name"]) in aliased_models:
+                    continue
+
+                # Add endpoint model if not already in list
+                if not any(e["id"] == model for e in entries):
+                    entries.append({
+                        "id": model,
+                        "object": "model",
+                        "type": "model",
+                        "created": 0,
+                        "created_at": _ANTHROPIC_EPOCH,
+                        "owned_by": f"custom_endpoint:{ep['name']}",
+                        "display_name": model,
+                        "display": model,
+                        "lifecycle": "active",
+                        "max_tokens": config.MAX_OUTPUT_TOKENS,
+                        "_custom_endpoint": ep["name"],
+                    })
+
     return {
         "object": "list",
         "data": entries,
@@ -121,8 +200,8 @@ async def api_root(
     reach its gateway reports it as a model problem rather than a network one.
     """
     auth = _resolve_auth(authorization, x_api_key)
-    _check_auth(auth)
-    return _models_payload()
+    account = _check_auth(auth)
+    return _models_payload(account)
 
 
 @app.get("/v1/models")
@@ -131,8 +210,8 @@ async def list_models(
     x_api_key: str | None = Header(default=None),
 ) -> Dict[str, Any]:
     auth = _resolve_auth(authorization, x_api_key)
-    _check_auth(auth)
-    return _models_payload()
+    account = _check_auth(auth)
+    return _models_payload(account)
 
 
 @app.get("/v1/models/{model_id:path}")

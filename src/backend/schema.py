@@ -122,6 +122,25 @@ def init_config_tables() -> None:
                     used_by TEXT
                 );
                 CREATE INDEX IF NOT EXISTS idx_invite_expiry ON invite_codes(expires_at);
+
+                -- Model aliases for model name spoofing and routing
+                CREATE TABLE IF NOT EXISTS model_aliases (
+                    alias_id TEXT PRIMARY KEY,
+                    account_id TEXT NOT NULL,
+                    account_key_id TEXT DEFAULT NULL,
+                    alias_name TEXT NOT NULL,
+                    target_model TEXT NOT NULL,
+                    target_endpoint TEXT DEFAULT NULL,
+                    enabled INTEGER DEFAULT 1,
+                    label TEXT DEFAULT '',
+                    created_at INTEGER NOT NULL,
+                    updated_at INTEGER NOT NULL,
+                    UNIQUE(account_id, account_key_id, alias_name)
+                );
+                CREATE INDEX IF NOT EXISTS idx_model_aliases_lookup
+                    ON model_aliases(account_id, account_key_id, alias_name, enabled);
+                CREATE INDEX IF NOT EXISTS idx_model_aliases_account
+                    ON model_aliases(account_id, enabled);
             """)
             c.commit()
 
@@ -201,6 +220,15 @@ def init_config_tables() -> None:
             # Migration: add pool_assignments to custom_endpoints
             try:
                 c.execute("ALTER TABLE custom_endpoints ADD COLUMN pool_assignments TEXT DEFAULT '{}'")
+            except Exception:
+                pass
+
+            # Migration: add account_key_id to custom_endpoints.
+            # This allows admin to assign endpoint to a specific key auth instead of whole account.
+            # If account_key_id is set, it takes precedence over account_id.
+            # If both empty, endpoint is global (not recommended but allowed).
+            try:
+                c.execute("ALTER TABLE custom_endpoints ADD COLUMN account_key_id TEXT DEFAULT ''")
             except Exception:
                 pass
 

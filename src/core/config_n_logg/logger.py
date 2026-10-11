@@ -19,6 +19,15 @@ def _ensure_log_dir():
     _LOG_DIR.mkdir(parents=True, exist_ok=True)
 
 
+class SafeRotatingFileHandler(RotatingFileHandler):
+    """Avoid Windows PermissionError during log file rollover when watched."""
+    def doRollover(self):
+        try:
+            super().doRollover()
+        except PermissionError:
+            pass
+
+
 def setup_logger(name: str, filename: str, console: bool = True) -> logging.Logger:
     logger = logging.getLogger(name)
     if logger.handlers:
@@ -33,7 +42,7 @@ def setup_logger(name: str, filename: str, console: bool = True) -> logging.Logg
         logger.addHandler(stream_handler)
 
     _ensure_log_dir()
-    file_handler = RotatingFileHandler(
+    file_handler = SafeRotatingFileHandler(
         filename=str(_LOG_DIR / filename),
         maxBytes=10 * 1024 * 1024,
         backupCount=3,

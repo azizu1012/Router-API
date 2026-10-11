@@ -1,6 +1,7 @@
 import json
 import uuid
 import time
+from typing import Any, Dict, Optional, List
 from fastapi import Header, HTTPException, Request
 from fastapi.responses import JSONResponse, StreamingResponse
 
@@ -23,6 +24,30 @@ def _error_type(status_code: int) -> str:
             404: "invalid_request_error",
             429: "rate_limit_error",
             }.get(status_code, "api_error")
+
+
+def _spoof_model_name_in_response(result: dict, original_name: str) -> dict:
+    """Replace model name in response with original alias name.
+
+    Client sent "claude-3-5-sonnet" (alias) → we routed to "gemini-flash" (target)
+    → response must say "claude-3-5-sonnet" to match client expectation.
+    """
+    if not result or not isinstance(result, dict):
+        return result
+
+    # Update model in response
+    if "model" in result:
+        result["model"] = original_name
+
+    # Update in choices (for chat completions)
+    if "choices" in result:
+        for choice in result.get("choices", []):
+            if isinstance(choice, dict) and "message" in choice:
+                msg = choice["message"]
+                if isinstance(msg, dict) and "model" in msg:
+                    msg["model"] = original_name
+
+    return result
 
 
 def _extract_response_text(result: dict) -> str:
@@ -472,9 +497,86 @@ async def chat_completions(
 
     try:
         requested_model = body.get("model", "")
+        original_model_name = requested_model  # Save for response spoofing
+
+        # Resolve model alias if exists
+        from src.logical_HQ_translator.alias_resolver import resolve_model_alias
+        account_id = str(account.get("account_id") or "")
+        account_key_id = account.get("token_key_id") or account.get("account_key_id")
+
+        resolved_model, alias_info = resolve_model_alias(
+            requested_model,
+            account_id,
+            account_key_id
+        )
+
+        # If alias found, update body with resolved model
+        if alias_info:
+            body["model"] = resolved_model
+            # Store original name for response spoofing
+            body["_original_model_name"] = original_model_name
+            body["_alias_info"] = alias_info
+
+        # Route directly to custom endpoint if specified in alias
+        target_ep_name = alias_info.get("target_endpoint") if alias_info else None
+        if target_ep_name:
+            from src.backend.endpoints import get_endpoint_db
+            custom_ep = get_endpoint_db(target_ep_name)
+            if custom_ep and custom_ep.get("enabled", True):
+                from src.core.providers.custom_endpoint_passthrough import call_custom_endpoint_passthrough
+                stream = body.get("stream", False)
+                if stream:
+                    _, stream_gen = await call_custom_endpoint_passthrough(
+                        endpoint=custom_ep,
+                        model=resolved_model,
+                        messages=body.get("messages", []),
+                        stream=True,
+                        temperature=body.get("temperature"),
+                        max_tokens=body.get("max_tokens"),
+                        tools=body.get("tools"),
+                        extra_body=body.get("extra_body"),
+                        tool_choice=body.get("tool_choice"),
+                        response_format=body.get("response_format"),
+                    )
+                    async def _custom_safe_stream():
+                        if stream_gen is not None:
+                            async for chunk in stream_gen:
+                                c_dict = getattr(chunk, "raw", chunk if isinstance(chunk, dict) else {})
+                                if original_model_name and isinstance(c_dict, dict):
+                                    c_dict["model"] = original_model_name
+                                yield f"data: {json.dumps(c_dict, ensure_ascii=False)}\n\n".encode("utf-8")
+                        yield b"data: [DONE]\n\n"
+                    return StreamingResponse(_custom_safe_stream(), media_type="text/event-stream")
+                else:
+                    resp, _ = await call_custom_endpoint_passthrough(
+                        endpoint=custom_ep,
+                        model=resolved_model,
+                        messages=body.get("messages", []),
+                        stream=False,
+                        temperature=body.get("temperature"),
+                        max_tokens=body.get("max_tokens"),
+                        tools=body.get("tools"),
+                        extra_body=body.get("extra_body"),
+                        tool_choice=body.get("tool_choice"),
+                        response_format=body.get("response_format"),
+                    )
+                    def _ns_to_dict(obj: Any) -> Any:
+                        if isinstance(obj, dict):
+                            return {k: _ns_to_dict(v) for k, v in obj.items()}
+                        elif isinstance(obj, list):
+                            return [_ns_to_dict(v) for v in obj]
+                        elif hasattr(obj, "__dict__"):
+                            return {k: _ns_to_dict(v) for k, v in vars(obj).items() if not k.startswith("_")}
+                        return obj
+                    resp_converted = _ns_to_dict(resp)
+                    resp_dict: Dict[str, Any] = resp_converted if isinstance(resp_converted, dict) else {"choices": []}
+                    if original_model_name:
+                        resp_dict = _spoof_model_name_in_response(resp_dict, original_model_name)
+                    return JSONResponse(content=resp_dict)
+
         from src.core.api_config import AVAILABLE_MODELS, MODEL_CONTEXT_LENGTH
         from src.core.router import router
-        model_alias = router.resolve_model_alias(requested_model)
+        model_alias = router.resolve_model_alias(body.get("model", ""))
         model_cfg = AVAILABLE_MODELS.get(model_alias)
         limit_tokens = model_cfg.get("context_length", MODEL_CONTEXT_LENGTH) if model_cfg else MODEL_CONTEXT_LENGTH
 
@@ -515,6 +617,18 @@ async def chat_completions(
             async def _safe_stream():
                 try:
                     async for chunk in opencode_proxy.stream_chat_completion(body, account=account, is_opencode=False):
+                        # Spoof model name in streaming chunks if needed
+                        if body.get("_original_model_name"):
+                            try:
+                                if chunk.startswith(b"data: "):
+                                    data_str = chunk.decode("utf-8").removeprefix("data: ").strip()
+                                    if data_str and data_str != "[DONE]":
+                                        chunk_data = json.loads(data_str)
+                                        if "model" in chunk_data:
+                                            chunk_data["model"] = body["_original_model_name"]
+                                        chunk = f"data: {json.dumps(chunk_data, ensure_ascii=False)}\n\n".encode("utf-8")
+                            except Exception:
+                                pass  # If parsing fails, forward original chunk
                         yield chunk
                 except Exception as e:
                     logger_api.warning("[Completion Route] Stream error caught: %s", e)
@@ -529,6 +643,11 @@ async def chat_completions(
                 headers=response_headers,
             )
         result = await opencode_proxy.chat_completion(body, account=account, is_opencode=False)
+
+        # Spoof model name in non-streaming response if needed
+        if body.get("_original_model_name"):
+            result = _spoof_model_name_in_response(result, body["_original_model_name"])
+
         return JSONResponse(content=result, headers=response_headers)
     except Exception as e:
         logger_api.error("chat_completion failed: %s", e)
@@ -566,6 +685,27 @@ async def chat_completions(
             return JSONResponse(
                 status_code=503,
                 content={"error": {"message": "All keys are temporarily frozen, retry later", "type": "overloaded_error"}},
+            )
+        if "custom endpoint" in msg.lower():
+            import re
+            m = re.search(r"HTTP (\d{3}):\s*(.*)", msg, re.DOTALL)
+            status_code = int(m.group(1)) if m else 502
+            err_text = m.group(2).strip() if m else msg
+            err_msg = err_text
+            try:
+                err_json = json.loads(err_text)
+                if isinstance(err_json, dict) and "error" in err_json:
+                    err_msg = err_json["error"].get("message") or str(err_json["error"])
+            except Exception:
+                pass
+            return JSONResponse(
+                status_code=status_code,
+                content={
+                    "error": {
+                        "message": f"Custom endpoint error ({status_code}): {err_msg}",
+                        "type": _error_type(status_code),
+                    }
+                },
             )
         return JSONResponse(
             status_code=503,
@@ -837,6 +977,22 @@ async def anthropic_messages(
             content={"type": "error", "error": {"type": "invalid_request_error", "message": "`messages` is required"}},
         )
 
+    # Resolve model alias if exists
+    requested_model = body.get("model", "")
+    from src.logical_HQ_translator.alias_resolver import resolve_model_alias
+    account_id = str(account.get("account_id") or "")
+    account_key_id = account.get("token_key_id") or account.get("account_key_id")
+
+    resolved_model, alias_info = resolve_model_alias(
+        requested_model,
+        account_id,
+        account_key_id,
+    )
+    if alias_info:
+        body["model"] = resolved_model
+        body["_original_model_name"] = requested_model
+        body["_alias_info"] = alias_info
+
     # Inject instruction to completely ban image reading in Claude Code proxy prompt
     image_ban_instruction = (
         "\n[IMPORTANT: Image analysis, multimodal features, and image input are completely disabled in this environment. "
@@ -951,6 +1107,29 @@ async def anthropic_messages(
                 status_code=503,
                 headers=response_headers,
                 content={"type": "error", "error": {"type": "overloaded_error", "message": "All keys are temporarily frozen or exhausted, retry later."}},
+            )
+        if "custom endpoint" in msg.lower():
+            import re
+            m = re.search(r"HTTP (\d{3}):\s*(.*)", msg, re.DOTALL)
+            status_code = int(m.group(1)) if m else 502
+            err_text = m.group(2).strip() if m else msg
+            err_msg = err_text
+            try:
+                err_json = json.loads(err_text)
+                if isinstance(err_json, dict) and "error" in err_json:
+                    err_msg = err_json["error"].get("message") or str(err_json["error"])
+            except Exception:
+                pass
+            return JSONResponse(
+                status_code=status_code,
+                headers=response_headers,
+                content={
+                    "type": "error",
+                    "error": {
+                        "type": "invalid_request_error" if status_code in (400, 404) else "api_error",
+                        "message": f"Custom endpoint error ({status_code}): {err_msg}",
+                    },
+                },
             )
         return JSONResponse(
             status_code=503,

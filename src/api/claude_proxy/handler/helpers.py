@@ -1,6 +1,6 @@
 from typing import Any, Dict, List, Optional
 
-def get_system_status_summary(model_alias: str, reason: str = "pool_exhausted") -> str:
+def get_system_status_summary(model_alias: str, reason: str = "pool_exhausted", error_details: str = "") -> str:
     if reason in ("rate_limit", "rate_limit_rpd", "rate_limit_rpm_tpm"):
         msg = (
             "⚠️ **[Tạm thời vượt giới hạn tốc độ / Rate Limit Reached]** ⚠️\n\n"
@@ -12,7 +12,7 @@ def get_system_status_summary(model_alias: str, reason: str = "pool_exhausted") 
     elif reason in ("unavailable", "server_error"):
         msg = (
             "⚠️ **[Dịch vụ tạm thời không khả dụng / Service Unavailable]** ⚠️\n\n"
-            "API Gemini đang tạm thời không phản hồi (503/500). Đây là lỗi server tạm thời.\n\n"
+            "API đang tạm thời không phản hồi (503/500). Đây là lỗi server tạm thời.\n\n"
             "**Hướng xử lý:**\n"
             "1. **Đợi 30-60 giây** rồi thử lại.\n"
             "2. Hệ thống sẽ tự động thử lại với key/model khác ở request tiếp theo."
@@ -20,21 +20,25 @@ def get_system_status_summary(model_alias: str, reason: str = "pool_exhausted") 
     elif reason in ("billing_error", "invalid_key"):
         msg = (
             "⚠️ **[Lỗi xác thực API / Auth Error]** ⚠️\n\n"
-            "Một số API key đang gặp vấn đề billing hoặc không hợp lệ. Hệ thống đã tự động loại key đó.\n\n"
+            "API key đang gặp vấn đề billing hoặc không hợp lệ. Hệ thống đã tự động loại key đó.\n\n"
             "**Hướng xử lý:**\n"
             "1. Thử lại ngay — hệ thống sẽ dùng key khác.\n"
-            "2. Nếu vẫn lỗi liên tục, kiểm tra lại danh sách API key trong dashboard."
+            "2. Nếu vẫn lỗi liên tục, kiểm tra lại cấu hình API key của bạn."
         )
     else:
-        # Generic pool exhausted — could be rate limit cascade
+        # Generic pool exhausted — could be rate limit cascade or unhandled 400 Bad Request
         msg = (
-            "⚠️ **[Hệ thống quá tải tạm thời / System Overloaded]** ⚠️\n\n"
-            "Tất cả các model/key trong pool đã được dùng hết hoặc đang bị rate limit. "
+            "⚠️ **[Hệ thống quá tải hoặc Lỗi Endpoint / System Error]** ⚠️\n\n"
+            "Tất cả các model/key trong pool đã được dùng hết, đang bị rate limit, hoặc endpoint tùy chỉnh từ chối request. "
             "Đây **không phải lỗi context** của bạn.\n\n"
             "**Hướng xử lý nhanh:**\n"
             "1. **Đợi 15-30 giây** để hệ thống tự động reset rate limit rồi thử lại.\n"
-            "2. Nếu context thực sự lớn (>100k tokens), chạy `/compact` để giảm tải."
+            "2. Nếu bạn dùng Custom Endpoint, hãy kiểm tra lại URL và cấu hình model."
         )
+        
+    if error_details:
+        msg += f"\n\n---\n**Chi tiết lỗi từ hệ thống (Log):**\n```\n{error_details}\n```"
+        
     return msg
 
 

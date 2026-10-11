@@ -3,9 +3,9 @@ import { useApp } from './context/AppContext';
 import { t } from './utils/i18n';
 import CanvasParticles from './components/CanvasParticles';
 import ThemeLanguageSelector from './components/ThemeLanguageSelector';
-import { 
-  LayoutDashboard, Key, Users, PieChart, Network, 
-  AlertTriangle,   ShieldCheck, User, BarChart3, LogOut, Lock, Eye, EyeOff, Settings, Terminal, Layers, BookOpen
+import {
+  LayoutDashboard, Key, Users, PieChart, Network,
+  AlertTriangle, ShieldCheck, User, BarChart3, LogOut, Lock, Eye, EyeOff, Settings, Terminal, Layers, BookOpen, Sparkles
 } from 'lucide-react';
 import LogHistoryModal from './components/LogHistoryModal';
 
@@ -22,6 +22,7 @@ import MyUsageTab from './tabs/MyUsageTab';
 import SettingsTab from './tabs/SettingsTab';
 import ApiHelpTab from './tabs/ApiHelpTab';
 import ModelsTab from './tabs/ModelsTab';
+import ModelAliasesTab from './tabs/ModelAliasesTab';
 
 export default function App() {
   const { 
@@ -429,16 +430,16 @@ export default function App() {
                 <span>{t('nav_mu', lang)}</span>
               </button>
 
-              <button 
-                onClick={() => setActiveTab('md')} 
+              <button
+                onClick={() => setActiveTab('md')}
                 className={`btn btn-xs lg:btn-sm btn-ghost justify-start gap-2 lg:gap-3 normal-case font-medium w-auto lg:w-full text-left rounded-xl shrink-0 whitespace-nowrap ${activeTab === 'md' ? 'bg-primary/15 text-primary font-bold border border-primary/20' : 'text-base-content/75'}`}
               >
                 <Layers className="w-4 h-4" />
                 <span>{t('nav_md', lang)}</span>
               </button>
 
-              <button 
-                onClick={() => setActiveTab('st')} 
+              <button
+                onClick={() => setActiveTab('st')}
                 className={`btn btn-xs lg:btn-sm btn-ghost justify-start gap-2 lg:gap-3 normal-case font-medium w-auto lg:w-full text-left rounded-xl shrink-0 whitespace-nowrap ${activeTab === 'st' ? 'bg-primary/15 text-primary font-bold border border-primary/20' : 'text-base-content/75'}`}
               >
                 <Settings className="w-4 h-4" />
@@ -458,6 +459,14 @@ export default function App() {
           )}
 
           {/* User Navigation (Available for both admin and users) */}
+          <button
+            onClick={() => setActiveTab('ma')}
+            className={`btn btn-xs lg:btn-sm btn-ghost justify-start gap-2 lg:gap-3 normal-case font-medium w-auto lg:w-full text-left rounded-xl shrink-0 whitespace-nowrap ${activeTab === 'ma' ? 'bg-primary/15 text-primary font-bold border border-primary/20' : 'text-base-content/75'}`}
+          >
+            <Sparkles className="w-4 h-4 text-primary" />
+            <span>Model Aliases</span>
+          </button>
+
           <button 
             onClick={() => setActiveTab('myacc')} 
             className={`btn btn-xs lg:btn-sm btn-ghost justify-start gap-2 lg:gap-3 normal-case font-medium w-auto lg:w-full text-left rounded-xl shrink-0 whitespace-nowrap ${activeTab === 'myacc' ? 'bg-primary/15 text-primary font-bold border border-primary/20' : 'text-base-content/75'}`}
@@ -515,10 +524,11 @@ export default function App() {
             {activeTab === 'pe' && <PenaltiesTab />}
             {activeTab === 'mu' && <PoolStructureTab />}
             {activeTab === 'md' && <ModelsTab />}
+            {activeTab === 'ma' && <ModelAliasesTab />}
             {activeTab === 'myacc' && <MyAccountTab />}
             {activeTab === 'myuse' && <MyUsageTab />}
             {activeTab === 'st' && <SettingsTab />}
-      {activeTab === 'help' && <ApiHelpTab />}
+            {activeTab === 'help' && <ApiHelpTab />}
           </div>
         </main>
       </div>

@@ -225,35 +225,28 @@ class CustomEndpointManager:
         return r
 
     # ── Pool assignments ─────────────────────────────────────────
+    # DEPRECATED: Custom endpoints are no longer pool members.
+    # Use account_id or account_key_id assignment instead.
+    # These methods are kept for backward compatibility during migration.
 
     def assign_pool_model(self, name: str, pool_name: str, model_id: str) -> Optional[Dict[str, Any]]:
-        ep = self.get(name)
-        if not ep:
-            return None
-        pool_assignments = dict(ep.get("pool_assignments", {}))
-        pool_assignments[pool_name] = model_id
-        r = update_endpoint_db(name, pool_assignments=pool_assignments)
-        if r:
-            self._invalidate_cache()
-        return r
+        """DEPRECATED: Use assign_to_account() or assign_to_key() instead.
+
+        Custom endpoints no longer participate in pool rotation.
+        Pool assignments are ignored by the new passthrough routing.
+        """
+        logger.warning("[DEPRECATED] assign_pool_model() is deprecated. Use account/key assignment instead.")
+        logger.warning("[DEPRECATED] Pool assignments are ignored - custom endpoints now use passthrough routing.")
+        return None
 
     def remove_pool_model(self, name: str, pool_name: str) -> Optional[Dict[str, Any]]:
-        ep = self.get(name)
-        if not ep:
-            return None
-        pool_assignments = dict(ep.get("pool_assignments", {}))
-        if pool_name in pool_assignments:
-            del pool_assignments[pool_name]
-        r = update_endpoint_db(name, pool_assignments=pool_assignments)
-        if r:
-            self._invalidate_cache()
-        return r
+        """DEPRECATED: Pool assignments are no longer used."""
+        logger.warning("[DEPRECATED] remove_pool_model() is deprecated and has no effect.")
+        return None
 
     def get_pool_assignments(self, name: str) -> Dict[str, str]:
-        ep = self.get(name)
-        if not ep:
-            return {}
-        return ep.get("pool_assignments", {})
+        """DEPRECATED: Returns empty dict. Pool assignments are no longer used."""
+        return {}
 
     # ── Model fetching ───────────────────────────────────────────
 

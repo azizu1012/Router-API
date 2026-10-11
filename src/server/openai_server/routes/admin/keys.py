@@ -7,6 +7,35 @@ from ..auth_session import _require_admin
 from .helpers import append_key_to_env, remove_key_from_env, normalize_key_name
 
 
+@app.get("/dashboard/admin/keys/list/{account_id}")
+async def admin_list_account_keys(request: Request, account_id: str):
+    """List all keys for a specific account (for UI dropdown when assigning endpoints)."""
+    _require_admin(request)
+
+    from src.backend.accounts import find_account_by_name
+    from src.backend.account_keys import get_keys_for_account
+
+    acct = find_account_by_name(account_id)
+    if not acct:
+        raise HTTPException(status_code=404, detail=f"Account '{account_id}' not found")
+
+    keys = get_keys_for_account(acct["account_id"])
+
+    # Return simplified key info for UI
+    return {
+        "status": "success",
+        "account_id": account_id,
+        "keys": [
+            {
+                "key_id": k["key_id"],
+                "prefix": k["key_id"][:12] + "..." if len(k["key_id"]) > 12 else k["key_id"],
+                "created_at": k.get("created_at"),
+            }
+            for k in keys
+        ]
+    }
+
+
 @app.post("/dashboard/admin/keys/add")
 async def admin_add_key(request: Request):
     _require_admin(request)

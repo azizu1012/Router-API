@@ -30,6 +30,7 @@ async def opencode_chat_completions(
         )
 
     model_alias = body.get("model", "")
+    requested_model = model_alias
     response_headers = {
         "anthropic-version": "2023-06-01",
         "Cache-Control": "no-cache",
@@ -38,6 +39,20 @@ async def opencode_chat_completions(
     }
 
     try:
+        # Resolve model alias if user defined one
+        from src.logical_HQ_translator.alias_resolver import resolve_model_alias
+        account_id = str(account.get("account_id") or "")
+        account_key_id = account.get("token_key_id") or account.get("account_key_id")
+        resolved_model, alias_info = resolve_model_alias(
+            requested_model,
+            account_id,
+            account_key_id,
+        )
+        if alias_info:
+            body["model"] = resolved_model
+            body["_original_model_name"] = requested_model
+            body["_alias_info"] = alias_info
+
         # Resolve model alias early so sub-agent override is applied for limits and headers
         model_alias = await opencode_proxy._resolve_alias(body, account=account, is_opencode=True)
         body["model"] = model_alias
@@ -73,6 +88,17 @@ async def opencode_chat_completions(
             async def _safe_stream():
                 try:
                     async for chunk in opencode_proxy.stream_chat_completion(body, account=account, is_opencode=True):
+                        if body.get("_original_model_name"):
+                            try:
+                                if chunk.startswith(b"data: "):
+                                    data_str = chunk.decode("utf-8").removeprefix("data: ").strip()
+                                    if data_str and data_str != "[DONE]":
+                                        chunk_data = json.loads(data_str)
+                                        if "model" in chunk_data:
+                                            chunk_data["model"] = body["_original_model_name"]
+                                        chunk = f"data: {json.dumps(chunk_data, ensure_ascii=False)}\n\n".encode("utf-8")
+                            except Exception:
+                                pass
                         yield chunk
                 except Exception as e:
                     logger_api.warning("[OpenCode Route] Stream error caught: %s", e)
@@ -89,6 +115,9 @@ async def opencode_chat_completions(
             )
         else:
             resp_dict = await opencode_proxy.chat_completion(body, account=account, is_opencode=True)
+            if body.get("_original_model_name") and isinstance(resp_dict, dict):
+                from .completions_routes import _spoof_model_name_in_response
+                resp_dict = _spoof_model_name_in_response(resp_dict, body["_original_model_name"])
             resp_content = "?"
             if isinstance(resp_dict, dict):
                 choices = resp_dict.get("choices", [])

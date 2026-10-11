@@ -324,17 +324,72 @@ class ClaudeProxyStreamMixin:
 
             stop_sequences = (sampling_params or {}).get("stop_sequences")
 
-            stream = pool_manager.call_stream(
-                model_alias=model_alias,
-                messages=openai_messages,
-                tools=openai_tools or None,
-                temperature=temperature,
-                max_tokens=max_tokens,
-                thinking_config=thinking_config,
-                account=account,
-                thinking_params=thinking_params,
-                sampling_params=sampling_params,
+            # NEW: Check for custom endpoint passthrough BEFORE pool logic
+            from src.core.providers.custom_endpoint_passthrough import (
+                resolve_custom_endpoint_for_request,
+                call_custom_endpoint_passthrough,
             )
+
+            # Only resolve custom endpoint on first call (not recursion)
+            custom_ep = None
+            if recursion_depth == 0:
+                custom_ep = await resolve_custom_endpoint_for_request(
+                    account=account,
+                    account_key_id=account.get("token_key_id") or account.get("key_id") if account else None,
+                    requested_model=body.get("model", ""),
+                    alias_info=body.get("_alias_info"),
+                )
+
+            if custom_ep:
+                # Custom endpoint: pure passthrough stream, no pool, no retry
+                logger.info("[Claude Stream] Using custom endpoint passthrough: %s", custom_ep.get("name"))
+                try:
+                    tool_choice = extract_tool_choice(body)
+
+                    _, stream_gen = await call_custom_endpoint_passthrough(
+                        endpoint=custom_ep,
+                        model=body.get("model", ""),
+                        messages=openai_messages,
+                        stream=True,
+                        temperature=temperature,
+                        max_tokens=max_tokens,
+                        tools=openai_tools or None,
+                        extra_body=sampling_params,
+                        tool_choice=tool_choice,
+                    )
+
+                    # Wrap custom endpoint stream to match pool_manager format
+                    async def custom_stream_wrapper():
+                        if stream_gen is not None:
+                            async for chunk in stream_gen:
+                                # Pool manager yields dicts with {chunk, api_key, model_id}
+                                yield {
+                                    "chunk": chunk,
+                                    "api_key": custom_ep["auth_key"],
+                                    "model_id": body.get("model", ""),
+                                    "input_tokens": 0,  # Custom endpoints don't report this
+                                }
+
+                    stream = custom_stream_wrapper()
+                except RuntimeError as e:
+                    # Custom endpoint errors are NOT retried - return error event immediately
+                    logger.error("[Claude Stream] Custom endpoint error: %s", e)
+                    error_event = build_error_event(e, "api_error")
+                    yield _sse("error", error_event)
+                    return
+            else:
+                # Standard pool logic for Gemini keys
+                stream = pool_manager.call_stream(
+                    model_alias=model_alias,
+                    messages=openai_messages,
+                    tools=openai_tools or None,
+                    temperature=temperature,
+                    max_tokens=max_tokens,
+                    thinking_config=thinking_config,
+                    account=account,
+                    thinking_params=thinking_params,
+                    sampling_params=sampling_params,
+                )
 
             # message_start is emitted before the pool is even pulled, so it is
             # unconditionally the first event. Anthropic documents the order as
@@ -360,7 +415,7 @@ class ClaudeProxyStreamMixin:
                         "id": msg_id,
                         "type": "message",
                         "role": "assistant",
-                        "model": body.get("model") or model_alias,
+                        "model": body.get("_original_model_name") or body.get("model") or model_alias,
                         "content": [],
                         "stop_reason": None,
                         "stop_sequence": None,
@@ -811,7 +866,9 @@ class ClaudeProxyStreamMixin:
             if recursion_depth == 0:
                 from src.core.sub_agent_detect import is_sub_agent_body
                 if is_sub_agent_body(body):
-                    summary_text = get_system_status_summary(model_alias)
+                    from .helpers import _classify_error_reason
+                    reason = _classify_error_reason(str(e))
+                    summary_text = get_system_status_summary(model_alias, reason, str(e))
                     fake_result = {
                         "id": "msg_err_" + uuid.uuid4().hex[:8],
                         "type": "message",

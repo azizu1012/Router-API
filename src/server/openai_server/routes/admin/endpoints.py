@@ -200,3 +200,71 @@ async def admin_refresh_endpoint(request: Request):
     from src.core.providers import _custom_endpoint_manager
     models = await _custom_endpoint_manager.fetch_models(name)
     return {"status": "success", "models": models, "count": len(models)}
+
+
+@app.post("/dashboard/admin/endpoints/assign-to-key")
+async def admin_assign_endpoint_to_key(request: Request):
+    """Assign custom endpoint to a specific account key (key-level assignment).
+
+    This is more granular than account-level assignment:
+    - Account-level: All keys in account use this endpoint
+    - Key-level: Only specific key uses this endpoint
+
+    Body:
+        {
+            "endpoint_name": "my-endpoint",
+            "key_id": "sk-abc123",  # Optional - empty to unassign
+            "account_id": "admin"   # Owner of the key
+        }
+    """
+    _require_admin(request)
+    try:
+        body = await request.json()
+        endpoint_name = str(body.get("endpoint_name", "")).strip()
+        key_id = str(body.get("key_id", "")).strip()
+        account_id = str(body.get("account_id", "")).strip()
+    except Exception:
+        raise HTTPException(status_code=400, detail="Invalid JSON")
+
+    if not endpoint_name:
+        raise HTTPException(status_code=400, detail="endpoint_name is required")
+
+    if not account_id:
+        raise HTTPException(status_code=400, detail="account_id is required")
+
+    from src.backend.endpoints import assign_endpoint_to_key_db
+    from src.backend.accounts import find_account_by_name
+
+    # Verify account exists
+    acct = find_account_by_name(account_id)
+    if not acct:
+        raise HTTPException(status_code=404, detail=f"Account '{account_id}' not found")
+
+    # Verify key exists and belongs to account
+    if key_id:
+        from src.backend.account_keys import get_keys_for_account
+        keys = get_keys_for_account(acct["account_id"])
+        if not any(k["key_id"] == key_id for k in keys):
+            raise HTTPException(
+                status_code=404,
+                detail=f"Key '{key_id}' not found in account '{account_id}'"
+            )
+
+    try:
+        ep = assign_endpoint_to_key_db(endpoint_name, key_id if key_id else None)
+        if not ep:
+            raise HTTPException(status_code=404, detail=f"Endpoint '{endpoint_name}' not found")
+
+        from src.core.providers import _custom_endpoint_manager
+        _custom_endpoint_manager._invalidate_cache()
+
+        return {
+            "status": "success",
+            "endpoint": ep,
+            "message": f"Endpoint '{endpoint_name}' assigned to key '{key_id}'" if key_id else f"Endpoint '{endpoint_name}' key assignment cleared"
+        }
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=str(e))
+

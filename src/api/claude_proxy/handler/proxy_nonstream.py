@@ -131,19 +131,59 @@ class ClaudeProxyNonstreamMixin:
         msg = None
         used_api_key = ""
         used_model_id = ""
+
+        # Check for custom endpoint passthrough BEFORE pool logic
+        from src.core.providers.custom_endpoint_passthrough import (
+            resolve_custom_endpoint_for_request,
+            call_custom_endpoint_passthrough,
+        )
+        custom_ep = await resolve_custom_endpoint_for_request(
+            account=account,
+            account_key_id=account.get("token_key_id") or account.get("key_id") if account else None,
+            requested_model=body.get("model", ""),
+            alias_info=body.get("_alias_info"),
+        )
+
         while recursion_depth < 5:
-            result = await pool_manager.call_nonstream(
-                model_alias=model_alias,
-                messages=openai_messages,
-                tools=openai_tools or None,
-                temperature=temperature,
-                max_tokens=max_tokens,
-                thinking_config=thinking_config,
-                account=account,
-                extra_body=None,
-                thinking_params=thinking_params,
-                sampling_params=sampling_params,
-            )
+            if custom_ep:
+                # Custom endpoint: pure passthrough, no pool, no retry
+                logger.info("[Claude NonStream] Using custom endpoint passthrough: %s", custom_ep.get("name"))
+                try:
+                    resp, _ = await call_custom_endpoint_passthrough(
+                        endpoint=custom_ep,
+                        model=body.get("model", ""),
+                        messages=openai_messages,
+                        stream=False,
+                        temperature=temperature,
+                        max_tokens=max_tokens,
+                        tools=openai_tools or None,
+                        extra_body=sampling_params,
+                        tool_choice=tool_choice,
+                    )
+                    result = {
+                        "response": resp,
+                        "api_key": custom_ep["auth_key"],
+                        "model_id": body.get("model", ""),
+                    }
+                except RuntimeError as e:
+                    # Custom endpoint errors are NOT retried - return to user immediately
+                    error_msg = str(e)
+                    logger.error("[Claude NonStream] Custom endpoint error: %s", error_msg)
+                    raise RuntimeError(f"Custom endpoint failed: {error_msg}")
+            else:
+                # Standard pool logic for Gemini keys
+                result = await pool_manager.call_nonstream(
+                    model_alias=model_alias,
+                    messages=openai_messages,
+                    tools=openai_tools or None,
+                    temperature=temperature,
+                    max_tokens=max_tokens,
+                    thinking_config=thinking_config,
+                    account=account,
+                    extra_body=None,
+                    thinking_params=thinking_params,
+                    sampling_params=sampling_params,
+                )
 
             resp = result["response"]
             used_api_key = result.get("api_key", "") or ""
@@ -377,7 +417,7 @@ class ClaudeProxyNonstreamMixin:
             "id": "msg_" + uuid.uuid4().hex[:24],
             "type": "message",
             "role": "assistant",
-            "model": body.get("model") or model_alias,
+            "model": body.get("_original_model_name") or body.get("model") or model_alias,
             "content": content_blocks,
             "stop_reason": stop_reason,
             "stop_sequence": stop_sequence,
