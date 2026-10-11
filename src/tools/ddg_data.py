@@ -171,3 +171,29 @@ class SearchDataMixin:
         "patch": "patch",
         "schedule": "schedule",
     }
+
+    # ponytail: tiered domain authority weights; extend when adding topic-specific curated lists
+    TIER1_AUTHORITY_DOMAINS = {
+        "github.com", "gitlab.com", "arxiv.org", "ietf.org", "w3.org",
+        "modelcontextprotocol.io", "python.org", "rust-lang.org", "go.dev", "golang.org",
+        "pypi.org", "npmjs.com", "crates.io", "huggingface.co",
+        "google.com", "deepmind.google", "blog.google", "ai.google.dev", "cloud.google.com",
+        "anthropic.com", "openai.com", "microsoft.com", "apple.com", "meta.com", "aws.amazon.com",
+        "developer.mozilla.org", "docs.python.org", "fastapi.tiangolo.com",
+    }
+
+    TIER1_AUTHORITY_PATTERNS = (
+        "docs.", "api.", "developer.", "spec.", "specification.",
+        ".gov", ".edu", ".ac.", "gov.vn", "edu.vn"
+    )
+
+    TIER2_REPUTABLE_DOMAINS = {
+        "theverge.com", "arstechnica.com", "techcrunch.com", "reuters.com", "bloomberg.com",
+        "wired.com", "stackoverflow.com", "stackexchange.com", "wikipedia.org", "zdnet.com",
+        "tomshardware.com", "anandtech.com", "venturebeat.com", "infoworld.com"
+    }
+
+    TIER4_SPAM_SEO_DOMAINS = {
+        "tokencalc.dev", "whichllm.io", "projedefteri.com", "hackaigc.com", "shattered.io",
+        "prompeteer.ai", "lorka.ai", "distk.in",
+    }

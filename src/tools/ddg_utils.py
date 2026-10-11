@@ -1,11 +1,12 @@
 # pyright: reportAttributeAccessIssue=false
 
 import re
+import json
 import unicodedata
 import dateparser
 from bs4 import BeautifulSoup
 from datetime import datetime, timedelta
-from typing import Dict, List, Tuple, Optional
+from typing import Dict, List, Tuple, Optional, Any
 from urllib.parse import urlparse, urlunparse, parse_qsl, urlencode
 
 from src.tools.ddg_data import SearchDataMixin
@@ -25,25 +26,132 @@ class SearchUtilsMixin(SearchDataMixin):
         try:
             return dateparser.parse(text, languages=['vi', 'en'])
         except Exception as e:
-            self.logger.warning(f"Error parsing date in _extract_date: {e}")
+            if hasattr(self, "logger") and self.logger:
+                self.logger.warning(f"Error parsing date in _extract_date: {e}")
             return None
+
+    def _extract_page_metadata(self, html_text: str) -> Dict[str, Any]:
+        """Extract verified published date and author from HTML meta/json-ld/time tags."""
+        result: Dict[str, Any] = {
+            "published_date": None,
+            "date_str": "",
+            "relative_age": "",
+            "author": "",
+            "has_verified_date": False,
+        }
+        if not html_text:
+            return result
+
+        try:
+            soup = BeautifulSoup(html_text, "lxml")
+            raw_date = None
+
+            # 1. Meta tags
+            meta_date_keys = [
+                {"property": "article:published_time"},
+                {"property": "og:published_time"},
+                {"name": "pubdate"},
+                {"name": "publishdate"},
+                {"name": "date"},
+                {"name": "dc.date"},
+                {"name": "parsely-pub-date"},
+            ]
+            for selector in meta_date_keys:
+                tag = soup.find("meta", selector)
+                if tag and tag.get("content"):
+                    raw_date = tag["content"].strip()
+                    break
+
+            # 2. Schema.org JSON-LD
+            if not raw_date:
+                for script in soup.find_all("script", type="application/ld+json"):
+                    if not script.string:
+                        continue
+                    try:
+                        data = json.loads(script.string)
+                        items = data if isinstance(data, list) else [data]
+                        for item in items:
+                            if isinstance(item, dict):
+                                d = item.get("datePublished") or item.get("dateCreated") or item.get("dateModified")
+                                if d:
+                                    raw_date = str(d).strip()
+                                    break
+                        if raw_date:
+                            break
+                    except Exception:
+                        continue
+
+            # 3. HTML5 <time datetime="...">
+            if not raw_date:
+                time_tag = soup.find("time")
+                if time_tag:
+                    raw_date = time_tag.get("datetime") or time_tag.get_text().strip()
+
+            if raw_date:
+                parsed = self._extract_date(raw_date)
+                if parsed:
+                    result["published_date"] = parsed
+                    result["has_verified_date"] = True
+                    result["date_str"] = parsed.strftime("%d/%m/%Y")
+                    parsed_naive = parsed.replace(tzinfo=None) if getattr(parsed, "tzinfo", None) is not None else parsed
+                    days = (datetime.now() - parsed_naive).days
+                    if days <= 0:
+                        result["relative_age"] = "hôm nay"
+                    elif days == 1:
+                        result["relative_age"] = "hôm qua"
+                    elif days < 30:
+                        result["relative_age"] = f"{days} ngày trước"
+                    elif days < 365:
+                        months = max(1, days // 30)
+                        result["relative_age"] = f"{months} tháng trước"
+                    else:
+                        years = max(1, days // 365)
+                        result["relative_age"] = f"{years} năm trước"
+        except Exception as e:
+            if hasattr(self, "logger") and self.logger:
+                self.logger.warning(f"Error extracting page metadata: {e}")
+
+        return result
 
     def _extract_main_text(self, html_text: str) -> str:
         soup = BeautifulSoup(html_text, 'lxml')
 
         # Loại bỏ các thẻ không cần thiết
-        for tag in soup(["script", "style", "noscript", "svg", "form", "button", "header", "footer", "nav", "aside"]):
+        for tag in soup(["script", "style", "noscript", "svg", "form", "button", "header", "footer", "nav", "aside", "iframe"]):
             tag.decompose()
+
+        # Loại bỏ các block nhiễu theo class/id (TOC, bio, share, newsletter, ads, comments)
+        noise_patterns = re.compile(
+            r"(toc|table-of-contents|author-bio|author-profile|newsletter|subscribe|share-buttons|related-posts|comments|cta|sidebar|advertisement|cookie-banner)",
+            re.IGNORECASE
+        )
+        for noise_el in soup.find_all(True, attrs={"class": noise_patterns}):
+            noise_el.decompose()
+        for noise_el in soup.find_all(True, attrs={"id": noise_patterns}):
+            noise_el.decompose()
 
         # Tìm nội dung chính
         content = soup.find("article") or soup.find("main") or soup.body
         if not content:
             return ""
 
+        # Bảo toàn code blocks với language tag và indentation
+        for pre in content.find_all("pre"):
+            code_tag = pre.find("code")
+            lang = ""
+            if code_tag and code_tag.get("class"):
+                for cls in code_tag.get("class", []):
+                    if cls.startswith(("language-", "lang-")):
+                        lang = cls.split("-", 1)[1]
+                        break
+            code_text = pre.get_text().strip()
+            pre.replace_with(f"\n\n```{lang}\n{code_text}\n```\n\n")
+
         # ponytail: markdown formatting for headings, tables and lists; upgrade when HTML needs full AST parser
         for h in content.find_all(["h1", "h2", "h3", "h4", "h5", "h6"]):
             level = int(h.name[1]) if len(h.name) > 1 and h.name[1].isdigit() else 2
-            h.replace_with(f"\n\n{'#' * level} {h.get_text().strip()}\n")
+            prefix = "#" * level
+            h.replace_with(f"\n\n{prefix} {h.get_text().strip()}\n")
 
         for tr in content.find_all("tr"):
             cells = [td.get_text().strip() for td in tr.find_all(["td", "th"])]
@@ -56,11 +164,26 @@ class SearchUtilsMixin(SearchDataMixin):
         for p in content.find_all("p"):
             p.replace_with(f"\n\n{p.get_text().strip()}\n")
 
-        text = content.get_text()
-        text = re.sub(r"\b(cookie policy|accept cookies|subscribe|advertisement|all rights reserved)\b", " ", text, flags=re.IGNORECASE)
-        text = re.sub(r"[ \t]+", " ", text)
-        text = re.sub(r"\n{3,}", "\n\n", text)
-        return text.strip()
+        raw_text = content.get_text()
+        raw_text = re.sub(r"\b(cookie policy|accept cookies|subscribe|advertisement|all rights reserved)\b", " ", raw_text, flags=re.IGNORECASE)
+
+        lines = []
+        in_code = False
+        for line in raw_text.splitlines():
+            if line.strip().startswith("```"):
+                in_code = not in_code
+                lines.append(line.strip())
+                continue
+            if in_code:
+                lines.append(line)
+            else:
+                cleaned = re.sub(r"[ \t]+", " ", line).strip()
+                if cleaned:
+                    lines.append(cleaned)
+                elif not lines or lines[-1] != "":
+                    lines.append("")
+
+        return "\n".join(lines).strip()
 
     def _extract_query_highlight(self, text: str, query: str, max_chars: int = 2500) -> str:
         """Extract the most relevant excerpt window centered around query keyword density."""
@@ -101,9 +224,16 @@ class SearchUtilsMixin(SearchDataMixin):
             if not expanded:
                 break
 
+        selected_paragraphs = paragraphs[start:end]
+        highlight = "\n\n".join(selected_paragraphs)
+
+        # Ensure code blocks inside highlight are properly closed
+        if highlight.count("```") % 2 != 0:
+            highlight += "\n```"
+
         prefix = "... " if start > 0 else ""
         suffix = " ..." if end < len(paragraphs) else ""
-        return prefix + "\n\n".join(paragraphs[start:end]) + suffix
+        return prefix + highlight + suffix
 
     def _normalize_domain(self, url: str) -> str:
         try:
@@ -286,7 +416,10 @@ class SearchUtilsMixin(SearchDataMixin):
             snippet = snippet[:330] + "..."
         url = rec.get("url") or ""
         domain = rec.get("domain") or ""
-        return f"**{title}** [{domain}](<{url}>): {snippet}"
+        date_badge = ""
+        if rec.get("pub_date_str"):
+            date_badge = f" [📅 {rec.get('pub_date_str')}]"
+        return f"**{title}**{date_badge} [{domain}](<{url}>): {snippet}"
 
     def _dedupe_records(self, records: List[Dict[str, str]]) -> List[Dict[str, str]]:
         unique = []

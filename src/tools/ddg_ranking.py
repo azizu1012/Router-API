@@ -136,14 +136,125 @@ class SearchRankingMixin(SearchUtilsMixin):
 
         return dynamic_score >= threshold
 
+    def _detect_query_profile(self, query: str) -> str:
+        q = (query or "").lower()
+        if re.search(r"\b(v\d|\d+\.\d+|\d{4}-\d{2}-\d{2}|benchmark|spec|specification|protocol|rfc|changelog|release notes|model card)\b", q):
+            return "tech_spec"
+        if any(w in q for w in ["giá", "price", "hôm nay", "today", "vừa qua", "mới nhất", "breaking", "bão", "weather", "ron95", "xăng"]):
+            return "realtime_news"
+        if any(w in q for w in ["how to", "làm sao", "cách dùng", "example", "syntax", "error", "exception", "cú pháp", "fix bug"]):
+            return "code_howto"
+        return "general"
+
+    def _domain_authority_score(self, domain: str, profile: str) -> float:
+        d = (domain or "").strip().lower()
+        if not d:
+            return 0.0
+
+        # Tier 4 SEO / Aggregator Spam penalty
+        if d in getattr(self, "TIER4_SPAM_SEO_DOMAINS", set()) or any(spam in d for spam in ["tokencalc", "whichllm", "projedefteri", "hackaigc", "shattered", "prompeteer", "lorka.ai", "distk.in"]):
+            return -3.0
+
+        # Tier 1 Primary Authority bonus
+        is_tier1 = d in getattr(self, "TIER1_AUTHORITY_DOMAINS", set()) or any(d.startswith(pat) or pat in d for pat in getattr(self, "TIER1_AUTHORITY_PATTERNS", ()))
+        if is_tier1:
+            return 2.5 if profile in ("tech_spec", "code_howto") else 2.0
+
+        # Tier 2 Reputable Tech Publications & Media
+        if d in getattr(self, "TIER2_REPUTABLE_DOMAINS", set()):
+            return 1.0
+
+        return 0.0
+
+    def _information_density_score(self, text: str) -> float:
+        """Measure technical information density (code, tables, numbers, specs)."""
+        if not text:
+            return 0.0
+        score = 0.0
+        if "```" in text or re.search(r"\b(def |class |import |async def |curl |pip install )\b", text):
+            score += 0.8
+        if re.search(r"\|.+\|.+\|", text):
+            score += 0.8
+        if re.search(r"\b\d+(\.\d+)?(%|ms|s|gb|mb|m|k tokens)\b", text, re.IGNORECASE):
+            score += 0.5
+        return score
+
+    def _calculate_coupled_freshness(self, query: str, text: str, pub_date: Optional[datetime], is_time_sensitive: bool) -> float:
+        """Calculate freshness score coupled with query terms in the same local window.
+
+        Avoids boosting clickbait SEO articles that merely append '2026' in titles
+        without actual temporal facts related to the query.
+        """
+        if not text:
+            return 0.0
+
+        q_tokens = [t.lower() for t in re.findall(r"\w+", query) if len(t) > 2]
+        if not q_tokens:
+            return 0.0
+
+        current_year = str(datetime.now().year)
+        prev_year = str(datetime.now().year - 1)
+        freshness_markers = ["mới nhất", "cập nhật", "hôm nay", "vừa qua", "mới đây", "ngày trước", "giờ trước", "latest", "update", "yesterday", "ago"]
+
+        sentences = re.split(r"[.\n!?]+", text.lower())
+        best_coupled_score = 0.0
+
+        for s in sentences:
+            s_clean = s.strip()
+            if not s_clean:
+                continue
+            hits = sum(1 for t in q_tokens if t in s_clean)
+            if hits < 2 and len(q_tokens) >= 2:
+                continue
+            if hits < 1:
+                continue
+
+            has_curr_year = current_year in s_clean
+            has_prev_year = prev_year in s_clean
+            has_fresh_marker = any(m in s_clean for m in freshness_markers)
+
+            s_boost = 0.0
+            if has_curr_year:
+                s_boost += 1.2
+            elif has_prev_year:
+                s_boost += 0.5
+
+            if has_fresh_marker:
+                s_boost += 0.4
+
+            match_ratio = hits / len(q_tokens)
+            coupled_val = s_boost * match_ratio
+            if coupled_val > best_coupled_score:
+                best_coupled_score = coupled_val
+
+        if pub_date:
+            pub_naive = pub_date.replace(tzinfo=None) if getattr(pub_date, "tzinfo", None) is not None else pub_date
+            days = max(0.0, (datetime.now() - pub_naive).total_seconds() / 86400.0)
+            if days <= 7:
+                best_coupled_score += 1.0
+            elif days <= 30:
+                best_coupled_score += 0.6
+            elif days <= 90:
+                best_coupled_score += 0.3
+
+        return round(best_coupled_score, 3)
+
     def _score_record(self, topic: str, query: str, record: Dict[str, str]) -> float:
+        profile = self._detect_query_profile(query)
+        domain = (record.get("domain") or "").strip().lower()
         title = (record.get("title") or "").lower()
         snippet = (record.get("snippet") or "").lower()
-        q = (query or "").lower()
+        evidence = (record.get("evidence") or "").lower()
+        full_text = f"{title} {snippet} {evidence}"
 
         score = self._dynamic_reputation_score(topic, query, record)
+        score += self._domain_authority_score(domain, profile)
+        score += self._information_density_score(full_text)
 
-        if any(token for token in re.findall(r"\w+", q) if len(token) > 3 and token in f"{title} {snippet}"):
+        pub_date = record.get("published_date") or self._extract_date(snippet[:40]) or self._extract_date(title[:40])
+        score += self._calculate_coupled_freshness(query, full_text, pub_date, self._is_time_sensitive_query(query))
+
+        if any(token for token in re.findall(r"\w+", query.lower()) if len(token) > 3 and token in f"{title} {snippet}"):
             score += 1.1
 
         provider = (record.get("provider") or "").lower()
@@ -153,12 +264,13 @@ class SearchRankingMixin(SearchUtilsMixin):
         if len(snippet) > 120:
             score += 0.35
 
-        return score
+        return round(score, 3)
 
     def _lightweight_rerank(self, topic: str, query: str, records: List[Dict[str, str]]) -> List[Dict[str, str]]:
         if not records:
             return []
 
+        profile = self._detect_query_profile(query)
         record_tokens = []
         for rec in records:
             text = f"{rec.get('title', '')} {rec.get('snippet', '')}".lower()
@@ -173,54 +285,22 @@ class SearchRankingMixin(SearchUtilsMixin):
                     if overlap > 3:
                         consensus_scores[i] += min(1.0, overlap * 0.1)
 
-        current_year = str(datetime.now().year)
-        prev_year = str(datetime.now().year - 1)
-        freshness_markers = ["mới nhất", "cập nhật", "hôm nay", "vừa qua", "mới đây", "ngày trước", "giờ trước", "latest", "update", "yesterday", "ago"]
-
         domain_counts = {}
-
         reranked = []
+
         for idx, rec in enumerate(records):
             base_score = float(rec.get("score", "0"))
-
             c_boost = min(1.5, consensus_scores[idx] * 0.2)
 
-            is_time_sensitive = self._is_time_sensitive_query(query)
-            f_boost = 0.0
-            decay_penalty = 0.0
-            title_snippet = f"{rec.get('title', '')} {rec.get('snippet', '')}".lower()
-
-            if is_time_sensitive:
-                boost_curr = 1.2
-                boost_prev = 0.6
-                boost_marker = 0.5
-            else:
-                boost_curr = 0.8
-                boost_prev = 0.4
-                boost_marker = 0.3
-
-            if current_year in title_snippet:
-                f_boost += boost_curr
-            elif prev_year in title_snippet:
-                f_boost += boost_prev
-            if any(marker in title_snippet for marker in freshness_markers):
-                f_boost += boost_marker
-
-            if is_time_sensitive:
-                pub_date = self._extract_date(rec.get("snippet", "")[:40])
-                if not pub_date:
-                    pub_date = self._extract_date(rec.get("title", "")[:40])
-                decay_penalty = self._calculate_time_decay_penalty(topic, pub_date, is_time_sensitive)
-
-            d_penalty = 0.0
             domain = (rec.get("domain") or "").strip().lower()
             org_domain = self._organization_domain(domain) or domain
+            d_penalty = 0.0
             if org_domain:
                 domain_counts[org_domain] = domain_counts.get(org_domain, 0) + 1
                 if domain_counts[org_domain] > 1:
                     d_penalty = -0.5 * (domain_counts[org_domain] - 1)
 
-            final_score = base_score + c_boost + f_boost + decay_penalty + d_penalty
+            final_score = base_score + c_boost + d_penalty
             rec["score"] = str(round(final_score, 3))
             reranked.append(rec)
 
@@ -271,6 +351,7 @@ class SearchRankingMixin(SearchUtilsMixin):
         return diverse[:limit]
 
     def _format_final_search_result(self, topic: str, query: str, ranked_records: List[Dict[str, str]], required_sources: int) -> str:
+        profile = self._detect_query_profile(query)
         top_lines = []
         additional_lines = []
         quality_domains = set()
@@ -299,11 +380,17 @@ class SearchRankingMixin(SearchUtilsMixin):
                 url = rec.get("url") or ""
                 snippet = self._extract_query_highlight(evidence, query, evidence_max)
                 if snippet:
-                    deep_lines.append(f"- {title} ([đọc nội dung](<{url}>)): {snippet}")
+                    date_badge = ""
+                    if rec.get("pub_date_str"):
+                        date_badge = f" [📅 {rec.get('pub_date_str')} — {rec.get('relative_age')}]"
+                    deep_lines.append(f"- {title}{date_badge} ([đọc nội dung](<{url}>)):\n{snippet}")
 
         unique_domains = {rec.get("domain") or "" for rec in display_records if rec.get("domain")}
+        now_dt = datetime.now()
+        server_anchor = now_dt.strftime("%A, %d %B %Y — %I:%M %p")
         parts = [
-            f"### 🔍 [Chủ đề: {topic.upper()}] Kết quả cho '{query}':",
+            f"[Mỏ neo thời gian thực: {server_anchor}]",
+            f"### 🔍 [Chủ đề: {topic.upper()} | Profile: {profile.upper()}] Kết quả cho '{query}':",
             f"- Mode: {self.search_web_mode}",
             f"- Top results: {len(display_records)}",
             f"- Unique domains: {len(unique_domains)}",

@@ -3,7 +3,7 @@ import re
 import os
 import time
 from datetime import datetime, timedelta
-from typing import Dict, List, Optional, Tuple, Union
+from typing import Dict, List, Optional, Tuple, Union, Any
 
 try:
     from ddgs import DDGS
@@ -73,12 +73,12 @@ class AdvancedSearchManager(SearchRankingMixin):
             "ttl_seconds": ttl_seconds,
         }
 
-    async def _fetch_page_evidence(self, url: str) -> str:
+    async def _fetch_page_data(self, url: str) -> Tuple[str, Dict[str, Any]]:
         cached = self._get_deep_read_cache(url)
         if cached is not None:
-            return cached
+            return cached, {}
 
-        def _fetch_once(timeout_sec: float) -> str:
+        def _fetch_once(timeout_sec: float) -> Tuple[str, Dict[str, Any]]:
             headers = {
                 "User-Agent": "Mozilla/5.0 (ChadGibitiBot/1.0)",
                 "Accept": "text/html,application/xhtml+xml",
@@ -86,28 +86,33 @@ class AdvancedSearchManager(SearchRankingMixin):
             }
             response = requests.get(url, headers=headers, timeout=timeout_sec)
             if response.status_code != 200 or not response.text:
-                return ""
+                return "", {}
 
             if not response.encoding:
                 response.encoding = response.apparent_encoding or "utf-8"
 
+            meta = self._extract_page_metadata(response.text)
             parsed = self._extract_main_text(response.text)
             if len(parsed) < 120:
-                return ""
-            return parsed[:self.deep_read_max_chars].strip()
+                return "", meta
+            return parsed[:self.deep_read_max_chars].strip(), meta
 
         for attempt in range(2):
             timeout_sec = 3.0 if attempt == 0 else 5.0
             try:
-                text = await asyncio.to_thread(_fetch_once, timeout_sec)
+                text, meta = await asyncio.to_thread(_fetch_once, timeout_sec)
                 if text:
                     self._set_deep_read_cache(url, text, ttl_seconds=7200)
-                    return text
+                    return text, meta
             except Exception:
                 continue
 
         self._set_deep_read_cache(url, "", ttl_seconds=self.search_empty_evidence_cache_ttl_seconds)
-        return ""
+        return "", {}
+
+    async def _fetch_page_evidence(self, url: str) -> str:
+        text, _ = await self._fetch_page_data(url)
+        return text
 
     async def _search_duckduckgo_records(
         self,
@@ -265,11 +270,19 @@ class AdvancedSearchManager(SearchRankingMixin):
             top_records = ranked[:self.search_grounded_top_links]
             if top_records:
                 evidence_results = await asyncio.gather(
-                    *(self._fetch_page_evidence(rec.get("url", "")) for rec in top_records),
+                    *(self._fetch_page_data(rec.get("url", "")) for rec in top_records),
                     return_exceptions=True,
                 )
-                for rec, evidence in zip(top_records, evidence_results):
-                    rec["evidence"] = evidence if isinstance(evidence, str) else ""
+                for rec, res in zip(top_records, evidence_results):
+                    if isinstance(res, tuple):
+                        evidence, meta = res
+                        rec["evidence"] = evidence
+                        if meta and meta.get("has_verified_date"):
+                            rec["pub_date_str"] = meta.get("date_str", "")
+                            rec["relative_age"] = meta.get("relative_age", "")
+                            rec["published_date"] = meta.get("published_date")
+                    elif isinstance(res, str):
+                        rec["evidence"] = res
 
         final = self._format_final_search_result(selected_topic, q_sub, ranked, required_sources)
         quality_count = self._count_quality_sources(ranked, selected_topic, q_sub)
@@ -424,11 +437,19 @@ class AdvancedSearchManager(SearchRankingMixin):
                 top_records = ranked[:self.search_grounded_top_links]
                 if top_records:
                     evidence_results = await asyncio.gather(
-                        *(self._fetch_page_evidence(rec.get("url", "")) for rec in top_records),
+                        *(self._fetch_page_data(rec.get("url", "")) for rec in top_records),
                         return_exceptions=True,
                     )
-                    for rec, evidence in zip(top_records, evidence_results):
-                        rec["evidence"] = evidence if isinstance(evidence, str) else ""
+                    for rec, res in zip(top_records, evidence_results):
+                        if isinstance(res, tuple):
+                            evidence, meta = res
+                            rec["evidence"] = evidence
+                            if meta and meta.get("has_verified_date"):
+                                rec["pub_date_str"] = meta.get("date_str", "")
+                                rec["relative_age"] = meta.get("relative_age", "")
+                                rec["published_date"] = meta.get("published_date")
+                        elif isinstance(res, str):
+                            rec["evidence"] = res
 
             formatted = self._format_final_search_result(selected_topic, intent, ranked, required_sources)
             all_formatted.append(formatted)

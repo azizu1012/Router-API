@@ -154,16 +154,28 @@ Hệ thống Router API được thiết kế như một lớp trừu tượng, 
     *   `google_grounding`: Dùng sub-agent Gemini gọi Google Search Grounding native.
     *   `duckduckgo`: Local search qua DDGS và tải trang bất đồng bộ song song (`asyncio.gather`), không tiêu tốn quota key Gemini.
     *   `auto`: Ưu tiên Google Grounding cho các yêu cầu có tool web_search rõ ràng, tự động fallback về DuckDuckGo khi quota cạn.
-*   **Trích xuất cấu trúc Markdown (Markdown-first Extraction - `ddg_utils.py`):**
+*   **Trích xuất cấu trúc Markdown & Code (Markdown-first Extraction - `ddg_utils.py`):**
     *   Hàm `_extract_main_text` phân tích DOM HTML qua BeautifulSoup và chuyển đổi thành Markdown có cấu trúc:
         *   Thẻ tiêu đề `h1..h6` thành `# Heading`.
         *   Thẻ danh sách `li` thành Markdown bullet `- Item`.
         *   Bảng HTML (`table`, `tr`, `th`, `td`) thành Markdown Table `| Col1 | Col2 |`.
-        *   Giữ khoảng cách phân đoạn `\n\n` rõ ràng, lọc bỏ triệt để cookie/ads/scripts.
-*   **Trích xuất Highlight thông minh (Query-Density Centered Window - `ddg_utils.py` & `ddg_ranking.py`):**
+        *   Khối code `<pre><code>` được bảo toàn nguyên vẹn kèm language identifier: ` ```python\ncode\n``` `.
+        *   Loại bỏ triệt để các thành phần rác: cookie banners, navbars, footer, TOC, author bio, ads, newsletter widgets.
+*   **Trích xuất Highlight thông minh & Khép kín Code Block (Query-Density Window - `ddg_utils.py`):**
     *   Hàm `_extract_query_highlight` quét mật độ từ khóa của truy vấn trên từng đoạn văn trong tài liệu.
     *   Chọn đoạn văn có điểm số trùng khớp cao nhất làm tâm và mở rộng vùng lân cận cho đến khi đạt ngưỡng ký tự bằng chứng (`search_evidence_max_chars`).
-    *   Điều này khắc phục nhược điểm cắt cụt từ đầu trang (`text[:max]`), tạo ra đoạn trích xuất bám sát ngữ cảnh câu hỏi tương đương cơ chế "Highlights" của Exa.
+    *   Tự động phát hiện và khép kín code fence (chống vỡ markdown khi cắt ngang khối code).
+*   **Mỏ neo thời gian thực & Bóc tách ngày xuất bản chuẩn xác (`ddg_utils.py` & `ddg_ranking.py`):**
+    *   Đóng dấu mỏ neo thời gian thực của máy chủ hệ thống ngay đầu kết quả: `[Mỏ neo thời gian thực: Sunday, 11 October 2026 — 06:00 PM]`. Giúp LLM không bị ảo giác ngày tháng do training cutoff.
+    *   Trích xuất ngày xuất bản có thẩm quyền từ OpenGraph (`article:published_time`), JSON-LD (`datePublished`), và thẻ HTML5 `<time datetime="...">`, gắn huy hiệu `[📅 DD/MM/YYYY — X ngày trước]` vào từng nguồn tin.
+*   **Thuật toán Xếp hạng Cấp độ Exa (Exa-Grade Ranking - `ddg_ranking.py` & `ddg_data.py`):**
+    *   **Phân tầng Thẩm quyền Tên miền (Domain Authority Tiers):**
+        *   *Tier 1 (+2.5 điểm):* Tài liệu chính thức, repo, chuẩn mực kỹ thuật và AI labs (`github.com`, `deepmind.google`, `*.google.com`, `*.anthropic.com`, `*.openai.com`, `ietf.org`, `w3.org`, `modelcontextprotocol.io`, `arxiv.org`, `docs.*`, `.edu`, `.gov`).
+        *   *Tier 2 (+1.0 điểm):* Báo chí công nghệ uy tín (`theverge.com`, `arstechnica.com`, `reuters.com`, `stackoverflow.com`).
+        *   *Tier 4 (-3.0 điểm):* Trang SEO rác, tin đồn, clickbait farm (`tokencalc.dev`, `whichllm.io`, `projedefteri.com`, `hackaigc.com`, `shattered.io`, ...).
+    *   **Độ tươi Liên kết (Coupled Freshness):** Chỉ thưởng điểm độ tươi (năm hiện tại, tháng, mốc thời gian) khi xuất hiện **cùng câu** với các từ khóa truy vấn, loại bỏ tình trạng nhồi nhét từ khóa năm ("2026") của trang tin đồn.
+    *   **Mật độ Thông tin Kỹ thuật (Technical Information Density):** Tăng điểm cho các trang chứa bảng thông số so sánh Markdown, khối code cú pháp, hoặc số liệu benchmark định lượng (`ms`, `%`, token).
+    *   **Hồ sơ Truy vấn Động (Dynamic Profiles):** Tự động phân loại `tech_spec`, `realtime_news`, `code_howto`, `general` để áp dụng trọng số chấm điểm tối ưu theo bản chất câu hỏi.
 *   **Cấu hình linh hoạt qua biến môi trường (`duckduckgo.py`):**
     *   `SEARCH_GROUNDED_TOP_LINKS`: Số liên kết web tải sâu song song (mặc định: `8`).
     *   `SEARCH_TOP_RESULTS_LIMIT`: Số lượng kết quả tìm kiếm tối đa (mặc định: `10`).
