@@ -30,6 +30,13 @@ class SearchUtilsMixin(SearchDataMixin):
                 self.logger.warning(f"Error parsing date in _extract_date: {e}")
             return None
 
+    def _parse_soup(self, html_text: str) -> BeautifulSoup:
+        # ponytail: lxml parser with stdlib html.parser fallback; upgrade when pure lxml is guaranteed
+        try:
+            return BeautifulSoup(html_text, "lxml")
+        except Exception:
+            return BeautifulSoup(html_text, "html.parser")
+
     def _extract_page_metadata(self, html_text: str) -> Dict[str, Any]:
         """Extract verified published date and author from HTML meta/json-ld/time tags."""
         result: Dict[str, Any] = {
@@ -43,7 +50,7 @@ class SearchUtilsMixin(SearchDataMixin):
             return result
 
         try:
-            soup = BeautifulSoup(html_text, "lxml")
+            soup = self._parse_soup(html_text)
             raw_date = None
 
             # 1. Meta tags
@@ -114,7 +121,7 @@ class SearchUtilsMixin(SearchDataMixin):
         return result
 
     def _extract_main_text(self, html_text: str) -> str:
-        soup = BeautifulSoup(html_text, 'lxml')
+        soup = self._parse_soup(html_text)
 
         # Loại bỏ các thẻ không cần thiết
         for tag in soup(["script", "style", "noscript", "svg", "form", "button", "header", "footer", "nav", "aside", "iframe"]):
