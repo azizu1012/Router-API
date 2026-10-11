@@ -49,6 +49,102 @@ async def _resolve_model(body: Dict[str, Any], pool_alias_override: Optional[str
         model_alias = config.DEFAULT_MODEL_ALIAS
     model_id = router.get_model_id(model_alias)
 
+    # Step 0: Member override in pool mode — route directly to the acquired member
+    if pool_mode and member_override:
+        pool_models = router.get_pool_custom_models(model_alias)
+        for pm in pool_models:
+            if pm["endpoint"].get("name", "") == member_override:
+                ep = pm["endpoint"]
+                ep_name = ep.get("name", "")
+                if endpoint_manager.is_endpoint_frozen(ep_name):
+                    logger.warning("[MemberOverride] %s is frozen, falling back to Gemini", ep_name)
+                    break
+                target_model = pm["model_id"]
+                try:
+                    alive = await endpoint_manager.ping_endpoint(ep)
+                    if not alive:
+                        logger.warning("[MemberOverride] %s ping failed, falling back to Gemini", ep_name)
+                        break
+                    logger.info("[MemberOverride] Routing member=%s to endpoint %s with model %s", member_override, ep_name, target_model)
+                    return model_alias, target_model, ep["auth_key"], target_model, {
+                        "key": ep["auth_key"],
+                        "name": ep_name,
+                        "model_alias": model_alias,
+                        "model_id": target_model,
+                        "provider": "custom",
+                        "api_base": ep["base_url"],
+                        "api_format": ep.get("api_format") or "openai",
+                    }
+                except Exception as e:
+                    logger.warning("[MemberOverride] %s error: %s, falling back to Gemini", ep_name, e)
+                    break
+    else:
+        # Step 1: Account endpoint (100% override mode — no pool_assignments)
+        if retry_attempt == 0:
+            for ep in endpoint_manager.get_endpoints_for_account(account):
+                if not ep.get("enabled", True):
+                    continue
+                ep_name = ep.get("name", "")
+                if endpoint_manager.is_endpoint_frozen(ep_name):
+                    logger.warning("[AccountEndpoint] %s is frozen (circuit breaker), skipping", ep_name)
+                    continue
+
+                pool_assignments = ep.get("pool_assignments", {})
+                if pool_assignments:
+                    continue
+
+                enabled_models = ep.get("enabled_models", [])
+                all_models = ep.get("models", [])
+                if not enabled_models and not all_models:
+                    continue
+
+                target_model = (enabled_models or all_models)[0]
+                try:
+                    alive = await endpoint_manager.ping_endpoint(ep)
+                    if not alive:
+                        continue
+                    return model_alias, target_model, ep["auth_key"], target_model, {
+                        "key": ep["auth_key"],
+                        "name": ep_name,
+                        "model_alias": model_alias,
+                        "model_id": target_model,
+                        "provider": "custom",
+                        "api_base": ep["base_url"],
+                        "api_format": ep.get("api_format") or "openai",
+                    }
+                except Exception as e:
+                    logger.warning("[AccountEndpoint] %s ping error (%s), trying next endpoint", ep_name, e)
+
+        # Step 2: Prioritize pool-assigned custom endpoints — only when no member_override
+        pool_models = router.get_pool_custom_models(model_alias)
+        if pool_models and retry_attempt == 0:
+            for pm in pool_models:
+                ep = pm["endpoint"]
+                ep_name = ep.get("name", "")
+                if endpoint_manager.is_endpoint_frozen(ep_name):
+                    logger.warning("[CustomPoolEndpoint] %s is frozen, skipping", ep_name)
+                    continue
+
+                target_model = pm["model_id"]
+                try:
+                    alive = await endpoint_manager.ping_endpoint(ep)
+                    if not alive:
+                        logger.warning("[CustomPoolEndpoint] %s ping failed, skipping", ep_name)
+                        continue
+
+                    logger.info("[CustomPoolEndpoint] Routing model_alias=%s to custom endpoint %s with model %s", model_alias, ep_name, target_model)
+                    return model_alias, target_model, ep["auth_key"], target_model, {
+                        "key": ep["auth_key"],
+                        "name": ep_name,
+                        "model_alias": model_alias,
+                        "model_id": target_model,
+                        "provider": "custom",
+                        "api_base": ep["base_url"],
+                        "api_format": ep.get("api_format") or "openai",
+                    }
+                except Exception as e:
+                    logger.warning("[CustomPoolEndpoint] %s ping error: %s", ep_name, e)
+
     # In pool_mode, don't wait long — the pool loop handles retry timing.
     # In standalone mode, wait up to KEY_429_COOLDOWN × 2 for a key to become available.
     max_wait = config.GEMINI_API_KEY_INTERVAL * 2 if pool_mode else config.KEY_429_COOLDOWN_SECONDS * 2

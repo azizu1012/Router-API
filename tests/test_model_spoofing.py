@@ -314,6 +314,10 @@ def test_chat_completion_response_spoofing(client, monkeypatch):
             "usage": {"prompt_tokens": 5, "completion_tokens": 2},
         }
 
+    from src.server.openai_server.routes import completions_routes
+    async def mock_limit(*args, **kwargs):
+        pass
+    monkeypatch.setattr(completions_routes, "_apply_account_limit", mock_limit)
     monkeypatch.setattr(opencode_proxy, "chat_completion", mock_chat)
 
     resp = client.post(
@@ -334,6 +338,7 @@ def test_messages_response_spoofing(client, monkeypatch):
     """When an alias is used in /v1/messages, response model is spoofed back to alias name."""
     from src.backend import model_aliases
     from src.api.claude_proxy import claude_proxy
+    from src.server.openai_server.routes import completions_routes
 
     user_acc, _, token_row = _create_user(client, name="claude_tester", tier="free")
     raw_key = f"sk-{user_acc['name']}-{token_row['token_code']}"
@@ -344,6 +349,10 @@ def test_messages_response_spoofing(client, monkeypatch):
         alias_name="claude-3-5-sonnet-20241022",
         target_model="gemini-flash",
     )
+
+    async def mock_limit(*args, **kwargs):
+        pass
+    monkeypatch.setattr(completions_routes, "_apply_account_limit", mock_limit)
 
     async def mock_create(body, akp="", account=None):
         assert body["model"] == "gemini-flash"
