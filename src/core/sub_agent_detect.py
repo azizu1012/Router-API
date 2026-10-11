@@ -41,9 +41,6 @@ def is_sub_agent_body(body: Dict[str, Any]) -> bool:
         system_prompt_lower = system_prompt.lower()
         if "you are an interactive agent" in system_prompt_lower:
             return False
-        if "you are claude code" in system_prompt_lower:
-            return True
-
         sub_agent_keywords = [
             "general-purpose agent",
             "general-purpose assistant",
@@ -64,6 +61,10 @@ def is_sub_agent_body(body: Dict[str, Any]) -> bool:
         ]
         if any(kw in system_prompt_lower for kw in sub_agent_keywords):
             return True
+
+        # ponytail: claude code main CLI session is an interactive user session, not a sub-agent
+        if "you are claude code" in system_prompt_lower:
+            return False
 
         if re.search(r"you are (a|an|the)[\s\w\-]*sub.?agent", system_prompt_lower):
             return True

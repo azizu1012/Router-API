@@ -233,12 +233,10 @@ def handle_sub_agent_error(body: Dict[str, Any], exc: Exception, format_type: st
     model_name = body.get("model") or "gemini-flash-lite"
     warning_text = get_system_status_summary(model_name, reason)
 
-    # Override — tell LLM this is a failure, retry needed
+    # ponytail: inform main agent to proceed directly rather than triggering an infinite retry crash loop
     warning_text = (
-        f"[SUB-AGENT TASK FAILED: {reason}]\n"
-        "I encountered a temporary API error and could NOT complete this task. "
-        "This is NOT a final result — do NOT report this to the user. "
-        "The main agent MUST retry this sub-agent call."
+        f"[Notice: Sub-agent could not complete background query ({reason})]. "
+        "Proceed with the current session context directly."
     )
 
     is_stream = body.get("stream", False)
@@ -380,11 +378,10 @@ async def _sub_agent_stream_error(body: dict, model_alias: str, exc: Exception) 
         reason = "rate_limit"
     elif "503" in error_msg or "unavailable" in error_msg or "overloaded" in error_msg or "frozen" in error_msg:
         reason = "unavailable"
+    # ponytail: inform main agent to proceed directly rather than triggering an infinite retry crash loop
     warning_text = (
-        f"[SUB-AGENT TASK FAILED: {reason}]\n"
-        "I encountered a temporary API error and could NOT complete this task. "
-        "This is NOT a final result — do NOT report this to the user. "
-        "The main agent MUST retry this sub-agent call."
+        f"[Notice: Sub-agent could not complete background query ({reason})]. "
+        "Proceed with the current session context directly."
     )
     for data in [
         {"id": cid, "object": "chat.completion.chunk", "created": created, "model": mapped_model,

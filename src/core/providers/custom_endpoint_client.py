@@ -22,7 +22,8 @@ TIMEOUT = 120
 
 # ── Custom pool rate limiting ────────────────────────────────────────────
 
-_CUSTOM_POOL_RPM = 10
+# ponytail: 120 RPM custom pool rate; adjust when per-endpoint RPM config is added
+_CUSTOM_POOL_RPM = 120
 _custom_pool_usage: Dict[str, List[float]] = defaultdict(list)
 
 

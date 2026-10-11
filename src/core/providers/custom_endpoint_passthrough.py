@@ -198,4 +198,5 @@ async def call_custom_endpoint_passthrough(
             parallel_tool_calls=parallel_tool_calls,
             response_format=response_format,
         )
+        endpoint_manager.mark_endpoint_success(ep_name)
         return response, None

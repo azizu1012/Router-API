@@ -75,9 +75,14 @@ class CustomEndpointManager:
         now = time.time()
         _, failures = self._circuit_breaker.get(name, (0.0, 0))
         failures += 1
-        cooldown = min(15.0 * failures, 120.0)
-        self._circuit_breaker[name] = (now + cooldown, failures)
-        logger.warning("[CustomEndpoint CB] %s failed (%d consecutive), frozen for %.1fs", name, failures, cooldown)
+        # ponytail: trip circuit breaker only after 3 consecutive failures to avoid blocking concurrent sessions on transient glitches
+        if failures >= 3:
+            cooldown = min(15.0 * (failures - 2), 120.0)
+            self._circuit_breaker[name] = (now + cooldown, failures)
+            logger.warning("[CustomEndpoint CB] %s failed (%d consecutive), frozen for %.1fs", name, failures, cooldown)
+        else:
+            self._circuit_breaker[name] = (0.0, failures)
+            logger.info("[CustomEndpoint CB] %s recorded transient failure (%d/3)", name, failures)
 
     _ping_ttl_alive: float = 30.0
     _ping_ttl_dead: float = 5.0
@@ -447,3 +452,4 @@ class CustomEndpointManager:
 
 
 _custom_endpoint_manager = CustomEndpointManager()
+endpoint_manager = _custom_endpoint_manager

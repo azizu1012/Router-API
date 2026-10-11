@@ -248,9 +248,13 @@ class PoolManager:
                             consecutive_transient = 0
                             logger.error("[PoolManager] Hard error %s on member %s: %s", reason, member_used, e)
                             if api_key_val and model_id_val:
-                                cooldown = config.KEY_INVALID_COOLDOWN_SECONDS if reason == "invalid_key" else config.KEY_429_COOLDOWN_SECONDS
+                                cooldown = config.KEY_INVALID_COOLDOWN_SECONDS if reason in ("invalid_key", "permission_denied") else config.KEY_429_COOLDOWN_SECONDS
                                 router.freeze_key(api_key_val, cooldown, model_id_val, reason)
                                 apply_error_penalty(api_key_val, reason, model_id_val)
+                            # ponytail: if key is invalid, rotate to next available key without retiring member
+                            if reason in ("invalid_key", "permission_denied"):
+                                pool.release(member)
+                                continue
                             _retire_member(pool, exhausted_members, member)
 
                 raise RuntimeError("Pool max_retry_seconds exhausted")
@@ -468,9 +472,13 @@ class PoolManager:
                             consecutive_transient = 0
                             logger.error("[PoolManager] Hard stream error %s: %s", reason, e)
                             if api_key_val and model_id_val:
-                                cooldown = config.KEY_INVALID_COOLDOWN_SECONDS if reason == "invalid_key" else config.KEY_429_COOLDOWN_SECONDS
+                                cooldown = config.KEY_INVALID_COOLDOWN_SECONDS if reason in ("invalid_key", "permission_denied") else config.KEY_429_COOLDOWN_SECONDS
                                 router.freeze_key(api_key_val, cooldown, model_id_val, reason)
                                 apply_error_penalty(api_key_val, reason, model_id_val)
+                            # ponytail: if key is invalid, rotate to next available key without retiring member
+                            if reason in ("invalid_key", "permission_denied"):
+                                pool.release(member)
+                                continue
                             _retire_member(pool, exhausted_members, member)
 
                 raise RuntimeError("Pool stream max_retry_seconds exhausted")
