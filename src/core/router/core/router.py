@@ -265,38 +265,56 @@ class APIRouter(KeyResolverMixin):
 
         return models
 
-    def resolve_model_alias(self, model: Optional[str]) -> str:
+    def resolve_model_alias(
+        self,
+        model: Optional[str],
+        account: Optional[Dict[str, Any]] = None,
+        account_id: Optional[str] = None,
+        account_key_id: Optional[str] = None,
+    ) -> str:
         """
         Resolves a raw model string (either alias or concrete model ID) into a standardized alias.
-        This method handles various input formats and attempts to find a matching alias from
-        `AVAILABLE_MODELS`, custom endpoints, or applies fallback logic for common LLM names.
+        Supports per-account/per-key dynamic aliases as well as built-in model mappings.
 
         Args:
             model: The raw model string provided in the request.
+            account: Optional user account dictionary.
+            account_id: Optional account ID.
+            account_key_id: Optional account key ID.
 
         Returns:
             The resolved standardized model alias. Defaults to `self.current_model` if no match is found.
-
-        Design Decision (Fallback Logic):
-        The fallback logic (`if "haiku" in raw: return "gemini-flash-lite"`) is a pragmatic approach
-        to handle common model name variations or implicit requests, ensuring that even ambiguous
-        inputs are routed to a reasonable default. This reduces friction for users but adds
-        a layer of implicit mapping within the router.
         """
-        raw = (model or "").strip().lower()
-        if raw in AVAILABLE_MODELS:
-            return raw
+        raw = (model or "").strip()
+        if not raw:
+            return self.current_model
+
+        # 1. Resolve user-defined per-account or per-key alias if account info is provided
+        acc_id = account_id or (account.get("account_id") if account else None)
+        key_id = account_key_id or (account.get("token_key_id") or account.get("account_key_id") if account else None)
+        if acc_id:
+            try:
+                from src.backend import model_aliases
+                alias_row = model_aliases.resolve_alias_db(raw, str(acc_id), key_id)
+                if alias_row and alias_row.get("target_model"):
+                    raw = alias_row["target_model"].strip()
+            except Exception:
+                pass
+
+        raw_lower = raw.lower()
+        if raw_lower in AVAILABLE_MODELS:
+            return raw_lower
         for alias, cfg in AVAILABLE_MODELS.items():
-            if raw == cfg.get("model_id"):
+            if raw_lower == cfg.get("model_id"):
                 return alias
         from src.core.providers import _custom_endpoint_manager
         for ep in _custom_endpoint_manager.list_endpoints():
-            if raw in ep.get("models", []):
+            if raw in ep.get("models", []) or raw_lower in [m.lower() for m in ep.get("models", [])]:
                 return raw
         
-        if "haiku" in raw:
+        if "haiku" in raw_lower:
             return "gemini-flash-lite"
-        if "sonnet" in raw or "opus" in raw:
+        if "sonnet" in raw_lower or "opus" in raw_lower:
             return "gemini-flash"
             
         return self.current_model

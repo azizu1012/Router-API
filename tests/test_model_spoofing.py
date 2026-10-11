@@ -373,3 +373,22 @@ def test_messages_response_spoofing(client, monkeypatch):
     data = resp.json()
     assert data["model"] == "claude-3-5-sonnet-20241022"
 
+
+def test_router_resolve_model_alias_with_account(client):
+    """APIRouter.resolve_model_alias supports dynamic resolution when account is provided."""
+    from src.core.router import router
+    from src.backend import model_aliases
+
+    user_acc, _, _ = _create_user(client, name="router_alias_tester", tier="free")
+    model_aliases.add_alias_db(
+        account_id=user_acc["account_id"],
+        alias_name="my-cool-gpt",
+        target_model="gemini-flash",
+    )
+
+    # Without account -> falls back to default
+    assert router.resolve_model_alias("my-cool-gpt") == router.current_model
+    # With account -> resolves to gemini-flash
+    assert router.resolve_model_alias("my-cool-gpt", account=user_acc) == "gemini-flash"
+
+

@@ -35,7 +35,7 @@ async def _resolve_model(body: Dict[str, Any], pool_alias_override: Optional[str
     if pool_alias_override:
         model_alias = pool_alias_override
     else:
-        model_alias = router.resolve_model_alias(body.get("model", ""))
+        model_alias = router.resolve_model_alias(body.get("model", ""), account=account)
     if not model_alias:
         model_alias = config.DEFAULT_MODEL_ALIAS
     model_id = router.get_model_id(model_alias)
