@@ -116,7 +116,7 @@ def _count_openai_images(messages: list) -> int:
         content = msg.get("content")
         if isinstance(content, list):
             for item in content:
-                if isinstance(item, dict) and item.get("type") == "image_url":
+                if isinstance(item, dict) and item.get("type") in ("image_url", "image"):
                     image_count += 1
     return image_count
 
@@ -179,7 +179,8 @@ async def _apply_account_limit(account: Dict[str, Any], body: Dict[str, Any], is
     max_tokens = int(body.get("max_tokens") or body.get("max_completion_tokens") or 4096)
     estimated = account_limiter.estimate_messages_tokens(body.get("messages") or [], max_tokens)
     image_count = _count_openai_images(body.get("messages") or [])
-    estimated += image_count * 258
+    # ponytail: 1600 tokens context penalty per image for TPM rate limiting; adjust when adaptive tile estimator is added
+    estimated += image_count * 1600
     
     allowed, reason = await account_limiter.acquire(effective, estimated, pool_type)
     if not allowed:

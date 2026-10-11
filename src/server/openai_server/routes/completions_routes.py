@@ -993,38 +993,6 @@ async def anthropic_messages(
         body["_original_model_name"] = requested_model
         body["_alias_info"] = alias_info
 
-    # Inject instruction to completely ban image reading in Claude Code proxy prompt
-    image_ban_instruction = (
-        "\n[IMPORTANT: Image analysis, multimodal features, and image input are completely disabled in this environment. "
-        "Do not request, read, or analyze images. If the user asks you to look at an image, explain that image processing "
-        "is disabled in the proxy to conserve tokens.]"
-    )
-    system_val = body.get("system", "")
-    if isinstance(system_val, str):
-        if system_val.strip():
-            body["system"] = system_val + "\n" + image_ban_instruction
-        else:
-            body["system"] = image_ban_instruction
-    elif isinstance(system_val, list):
-        body["system"].append({"type": "text", "text": image_ban_instruction})
-
-    # Forbid image content blocks in Claude proxy messages to prevent heavy token consumption
-    for msg in body.get("messages", []):
-        content = msg.get("content") if isinstance(msg, dict) else None
-        if isinstance(content, list):
-            for block in content:
-                if isinstance(block, dict) and block.get("type") == "image":
-                    raise HTTPException(
-                        status_code=400,
-                        detail={
-                            "type": "error",
-                            "error": {
-                                "type": "invalid_request_error",
-                                "message": "Image inputs are disabled in Claude Proxy to conserve tokens."
-                            }
-                        }
-                    )
-
     if not body.get("max_tokens"):
         body["max_tokens"] = config.MAX_OUTPUT_TOKENS
 

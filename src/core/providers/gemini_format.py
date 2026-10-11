@@ -283,6 +283,13 @@ def _convert_content_to_parts(content: Any) -> List[Dict[str, Any]]:
                         parts.append({"inlineData": {"mimeType": mime, "data": b64}})
                     except (ValueError, IndexError):
                         pass
+            elif item.get("type") == "image":
+                src = item.get("source", {})
+                if isinstance(src, dict) and src.get("type") == "base64":
+                    mime = src.get("media_type", "image/jpeg")
+                    b64 = src.get("data", "")
+                    if mime and b64:
+                        parts.append({"inlineData": {"mimeType": mime, "data": b64}})
     return parts
 
 

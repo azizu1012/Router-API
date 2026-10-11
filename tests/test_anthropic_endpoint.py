@@ -284,6 +284,23 @@ class TestImagesSurvive:
             {"type": "image_url", "image_url": {"url": ""}}]}])
         assert body["messages"][0]["content"] == [{"type": "text", "text": "keep me"}]
 
+    def test_anthropic_image_block_converts_to_gemini_inline_data(self):
+        from src.core.providers.gemini_format import _convert_content_to_parts
+        parts = _convert_content_to_parts([
+            {"type": "text", "text": "look at this"},
+            {"type": "image", "source": {"type": "base64", "media_type": "image/png", "data": "QUJD"}},
+        ])
+        assert len(parts) == 2
+        assert parts[0] == {"text": "look at this"}
+        assert parts[1] == {"inlineData": {"mimeType": "image/png", "data": "QUJD"}}
+
+    def test_image_counting_counts_both_openai_and_anthropic_images(self):
+        from src.server.openai_server.auth import _count_openai_images
+        openai_msgs = [{"role": "user", "content": [{"type": "image_url", "image_url": {"url": "data:..."}}]}]
+        anthropic_msgs = [{"role": "user", "content": [{"type": "image", "source": {"type": "base64", "data": "..."}}]}]
+        assert _count_openai_images(openai_msgs) == 1
+        assert _count_openai_images(anthropic_msgs) == 1
+
 
 class TestToolChoiceIsSpelledTheWayAnthropicSpellsIt:
     """OpenAI's `required` has no Anthropic equivalent as a string, and its
