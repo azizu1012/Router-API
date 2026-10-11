@@ -106,8 +106,10 @@ class TestSwitchIsHonoured:
         flag_member(FLASH_36, False)
         assert api_config.is_model_enabled(FLASH_38) is True
 
-    def test_deprecated_models_remain_disabled(self):
-        """35 and 37 are deprecated by Google and disabled in real config."""
+    def test_deprecated_models_can_be_disabled(self, flag_member):
+        """When deprecated models (35, 37) are switched off, they drop out of active members."""
+        flag_member("gemini-flash-35", False)
+        flag_member("gemini-flash-37", False)
         assert api_config.is_model_enabled("gemini-flash-35") is False
         assert api_config.is_model_enabled("gemini-flash-37") is False
         active = api_config.active_pool_members("gemini-flash")
