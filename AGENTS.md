@@ -28,8 +28,18 @@
 - DB dùng SQLite qua `src/backend/_db.py`
 - Dùng logger có sẵn: `from src.core.config_n_logg.logger import logger_system/logger_proxy/logger_keys/logger_api/logger_keepalive`
 - Khi viết test integration gửi request vào API (`/v1/...`), **đừng assert cứng `200`** nếu chưa mock rate limiter/pool. DB trống trên CI (dùng `temp_db`) sẽ làm capacity=0, request bị giới hạn và trả về `429` hoặc `503`. Hãy assert loại trừ (`not in (404, 405)`) hoặc mock limit cẩn thận.
+- Provider wire-form tests phải là deterministic: dùng fake provider và account `anonymous` (hoặc mock `_apply_account_limit`), không để `usage.db`/account limiter thật quyết định kết quả. `tests/conftest.py` reset in-process limiters giữa các test; `AccountRateLimiter.reset()` trong `src/core/limits/account_limiter/limiter.py` là test-isolation seam có chủ đích, không được xoá nếu chưa thay bằng cơ chế reset tương đương.
+- Tuyệt đối không commit `usage.db` để làm fixture. Nếu test cần dữ liệu SQLite, dùng fixture `temp_db` để tạo DB tạm và khởi tạo schema.
 
-## 5. Luồng request & file map (đọc trước khi planning)
+### Test isolation và `AccountRateLimiter.reset()`
+
+`AccountRateLimiter` giữ RPM/TPM/RPD state trong singleton process. CI chạy checkout sạch, còn máy developer có thể đã có `usage.db` và state khác, nên provider wire tests phải không phụ thuộc vào quota persisted hoặc state từ test trước. `tests/conftest.py` gọi `account_limiter.reset()` và `token_limiter.reset()` trước/sau mỗi test; `reset()` chỉ xoá state trong memory, không xoá database và không được gọi từ production request path. Khi thêm integration test mới, hoặc dùng account `anonymous`, hoặc mock limiter/pool rõ ràng.
+
+Nếu CI báo `429` với `tokens per minute limit exceeded` trong một test fake-provider, đó là dấu hiệu test đã lọt qua isolation seam — không phải lý do để commit database.
+
+## 6. Luồng request & file map (đọc trước khi planning)
+
+## 6. Luồng request & file map (đọc trước khi planning)
 
 Một request đi qua các tầng theo thứ tự sau. Xác định task chạm vào tầng nào → chỉ đọc file tương ứng:
 
@@ -55,7 +65,7 @@ Client → src/server/ (routes)
 | Admin console CLI | `src/console/admin_console/` |
 **PoolManager (581 dòng)** là monolithic intentional (`docs/architecture_overview.md` mục 6). Không cần decompose — chỉ cần focus vào nhánh transient error vs hard error + pool vs standalone.
 
-## 6. Phân tầng — tầng dưới KHÔNG được import tầng trên
+## 7. Phân tầng — tầng dưới KHÔNG được import tầng trên
 
 Thứ tự tầng, từ trên xuống:
 
