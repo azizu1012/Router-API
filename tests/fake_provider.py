@@ -2,12 +2,12 @@
 
 Every provider seam in this repo is a method on one of two singletons:
 
-    src.core.pool_manager.pool_manager            call_nonstream / call_stream / acompletion
+    src.core.orchestration.pool_manager.pool_manager            call_nonstream / call_stream / acompletion
     src.core.providers.gemini.manager.api_manager call_gemini / call_gemini_json / call_gemini_stream
 
 The proxy modules import those singletons by reference, so replacing a method on
 the singleton replaces the provider for every caller at once — including the
-function-local `from src.core.providers import search_manager` sites that a
+function-local `from src.tools.search.orchestration import manager as search_manager` sites that a
 per-module patch would miss. That is why this kit needed no production change:
 the seam it needs already existed, it just was not being used.
 
@@ -39,7 +39,7 @@ from having to count its own calls.
 
 Web search is local by design. `FakeSearch` replaces either the DuckDuckGo
 scrape (`install`) or the engine dispatch itself (`install_manager`), so a search
-test costs nothing and never reaches Gemini grounding.
+test costs nothing and never reaches Gemini Router search.
 """
 
 from __future__ import annotations
@@ -68,7 +68,7 @@ __all__ = [
 
 # A credential-shaped string so code that logs or slices the key has something
 # realistic to chew on. Not a key: it authenticates with nothing.
-DEFAULT_API_KEY = "sk-fake-key-000000000000"
+DEFAULT_API_KEY = "sk-fake-mock-key"
 DEFAULT_MODEL_ID = "gemini-3.5-flash"
 DEFAULT_MODEL_ALIAS = "gemini-flash"
 DEFAULT_INPUT_TOKENS = 1000
@@ -85,7 +85,7 @@ DEFAULT_CITATIONS = [
 # list is auditable: a module added to the codebase is not silently uncovered,
 # it is a line someone has to add here and notice is missing.
 _USAGE_LOG_MODULES: Tuple[str, ...] = (
-    "src.core.usage_logger",
+    "src.core.observability.usage_logger",
     "src.api.claude_proxy.handler.proxy_nonstream",
     "src.api.claude_proxy.handler.proxy_stream",
     "src.api.opencode_proxy.handler.nonstream_executor",
@@ -93,16 +93,17 @@ _USAGE_LOG_MODULES: Tuple[str, ...] = (
     "src.api.opencode_proxy.handler.stream_executor",
     "src.server.pass_through_server.routes.gemini_handlers",
     "src.server.pass_through_server.routes.gemini_streaming",
-    "src.server.openai_server.routes.completions_routes",
+    "src.server.openai_server.routes.completions.legacy",
+    "src.server.openai_server.routes.completions.responses",
 )
 
 # Modules that bind `acompletion` by name at import, so patching the
 # `pool_manager` singleton does not reach them.
 _ACOMPLETION_IMPORTERS: Tuple[str, ...] = (
-    "src.core.pool_manager",
+    "src.core.orchestration.pool_manager",
     "src.api.opencode_proxy.handler.nonstream_executor",
-    "src.server.openai_server.routes.completions_routes",
-    "src.console.console_endpoint",
+    "src.server.openai_server.routes.completions.admin_probe",
+    "src.console.interactive.endpoint",
 )
 
 
@@ -630,7 +631,7 @@ class FakeProvider:
         usage row to the developer's `usage.db` — which is a real cost and which
         the session guard in conftest would (correctly) fail the suite over.
         """
-        from src.core.pool_manager import pool_manager as _pool
+        from src.core.orchestration.pool_manager import pool_manager as _pool
 
         monkeypatch.setattr(_pool, "call_nonstream", self.call_nonstream,
                             raising=False)
@@ -667,7 +668,7 @@ class FakeProvider:
         import lazily inside a function, and each binding for the ones that
         bound it at import.
         """
-        from src.core.providers import gemini_facade
+        from src.core.providers.gemini import facade as gemini_facade
 
         monkeypatch.setattr(gemini_facade, "acompletion", self.acompletion,
                             raising=False)
@@ -762,7 +763,7 @@ class _GeminiResponse:
     `_classify_native_failure` turned into a 500: the request "failed", for a
     reason that had nothing to do with the code under test.
 
-    Grounding reads `response.candidates[0].grounding_metadata.grounding_chunks`;
+    Router search reads `response.candidates[0].Router search_metadata.Router search_chunks`;
     a fake with no candidates must still *have* the attribute, so a consumer that
     probes for it gets `[]` instead of an AttributeError.
     """
@@ -998,11 +999,11 @@ def retry_then_success_scenario(failures: int = 1, *, error: Any = None,
 # ── web search ─────────────────────────────────────────────────────────────
 
 class FakeSearch:
-    """A local stand-in for web search. No network, no Gemini grounding.
+    """A local stand-in for web search. No network, no Gemini Router search.
 
     Two seams, because they answer different questions:
 
-    * `install` patches `src.tools.duckduckgo.search_with_citations` — the HTTP
+    * `install` patches `src.tools.search.engine.manager.search_with_citations` — the HTTP
       scrape. `search_manager.execute_hybrid_search` still runs for real, so the
       test exercises the real engine dispatch and formatting.
     * `install_manager` patches `execute_hybrid_search` itself — for tests
@@ -1045,12 +1046,12 @@ class FakeSearch:
         single positional argument, so the engine that was chosen never reaches
         the scrape. A test cannot assert on it here. What it can assert — and
         what is worth asserting — is that the scrape was reached at all, since
-        the `google_grounding` branch goes to Gemini instead and never arrives
+        the `router_search` branch goes to Gemini instead and never arrives
         here. The charged/not-charged split is pinned one level up, by
         `test_search_endpoint.py::TestOnlyTheGroundedSearchSpendsQuota`.
         """
         with suppress(ImportError):
-            import src.tools.duckduckgo as ddg
+            import src.tools.search.engine.manager as ddg
 
             monkeypatch.setattr(ddg, "search_with_citations", self,
                                 raising=False)
@@ -1058,7 +1059,7 @@ class FakeSearch:
 
     def install_manager(self, monkeypatch) -> "FakeSearch":
         """Replace `execute_hybrid_search` — the seam the routes call."""
-        from src.core.providers import search_manager
+        from src.tools.search.orchestration import manager as search_manager
 
         monkeypatch.setattr(search_manager, "execute_hybrid_search", self,
                             raising=False)

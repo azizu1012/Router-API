@@ -12,8 +12,8 @@ async def admin_list_account_keys(request: Request, account_id: str):
     """List all keys for a specific account (for UI dropdown when assigning endpoints)."""
     _require_admin(request)
 
-    from src.backend.accounts import find_account_by_name
-    from src.backend.account_keys import get_keys_for_account
+    from src.backend.accounts.manager import find_account_by_name
+    from src.backend.keys.accounts import get_keys_for_account
 
     acct = find_account_by_name(account_id)
     if not acct:
@@ -51,7 +51,7 @@ async def admin_add_key(request: Request):
 
     from src.core.config_n_logg import reload_config
     new_keys = reload_config()
-    from src.backend.key_status import register_keys_in_db
+    from src.backend.keys.status import register_keys_in_db
     register_keys_in_db(new_keys)
     from src.core.router import router
     router.refresh_keys()
@@ -93,7 +93,7 @@ async def admin_delete_key(request: Request):
 
     from src.core.config_n_logg import reload_config
     new_keys = reload_config()
-    from src.backend.key_status import register_keys_in_db
+    from src.backend.keys.status import register_keys_in_db
     register_keys_in_db(new_keys)
     from src.core.router import router
     router.refresh_keys()
@@ -212,4 +212,5 @@ async def admin_reset_key(request: Request):
     router.refresh_keys()
 
     return {"status": "success"}
+
 

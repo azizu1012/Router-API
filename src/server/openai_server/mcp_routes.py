@@ -46,10 +46,9 @@ logger = logging.getLogger("router.mcp")
 _mcp_account: contextvars.ContextVar[dict[str, Any] | None] = contextvars.ContextVar(
     "mcp_account", default=None)
 
-# A tool call can fan out into several engine attempts (google_grounding then
-# duckduckgo under "auto"). Bounding it here means a runaway loop costs one
-# search, not the account's whole daily budget — the token's rpm limits how
-# often the tool is *invoked*, not what one invocation may do.
+# A tool call can fan out into several Router search attempts. Bounding it here
+# means a runaway loop costs one bounded request, not the account's whole daily
+# budget.
 _MAX_QUERIES_PER_CALL = 3
 
 
@@ -151,10 +150,10 @@ def build_mcp_app(host: str = "127.0.0.1", resource_server_url: str = "http://12
         if account is None:
             return "Error: no authenticated account for this session."
 
-        from src.core.providers.search_manager import execute_hybrid_search
+        from src.tools.search.orchestration.manager import execute_hybrid_search
 
         queries = [query][:_MAX_QUERIES_PER_CALL]
-        # MCP search is Router-owned; never invoke legacy Gemini grounding.
+        # MCP search is Router-owned; never invoke provider-specific search.
         engine_name = "duckduckgo"
         context, citations = await execute_hybrid_search(
             queries,
@@ -295,3 +294,4 @@ def mount_mcp(app) -> bool:
     """
     app.mount("/mcp", _proxy)
     return True
+

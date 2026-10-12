@@ -1,12 +1,12 @@
 from typing import Dict, List, Tuple, Optional, Any
 
-from src.core.providers.search_manager import execute_hybrid_search
+from src.tools.search.orchestration.manager import execute_hybrid_search
 
 
 async def execute_opencode_search(
     queries: List[str],
     model_alias_or_name: str = "",
-    search_engine: str = "auto",
+    search_engine: str = "duckduckgo",
     auth_key_prefix: str = "",
     account: Optional[Dict[str, Any]] = None,
 ) -> Tuple[str, List[Dict[str, Any]]]:
@@ -23,3 +23,4 @@ async def execute_opencode_search(
         auth_key_prefix=auth_key_prefix,
         account=account,
     )
+

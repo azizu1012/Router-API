@@ -209,14 +209,13 @@ class RouterApiConfig:
     KEY_INVALID_COOLDOWN_SECONDS: int = _get_int("KEY_INVALID_COOLDOWN_SECONDS", 3600, 60, 86400)
     KEY_UNKNOWN_ERROR_COOLDOWN_SECONDS: int = _get_int("KEY_UNKNOWN_ERROR_COOLDOWN_SECONDS", 30, 5, 300)
 
-    # Per-key throttle tuning (gemini_api_manager)
+    # Per-key throttle tuning (Gemini provider manager)
     GEMINI_API_GLOBAL_INTERVAL: float = _get_int("GEMINI_API_GLOBAL_INTERVAL", 15, 10, 26) / 10.0
     GEMINI_API_KEY_INTERVAL: float = _get_int("GEMINI_API_KEY_INTERVAL", 15, 10, 26) / 10.0
     GEMINI_API_MAX_CONCURRENT: int = _get_int("GEMINI_API_MAX_CONCURRENT", 0, 0, 500)
     GEMINI_GLOBAL_COOLDOWN_SEC: int = _get_int("GEMINI_GLOBAL_COOLDOWN_SEC", 5, 1, 60)
     GEMINI_PROJECT_FREEZE_SEC: int = _get_int("GEMINI_PROJECT_FREEZE_SEC", 60, 5, 600)
     GEMINI_UNAVAILABLE_DELAY_SEC: float = _get_int("GEMINI_UNAVAILABLE_DELAY_SEC", 50, 5, 300) / 10.0
-    GEMINI_AUTO_GROUNDING: bool = _get_bool("GEMINI_AUTO_GROUNDING", False)
 
     def __post_init__(self):
         if not self.GEMINI_API_KEYS:
@@ -281,3 +280,5 @@ def remove_banned_key_from_env(api_key: str) -> None:
                     logger.warning("[SelfHealing] Appended banned key %s to banned-keys.txt", var_name)
     except Exception as e:
         logger.error("[SelfHealing] Error removing banned key from .env: %s", e)
+
+

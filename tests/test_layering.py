@@ -1,7 +1,7 @@
 """Layering: the bottom may not import upward.
 
 Three helpers sat in the wrong module, so a lower layer had to reach past the
-layer above it to get them — `gemini_format` (providers) importing
+layer above it to get them — `gemini/format` (providers) importing
 `message_converter` (translator) for a function that exists only to satisfy
 google-genai, and `auth.py` importing `sse_cache_agent` for an SSE frame
 formatter. Nothing was broken; every call returned the right answer. That is
@@ -21,9 +21,12 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 
 def _tracked_python_files():
     out = subprocess.run(
-        ['git', 'ls-files', '*.py'], capture_output=True, text=True, cwd=REPO_ROOT
+        ['git', 'ls-files', '-c', '-o', '--exclude-standard', '*.py'],
+        capture_output=True,
+        text=True,
+        cwd=REPO_ROOT,
     )
-    return [REPO_ROOT / p for p in out.stdout.split()]
+    return [REPO_ROOT / p for p in out.stdout.split() if (REPO_ROOT / p).is_file()]
 
 
 def _module_level_imports(path: Path):
@@ -66,8 +69,8 @@ RULES = [
 # Documented debt, not a licence. Each entry is (file, prefix, why it is tolerated).
 KNOWN_EXCEPTIONS = [
     (
-        'src/core/providers/custom_endpoint_manager.py',
-        'src.server.websocket_manager',
+        'src/core/providers/custom_endpoint/manager.py',
+        'src.server.realtime.websocket',
         'needs to broadcast endpoint health to the live dashboard. The dependency runs '
         'the wrong way; the fix is an event sink in core that server subscribes to, '
         'which is a larger change than this refactor.',
@@ -120,20 +123,20 @@ class TestLayering:
         Feed it a file shaped exactly like the bug this test was written for and
         confirm it gets reported.
         """
-        fake = 'from src.logical_HQ_translator.message_converter import _sanitize_schema_for_gemini\n'
+        fake = 'from src.logical_HQ_translator.messages.converter import _sanitize_schema_for_gemini\n'
         tree = ast.parse(fake)
         modules = []
         for node in tree.body:
             if isinstance(node, ast.ImportFrom) and node.module and node.module.startswith('src.'):
                 modules.append(node.module)
 
-        assert modules == ['src.logical_HQ_translator.message_converter'], modules
+        assert modules == ['src.logical_HQ_translator.messages.converter'], modules
         banned = ('src.logical_HQ_translator', 'src.api')
         assert any(m.startswith(banned[0]) for m in modules), 'checker missed the import'
 
     def test_function_body_imports_are_not_treated_as_violations(self):
         """The 252 lazy imports are house style; scanning them would be noise."""
-        lazy = 'def f():\n    from src.logical_HQ_translator.message_converter import x\n'
+        lazy = 'def f():\n    from src.logical_HQ_translator.messages.converter import x\n'
         tree = ast.parse(lazy)
         found = []
         for node in tree.body:

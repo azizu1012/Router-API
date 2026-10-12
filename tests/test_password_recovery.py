@@ -22,7 +22,7 @@ from unittest.mock import patch
 
 import pytest
 
-from src.backend import password_recovery as pr
+from src.backend.accounts import recovery as pr
 
 
 @pytest.fixture
@@ -110,7 +110,7 @@ class TestWrongKeyOrTamperedRow:
 class TestHashStillGoverns:
     def test_login_verification_is_independent_of_the_encrypted_copy(self, with_key):
         """The digest is what authenticates. The ciphertext is for the operator."""
-        from src.backend.account_keys import hash_password, verify_password
+        from src.backend.keys.accounts import hash_password, verify_password
 
         digest, salt = hash_password("hunter2")
         blob = pr.encrypt_password("hunter2")
@@ -122,7 +122,7 @@ class TestHashStillGoverns:
 
     def test_the_hash_alone_cannot_be_reversed(self, with_key):
         """The whole reason the second column exists — worth asserting."""
-        from src.backend.account_keys import hash_password
+        from src.backend.keys.accounts import hash_password
 
         digest, salt = hash_password("hunter2")
         assert pr.decrypt_password(digest) is None
@@ -146,7 +146,7 @@ class TestKeyDerivation:
 
 class TestStorage:
     def test_the_row_keeps_hash_salt_and_encrypted_copy(self, temp_db, with_key):
-        from src.backend.account_keys import get_credential_db, set_password_db
+        from src.backend.keys.accounts import get_credential_db, set_password_db
 
         set_password_db("acct-1", "hunter2")
         cred = get_credential_db("acct-1")
@@ -156,7 +156,7 @@ class TestStorage:
         assert "hunter2" not in cred["password_enc"]
 
     def test_the_recovery_reader_returns_the_password(self, temp_db, with_key):
-        from src.backend.account_keys import (
+        from src.backend.keys.accounts import (
             get_recoverable_password_db,
             set_password_db,
         )
@@ -166,13 +166,13 @@ class TestStorage:
 
     def test_with_no_key_the_row_still_verifies_but_has_no_copy(self, temp_db, without_key):
         """An operator who upgrades without setting the key can still sign in."""
-        from src.backend.account_keys import (
+        from src.backend.keys.accounts import (
             get_credential_db,
             get_recoverable_password_db,
             set_password_db,
             verify_login_db,
         )
-        from src.backend.accounts import create_account_db
+        from src.backend.accounts.manager import create_account_db
 
         create_account_db(name="nokey")
         set_password_db("nokey", "hunter2")
@@ -183,7 +183,7 @@ class TestStorage:
         assert get_recoverable_password_db("nokey") is None
 
     def test_setting_a_password_twice_replaces_both_copies(self, temp_db, with_key):
-        from src.backend.account_keys import (
+        from src.backend.keys.accounts import (
             get_recoverable_password_db,
             set_password_db,
         )
@@ -193,5 +193,7 @@ class TestStorage:
         assert get_recoverable_password_db("acct-1") == "second"
 
     def test_a_row_without_a_credential_reads_as_none(self, temp_db, with_key):
-        from src.backend.account_keys import get_recoverable_password_db
+        from src.backend.keys.accounts import get_recoverable_password_db
         assert get_recoverable_password_db("nobody") is None
+
+

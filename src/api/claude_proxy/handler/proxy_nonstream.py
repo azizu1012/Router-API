@@ -10,8 +10,8 @@ from typing import Any, Dict, Optional
 from src.core.config_n_logg import config
 from src.core.config_n_logg.logger import logger_proxy as logger
 from src.core.router import router
-from src.core.pool_manager import pool_manager
-from src.core.usage_logger import log_usage
+from src.core.orchestration.pool_manager import pool_manager
+from src.core.observability.usage_logger import log_usage
 from src.logical_HQ_translator import _convert_messages, XMLThinkingExtractor
 from .anthropic_spec import (
     apply_tool_choice_to_tools,
@@ -82,14 +82,14 @@ class ClaudeProxyNonstreamMixin:
 
         from src.api.opencode_proxy.handler.websearch import should_enable_web_search
         from src.api.opencode_proxy.handler.proxy import _WEBSEARCH_TOOL_DEF, _resolve_thinking_config, _extract_thinking_params
-        from src.core.sub_agent_detect import is_sub_agent_body
+        from src.core.runtime.sub_agent_detect import is_sub_agent_body
         if not is_sub_agent_body(body) and should_enable_web_search(body, account) and not any(
             t.get("function", {}).get("name") in ("WebSearch", "web_search") for t in openai_tools
         ):
             openai_tools.append(_WEBSEARCH_TOOL_DEF)
             logger.info("[WebSearch] Injected WebSearch tool for Claude non-stream")
             
-        from src.core.compaction_detect import strip_tools_for_compaction
+        from src.core.runtime.compaction_detect import strip_tools_for_compaction
         strip_tools_for_compaction(body, openai_messages, openai_tools, is_claude_or_opencode=True)
 
         model_alias = router.resolve_model_alias(body.get("model", "")) or config.DEFAULT_MODEL_ALIAS
@@ -136,7 +136,7 @@ class ClaudeProxyNonstreamMixin:
         used_model_id = ""
 
         # Check for custom endpoint passthrough BEFORE pool logic
-        from src.core.providers.custom_endpoint_passthrough import (
+        from src.core.providers.custom_endpoint.passthrough import (
             resolve_custom_endpoint_for_request,
             call_custom_endpoint_passthrough,
         )

@@ -191,7 +191,7 @@ def init_config_tables() -> None:
 
             # Migration: add search_engine to accounts
             try:
-                c.execute("ALTER TABLE accounts ADD COLUMN search_engine TEXT DEFAULT 'auto'")
+                c.execute("ALTER TABLE accounts ADD COLUMN search_engine TEXT DEFAULT 'duckduckgo'")
             except Exception:
                 pass
 
@@ -265,7 +265,7 @@ def init_config_tables() -> None:
             c.commit()
 
             # Seed or update model_prices to real pricing
-            from src.backend.model_prices import DEFAULT_MODEL_PRICES
+            from src.backend.models.prices import DEFAULT_MODEL_PRICES
             cur = c.execute("SELECT input_rate_per_1k FROM model_prices WHERE model_name = 'gemini-3.5-flash'")
             old_flash_row = cur.fetchone()
             if not old_flash_row or (old_flash_row and abs(old_flash_row[0] - 0.0015) < 1e-6):
@@ -284,7 +284,7 @@ def init_config_tables() -> None:
             c.close()
 
     try:
-        from src.backend.model_config import sync_default_models_to_db
+        from src.backend.models.config import sync_default_models_to_db
         sync_default_models_to_db()
     except Exception as e:
         logger.warning("[Schema] Failed to sync default models: %s", e)
@@ -463,3 +463,4 @@ def migrate_from_json() -> None:
             _rename_bak(Path(__file__).resolve().parents[2] / "custom_endpoints.json")
         finally:
             c.close()
+

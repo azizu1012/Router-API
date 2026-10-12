@@ -10,6 +10,7 @@ logs/
 __pycache__/
 *.pyc
 .pytest_cache/
+.pytest_tmp/
 .ruff_cache/
 .mypy_cache/
 
@@ -41,7 +42,6 @@ tests/*
 !tests/test_search_endpoint.py
 !tests/test_anthropic_protocol.py
 !tests/test_anthropic_integration.py
-!tests/test_adk_runner.py
 !tests/test_account_auth.py
 !tests/test_secret_scanner.py
 !tests/test_schema_bootstrap.py
@@ -71,7 +71,6 @@ tests/*
 !tests/test_anthropic_stream_order.py
 !tests/test_responses_conformance.py
 !tests/test_finish_reason.py
-!tests/test_native_gemini_errors.py
 !tests/test_uncovered_routes.py
 !tests/test_hosted_search_shape.py
 !tests/test_security_no_secret_leak.py

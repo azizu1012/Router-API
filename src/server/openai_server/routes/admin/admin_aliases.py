@@ -5,7 +5,7 @@ from typing import Any, Dict, List, Optional
 from fastapi import HTTPException, Request
 from pydantic import BaseModel, Field
 
-from src.backend import model_aliases as aliases_db
+from src.backend.models import aliases as aliases_db
 from src.core.config_n_logg.logger import logger_api as logger
 
 from ..app_init import app
@@ -146,6 +146,7 @@ async def admin_delete_alias(alias_id: str, request: Request):
 async def admin_list_all_endpoints(request: Request):
     """List all endpoints for admin."""
     _require_admin(request)
-    from src.backend.endpoints import list_endpoints_db
+    from src.backend.endpoints.manager import list_endpoints_db
     eps = list_endpoints_db()
     return {"endpoints": eps}
+

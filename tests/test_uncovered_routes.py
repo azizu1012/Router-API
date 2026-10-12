@@ -41,7 +41,7 @@ class TestUnsetMaxTokens:
             return {"response": _Resp(), "api_key": "k", "model_id": "m",
                     "input_tokens": 5}
 
-        from src.core.pool_manager import pool_manager
+        from src.core.orchestration.pool_manager import pool_manager
         monkeypatch.setattr(pool_manager, "call_nonstream", fake_nonstream)
 
         proxy = OpenCodeProxy()
@@ -57,7 +57,7 @@ class TestUnsetMaxTokens:
         """The caller-side half: do not write a None into the body at all."""
         import inspect
 
-        from src.server.openai_server.routes import completions_routes
+        from src.server.openai_server.routes.completions import legacy as completions_routes
 
         src = inspect.getsource(completions_routes.completions)
         assert '"max_tokens": body.get("max_tokens")' not in src, (
@@ -70,7 +70,7 @@ class TestUnsetMaxTokens:
 class TestModelListingIsASuperset:
     def test_an_entry_validates_as_an_anthropic_model_info(self):
         pytest.importorskip("anthropic.types")
-        from src.server.openai_server.routes.standard_routes import _model_entry
+        from src.server.openai_server.routes.standard_routes.models import _model_entry
 
         entry = _model_entry({"id": "gemini-flash", "display": "Flash",
                               "context_length": 220000})
@@ -83,7 +83,7 @@ class TestModelListingIsASuperset:
 
         pytest.importorskip("anthropic.types")
         import anthropic.types as T
-        from src.server.openai_server.routes.standard_routes import _model_entry
+        from src.server.openai_server.routes.standard_routes.models import _model_entry
 
         entry = _model_entry({"id": "m"})
 
@@ -93,7 +93,7 @@ class TestModelListingIsASuperset:
     def test_an_entry_still_validates_as_an_openai_model(self):
         pytest.importorskip("openai.types.model")
         from openai.types.model import Model
-        from src.server.openai_server.routes.standard_routes import _model_entry
+        from src.server.openai_server.routes.standard_routes.models import _model_entry
 
         entry = _model_entry({"id": "gemini-flash", "display": "Flash",
                               "context_length": 220000})
@@ -103,7 +103,7 @@ class TestModelListingIsASuperset:
     def test_every_required_anthropic_field_is_emitted(self):
         pytest.importorskip("anthropic.types")
         import anthropic.types as T
-        from src.server.openai_server.routes.standard_routes import _model_entry
+        from src.server.openai_server.routes.standard_routes.models import _model_entry
 
         required = {n for n, f in T.ModelInfo.model_fields.items()
                     if f.is_required()}
@@ -166,7 +166,7 @@ class TestSearchToolDoesNotLeak:
             seen.extend(queries)
             return "SEARCH RESULT", [{"url": "http://x", "title": "X"}]
 
-        import src.core.providers.search_manager as sm
+        import src.tools.search.orchestration.manager as sm
         original = sm.execute_hybrid_search
         sm.execute_hybrid_search = fake_search
         try:
@@ -229,7 +229,7 @@ class TestSearchToolDoesNotLeak:
         async def fake_search(*_a, **_kw):
             return "", []
 
-        import src.core.providers.search_manager as sm
+        import src.tools.search.orchestration.manager as sm
         original = sm.execute_hybrid_search
         sm.execute_hybrid_search = fake_search
         try:
@@ -250,7 +250,7 @@ class TestSearchToolDoesNotLeak:
         async def boom(*_a, **_kw):
             raise RuntimeError("search backend down")
 
-        import src.core.providers.search_manager as sm
+        import src.tools.search.orchestration.manager as sm
         original = sm.execute_hybrid_search
         sm.execute_hybrid_search = boom
         try:
@@ -293,7 +293,7 @@ class TestPoolDisplayHasNoMemberList:
     """
 
     def _display(self, alias):
-        from src.core.api_config import AVAILABLE_MODELS
+        from src.core.config.api_config import AVAILABLE_MODELS
 
         return AVAILABLE_MODELS[alias]["display"]
 
@@ -304,14 +304,14 @@ class TestPoolDisplayHasNoMemberList:
         assert self._display("gemini-flash-lite") == "Gemini Flash Lite Pool"
 
     def test_no_pool_label_carries_a_parenthetical(self):
-        from src.core.api_config import MODEL_POOLS
+        from src.core.config.api_config import MODEL_POOLS
 
         for pool in MODEL_POOLS:
             assert "(" not in self._display(pool), (
                 f"{pool} label still lists its members: {self._display(pool)!r}")
 
     def test_the_label_is_what_clients_receive(self):
-        from src.server.openai_server.routes.standard_routes import _model_entry
+        from src.server.openai_server.routes.standard_routes.models import _model_entry
 
         entry = _model_entry({"id": "gemini-flash",
                               "display": self._display("gemini-flash")})
@@ -325,7 +325,7 @@ class TestPoolDisplayHasNoMemberList:
         """
         import os
 
-        from src.core import api_config
+        import src.core.config.api_config as api_config
 
         os.environ["GEMINI_FLASH_DISPLAY"] = "Flash (custom label)"
         try:
@@ -335,3 +335,6 @@ class TestPoolDisplayHasNoMemberList:
         finally:
             del os.environ["GEMINI_FLASH_DISPLAY"]
             api_config.reload_model_config()
+
+
+

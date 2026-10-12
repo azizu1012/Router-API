@@ -88,11 +88,14 @@ def parse_gemini_tools(raw_tools: list) -> List[gt.Tool]:
         if not isinstance(t, dict):
             continue
         if "googleSearch" in t or "google_search" in t:
-            tools.append(gt.Tool(google_search=gt.GoogleSearch()))
-        elif "functionDeclarations" in t or "function_declarations" in t:
+            # Router-owned search is handled before provider dispatch. Do not
+            # construct a provider-specific search tool here.
+            continue
+        if "functionDeclarations" in t or "function_declarations" in t:
             decls = t.get("functionDeclarations") or t.get("function_declarations") or []
             func_decls = []
             for d in decls:
                 func_decls.append(gt.FunctionDeclaration(**d))
             tools.append(gt.Tool(function_declarations=func_decls))
     return tools
+

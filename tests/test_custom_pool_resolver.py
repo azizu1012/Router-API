@@ -2,7 +2,7 @@ import time
 import pytest
 from src.core.router.pool import ModelPool
 from src.core.router.core.router import APIRouter
-from src.logical_HQ_translator.model_resolver import _resolve_model
+from src.logical_HQ_translator.model.resolver import _resolve_model
 from src.core.providers import _custom_endpoint_manager
 from src.server.openai_server.auth import _apply_account_limit
 
@@ -147,3 +147,5 @@ async def test_auth_is_custom_when_disabled():
     finally:
         _custom_endpoint_manager.list_endpoints = orig_list_endpoints
         _custom_endpoint_manager.is_endpoint_frozen = orig_is_endpoint_frozen
+
+

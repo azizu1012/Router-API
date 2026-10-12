@@ -17,7 +17,7 @@ import pytest
 
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 
-from src.core.pool_manager import _classify_error
+from src.core.orchestration.pool_manager import _classify_error
 
 
 def err(msg):

@@ -40,7 +40,7 @@ async def opencode_chat_completions(
 
     try:
         # Resolve model alias if user defined one
-        from src.logical_HQ_translator.alias_resolver import resolve_model_alias
+        from src.logical_HQ_translator.model.alias import resolve_model_alias
         account_id = str(account.get("account_id") or "")
         account_key_id = account.get("token_key_id") or account.get("account_key_id")
         resolved_model, alias_info = resolve_model_alias(
@@ -116,7 +116,7 @@ async def opencode_chat_completions(
         else:
             resp_dict = await opencode_proxy.chat_completion(body, account=account, is_opencode=True)
             if body.get("_original_model_name") and isinstance(resp_dict, dict):
-                from .completions_routes import _spoof_model_name_in_response
+                from .responses.format import _spoof_model_name_in_response
                 resp_dict = _spoof_model_name_in_response(resp_dict, body["_original_model_name"])
             resp_content = "?"
             if isinstance(resp_dict, dict):
@@ -144,3 +144,5 @@ async def opencode_chat_completions(
             content=error_response(body, model_alias, "pool_exhausted"),
             headers=response_headers,
         )
+
+

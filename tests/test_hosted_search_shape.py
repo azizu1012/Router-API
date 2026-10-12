@@ -41,7 +41,7 @@ FAILED = {"id": "call_2", "name": "WebSearch", "type": "search",
 
 class TestResponsesHostedSearch:
     def test_a_search_is_a_web_search_call_item(self):
-        from src.server.openai_server.routes.completions_routes import (
+        from src.server.openai_server.routes.completions.responses import (
             _web_search_call_item,
         )
 
@@ -54,7 +54,7 @@ class TestResponsesHostedSearch:
     def test_the_item_validates_against_the_official_model(self):
         pytest.importorskip("openai.types.responses")
         from openai.types.responses import ResponseFunctionWebSearch
-        from src.server.openai_server.routes.completions_routes import (
+        from src.server.openai_server.routes.completions.responses import (
             _web_search_call_item,
         )
 
@@ -64,7 +64,7 @@ class TestResponsesHostedSearch:
     def test_the_item_validates_under_strict(self):
         pytest.importorskip("openai.types.responses")
         from openai.types.responses import ResponseFunctionWebSearch
-        from src.server.openai_server.routes.completions_routes import (
+        from src.server.openai_server.routes.completions.responses import (
             _web_search_call_item,
         )
 
@@ -72,14 +72,14 @@ class TestResponsesHostedSearch:
             _web_search_call_item("ws_1", RECORD), strict=True)
 
     def test_a_failed_search_says_so(self):
-        from src.server.openai_server.routes.completions_routes import (
+        from src.server.openai_server.routes.completions.responses import (
             _web_search_call_item,
         )
 
         assert _web_search_call_item("ws_2", FAILED)["status"] == "failed"
 
     def test_the_action_carries_the_query(self):
-        from src.server.openai_server.routes.completions_routes import (
+        from src.server.openai_server.routes.completions.responses import (
             _web_search_call_item,
         )
 
@@ -89,7 +89,7 @@ class TestResponsesHostedSearch:
         assert action["query"] == "capital of France"
 
     def test_a_fetch_uses_the_open_page_action(self):
-        from src.server.openai_server.routes.completions_routes import (
+        from src.server.openai_server.routes.completions.responses import (
             _web_search_call_item,
         )
 
@@ -100,7 +100,7 @@ class TestResponsesHostedSearch:
                                   "url": "https://example.com"}
 
     def test_the_router_own_search_never_becomes_a_function_call(self):
-        from src.server.openai_server.routes.completions_routes import (
+        from src.server.openai_server.routes.completions.responses import (
             _extract_response_tool_calls,
         )
 
@@ -112,7 +112,7 @@ class TestResponsesHostedSearch:
         assert got[0]["name"] == "WebSearch"
 
     def test_a_real_client_tool_is_still_a_function_call(self):
-        from src.server.openai_server.routes.completions_routes import (
+        from src.server.openai_server.routes.completions.responses import (
             _extract_response_tool_calls,
         )
 
@@ -271,11 +271,10 @@ class TestSearchIsNeverAutomatic:
 
         assert 'account.get("web_search_enabled")' not in src, (
             "the account default still switches search on")
-        # Exactly one place turns it on: the loop that reads a google_search tool
-        # out of the request. The old code had a second, after an `else:`.
-        assert src.count("web_search = True") == 1, (
-            "search is switched on somewhere other than the tool the client "
-            f"declared:\n{src}")
+        # Search is derived once from explicit request fields/tools. There is
+        # no account-level default that silently turns it on.
+        assert src.count("web_search = any(") == 1, (
+            f"search is not derived from one explicit request gate:\n{src}")
 
 # ── Spec fidelity: what the official models actually declare ────────────────
 #
@@ -312,7 +311,7 @@ class TestActionMatchesTheDeclaredSpec:
     def test_the_router_emits_no_undeclared_action_field(self):
         pytest.importorskip("openai.types.responses")
         from openai.types.responses import ResponseFunctionWebSearch
-        from src.server.openai_server.routes.completions_routes import (
+        from src.server.openai_server.routes.completions.responses import (
             _web_search_call_item,
         )
 
@@ -321,7 +320,7 @@ class TestActionMatchesTheDeclaredSpec:
             strict=True, extra="forbid")
 
     def test_the_action_lists_the_sources_it_read(self):
-        from src.server.openai_server.routes.completions_routes import (
+        from src.server.openai_server.routes.completions.responses import (
             _web_search_action,
         )
 
@@ -333,7 +332,7 @@ class TestActionMatchesTheDeclaredSpec:
         ]
 
     def test_no_search_means_no_sources_key(self):
-        from src.server.openai_server.routes.completions_routes import (
+        from src.server.openai_server.routes.completions.responses import (
             _web_search_action,
         )
 
@@ -345,7 +344,7 @@ class TestActionMatchesTheDeclaredSpec:
 
 class TestMessageCitations:
     def test_a_search_backed_answer_carries_url_citations(self):
-        from src.server.openai_server.routes.completions_routes import (
+        from src.server.openai_server.routes.completions.responses import (
             _url_citations,
         )
 
@@ -356,7 +355,7 @@ class TestMessageCitations:
         assert anns[0]["title"] == "France"
 
     def test_a_citation_spans_the_text_it_supports(self):
-        from src.server.openai_server.routes.completions_routes import (
+        from src.server.openai_server.routes.completions.responses import (
             _url_citations,
         )
 
@@ -367,7 +366,7 @@ class TestMessageCitations:
         assert ann["end_index"] == len(text)
 
     def test_no_search_means_no_annotations(self):
-        from src.server.openai_server.routes.completions_routes import (
+        from src.server.openai_server.routes.completions.responses import (
             _url_citations,
         )
 
@@ -378,7 +377,7 @@ class TestMessageCitations:
         from openai.types.responses.response_output_text import (
             AnnotationURLCitation,
         )
-        from src.server.openai_server.routes.completions_routes import (
+        from src.server.openai_server.routes.completions.responses import (
             _url_citations,
         )
 
@@ -386,7 +385,7 @@ class TestMessageCitations:
             AnnotationURLCitation.model_validate(ann, strict=True, extra="forbid")
 
     def test_the_text_part_carries_them(self):
-        from src.server.openai_server.routes.completions_routes import (
+        from src.server.openai_server.routes.completions.responses import (
             _output_text_part,
         )
 
@@ -565,7 +564,7 @@ def search_backed(monkeypatch):
     """
     import src.api.claude_proxy.handler.proxy_nonstream as ns
     from src.api.claude_proxy import claude_proxy
-    from src.core.providers import search_manager
+    from src.tools.search.orchestration import manager as search_manager
 
     async def fake_search(queries, **kwargs):
         return ("Paris is the capital of France.", ACTION_WITH_RESULTS["citations"])
@@ -683,7 +682,7 @@ class TestRefusedSearchesAreNotCounted:
     def test_the_usage_skips_a_refused_attempt(self, monkeypatch):
         import src.api.claude_proxy.handler.proxy_nonstream as ns
         from src.api.claude_proxy import claude_proxy
-        from src.core.providers import search_manager
+        from src.tools.search.orchestration import manager as search_manager
 
         calls = {"n": 0}
 
@@ -717,7 +716,7 @@ class TestRefusedSearchesAreNotCounted:
                                                                monkeypatch):
         import src.api.claude_proxy.handler.proxy_nonstream as ns
         from src.api.claude_proxy import claude_proxy
-        from src.core.providers import search_manager
+        from src.tools.search.orchestration import manager as search_manager
 
         async def only_once(queries, **kwargs):
             return ("Paris.", ACTION_WITH_RESULTS["citations"])
@@ -807,7 +806,7 @@ def _run_streamed_search(monkeypatch, turns, body=None):
     """Drive the real streaming proxy over scripted turns; return parsed events."""
     import src.api.claude_proxy.handler.proxy_stream as st
     from src.api.claude_proxy import claude_proxy
-    from src.core.providers import search_manager
+    from src.tools.search.orchestration import manager as search_manager
 
     calls = {"n": 0, "search": 0}
 
@@ -1021,7 +1020,7 @@ class TestTheStreamedSearchHonoursMaxUses:
 
 class TestHostedSearchHistoryConversion:
     def test_message_converter_handles_server_tool_use_and_web_search_tool_result(self):
-        from src.logical_HQ_translator.message_converter import _convert_messages
+        from src.logical_HQ_translator.messages.converter import _convert_messages
         body = {
             "messages": [
                 {"role": "user", "content": "What is the capital of France?"},
@@ -1094,7 +1093,7 @@ def _fetch_call(url=FETCH_URL, id_="call_1", name="WebFetch"):
 def _run_server_tool(name, args, fake_search, monkeypatch, *, limits=None):
     """Run one server tool with the search manager faked out."""
     from src.api.claude_proxy.handler.anthropic_spec import run_server_tool
-    from src.core.providers import search_manager
+    from src.tools.search.orchestration import manager as search_manager
 
     seen = {}
 
@@ -1245,7 +1244,7 @@ class TestTheFetchReachesTheClientUnchanged:
     def _message(self, monkeypatch, fake_search, *, tools=None, url=FETCH_URL):
         import src.api.claude_proxy.handler.proxy_nonstream as ns
         from src.api.claude_proxy import claude_proxy
-        from src.core.providers import search_manager
+        from src.tools.search.orchestration import manager as search_manager
 
         async def fake_log_usage(*a):
             return None
@@ -1339,3 +1338,5 @@ class TestTheFetchReachesTheClientUnchanged:
 
         Message.model_validate(self._message(monkeypatch, self._ok),
                                strict=True, extra="forbid")
+
+

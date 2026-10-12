@@ -26,7 +26,7 @@ from src.core.providers.anthropic_wire import (
     normalize_api_format,
     openai_to_anthropic_body,
 )
-from src.core.providers.custom_endpoint_client import anthropic_messages_url
+from src.core.providers.custom_endpoint.client import anthropic_messages_url
 
 
 class TestTheFormatIsDeclaredAndDefaultsSafely:
@@ -285,7 +285,7 @@ class TestImagesSurvive:
         assert body["messages"][0]["content"] == [{"type": "text", "text": "keep me"}]
 
     def test_anthropic_image_block_converts_to_gemini_inline_data(self):
-        from src.core.providers.gemini_format import _convert_content_to_parts
+        from src.core.providers.gemini.format import _convert_content_to_parts
         parts = _convert_content_to_parts([
             {"type": "text", "text": "look at this"},
             {"type": "image", "source": {"type": "base64", "media_type": "image/png", "data": "QUJD"}},

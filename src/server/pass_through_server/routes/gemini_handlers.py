@@ -8,8 +8,7 @@ from src.core.config_n_logg import config
 from src.core.config_n_logg.logger import logger_api
 from src.core.router import router
 from src.core.providers import api_manager
-from src.core.providers.gemini.manager import ADKUnavailableError
-from src.core.usage_logger import log_usage
+from src.core.observability.usage_logger import log_usage
 from src.core.limits import account_limiter
 from src.server.openai_server.auth import _check_auth, _auth_key_prefix
 from .gemini_parsers import resolve_gemini_auth, parse_gemini_contents, parse_gemini_tools
@@ -36,37 +35,9 @@ def _classify_native_failure(exc: Exception) -> tuple[int, str]:
         return exc.status_code, _detail_message(exc.detail)
     if "no_available_key" in msg or "quota_exhausted" in msg:
         return 429, "All API keys are temporarily unavailable, retry later"
-    if "google-adk" in msg or isinstance(exc, ADKUnavailableError):
-        # A missing optional dependency is a server misconfiguration, not a
-        # client error, and it must not be reported as a quota problem.
-        return 500, msg
     if isinstance(exc, (TimeoutError, asyncio.TimeoutError)):
         return 504, "Upstream request timed out"
     return 500, msg
-
-
-async def _stream_with_search_fallback(**kw):
-    """stream_gemini_native, retrying once without search if ADK is missing.
-
-    The ADK runner is resolved before its retry loop, so the failure arrives on
-    the first pull rather than after every key has been tried. This is the
-    streaming counterpart of the same fallback in the non-stream path: search
-    that the account default switched on must not stop a request the caller
-    never asked to search for.
-    """
-    search_requested = kw.pop("search_requested", False)
-    try:
-        async for item in stream_gemini_native(**kw):
-            yield item
-    except ADKUnavailableError:
-        if search_requested:
-            raise
-        logger_api.warning(
-            "[GeminiNative] search unavailable (google-adk missing); "
-            "streaming %s without it", kw.get("model_alias"))
-        kw["web_search"] = False
-        async for item in stream_gemini_native(**kw):
-            yield item
 
 
 async def _handle_gemini_native(
@@ -133,7 +104,7 @@ async def _handle_gemini_native_inner(
     
     # Resolve the model's configured context length limit
     requested_model = model_alias
-    from src.core.api_config import AVAILABLE_MODELS, MODEL_CONTEXT_LENGTH
+    from src.core.config.api_config import AVAILABLE_MODELS, MODEL_CONTEXT_LENGTH
     model_alias_resolved = router.resolve_model_alias(requested_model)
     model_cfg = AVAILABLE_MODELS.get(model_alias_resolved)
     limit_tokens = model_cfg.get("context_length", MODEL_CONTEXT_LENGTH) if model_cfg else MODEL_CONTEXT_LENGTH
@@ -177,17 +148,15 @@ async def _handle_gemini_native_inner(
                 status_code=429,
                 detail={"error": {"message": f"Account rate limit exceeded: {reason}", "type": "rate_limit_error"}}
             )
-    web_search = False
-    has_media = image_count > 0 or api_manager._has_media_or_files(contents)
+    web_search = any(
+        isinstance(tool, dict) and ("googleSearch" in tool or "google_search" in tool)
+        for tool in raw_tools
+    ) or any(body.get(flag) is True for flag in ("web_search", "search", "google_search", "grounding"))
     auth_key_prefix = _auth_key_prefix(account)
-    for tool in tools:
-        if getattr(tool, "google_search", None) is not None:
-            web_search = True
     # Whether the caller asked for search, as opposed to the account-level
     # default turning it on below. The distinction decides what happens when
     # the search backend is missing: a request that never asked for search must
     # still be answered, one that did has to be told it cannot be served.
-    search_requested = web_search
     explicit_disable = False
     for flag in ["web_search", "search", "google_search", "grounding"]:
         if flag in body and body[flag] is False:
@@ -196,27 +165,15 @@ async def _handle_gemini_native_inner(
     if explicit_disable:
         web_search = False
         tools = [t for t in tools if getattr(t, "google_search", None) is None]
-    # No default-on branch. This used to switch search on for any account whose
-    # `search_engine` was not literally "disabled" — which is every account,
-    # since the default is "auto". A client asking a question then got routed
-    # onto the ADK search path, so without google-adk installed the whole
-    # :generateContent endpoint failed. Google decides grounding on its own when
-    # the client asks for it with a google_search tool; a request that never
-    # asked must not be sent searching.
-    #
-    # OpenAI's own guidance on hosted search is the same principle: asking for a
-    # search in the prompt does not turn it on.
-    target_model_id = router.get_model_id(model_alias)
-    is_lite = "lite" in model_alias.lower() or "lite" in target_model_id.lower()
-    can_native_ground = (
-        web_search
-        and not has_media
-        and is_lite
-        and ("gemini" in target_model_id.lower())
-    )
-    native_grounding_active = can_native_ground
     hybrid_citations = []
-    from src.core.providers.custom_endpoint_manager import _custom_endpoint_manager
+    if web_search and prompt_text.strip():
+        from src.tools.search.orchestration.manager import execute_hybrid_search
+        search_context, hybrid_citations = await execute_hybrid_search(
+            [prompt_text.strip()], auth_key_prefix=auth_key_prefix, account=account
+        )
+        if search_context:
+            system_instruction = f"{system_instruction}\n\n{search_context}".strip()
+    from src.core.providers.custom_endpoint.manager import _custom_endpoint_manager
     for ep in _custom_endpoint_manager.get_endpoints_for_account(account):
         if not ep.get("enabled", True):
             continue
@@ -226,7 +183,7 @@ async def _handle_gemini_native_inner(
             model_to_use = pool_assignments[model_alias]
         enabled_models = ep.get("enabled_models", [])
         if model_to_use in enabled_models:
-            from src.core.providers.custom_endpoint_genai_adapter import (
+            from src.core.providers.custom_endpoint.adapter import (
                 genai_contents_to_openai_messages,
                 openai_result_to_genai_response,
             )
@@ -277,7 +234,7 @@ async def _handle_gemini_native_inner(
             except Exception as e:
                 logger_api.warning("[AccountEndpoint Pass-through] %s failed (%s), trying next endpoint", model_alias, e)
     if stream:
-        return StreamingResponse(_stream_with_search_fallback(
+        return StreamingResponse(stream_gemini_native(
             model_alias=model_alias,
             system_instruction=system_instruction,
             contents=contents,
@@ -288,54 +245,27 @@ async def _handle_gemini_native_inner(
             image_count=image_count,
             account=account,
             web_search=web_search,
-            search_requested=search_requested,
             hybrid_citations=hybrid_citations,
             auth_key_prefix=auth_key_prefix,
             thinking_level=thinking_level,
             thinking_budget=thinking_budget,
             include_thoughts=include_thoughts,
         ), media_type="text/event-stream")
-    try:
-        gresult = await api_manager.call_gemini(
-            model_alias=model_alias,
-            system_instruction=system_instruction,
-            contents=contents,
-            max_tokens=max_tokens,
-            temperature=temperature,
-            top_p=top_p,
-            tools=tools or None,
-            image_count=image_count,
-            account=account,
-            web_search=web_search,
-            thinking_level=thinking_level,
-            thinking_budget=thinking_budget,
-            include_thoughts=include_thoughts,
-        )
-    except ADKUnavailableError:
-        if search_requested:
-            raise
-        # Search was switched on by the account default, not by this request.
-        # Answering the question without search beats refusing it: the caller
-        # asked for an answer, and without google-adk installed this used to
-        # take the whole :generateContent endpoint down.
-        logger_api.warning(
-            "[GeminiNative] search unavailable (google-adk missing); "
-            "answering %s without it", model_alias)
-        gresult = await api_manager.call_gemini(
-            model_alias=model_alias,
-            system_instruction=system_instruction,
-            contents=contents,
-            max_tokens=max_tokens,
-            temperature=temperature,
-            top_p=top_p,
-            tools=tools or None,
-            image_count=image_count,
-            account=account,
-            web_search=False,
-            thinking_level=thinking_level,
-            thinking_budget=thinking_budget,
-            include_thoughts=include_thoughts,
-        )
+    gresult = await api_manager.call_gemini(
+        model_alias=model_alias,
+        system_instruction=system_instruction,
+        contents=contents,
+        max_tokens=max_tokens,
+        temperature=temperature,
+        top_p=top_p,
+        tools=tools or None,
+        image_count=image_count,
+        account=account,
+        web_search=web_search,
+        thinking_level=thinking_level,
+        thinking_budget=thinking_budget,
+        include_thoughts=include_thoughts,
+    )
     response_obj = gresult["response"]
     # Strip the SDK's own bookkeeping; `sdk_http_response` is the live httpx
     # response and has no business in a body a client parses.
@@ -349,23 +279,8 @@ async def _handle_gemini_native_inner(
                 text = parts[0]["text"]
                 footer = None
                 if hybrid_citations:
-                    from src.core.providers.search_manager import _format_citations_footer
+                    from src.tools.search.orchestration.manager import _format_citations_footer
                     footer = _format_citations_footer(hybrid_citations)
-                else:
-                    grounding = candidates[0].get("groundingMetadata")
-                    if grounding:
-                        chunks = grounding.get("groundingChunks") or []
-                        native_citations = []
-                        for chunk in chunks:
-                            web = chunk.get("web")
-                            if web:
-                                title = web.get("title") or "Source"
-                                uri = web.get("uri")
-                                if uri:
-                                    native_citations.append({"title": title, "url": uri})
-                        if native_citations:
-                            from src.core.providers.search_manager import _format_citations_footer
-                            footer = _format_citations_footer(native_citations)
                 if footer:
                     text += footer
                 parts[0]["text"] = text
@@ -385,3 +300,4 @@ async def _handle_gemini_native_inner(
         0,
     )
     return JSONResponse(content=resp_dict)
+

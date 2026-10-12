@@ -19,7 +19,7 @@ def client(temp_db):
 
 def _create_user(client, name="alice", tier="free"):
     from src.core.accounts import account_manager
-    from src.backend.account_keys import set_password_db, create_key_db
+    from src.backend.keys.accounts import set_password_db, create_key_db
     from src.server.openai_server.routes.auth_session import _make_session_token
 
     acc = account_manager.create_account(name=name, tier=tier)
@@ -31,7 +31,7 @@ def _create_user(client, name="alice", tier="free"):
 
 def test_backend_alias_crud(client):
     """Verify backend model_aliases DB operations and precedence rules."""
-    from src.backend import model_aliases
+    from src.backend.models import aliases as model_aliases
 
     # 1. Add alias
     alias_id = model_aliases.add_alias_db(
@@ -250,7 +250,8 @@ def test_admin_aliases_routes(client):
 
 def test_models_list_spoofing(client):
     """GET /v1/models reflects user aliases and hides aliased custom endpoint models."""
-    from src.backend import endpoints, model_aliases
+    from src.backend.endpoints import manager as endpoints
+    from src.backend.models import aliases as model_aliases
 
     user_acc, user_sess, token_row = _create_user(client, name="tester", tier="free")
     raw_key = f"sk-{user_acc['name']}-{token_row['token_code']}"
@@ -291,7 +292,7 @@ def test_models_list_spoofing(client):
 
 def test_chat_completion_response_spoofing(client, monkeypatch):
     """When an alias is used in /v1/chat/completions, response model is spoofed back to alias name."""
-    from src.backend import model_aliases
+    from src.backend.models import aliases as model_aliases
     from src.api.opencode_proxy import opencode_proxy
 
     user_acc, _, token_row = _create_user(client, name="chat_tester", tier="free")
@@ -314,7 +315,7 @@ def test_chat_completion_response_spoofing(client, monkeypatch):
             "usage": {"prompt_tokens": 5, "completion_tokens": 2},
         }
 
-    from src.server.openai_server.routes import completions_routes
+    from src.server.openai_server.routes.completions import chat as completions_routes
     async def mock_limit(*args, **kwargs):
         pass
     monkeypatch.setattr(completions_routes, "_apply_account_limit", mock_limit)
@@ -336,9 +337,9 @@ def test_chat_completion_response_spoofing(client, monkeypatch):
 
 def test_messages_response_spoofing(client, monkeypatch):
     """When an alias is used in /v1/messages, response model is spoofed back to alias name."""
-    from src.backend import model_aliases
+    from src.backend.models import aliases as model_aliases
     from src.api.claude_proxy import claude_proxy
-    from src.server.openai_server.routes import completions_routes
+    from src.server.openai_server.routes.completions import anthropic as completions_routes
 
     user_acc, _, token_row = _create_user(client, name="claude_tester", tier="free")
     raw_key = f"sk-{user_acc['name']}-{token_row['token_code']}"
@@ -386,7 +387,7 @@ def test_messages_response_spoofing(client, monkeypatch):
 def test_router_resolve_model_alias_with_account(client):
     """APIRouter.resolve_model_alias supports dynamic resolution when account is provided."""
     from src.core.router import router
-    from src.backend import model_aliases
+    from src.backend.models import aliases as model_aliases
 
     user_acc, _, _ = _create_user(client, name="router_alias_tester", tier="free")
     model_aliases.add_alias_db(
@@ -399,5 +400,7 @@ def test_router_resolve_model_alias_with_account(client):
     assert router.resolve_model_alias("my-cool-gpt") == router.current_model
     # With account -> resolves to gemini-flash
     assert router.resolve_model_alias("my-cool-gpt", account=user_acc) == "gemini-flash"
+
+
 
 

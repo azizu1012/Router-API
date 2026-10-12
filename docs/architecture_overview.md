@@ -47,13 +47,13 @@ router_api/
 ### 3.1. APIRouter (`src/core/router/core/router.py`)
 *   **Vai trò**: Là trái tim của hệ thống định tuyến và quản lý tài nguyên. `APIRouter` là một Singleton, đảm bảo toàn bộ ứng dụng sử dụng cùng một thể hiện để quản lý trạng thái toàn cục của các API Key và Model.
 *   **Trạng thái Key In-memory (`_key_status`):** `APIRouter` duy trì một dictionary `_key_status` trong bộ nhớ, chứa trạng thái chi tiết của tất cả các API Key (enabled, usage, active requests, frozen_until, consecutive_failures, last_success, per_model failures/frozen_until). Đây là nguồn dữ liệu chính cho các quyết định định tuyến trong thời gian chạy.
-    *   **Khởi tạo:** Khi khởi động, `_key_status` được tải từ cơ sở dữ liệu SQLite (`src/backend/key_status.py`) và hợp nhất với trạng thái mặc định cho các key mới hoặc chưa đầy đủ thông tin.
-    *   **Đồng bộ hóa:** Mọi cập nhật trạng thái key (ví dụ: `acquire_key`, `record_success`, `record_failure`, `freeze_key`, `release_key`) sẽ thay đổi trạng thái in-memory và sau đó kích hoạt các thao tác ghi **bất đồng bộ** vào SQLite thông qua các hàm `atomic_reserve_key`, `atomic_release_key`, `atomic_freeze_key`, `atomic_record_success` trong `src/backend/key_status.py`. Điều này đảm bảo tính bền vững của dữ liệu mà không làm chặn luồng xử lý chính.
+    *   **Khởi tạo:** Khi khởi động, `_key_status` được tải từ cơ sở dữ liệu SQLite (`src/backend/keys/status.py`) và hợp nhất với trạng thái mặc định cho các key mới hoặc chưa đầy đủ thông tin.
+    *   **Đồng bộ hóa:** Mọi cập nhật trạng thái key (ví dụ: `acquire_key`, `record_success`, `record_failure`, `freeze_key`, `release_key`) sẽ thay đổi trạng thái in-memory và sau đó kích hoạt các thao tác ghi **bất đồng bộ** vào SQLite thông qua các hàm `atomic_reserve_key`, `atomic_release_key`, `atomic_freeze_key`, `atomic_record_success` trong `src/backend/keys/status.py`. Điều này đảm bảo tính bền vững của dữ liệu mà không làm chặn luồng xử lý chính.
 *   **Chọn Model**: Chịu trách nhiệm chọn mô hình phù hợp nhất dựa trên ưu tiên, tình trạng sức khỏe và giới hạn.
-*   **Giới hạn tốc độ**: Tương tác với `src/core/limits/gemini_rate_limiter.py` để thực thi các giới hạn RPM/TPM.
+*   **Giới hạn tốc độ**: Tương tác với `src/core/limits/gemini/limiter.py` để thực thi các giới hạn RPM/TPM.
 *   **Theo dõi sức khỏe Model**: `update_model_health` điều chỉnh điểm số của mô hình dựa trên thành công/thất bại.
 
-### 3.2. PoolManager (`src/core/pool_manager.py`)
+### 3.2. PoolManager (`src/core/orchestration/pool_manager.py`)
 *   **Vai trò**: Điều phối vòng lặp xoay vòng (rotation) qua các pool member, quản lý slot concurrency qua `ModelPool`, và thực hiện retry khi gặp lỗi tạm thời. Đây là module trung tâm xử lý logic retry, failover và quản lý pool một cách "monolithic" (tập trung). Nó là thành phần điều phối chính trong việc lựa chọn key/model, quản lý quota và xử lý vòng lặp retry.
 *   **Chức năng chính**:
     *   **Vòng lặp Pool**: Chứa logic chính cho việc thử lại và xoay vòng qua các thành viên trong pool (ví dụ: các phiên bản khác nhau của Gemini Flash).
@@ -79,7 +79,7 @@ router_api/
 *   **Chức năng chính**:
     *   **`_db.py`**: Quản lý kết nối DB dùng chung, **và tạo các bảng đọc lúc import**.
     *   **`schema.py`**: Schema đầy đủ + các `ALTER TABLE` migration, chạy trong startup hook.
-    *   **`key_status.py`**: Các thao tác nguyên tất (atomic) để cập nhật trạng thái key (reserve, release, freeze, disable).
+    *   **`keys/status.py`**: Các thao tác nguyên tất (atomic) để cập nhật trạng thái key (reserve, release, freeze, disable).
     *   **`accounts.py`, `endpoints.py`, `model_prices.py`**: CRUD cho tài khoản, custom endpoints và giá model thực tế chuẩn Google Gemini API (với cơ chế auto-migration loại bỏ giá ảo cũ).
     *   **`model_config.py`**: Quản lý cấu hình per-model trong bảng `model_config` (RPM, TPM, RPD, pool_name, priority) và cung cấp hàm đồng bộ hai chiều `sync_env_to_db()`.
     *   **`account_keys.py`**: Auth token theo `sk-<name>-<6 ký tự>`, web credential, invite code.
@@ -93,7 +93,7 @@ Hệ thống thiết lập nguyên tắc: **`.env` là Source of Truth chính ch
 
 #### Vì sao `_db.py` cũng phải tạo bảng
 
-`APIRouter` query `key_status` **ngay lúc nó được khởi tạo**, và `custom_endpoint_manager` dựng cache ở module level — cả hai đều xảy ra trong lúc import, trước mọi startup hook. Một máy chưa có `usage.db` sẽ fail `no such table: key_status` trước khi app kịp tồn tại.
+`APIRouter` query `keys/status` **ngay lúc nó được khởi tạo**, và `custom_endpoint_manager` dựng cache ở module level — cả hai đều xảy ra trong lúc import, trước mọi startup hook. Một máy chưa có `usage.db` sẽ fail `no such table: key_status` trước khi app kịp tồn tại.
 
 Vì vậy `_db.conn()` tạo sẵn hai bảng đó ngay lần mở connection đầu tiên. Ranh giới này **có thật** và dễ vỡ: `CREATE TABLE IF NOT EXISTS` không sửa được bảng đã có sai shape, nên nếu định nghĩa ở `_db.py` lệch với `schema.py` thì bản bootstrap thắng, `CREATE` của `schema.py` thành no-op, và bất kỳ cột nào không có `ALTER` migration sẽ không bao giờ được tạo. `tests/test_schema_bootstrap.py` so DDL của hai bên để chặn điều đó.
 
@@ -102,16 +102,17 @@ Vì vậy `_db.conn()` tạo sẵn hai bảng đó ngay lần mở connection đ
 ### 3.6. Logical HQ Translator (`src/logical_HQ_translator/`)
 *   **Vai trò**: Chứa các bộ chuyển đổi và tiện ích dùng chung giữa các proxy, đặc biệt là liên quan đến việc xử lý message, định dạng và các công cụ hỗ trợ AI Agent.
 *   **Chức năng chính**:
-    *   **`model_resolver.py`**: Giải quyết bí danh mô hình và quản lý độ đồng thời của key.
-    *   **`format_normalizer.py`**: Chuẩn hóa văn bản streaming và trích xuất XML thinking.
-    *   **`rtk.py`**: Lọc và định dạng output của các công cụ (git diff, status, ls, grep) cho AI Agent.
+    *   **`model/`**: Giải quyết bí danh mô hình, custom endpoint và quản lý việc lấy key.
+    *   **`messages/`**: Chuyển đổi message giữa các protocol và cắt context khi vượt giới hạn.
+    *   **`normalization/`**: Chuẩn hóa văn bản streaming và trích xuất XML thinking.
+    *   **`streaming/`**: Tiện ích SSE, cache usage mô phỏng và đồng bộ model theo session.
+    *   **`compression/`**: Lọc và định dạng output của các công cụ (git diff, status, ls, grep) cho AI Agent.
 
 ### 3.7. Providers (`src/core/providers/`)
 *   **Vai trò**: Cung cấp các giao diện thống nhất để tương tác với các nhà cung cấp LLM khác nhau và quản lý custom endpoints.
 *   **Chức năng chính**:
-    *   **`gemini_facade.py`**: Facade chính để gọi Gemini SDK hoặc Custom Endpoint và chuyển đổi output sang định dạng tương thích OpenAI.
-    *   **`gemini/`**: Chứa các module cụ thể cho Gemini API (Manager, Caller, Pool, Error classification).
-    *   **`custom_endpoint_manager.py`**: Quản lý các custom endpoints (CRUD, pool, health).
+    *   **`gemini/`**: Chứa toàn bộ provider Gemini theo domain (facade, manager, caller, request/response format, pool, error classification và thinking).
+    *   **`custom_endpoint/manager.py`**: Quản lý các custom endpoints (CRUD, pool, health).
 
 ### 3.8. ModelPool (`src/core/router/pool.py`)
 *   **Vai trò**: Quản lý slot-based concurrent workers cho pool model. Là Singleton per pool (dùng `get_or_create`), đảm bảo mỗi pool member chỉ xử lý một request tại một thời điểm thông qua `asyncio.Lock()`.
@@ -136,39 +137,37 @@ Hệ thống Router API được thiết kế như một lớp trừu tượng, 
     *   **Ủy quyền:** Tất cả logic cốt lõi được ủy quyền cho `PoolManager`.
 
 *   **Gemini Native Endpoint:**
-    *   Các yêu cầu được định tuyến trực tiếp đến API Gemini thông qua `src/core/providers/gemini_facade.py`.
-    *   `gemini_facade` chịu trách nhiệm tương tác với Gemini SDK hoặc các endpoint HTTP của Gemini, và chuẩn hóa phản hồi.
+    *   Các yêu cầu được định tuyến trực tiếp đến API Gemini thông qua `src/core/providers/gemini/facade.py`.
+    *   `gemini/facade.py` chịu trách nhiệm tương tác với Gemini SDK hoặc các endpoint HTTP của Gemini, và chuẩn hóa phản hồi.
 
 *   **Custom Endpoint:**
-    *   Các Custom Endpoint được quản lý bởi `src/core/providers/_custom_endpoint_manager.py`.
-    *   **Quản lý (CRUD):** Các endpoint có thể được thêm, cập nhật, xóa, bật/tắt thông qua các hàm trong `src/backend/endpoints.py`. Điều này cho phép quản lý linh hoạt các nhà cung cấp LLM bên ngoài.
+    *   Các Custom Endpoint được quản lý bởi `src/core/providers/custom_endpoint/manager.py`.
+    *   **Quản lý (CRUD):** Các endpoint có thể được thêm, cập nhật, xóa, bật/tắt thông qua các hàm trong `src/backend/endpoints/manager.py`. Điều này cho phép quản lý linh hoạt các nhà cung cấp LLM bên ngoài.
     *   **Kiểm tra sức khỏe (Health Checks):** `CustomEndpointManager` thực hiện các kiểm tra sức khỏe định kỳ (`ping_endpoint`) đến `/models` endpoint của Custom Endpoint. Kết quả ping được lưu vào bộ nhớ đệm (`_ping_cache`) để tránh gọi API liên tục.
     *   **Circuit Breaker:** Một cơ chế circuit breaker (`_circuit_breaker`) được triển khai để đóng băng tạm thời các Custom Endpoint bị lỗi liên tiếp. Thời gian đóng băng sẽ tăng lên theo số lần lỗi, giúp hệ thống không gửi yêu cầu đến các endpoint không ổn định.
     *   **Phát hiện Model:** Hàm `fetch_models` tự động khám phá các model có sẵn từ Custom Endpoint bằng cách gọi API `/models` của nó và cập nhật vào cấu hình của endpoint.
     *   **Gán cho Pool/Tài khoản:** Custom endpoint là first-class pool member thông qua `pool_assignments`. Khi gán endpoint vào pool (VD: `endpoint assign my-provider pool gemini-flash:flash`), model của endpoint trở thành member của pool đó, được ModelPool quản lý slot concurrency như các Gemini members khác. Nếu model không có trong `MODEL_POOLS`, endpoint fallback về standalone mode (không qua pool acquire/release).
-    *   **Xử lý Payload khi Fallback:** Khi một yêu cầu ban đầu đi qua các Proxy Layer (ClaudeProxy hoặc OpenCodeProxy), nó đã được dịch về một định dạng payload nội bộ dùng chung. Nếu `PoolManager` chọn một Custom Endpoint và sau đó Custom Endpoint này báo lỗi và hệ thống fallback về bể API Key của Gemini nội bộ, `GeminiFacade` (`src/core/providers/gemini_facade.py`) sẽ nhận lại đúng payload gốc của hệ thống. `GeminiFacade` chịu trách nhiệm tái cấu trúc payload (Strip/Convert các tham số đặc thù của OpenAI như `response_format` hay cấu trúc `tools` dạng function call) sang cấu hình tương thích với Gemini SDK/HTTP native một cách tự động. Logic này được triển khai trong các hàm phụ trợ của `gemini_facade.py` (ví dụ: `_sdk_acompletion` cho Gemini native, `_http_acompletion` cho OpenAI-compatible), đảm bảo cấu trúc `tool_calls` và các tham số khác được dịch đúng cách.
+    *   **Xử lý Payload khi Fallback:** Khi một yêu cầu ban đầu đi qua các Proxy Layer (ClaudeProxy hoặc OpenCodeProxy), nó đã được dịch về một định dạng payload nội bộ dùng chung. Nếu `PoolManager` chọn một Custom Endpoint và sau đó Custom Endpoint này báo lỗi và hệ thống fallback về bể API Key của Gemini nội bộ, `GeminiFacade` (`src/core/providers/gemini/facade.py`) sẽ nhận lại đúng payload gốc của hệ thống. `GeminiFacade` chịu trách nhiệm tái cấu trúc payload (Strip/Convert các tham số đặc thù của OpenAI như `response_format` hay cấu trúc `tools` dạng function call) sang cấu hình tương thích với Gemini SDK/HTTP native một cách tự động. Logic dispatch được chia trong package `gemini/`, với `facade.py` làm entrypoint và các module request/response riêng, đảm bảo cấu trúc `tool_calls` và các tham số khác được dịch đúng cách.
 
 ### 3.10. Web Search & Evidence Pipeline (`src/tools/` & `src/api/opencode_proxy/handler/`)
 *   **Vai trò:** Cung cấp khả năng tìm kiếm web grounded (`search_with_citations`, `web_search`) tốc độ cao, trích dẫn chính xác nguồn tin và bằng chứng chi tiết mà không phụ thuộc vào dịch vụ trả phí bên ngoài.
 *   **Thứ tự ưu tiên công cụ tìm kiếm (Engine Precedence):**
-    *   `google_grounding`: Dùng sub-agent Gemini gọi Google Search Grounding native.
-    *   `duckduckgo`: Local search qua DDGS và tải trang bất đồng bộ song song (`asyncio.gather`), không tiêu tốn quota key Gemini.
-    *   `auto`: Ưu tiên Google Grounding cho các yêu cầu có tool web_search rõ ràng, tự động fallback về DuckDuckGo khi quota cạn.
-*   **Trích xuất cấu trúc Markdown & Code (Markdown-first Extraction - `ddg_utils.py`):**
+    *   DuckDuckGo: Local search qua DDGS và tải trang bất đồng bộ song song (`asyncio.gather`), không tiêu tốn quota key Gemini.
+*   **Trích xuất cấu trúc Markdown & Code (Markdown-first Extraction - `src/tools/search/text.py`):**
     *   Hàm `_extract_main_text` phân tích DOM HTML qua BeautifulSoup và chuyển đổi thành Markdown có cấu trúc:
         *   Thẻ tiêu đề `h1..h6` thành `# Heading`.
         *   Thẻ danh sách `li` thành Markdown bullet `- Item`.
         *   Bảng HTML (`table`, `tr`, `th`, `td`) thành Markdown Table `| Col1 | Col2 |`.
         *   Khối code `<pre><code>` được bảo toàn nguyên vẹn kèm language identifier: ` ```python\ncode\n``` `.
         *   Loại bỏ triệt để các thành phần rác: cookie banners, navbars, footer, TOC, author bio, ads, newsletter widgets.
-*   **Trích xuất Highlight thông minh & Khép kín Code Block (Query-Density Window - `ddg_utils.py`):**
+*   **Trích xuất Highlight thông minh & Khép kín Code Block (Query-Density Window - `src/tools/search/text.py`):**
     *   Hàm `_extract_query_highlight` quét mật độ từ khóa của truy vấn trên từng đoạn văn trong tài liệu.
     *   Chọn đoạn văn có điểm số trùng khớp cao nhất làm tâm và mở rộng vùng lân cận cho đến khi đạt ngưỡng ký tự bằng chứng (`search_evidence_max_chars`).
     *   Tự động phát hiện và khép kín code fence (chống vỡ markdown khi cắt ngang khối code).
-*   **Mỏ neo thời gian thực & Bóc tách ngày xuất bản chuẩn xác (`ddg_utils.py` & `ddg_ranking.py`):**
+*   **Mỏ neo thời gian thực & Bóc tách ngày xuất bản chuẩn xác (`src/tools/search/text.py` & `src/tools/search/ranking.py`):**
     *   Đóng dấu mỏ neo thời gian thực của máy chủ hệ thống ngay đầu kết quả: `[Mỏ neo thời gian thực: Sunday, 11 October 2026 — 06:00 PM]`. Giúp LLM không bị ảo giác ngày tháng do training cutoff.
     *   Trích xuất ngày xuất bản có thẩm quyền từ OpenGraph (`article:published_time`), JSON-LD (`datePublished`), và thẻ HTML5 `<time datetime="...">`, gắn huy hiệu `[📅 DD/MM/YYYY — X ngày trước]` vào từng nguồn tin.
-*   **Thuật toán Xếp hạng Cấp độ Exa (Exa-Grade Ranking - `ddg_ranking.py` & `ddg_data.py`):**
+*   **Thuật toán Xếp hạng Cấp độ Exa (Exa-Grade Ranking - `src/tools/search/ranking.py` & `src/tools/search/data.py`):**
     *   **Phân tầng Thẩm quyền Tên miền (Domain Authority Tiers):**
         *   *Tier 1 (+2.5 điểm):* Tài liệu chính thức, repo, chuẩn mực kỹ thuật và AI labs (`github.com`, `deepmind.google`, `*.google.com`, `*.anthropic.com`, `*.openai.com`, `ietf.org`, `w3.org`, `modelcontextprotocol.io`, `arxiv.org`, `docs.*`, `.edu`, `.gov`).
         *   *Tier 2 (+1.0 điểm):* Báo chí công nghệ uy tín (`theverge.com`, `arstechnica.com`, `reuters.com`, `stackoverflow.com`).
@@ -243,8 +242,8 @@ Những quyết định này phản ánh triết lý "practicality over purity" 
 
 Hệ thống sử dụng một chiến lược kết hợp để quản lý trạng thái, tận dụng cả bộ nhớ trong (in-memory) và cơ sở dữ liệu SQLite để đạt được hiệu suất và tính bền vững.
 
-*   **Trạng thái In-memory (thời gian thực, ngắn hạn):** Các giới hạn tốc độ dựa trên phút (RPM, TPM) được quản lý hoàn toàn trong bộ nhớ trong mỗi instance `GeminiRateLimiter` (`src/core/limits/gemini_rate_limiter.py`). Các cấu trúc dữ liệu `deque` được bảo vệ bằng `asyncio.Lock` để đảm bảo an toàn luồng (thread-safety) trong cùng một tiến trình (process).
-*   **Trạng thái In-memory với ghi vào DB không đồng bộ (dài hạn):** Các thông tin sử dụng key hàng ngày (`_rpd_count` và `today` trong `key_status`) và các hình phạt key (`_score_penalties`) được lưu giữ trong bộ nhớ sau khi tải ban đầu từ DB. Mọi thay đổi quan trọng được ghi không đồng bộ vào SQLite thông qua một `ThreadPoolExecutor(max_workers=1)` (`src/backend/key_status.py`). Cơ chế này đảm bảo các thao tác ghi vào DB không làm chặn luồng xử lý chính.
+*   **Trạng thái In-memory (thời gian thực, ngắn hạn):** Các giới hạn tốc độ dựa trên phút (RPM, TPM) được quản lý hoàn toàn trong bộ nhớ trong mỗi instance `GeminiRateLimiter` (`src/core/limits/gemini/limiter.py`). Các cấu trúc dữ liệu `deque` được bảo vệ bằng `asyncio.Lock` để đảm bảo an toàn luồng (thread-safety) trong cùng một tiến trình (process).
+*   **Trạng thái In-memory với ghi vào DB không đồng bộ (dài hạn):** Các thông tin sử dụng key hàng ngày (`_rpd_count` và `today` trong `keys/status`) và các hình phạt key (`_score_penalties`) được lưu giữ trong bộ nhớ sau khi tải ban đầu từ DB. Mọi thay đổi quan trọng được ghi không đồng bộ vào SQLite thông qua một `ThreadPoolExecutor(max_workers=1)` (`src/backend/keys/status.py`). Cơ chế này đảm bảo các thao tác ghi vào DB không làm chặn luồng xử lý chính.
 
 **Lưu ý về hiệu suất:**
 *   `ThreadPoolExecutor(max_workers=1)` giúp giảm thiểu tắc nghẽn I/O trực tiếp trên luồng chính. Tuy nhiên, nếu có một lượng lớn các cập nhật key hoặc thay đổi hình phạt *khác nhau* xảy ra đồng thời, worker đơn lẻ này có thể trở thành nút thắt cổ chai, dẫn đến việc xếp hàng đợi các tác vụ ghi vào DB.
@@ -293,7 +292,7 @@ Dành cho các ứng dụng client hoặc Agent độc lập chạy local (ví d
   ```json
   {
     "query": "từ khóa tìm kiếm",
-    "search_engine": "auto" | "duckduckgo" | "google_grounding"
+    "search_engine": "duckduckgo"
   }
   ```
 * **Dữ liệu trả về**: Trả về dữ liệu tìm kiếm dưới dạng cấu trúc JSON bao gồm kết quả đã định dạng (`results`) và danh sách các nguồn thông tin nguồn gốc (`citations`):
@@ -314,7 +313,7 @@ Dành cho các completions client truyền thống. Router đóng vai trò làm 
 * **Luồng chạy**:
   1. LLM nhận diện công cụ `WebSearch` trong danh sách `tools`.
   2. Khi gặp câu hỏi cần thông tin thực tế, LLM sinh ra Tool Call: `WebSearch(query="...")`.
-  3. Router bắt được Tool Call này từ LLM, tự động chạy tìm kiếm trên server (qua Google Grounding hoặc DuckDuckGo).
+  3. Router bắt được Tool Call này từ LLM, tự động chạy tìm kiếm trên server qua DuckDuckGo.
   4. Router trả kết quả tìm kiếm lại cho LLM dưới dạng tin nhắn của tool (`role: tool`), giúp LLM có đầy đủ ngữ cảnh để trả lời câu hỏi gốc.
 
 ### 10.3. Cơ chế cấu hình & Độ ưu tiên (Precedence)
@@ -325,8 +324,8 @@ Các thiết lập tìm kiếm có độ ưu tiên rõ ràng giữa Client (Requ
 
 ### 10.4. Tiết kiệm Quota thông qua DuckDuckGo
 Hệ thống hỗ trợ công cụ tìm kiếm `"duckduckgo"`. Khi cấu hình giá trị này (hoặc qua Web/Database hoặc qua Client payload):
-* Router chỉ gọi trực tiếp scraper DuckDuckGo ở local (`src/tools/duckduckgo.py`).
-* Không chạy qua sub-agent Gemini Flash Lite và không gọi Google Grounding API.
+* Router chỉ gọi trực tiếp scraper DuckDuckGo ở local (`src/tools/search/providers/duckduckgo_provider.py`).
+* Không chạy qua sub-agent Gemini Flash Lite hay bất kỳ model search trung gian nào.
 * Giúp **tiết kiệm 100% hạn ngạch (quota) API Key của Gemini** và tối ưu hóa chi phí vận hành.
 
 ---

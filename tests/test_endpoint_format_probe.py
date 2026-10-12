@@ -13,8 +13,8 @@ import pytest
 
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 
-from src.core.providers.custom_endpoint_manager import CustomEndpointManager
-from src.core.providers.custom_endpoint_client import anthropic_headers, anthropic_messages_url
+from src.core.providers.custom_endpoint.manager import CustomEndpointManager
+from src.core.providers.custom_endpoint.client import anthropic_headers, anthropic_messages_url
 
 
 @pytest.mark.anyio
@@ -86,16 +86,16 @@ class TestTheProbeAsksTheEndpointTheRightQuestion:
 
 class TestTheAddPathCarriesTheFormat:
     def test_add_defaults_to_openai(self):
-        with patch("src.core.providers.custom_endpoint_manager.add_endpoint_db") as add, \
-             patch("src.core.providers.custom_endpoint_manager.update_endpoint_db") as upd:
+        with patch("src.core.providers.custom_endpoint.manager.add_endpoint_db") as add, \
+             patch("src.core.providers.custom_endpoint.manager.update_endpoint_db") as upd:
             add.return_value = {"name": "x"}
             CustomEndpointManager().add("x", "https://e", "k")
             assert add.call_args.kwargs.get("api_format", "openai") == "openai"
             assert not upd.called
 
     def test_add_persists_a_non_default_format(self):
-        with patch("src.core.providers.custom_endpoint_manager.add_endpoint_db") as add, \
-             patch("src.core.providers.custom_endpoint_manager.update_endpoint_db") as upd:
+        with patch("src.core.providers.custom_endpoint.manager.add_endpoint_db") as add, \
+             patch("src.core.providers.custom_endpoint.manager.update_endpoint_db") as upd:
             add.return_value = {"name": "x"}
             upd.return_value = {"name": "x", "api_format": "anthropic"}
             out = CustomEndpointManager().add("x", "https://e", "k",

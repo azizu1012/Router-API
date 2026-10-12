@@ -22,7 +22,7 @@ import pytest
 
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 
-from src.backend.account_keys import (
+from src.backend.keys.accounts import (
     DEFAULT_MAX_CONCURRENCY,
     DEFAULT_MIN_INTERVAL_SECONDS,
     TOKEN_CODE_LEN,
@@ -107,7 +107,7 @@ class TestPasswordHash:
 class TestKeyStorage:
     def test_row_has_no_literal_token_column_value(self):
         """The DB must hold name+code, never the concatenated wire string."""
-        from src.backend.accounts import create_account_db, delete_account_db
+        from src.backend.accounts.manager import create_account_db, delete_account_db
         from src.core.accounts import account_manager
 
         name = "decomp-probe"
@@ -132,7 +132,7 @@ class TestKeyStorage:
             account_manager.invalidate_cache()
 
     def test_account_owns_multiple_independent_keys(self):
-        from src.backend.accounts import create_account_db, delete_account_db
+        from src.backend.accounts.manager import create_account_db, delete_account_db
         from src.core.accounts import account_manager
 
         name = "multi-key-probe"
@@ -162,7 +162,7 @@ class TestKeyStorage:
             account_manager.invalidate_cache()
 
     def test_code_collision_retries(self):
-        from src.backend.accounts import create_account_db, delete_account_db
+        from src.backend.accounts.manager import create_account_db, delete_account_db
         from src.core.accounts import account_manager
 
         name = "collide-probe"

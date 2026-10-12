@@ -71,7 +71,7 @@ def stub_provider(temp_db, monkeypatch):
     looks empty rather than one that fails, which is worse to debug.
     """
     import src.api.opencode_proxy.handler.stream_executor as se
-    from src.backend.key_status import register_keys_in_db
+    from src.backend.keys.status import register_keys_in_db
     from src.core.config_n_logg import config as config_mod
     from src.core.router import router
     from tests.test_stream_impl_seams import Chunk, Delta, item

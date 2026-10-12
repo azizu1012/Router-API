@@ -20,7 +20,7 @@ from src.server.openai_server.routes.app_init import app
 @pytest.fixture
 def world(temp_db):
     from src.core.accounts import account_manager
-    from src.backend.account_keys import set_password_db
+    from src.backend.keys.accounts import set_password_db
     from src.server.openai_server.security import clear_dashboard_rate
 
     # Every TestClient in the suite shares the host "testclient", and
@@ -88,7 +88,7 @@ class TestTheFlagReachesTheDashboard:
 class TestTheFlagIsIndependent:
     def test_raising_the_flag_leaves_the_password_working(self, world):
         """It is a banner, not a lock. Login must survive it."""
-        from src.backend.account_keys import verify_login_db
+        from src.backend.keys.accounts import verify_login_db
 
         _flag(world, "dev", True)
         assert verify_login_db("dev", "userpw"), "login broke while the flag was set"
@@ -97,8 +97,8 @@ class TestTheFlagIsIndependent:
         """An admin marking an account for reset does not have the password, so
         the route cannot re-hash. Losing password_enc here would silently break
         the 'read it back' feature."""
-        from src.backend.accounts import find_account_by_name
-        from src.backend.account_keys import get_recoverable_password_db
+        from src.backend.accounts.manager import find_account_by_name
+        from src.backend.keys.accounts import get_recoverable_password_db
 
         _flag(world, "dev", True)
         assert get_recoverable_password_db(find_account_by_name("dev")["account_id"]) == "userpw"
@@ -156,8 +156,8 @@ class TestAccessAndValidation:
         assert "chưa có mật khẩu" in out.json()["detail"]
 
     def test_the_refusal_did_not_invent_a_credential(self, world):
-        from src.backend.accounts import find_account_by_name
-        from src.backend.account_keys import get_credential_db
+        from src.backend.accounts.manager import find_account_by_name
+        from src.backend.keys.accounts import get_credential_db
 
         from src.core.accounts import account_manager
         account_manager.create_account(name="keyonly", tier="free")
@@ -169,8 +169,8 @@ class TestCreateAndChangeInteraction:
     def test_creating_with_the_default_password_marks_it(self, world):
         """The create route computed this and threw it away — the flag was
         returned in the response and never written."""
-        from src.backend.accounts import find_account_by_name
-        from src.backend.account_keys import get_credential_db
+        from src.backend.accounts.manager import find_account_by_name
+        from src.backend.keys.accounts import get_credential_db
 
         out = world.post(
             "/dashboard/admin/accounts/create",
@@ -182,8 +182,8 @@ class TestCreateAndChangeInteraction:
         assert cred["must_change"] == 1, "the flag was reported but not stored"
 
     def test_creating_with_a_real_password_does_not_mark_it(self, world):
-        from src.backend.accounts import find_account_by_name
-        from src.backend.account_keys import get_credential_db
+        from src.backend.accounts.manager import find_account_by_name
+        from src.backend.keys.accounts import get_credential_db
 
         world.post(
             "/dashboard/admin/accounts/create",
@@ -210,8 +210,8 @@ class TestCreateAndChangeInteraction:
 
     def test_changing_the_password_also_writes_a_fresh_recoverable_copy(self, world):
         """The old copy encrypted under the old password must not survive."""
-        from src.backend.accounts import find_account_by_name
-        from src.backend.account_keys import get_recoverable_password_db
+        from src.backend.accounts.manager import find_account_by_name
+        from src.backend.keys.accounts import get_recoverable_password_db
 
         world.post(
             "/dashboard/password",

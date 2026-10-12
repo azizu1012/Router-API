@@ -17,7 +17,7 @@ import pytest
 
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 
-from src.core.providers.gemini_response import parse_gemini_chunk
+from src.core.providers.gemini.response import parse_gemini_chunk
 
 BLOCKED = {
     "responseId": "resp_1",
@@ -80,3 +80,6 @@ class TestNormalTurnsAreUnchanged:
             {},
         )
         assert chunks[-1]["choices"][0]["finish_reason"] == "stop"
+
+
+

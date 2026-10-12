@@ -19,7 +19,7 @@ import pytest
 
 sys.path.insert(0, ".")
 
-from src.server.log_watcher import normalize_channel, LogWatcher
+from src.server.realtime.log_watcher import normalize_channel, LogWatcher
 
 
 def test_normalize_channel_forms():
@@ -83,7 +83,7 @@ def client():
 
 def _create_user(client, name="user1", tier="free"):
     from src.core.accounts import account_manager
-    from src.backend.account_keys import set_password_db
+    from src.backend.keys.accounts import set_password_db
     from src.server.openai_server.routes.auth_session import _make_session_token
 
     acc = account_manager.create_account(name=name, tier=tier)
@@ -134,3 +134,5 @@ def test_log_history_admin_permissions(client):
         data = res.json()
         assert "history" in data
         assert isinstance(data["history"], list)
+
+

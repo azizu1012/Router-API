@@ -175,7 +175,7 @@ class TestExistingBehaviour:
         assert cfg == {}, "lite has no thinking support"
 
     def test_sub_agent_gets_no_thinking(self):
-        from src.core.providers.gemini_thinking import resolve_thinking_config
+        from src.core.providers.gemini.thinking import resolve_thinking_config
         cfg = resolve_thinking_config(V3, thinking_level="high",
                                       is_sub_agent=True)
         assert cfg == {}

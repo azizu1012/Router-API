@@ -19,7 +19,7 @@ import pytest
 
 sys.path.insert(0, ".")
 
-from src.backend.account_keys import consume_invite_db, create_invite_db
+from src.backend.keys.accounts import consume_invite_db, create_invite_db
 
 
 def _spent(codes, db_path):

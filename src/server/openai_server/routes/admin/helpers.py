@@ -96,3 +96,4 @@ def update_env_var(key_name: str, val: str) -> None:
         new_lines.append(f"{key_name}={val}")
     
     ENV_PATH.write_text("\n".join(new_lines) + "\n", encoding="utf-8")
+

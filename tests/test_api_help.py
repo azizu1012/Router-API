@@ -98,7 +98,7 @@ class TestEveryEntryIsUsable:
         group = next(g for g in CATALOG if g["id"] == "search")
         body = " ".join(e.get("note", "") for e in group["endpoints"])
         assert "duckduckgo" in body.lower()
-        assert "google_grounding" in body.lower()
+        assert "duckduckgo" in body.lower()
 
     def test_the_anthropic_group_shows_streaming(self):
         group = next(g for g in CATALOG if g["id"] == "anthropic")
@@ -130,3 +130,5 @@ class TestPayload:
         # no long opaque strings that could be a pasted key
         for suspicious in re.findall(r"sk-[A-Za-z0-9_\-]{8,}", blob):
             assert "sk-<" in suspicious, f"possible real token in the catalog: {suspicious}"
+
+

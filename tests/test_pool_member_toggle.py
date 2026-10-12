@@ -31,7 +31,7 @@ import pytest
 
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 
-from src.core import api_config
+import src.core.config.api_config as api_config
 
 
 FLASH_36 = "gemini-flash-36"
@@ -365,7 +365,7 @@ class TestMergeKeepsTheFlag:
         was no flag anywhere for the routing layer to read.
         """
         monkeypatch.setattr(
-            "src.backend.model_config.load_all_model_configs",
+            "src.backend.models.config.load_all_model_configs",
             lambda: {FLASH_36: {"enabled": False, "rpm": 777, "display": "off"}},
         )
         try:
@@ -415,7 +415,7 @@ def client():
 
 def _admin_session():
     from src.core.accounts import account_manager
-    from src.backend.account_keys import set_password_db
+    from src.backend.keys.accounts import set_password_db
     from src.server.openai_server.routes.auth_session import _make_session_token
 
     acc = account_manager.create_account(name="boss", tier="admin")
@@ -536,7 +536,7 @@ class TestToggleEndpoint:
 
     def test_a_plain_user_cannot_toggle(self, client):
         from src.core.accounts import account_manager
-        from src.backend.account_keys import set_password_db
+        from src.backend.keys.accounts import set_password_db
         from src.server.openai_server.routes.auth_session import _make_session_token
 
         acc = account_manager.create_account(name="dev", tier="free")

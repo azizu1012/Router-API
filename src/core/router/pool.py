@@ -87,3 +87,4 @@ class ModelPool:
         lock = self._locks.get(member)
         if lock is not None and lock.locked():
             lock.release()
+

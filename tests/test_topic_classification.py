@@ -13,8 +13,8 @@ the endpoint.
 
 import pytest
 
-from src.tools.ddg_ranking import SearchRankingMixin
-from src.tools.ddg_utils import SearchUtilsMixin
+from src.tools.search.engine.ranking import SearchRankingMixin
+from src.tools.search.engine.text import SearchUtilsMixin
 
 
 @pytest.fixture
@@ -149,3 +149,14 @@ class TestTheClassifierAlwaysAnswers:
 
     def test_general_is_a_declared_topic(self):
         assert "general" in SearchRankingMixin.SEARCH_TOPICS
+
+
+class TestScriptSpecificLanguageHints:
+    @pytest.mark.parametrize("query,topic", [
+        ("最新のゲームニュースと新作ゲーム", "gaming"),
+        ("人工知能の最新技術とAPI仕様", "tech"),
+        ("최신 게임 업데이트 뉴스", "gaming"),
+        ("人工智能和软件开发的最新技术", "tech"),
+    ])
+    def test_non_latin_queries_use_language_modules(self, classify, query, topic):
+        assert classify(query) == topic

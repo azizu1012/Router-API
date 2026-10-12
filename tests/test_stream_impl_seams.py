@@ -483,7 +483,7 @@ class TestWebSearchInterception:
 
         with patch("src.api.claude_proxy.handler.proxy_stream.pool_manager.call_stream",
                    fake_call_stream), \
-             patch("src.core.providers.search_manager.execute_hybrid_search", fake_search), \
+             patch("src.tools.search.orchestration.manager.execute_hybrid_search", fake_search), \
              patch("src.api.claude_proxy.handler.proxy_stream.log_usage",
                    fake_log_usage, create=True):
 
@@ -533,7 +533,7 @@ class TestWebSearchInterception:
 
         with patch("src.api.claude_proxy.handler.proxy_stream.pool_manager.call_stream",
                    fake_call_stream), \
-             patch("src.core.providers.search_manager.execute_hybrid_search", boom), \
+             patch("src.tools.search.orchestration.manager.execute_hybrid_search", boom), \
              patch("src.api.claude_proxy.handler.proxy_stream.log_usage",
                    fake_log_usage, create=True):
 
@@ -562,3 +562,5 @@ class TestWebSearchInterception:
                                                   "arguments": "not json"}}])),
         ], body=self._tools_body()).run()
         assert names(events)[-1] == "message_stop", names(events)
+
+

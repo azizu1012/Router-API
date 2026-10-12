@@ -2,202 +2,74 @@ from typing import Any, AsyncIterator, Dict, Optional
 from fastapi import HTTPException
 
 from src.core.limits import account_limiter, token_limiter
-from src.core.accounts import account_manager
+from src.core.auth import (
+    AuthenticationFailure,
+    authenticate,
+    auth_key_prefix,
+    bearer_token,
+    count_openai_images,
+    resolve_auth_header,
+    enforce_account_limit,
+    enforce_token_limits,
+    token_limit_message,
+    AccountLimitFailure,
+    TokenLimitFailure,
+)
 
 # Sub-agent detection and SSE framing come from src/core/ on purpose. Both used to
-# be imported from src.logical_HQ_translator.sse_cache_agent (and the opencode
+# be imported from src.logical_HQ_translator.streaming.cache_agent (and the opencode
 # proxy) inside function bodies, which read like cycle-breaking but were not one:
 # no proxy ever imports auth. That made auth depend upward on src/api/ with
 # nothing to show for it. Keep these at module level. See docs/bug-logs.md Bug #6.
-from src.core.sse_format import sse_event as _sse
-from src.core.sub_agent_detect import is_sub_agent_body, is_sub_agent_request_openai
+from src.core.runtime.sse_format import sse_event as _sse
+from src.core.runtime.sub_agent_detect import is_sub_agent_body, is_sub_agent_request_openai
 
-from src.backend.account_keys import get_key_db
-
-
-def _bearer_token(authorization: str | None) -> str:
-    raw = str(authorization or "").strip()
-    if not raw:
-        return ""
-    if raw.lower().startswith("bearer "):
-        return raw[7:].strip()
-    if raw.startswith("sk-"):
-        return raw
-    return raw
+from src.backend.keys.accounts import get_key_db
 
 
-def _resolve_auth(authorization: str | None, x_api_key: str | None) -> str | None:
-    if x_api_key and x_api_key.strip():
-        val = x_api_key.strip()
-        return f"Bearer {val}" if not val.lower().startswith("bearer ") else val
-    return authorization if authorization and authorization.strip() else None
+_bearer_token = bearer_token
+
+
+_resolve_auth = resolve_auth_header
 
 
 def _check_auth(authorization: str | None) -> Dict[str, Any]:
-    token = _bearer_token(authorization)
-    if not token:
+    try:
+        return authenticate(authorization)
+    except AuthenticationFailure as exc:
         raise HTTPException(
             status_code=401,
-            detail={"error": {"message": "Missing API Key", "type": "authentication_error"}},
-        )
-
-    account = account_manager.find_by_key(token)
-    if not account and token.lower().startswith("sk-ant-"):
-        account = account_manager.find_by_key(token[7:])
-
-    if account:
-        return account
-
-    raise HTTPException(
-        status_code=401,
-        detail={"error": {"message": "Unauthorized API Key", "type": "authentication_error"}},
-    )
+            detail={"error": {"message": exc.message, "type": "authentication_error"}},
+        ) from exc
 
 
-_TOKEN_LIMIT_MESSAGES = {
-    "token_concurrency_limit": "Token concurrency limit reached",
-    "token_rpm_exceeded": "Token requests-per-minute limit reached",
-    "token_tpm_exceeded": "Token tokens-per-minute limit reached",
-    "token_rpd_exceeded": "Token daily request limit reached",
-}
+_token_limit_message = token_limit_message
 
 
-def _token_limit_message(reason: str, row: Optional[Dict[str, Any]]) -> str:
-    base = _TOKEN_LIMIT_MESSAGES.get(reason.split(":")[0])
-    if not base:
-        return "Token rate interval not elapsed"
-    lim = token_limiter.limits_for(row)
-    if reason.startswith("token_concurrency_limit"):
-        return f"{base} ({lim['max_concurrency']})"
-    if reason.startswith("token_rpm_exceeded"):
-        return f"{base} ({lim['rpm']}/min)"
-    if reason.startswith("token_tpm_exceeded"):
-        return f"{base} ({lim['tpm']} tok/min)"
-    if reason.startswith("token_rpd_exceeded"):
-        return f"{base} ({lim['rpd']}/day)"
-    return base
-
-
-async def _enforce_token_limits(
-    account: Dict[str, Any],
-    estimated_tokens: int = 0,
-) -> Any:
-    """Reserve this token's concurrency slot and rate budget.
-
-    Returns a release callable, or None when the caller used a legacy whole-key
-    account (the master key path), which is intentionally exempt.
-    """
-    key_id = account.get("token_key_id")
-    if not key_id:
-        return None
-
-    row = get_key_db(key_id)
-    ok, reason = await token_limiter.acquire(row, key_id, estimated_tokens=estimated_tokens)
-    if not ok:
+async def _enforce_token_limits(account: Dict[str, Any], estimated_tokens: int = 0) -> Any:
+    try:
+        return await enforce_token_limits(account, estimated_tokens)
+    except TokenLimitFailure as exc:
         raise HTTPException(
             status_code=429,
-            detail={
-                "error": {
-                    "message": _token_limit_message(reason, row),
-                    "type": "rate_limit_error",
-                }
-            },
-        )
-
-    async def _release(actual_tokens: int = 0) -> None:
-        await token_limiter.release(row, key_id, actual_tokens=actual_tokens)
-
-    return _release
+            detail={"error": {"message": exc.message, "type": "rate_limit_error"}},
+        ) from exc
 
 
-def _count_openai_images(messages: list) -> int:
-    image_count = 0
-    for msg in messages or []:
-        content = msg.get("content")
-        if isinstance(content, list):
-            for item in content:
-                if isinstance(item, dict) and item.get("type") in ("image_url", "image"):
-                    image_count += 1
-    return image_count
+_count_openai_images = count_openai_images
 
 
 async def _apply_account_limit(account: Dict[str, Any], body: Dict[str, Any], is_opencode: bool = False) -> None:
-    if account.get("name") in {"anonymous", "legacy-env-token"}:
-        return
-    model = body.get("model") or ""
-    from src.core.router import router
-
-    if "non-existent-model-to-trigger-error-directly" in model.lower():
+    try:
+        await enforce_account_limit(account, body, is_opencode=is_opencode)
+    except AccountLimitFailure as exc:
         raise HTTPException(
             status_code=429,
-            detail={
-                "error": {
-                    "message": "Account rate limit exceeded: simulated error for testing",
-                    "type": "rate_limit_error",
-                }
-            },
-        )
-
-    model_alias = router.resolve_model_alias(model)
-    pool_type = "lite" if (model_alias and ("lite" in model_alias.lower() or "flash-lite" in model_alias.lower())) else "flash"
-
-    # Detect if the request goes to a custom endpoint
-    from src.core.providers import _custom_endpoint_manager
-    is_custom = False
-    for ep in _custom_endpoint_manager.get_endpoints_for_account(account):
-        if not ep.get("enabled", True):
-            continue
-        model_to_use = body.get("model", model_alias)
-        enabled_models = ep.get("enabled_models", [])
-        if model_to_use in enabled_models:
-            is_custom = True
-            break
-    if not is_custom:
-        pool_models = router.get_pool_custom_models(model_alias)
-        # Only treat as custom if there are actually enabled custom endpoints in the pool
-        # router.get_pool_custom_models internally filters: if not ep.get("enabled", True): continue
-        if pool_models:
-            # Additionally, check if at least one custom endpoint in the pool is not frozen
-            has_active_custom = False
-            for pm in pool_models:
-                if not _custom_endpoint_manager.is_endpoint_frozen(pm["endpoint"].get("name", "")):
-                    has_active_custom = True
-                    break
-            if has_active_custom:
-                is_custom = True
-    if is_custom:
-        pool_type = "custom"
-
-    from src.core.limits.account_limiter import get_effective_limits_by_pool
-    eff_rpm, eff_tpm, eff_rpd = await get_effective_limits_by_pool(account, pool_type)
-    
-    effective = dict(account)
-    effective["rpm"] = eff_rpm
-    effective["tpm"] = eff_tpm
-    effective["rpd"] = eff_rpd
-    
-    max_tokens = int(body.get("max_tokens") or body.get("max_completion_tokens") or 4096)
-    estimated = account_limiter.estimate_messages_tokens(body.get("messages") or [], max_tokens)
-    image_count = _count_openai_images(body.get("messages") or [])
-    # ponytail: 1600 tokens context penalty per image for TPM rate limiting; adjust when adaptive tile estimator is added
-    estimated += image_count * 1600
-    
-    allowed, reason = await account_limiter.acquire(effective, estimated, pool_type)
-    if not allowed:
-        raise HTTPException(
-            status_code=429,
-            detail={
-                "error": {
-                    "message": f"Account rate limit exceeded: {reason}",
-                    "type": "rate_limit_error",
-                }
-            },
-        )
+            detail={"error": {"message": exc.message, "type": "rate_limit_error"}},
+        ) from exc
 
 
-def _auth_key_prefix(account: Dict[str, Any]) -> str:
-    ak = account.get("auth_key") or ""
-    return ak[-8:] if len(ak) >= 8 else ak
+_auth_key_prefix = auth_key_prefix
 
 
 def is_sub_agent_request(body: Dict[str, Any], is_opencode: bool = False) -> bool:
@@ -393,3 +265,4 @@ async def _sub_agent_stream_error(body: dict, model_alias: str, exc: Exception) 
     ]:
         yield f"data: {json.dumps(data, ensure_ascii=False)}\n\n".encode("utf-8")
     yield b"data: [DONE]\n\n"
+

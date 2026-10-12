@@ -16,9 +16,9 @@ Hệ thống sử dụng **2 DB SQLite độc lập**: `usage.db` cho cấu hìn
 | `src/api/` | Proxy Route / Handler (`claude_proxy`, v.v) | 21 | Scanned (100%) |
 | `src/core/router/` | `APIRouter`, `KeyResolver`, `ModelPool` | 4 | Scanned (100%) |
 | `src/core/limits/` | Quota & Tokens (`GeminiRateLimiter`) | 9 | Scanned (100%) |
-| `src/core/providers/`| `gemini_facade`, `adk_runner`, Custom Endpoints| 8 | Scanned (100%) |
+| `src/core/providers/`| `gemini_facade`, `Router search_runner`, Custom Endpoints| 8 | Scanned (100%) |
 | `src/core/` (other) | `PoolManager`, Accounts, System Config | 29 | Scanned (100%) |
-| `src/backend/` | SQLite DAL (`_db.py`, `key_status.py`) | 10 | Scanned (100%) |
+| `src/backend/` | SQLite DAL (`_db.py`, `keys/status.py`) | 10 | Scanned (100%) |
 | `src/logical_HQ_translator/`| Translation peer of Core | 7 | Scanned (100%) |
 | `scripts/`, `main.py`, v.v. | Application Components | 13 | Scanned (100%) |
 *(Tổng cộng 134 tệp mã nguồn python, đã verify toàn bộ danh sách `manifest.txt`)*
@@ -30,7 +30,7 @@ Hệ thống sử dụng **2 DB SQLite độc lập**: `usage.db` cho cấu hìn
 flowchart TD
     Client((Client)) --> Server[FastAPI App <br> src/server]
     Server --> Proxy[API Handlers <br> src/api]
-    Proxy --> PoolMgr[Pool Manager <br> src/core/pool_manager.py]
+    Proxy --> PoolMgr[Pool Manager <br> src/core/orchestration/pool_manager.py]
     PoolMgr --> Router[Global Router <br> src/core/router/core/router.py]
     
     Router --> KeyResolver[KeyResolverMixin <br> Double Random Algorithm]
@@ -42,8 +42,8 @@ flowchart TD
     
     Facade -.->|Log Async| Metrics[(usage_logs.db <br> Token Metrics)]
     
-    subgraph Optional (Only for Search Grounding)
-    Facade -.-> AdkRunner[adk_runner.py]
+    subgraph Optional (Only for provider search)
+    Facade -.-> Router searchRunner[search_backend.py]
     end
 ```
 
@@ -107,10 +107,10 @@ sequenceDiagram
 - **Outputs:** Slot an toàn.
 - **Core Logic:** Không dùng `Condition.wait()`, mà dùng `asyncio.Lock()` độc lập cho TỪNG member. Nếu member đang bận (lock bị khóa), sẽ lập tức thử member khác, hoặc sleep `50ms` rồi thử lại cho đến khi hết timeout. Cơ chế này siêu nhanh và tránh deadlock.
 
-#### [N3] `src/core/providers/gemini_facade.py` — GeminiFacade
+#### [N3] `src/core/providers/gemini/facade.py` — GeminiFacade
 - **Inputs:** Normalized Payload từ Proxy.
 - **Outputs:** Kết nối Native/OpenAI-compat tới nhà cung cấp.
-- **Core Logic:** Trái tim Dispatch thực tế (không phải `adk_runner.py`). Nó tự động phiên dịch (Strip/Convert) parameters, tool calls để bắn thẳng tới Gemini SDK thuần hoặc HTTP Custom Endpoint.
+- **Core Logic:** Trái tim Dispatch thực tế (không phải `search_backend.py`). Nó tự động phiên dịch (Strip/Convert) parameters, tool calls để bắn thẳng tới Gemini SDK thuần hoặc HTTP Custom Endpoint.
 
 #### [N4] `src/backend/_db.py` & `usage_logs.db` — Dual Database System
 - **Core Logic:** Tách biệt triệt để I/O.
@@ -122,12 +122,12 @@ sequenceDiagram
 | Severity | Location | Issue Description | Recommended Remediation |
 | :--- | :--- | :--- | :--- |
 | Medium | `src/backend/_db.py` | Dùng `threading.RLock` chung cho SQLite: an toàn trong Single-Worker (tiến trình đơn), nhưng sẽ nổ `database is locked` nếu chạy Uvicorn Multi-Worker. | Dùng `filelock` liên tiến trình, hoặc cấu hình Uvicorn 1 worker. |
-| Low | `adk_runner.py` | Gắn cứng vào main flow dễ dính 500 do SDK Google bị lỗi (Bug #25). | Giữ nguyên cô lập như hiện tại: chỉ trigger khi thật sự có lệnh Search Grounding. |
+| Low | `search_backend.py` | Gắn cứng vào main flow dễ dính 500 do SDK Google bị lỗi (Bug #25). | Giữ nguyên cô lập như hiện tại: chỉ trigger khi thật sự có lệnh provider search. |
 
 ## SECTION 6: Blind Spot Verification & Unchecked Dependencies
 - **DB Migrations**: Schema SQLite tự tạo lúc import (xử lý rất rủi ro nếu khác định dạng `schema.py`). Đã có test `test_schema_bootstrap.py` chặn điều này.
 - **Logs Streaming**: WebSocket logs có RBAC rõ ràng, chống User thường xem kênh `keys` (chỉ Admin).
-- **DuckDuckGo Tools**: Chặn gọi Google Grounding khi config `duckduckgo` để tiết kiệm 100% quota LLM (cơ chế Client Override).
+- **DuckDuckGo Tools**: Chặn gọi legacy provider search khi config `duckduckgo` để tiết kiệm 100% quota LLM (cơ chế Client Override).
 
 ## SECTION 7: Execution Metrics Summary
 - **Total Source Files Scanned**: 134 / 134 (100%)

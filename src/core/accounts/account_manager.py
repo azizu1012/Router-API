@@ -5,7 +5,7 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 from src.core.config_n_logg import config
-from src.backend.accounts import (
+from src.backend.accounts.manager import (
     find_account_by_key as _find_by_key,
     find_account_by_name,
     list_accounts_db as _list_accounts,
@@ -13,7 +13,7 @@ from src.backend.accounts import (
     update_account_db as _update_account,
     delete_account_db as _delete_account,
 )
-from src.backend.account_keys import (
+from src.backend.keys.accounts import (
     all_keys_db as _all_keys_db,
     compose_token,
     create_key_db,
@@ -23,7 +23,7 @@ from src.backend.account_keys import (
     update_key_db,
     MASTER_KEY_BYTES,
 )
-from src.backend.key_status import get_key_usage_db, update_key_usage_batch_db
+from src.backend.keys.status import get_key_usage_db, update_key_usage_batch_db
 
 
 class AccountManager:
@@ -93,7 +93,7 @@ class AccountManager:
         tpm: Optional[int] = None,
         rpd: Optional[int] = None,
         tier: str = "free",
-        search_engine: str = "auto",
+        search_engine: str = "duckduckgo",
         web_search_enabled: bool = False,
         mcp_only: bool = False,
     ) -> Dict[str, Any]:
@@ -148,7 +148,7 @@ class AccountManager:
         # the current key does not match the canonical master-key shape it was
         # set by hand or by an older scheme, and swapping it would silently
         # change its format — so say so instead of quietly rewriting it.
-        from src.backend.accounts import find_account_by_name as _find
+        from src.backend.accounts.manager import find_account_by_name as _find
         current = _find(name)
         if current and not is_valid_master_key(str(current.get("auth_key") or "")):
             from src.core.config_n_logg.logger import logger_system as _log
@@ -175,3 +175,4 @@ class AccountManager:
 
 
 account_manager = AccountManager(config.ACCOUNTS_FILE)
+

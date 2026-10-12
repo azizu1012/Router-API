@@ -25,7 +25,7 @@ import pytest
 
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 
-from src.core import pool_manager as pm
+import src.core.orchestration.pool_manager as pm
 from src.core.providers import _custom_endpoint_manager as endpoint_manager
 from src.core.router import router
 

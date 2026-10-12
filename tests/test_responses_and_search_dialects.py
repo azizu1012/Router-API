@@ -21,8 +21,8 @@ import json
 
 import pytest
 
-from src.logical_HQ_translator.message_converter import _convert_messages
-from src.server.openai_server.routes.completions_routes import _responses_sse_stream
+from src.logical_HQ_translator.messages.converter import _convert_messages
+from src.server.openai_server.routes.completions.responses import _responses_sse_stream
 
 
 def _collect(stream):
@@ -205,7 +205,7 @@ class TestAnthropicServerSearchTool:
         assert self._convert({"description": "no identity"}) == []
 
     def test_stripped_tools_are_still_stripped(self):
-        from src.logical_HQ_translator.message_converter import (
+        from src.logical_HQ_translator.messages.converter import (
             UNSUPPORTED_OR_HEAVY_TOOLS,
         )
         name = sorted(UNSUPPORTED_OR_HEAVY_TOOLS)[0]
@@ -228,7 +228,7 @@ class TestEngineResolution:
         body = {"web_search": True, "search_engine": "disabled"}
         assert should_enable_web_search(body, None) is False
 
-    def test_a_responses_hosted_tool_opt_into_grounding(self):
+    def test_a_responses_hosted_tool_opt_into_router_search(self):
         from src.api.opencode_proxy.handler.responses_mapping import (
             responses_to_chat_body,
         )
@@ -240,10 +240,10 @@ class TestEngineResolution:
         })
 
         assert chat["web_search"] is True
-        assert chat["search_engine"] == "auto"
+        assert chat["search_engine"] == "duckduckgo"
 
     def test_a_chat_request_stays_on_duckduckgo(self):
-        """Only the Responses dialect opts up to grounding. Anything else keeps
+        """Only the Responses dialect opts up to Router search. Anything else keeps
         the free path so search does not spend a Gemini call."""
         from src.api.opencode_proxy.handler.websearch import resolve_search_engine
 

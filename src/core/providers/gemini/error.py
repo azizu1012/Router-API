@@ -66,7 +66,7 @@ def classify(exc: Any) -> str:
     Returns one of:
       ``bad_request``, ``project_denied``, ``permission_denied``,
       ``unavailable``, ``project_quota_429``, ``rate_limit``,
-      ``grounding_fallback``, ``unknown``.
+      ``unknown``.
     """
     if isinstance(exc, Exception):
         info = get_error_info(exc)
@@ -152,12 +152,6 @@ def classify(exc: Any) -> str:
             return "project_quota_429"
         return "rate_limit"
 
-    if any(kw in lowered for kw in [
-        "grounding", "google_search", "google-search",
-        "search tool", "tool is not allowed", "tool not supported",
-    ]) or ("403" in message and "permission" in lowered) or ("400" in message and "invalid" in lowered):
-        return "grounding_fallback"
-
     if is_bad_request_simple(message):
         return "bad_request"
 
@@ -182,16 +176,6 @@ def is_invalid_key_simple(text: str) -> bool:
     ])
 
 
-def is_grounding_suppression(error_text: str) -> bool:
-    """Check if the error is specifically a grounding-tool rejection."""
-    return any(kw in error_text.lower() for kw in [
-        "grounding", "google_search", "google-search",
-        "search tool", "tool is not allowed", "tool not supported",
-    ]) or ("403" in error_text and "permission" in error_text) or (
-        "400" in error_text and "invalid" in error_text
-    )
-
-
 def needs_backoff(reason: str) -> bool:
     """True if a retry should include a sleep backoff."""
     return reason in ("rate_limit", "project_quota_429", "unavailable", "unknown")
@@ -200,3 +184,4 @@ def needs_backoff(reason: str) -> bool:
 def is_fatal(reason: str) -> bool:
     """True if this error should terminate the request immediately."""
     return reason in ("bad_request", "project_denied")
+

@@ -23,7 +23,7 @@ import time
 from collections import deque
 from typing import Any, Dict, Optional
 
-from src.backend.account_keys import DEFAULT_MAX_CONCURRENCY, DEFAULT_MIN_INTERVAL_SECONDS
+from src.backend.keys.accounts import DEFAULT_MAX_CONCURRENCY, DEFAULT_MIN_INTERVAL_SECONDS
 
 
 class _TokenState:

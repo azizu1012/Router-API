@@ -81,7 +81,7 @@ src/backend/
 │   ├── PATCH /api/me/aliases/{id}
 │   └── DELETE /api/me/aliases/{id}
 │
-└── admin_routes.py         # Admin management routes
+└── admin/                  # Admin management routes
     ├── POST /dashboard/admin/aliases
     ├── GET /dashboard/admin/aliases
     ├── PATCH /dashboard/admin/aliases/{id}
@@ -351,7 +351,7 @@ khởi động — kể cả trên DB hoàn toàn trống.
 ### Step 2: Register Routes
 
 Routes are auto-registered in `src/server/webapp.py`:
-- Admin routes: `admin_routes.py` → `/dashboard/admin/aliases/*`
+- Admin routes: `routes/admin/` → `/dashboard/admin/aliases/*`
 - Member routes: `endpoints.py` → `/api/me/aliases/*`
 
 ### Step 3: Build Frontend

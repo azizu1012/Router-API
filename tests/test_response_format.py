@@ -21,8 +21,8 @@ import pytest
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 
 from src.api.opencode_proxy.handler.proxy import _client_sampling_params
-from src.core.providers.custom_endpoint_client import call_custom_nonstream
-from src.core.providers.gemini_facade import _gemini_response_format
+from src.core.providers.custom_endpoint.client import call_custom_nonstream
+from src.core.providers.gemini.request_config import gemini_response_format
 
 SCHEMA = {"type": "object", "properties": {"answer": {"type": "string"}},
           "required": ["answer"]}
@@ -48,23 +48,23 @@ class TestTheEdgeCarriesIt:
 
 class TestGeminiGetsMimeTypeAndSchema:
     def test_json_object_is_just_a_mime_type(self):
-        assert _gemini_response_format({"type": "json_object"}) == {
+        assert gemini_response_format({"type": "json_object"}) == {
             "response_mime_type": "application/json"}
 
     def test_a_schema_becomes_both_fields(self):
-        out = _gemini_response_format(JSON_SCHEMA)
+        out = gemini_response_format(JSON_SCHEMA)
         assert out["response_mime_type"] == "application/json"
         assert out["response_schema"] == SCHEMA
 
     def test_an_inlined_schema_is_accepted_too(self):
         """Some clients flatten json_schema's schema up a level."""
-        out = _gemini_response_format({"type": "json_schema", "json_schema": SCHEMA})
+        out = gemini_response_format({"type": "json_schema", "json_schema": SCHEMA})
         assert out["response_schema"] == SCHEMA
 
     def test_the_schema_is_sanitised_like_a_tool_schema(self):
         """Gemini's responseSchema is the restricted Schema subset, so an
         items:{} or anyOf in a client schema is the same 400 as in a tool."""
-        out = _gemini_response_format({"type": "json_schema", "json_schema": {
+        out = gemini_response_format({"type": "json_schema", "json_schema": {
             "schema": {"type": "object", "properties": {
                 "tags": {"type": "array", "items": {}},
                 "n": {"anyOf": [{"type": "integer"}, {"type": "null"}]}}}}})
@@ -75,13 +75,13 @@ class TestGeminiGetsMimeTypeAndSchema:
     def test_the_sdk_accepts_what_we_build(self):
         from google.genai import types
 
-        cfg = types.GenerateContentConfig(**_gemini_response_format(JSON_SCHEMA))
+        cfg = types.GenerateContentConfig(**gemini_response_format(JSON_SCHEMA))
         assert cfg.response_mime_type == "application/json"
         assert cfg.response_schema is not None
 
     @pytest.mark.parametrize("value", [None, "json", {}, {"type": "text"}, 7])
     def test_anything_else_produces_nothing(self, value):
-        assert _gemini_response_format(value) is None
+        assert gemini_response_format(value) is None
 
 
 OPENAI_REPLY = {"id": "c1", "object": "chat.completion", "created": 1, "model": "m",

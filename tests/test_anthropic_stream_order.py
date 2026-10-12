@@ -82,7 +82,7 @@ def _stub_pool(turns, monkeypatch):
     call_stream is bound on the PoolManager instance, so it has to be replaced
     there — the proxy reaches it through `pool_manager.call_stream`.
     """
-    from src.core.pool_manager import pool_manager
+    from src.core.orchestration.pool_manager import pool_manager
 
     state = {"n": 0}
 
@@ -227,7 +227,7 @@ class TestToolRoundTrip:
             return "SEARCH RESULT", []
 
         monkeypatch.setattr(
-            "src.core.providers.search_manager.execute_hybrid_search", fake_search)
+            "src.tools.search.orchestration.manager.execute_hybrid_search", fake_search)
 
     def test_a_recursive_turn_adds_no_second_message_start(self, monkeypatch):
         self._interception(monkeypatch)

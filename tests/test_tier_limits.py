@@ -24,7 +24,7 @@ limit an admin had already lowered on purpose.
 import pytest
 
 from src.core.config_n_logg import config
-from src.core.tier_limits import (
+from src.core.policy.tier_limits import (
     clamp_to_account,
     clamp_to_tier,
     normalise_tier,
@@ -137,3 +137,5 @@ class TestConfigIsEnvDriven:
             for field in ("RPM", "TPM", "RPD"):
                 name = f"ROUTER_API_TIER_{tier}_{field}"
                 assert name in text, f"{name} is not documented in .env.example"
+
+

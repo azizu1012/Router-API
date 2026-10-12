@@ -155,32 +155,21 @@ Three ways in, all optional:
 |---|---|---|
 | Client-side search | `POST /v1/search` | no |
 | Server-side tool loop | `web_search: true` on a completion | no |
-| Responses hosted tool | `tools: [{"type": "web_search"}]` on `/v1/responses` | yes |
+| Responses hosted tool | `tools: [{"type": "web_search"}]` on `/v1/responses` | no |
 
 The DuckDuckGo path never touches a Gemini key, so search-heavy agent loops cost nothing against your key budget.
 
 Which engine a search uses follows from the dialect, not from a dashboard toggle:
 
-- **Responses client** passing `tools: [{"type": "web_search"}]` is asking for the hosted
-  capability, so it gets Google grounding first with DuckDuckGo behind it — `auto`.
-- **Everything else** on the chat paths stays on DuckDuckGo.
-- An explicit `search_engine` in the request body overrides both.
+- All dialects use Router-owned DuckDuckGo search.
+- The `search_engine` field remains accepted for wire compatibility, but does not invoke a model-backed search provider.
 
 An app that drives its own loop should prefer `POST /v1/search`: it costs no Gemini
 quota and does not spend a second model call re-reading the conversation. The
 in-chat tool exists for clients that cannot drive their own loop.
 
-`POST /v1/search` defaults to `duckduckgo`, and accepts any of:
-
-| `search_engine` | Cost | Measured latency |
-|---|---|---|
-| `duckduckgo` (default) | no Gemini quota | ~5s |
-| `google_grounding` | spends the account's RPM/TPM/RPD | ~90s |
-| `auto` | spends the account's quota if Google answers | slowest |
-
-On the same queries DuckDuckGo returned more sources and roughly twice the prose
-at a fifteenth of the latency, so it is the floor a request falls back to. Only
-`google_grounding` calls a model, and only it is charged against the account.
+`POST /v1/search` uses `duckduckgo` and returns ranked sources, citations, and
+grounded evidence without consuming Gemini model quota.
 
 ---
 

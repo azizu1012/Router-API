@@ -3,7 +3,7 @@ from fastapi import WebSocket, WebSocketDisconnect
 
 from .app_init import app
 from .auth_session import _verify_session_token
-from ...websocket_manager import ws_manager
+from ...realtime.websocket import ws_manager
 from src.core.config_n_logg.logger import logger_system as logger
 
 
@@ -84,3 +84,4 @@ async def dashboard_websocket(websocket: WebSocket):
         logger.warning("[WS] Error for %s: %s", account.get("name"), e)
     finally:
         await ws_manager.disconnect(websocket)
+

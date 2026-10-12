@@ -155,16 +155,14 @@ Ba cách, tất cả đều tuỳ chọn:
 |---|---|---|
 | Client-side search | `POST /v1/search` | không |
 | Server-side tool loop | `web_search: true` trong completion | không |
-| Hosted tool của Responses | `tools: [{"type": "web_search"}]` trên `/v1/responses` | có |
+| Hosted tool của Responses | `tools: [{"type": "web_search"}]` trên `/v1/responses` | không |
 
 Đường DuckDuckGo không chạm vào Gemini key nào, nên agent loop nhiều search gần như không tốn hạn mức key.
 
 Engine nào phục vụ một lần search **do dialect quyết định, không phải do toggle trên dashboard**:
 
-- **Client Responses** gửi `tools: [{"type": "web_search"}]` đang hỏi đúng năng lực hosted,
-  nên nó nhận Google grounding trước, DuckDuckGo phía sau — tức `auto`.
-- **Mọi thứ khác** trên các đường chat vẫn nằm ở DuckDuckGo.
-- `search_engine` ghi rõ trong body ghi đè cả hai.
+- Mọi dialect đều dùng search Router-owned qua DuckDuckGo.
+- `search_engine` vẫn được chấp nhận để tương thích wire, nhưng không gọi model search trung gian.
 
 App tự điều phối vòng lặt riêng thì nên dùng `POST /v1/search`: không tốn quota Gemini, và
 không phải tốn thêm một lượt gọi model để đọc lại toàn bộ conversation. Tool trong chat tồn

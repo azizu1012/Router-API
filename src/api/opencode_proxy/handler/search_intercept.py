@@ -15,8 +15,8 @@ carries nothing else. The README documents this path as a server-side tool loop,
 so the client never has to implement search — leaking the call breaks that
 promise and breaks the turn at the same time.
 
-`pool_manager` has no `web_search` parameter, so Google grounding is not an
-alternative here: the injected tool is the only search mechanism on this path.
+`pool_manager` has no `web_search` parameter, so the injected tool is executed
+by the Router-owned search service before the next model turn.
 """
 
 import json
@@ -104,7 +104,7 @@ async def run_intercepted(
                                                      "query": query}
         try:
             from src.api.opencode_proxy.handler.websearch import resolve_search_engine
-            from src.core.providers.search_manager import execute_hybrid_search
+            from src.tools.search.orchestration.manager import execute_hybrid_search
 
             engine = resolve_search_engine(body, account)
             context, citations = await execute_hybrid_search(
@@ -245,3 +245,4 @@ def _as_assistant_tool_call(tc: Any) -> Dict[str, Any]:
     args_str = args if isinstance(args, str) else json.dumps(args)
     return {"id": _tool_id(tc), "type": "function",
             "function": {"name": _tool_name(tc), "arguments": args_str}}
+

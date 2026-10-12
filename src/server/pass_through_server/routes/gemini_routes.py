@@ -44,7 +44,7 @@ async def list_gemini_models(
     auth_val = resolve_gemini_auth(request, authorization, x_api_key, x_goog_api_key)
     _check_auth(auth_val)
 
-    from src.core.api_config import AVAILABLE_MODELS
+    from src.core.config.api_config import AVAILABLE_MODELS
     gemini_models = []
     for alias, cfg in AVAILABLE_MODELS.items():
         if cfg.get("hidden"):
@@ -74,7 +74,7 @@ async def get_gemini_model(
     _check_auth(auth_val)
 
     alias = model_id.split("/")[-1]
-    from src.core.api_config import AVAILABLE_MODELS
+    from src.core.config.api_config import AVAILABLE_MODELS
     from src.core.router import router
 
     model_alias_resolved = router.resolve_model_alias(alias)
@@ -108,3 +108,4 @@ async def get_gemini_model(
         "outputTokenLimit": 8192,
         "supportedGenerationMethods": ["generateContent", "countTokens"]
     }
+

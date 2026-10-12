@@ -16,7 +16,7 @@ async def test_search_endpoint_missing_auth():
 
 @pytest.mark.anyio
 async def test_search_endpoint_invalid_query():
-    with patch("src.server.openai_server.routes.standard_routes._check_auth") as mock_check_auth:
+    with patch("src.server.openai_server.routes.standard_routes.search._check_auth") as mock_check_auth:
         mock_check_auth.return_value = {
             "name": "test-account",
             "auth_key": "some-key",
@@ -33,8 +33,8 @@ async def test_search_endpoint_invalid_query():
 
 @pytest.mark.anyio
 async def test_search_endpoint_success():
-    with patch("src.server.openai_server.routes.standard_routes._check_auth") as mock_check_auth, \
-         patch("src.core.providers.search_manager.execute_hybrid_search", new_callable=AsyncMock) as mock_search:
+    with patch("src.server.openai_server.routes.standard_routes.search._check_auth") as mock_check_auth, \
+         patch("src.tools.search.orchestration.manager.execute_hybrid_search", new_callable=AsyncMock) as mock_search:
         
         mock_check_auth.return_value = {
             "name": "test-account",
@@ -78,7 +78,7 @@ class TestTheErrorEnvelopeIsReachable:
 
     def _auth(self):
         return patch(
-            "src.server.openai_server.routes.standard_routes._check_auth"
+            "src.server.openai_server.routes.standard_routes.search._check_auth"
         )
 
     @pytest.mark.anyio
@@ -109,7 +109,7 @@ class TestTheErrorEnvelopeIsReachable:
     @pytest.mark.anyio
     async def test_a_search_failure_puts_the_message_at_the_top_level(self):
         with self._auth() as check, patch(
-            "src.core.providers.search_manager.execute_hybrid_search",
+            "src.tools.search.orchestration.manager.execute_hybrid_search",
             new_callable=AsyncMock,
         ) as search:
             check.return_value = {"name": "t", "auth_key": "k", "enabled": True}
@@ -126,10 +126,10 @@ class TestTheErrorEnvelopeIsReachable:
     async def test_results_without_citations_are_logged_not_hidden(self):
         """Zero citations with real prose is legitimate; being silent about it is not."""
         with self._auth() as check, patch(
-            "src.core.providers.search_manager.execute_hybrid_search",
+            "src.tools.search.orchestration.manager.execute_hybrid_search",
             new_callable=AsyncMock,
         ) as search, patch(
-            "src.server.openai_server.routes.standard_routes.logger_web"
+            "src.server.openai_server.routes.standard_routes.search.logger_web"
         ) as log:
             check.return_value = {"name": "t", "auth_key": "k", "enabled": True}
             search.return_value = ("Grounded prose with no links.", [])
@@ -148,10 +148,10 @@ class TestTheErrorEnvelopeIsReachable:
     @pytest.mark.anyio
     async def test_a_search_with_citations_is_not_warned_about(self):
         with self._auth() as check, patch(
-            "src.core.providers.search_manager.execute_hybrid_search",
+            "src.tools.search.orchestration.manager.execute_hybrid_search",
             new_callable=AsyncMock,
         ) as search, patch(
-            "src.server.openai_server.routes.standard_routes.logger_web"
+            "src.server.openai_server.routes.standard_routes.search.logger_web"
         ) as log:
             check.return_value = {"name": "t", "auth_key": "k", "enabled": True}
             search.return_value = ("Prose.", [{"title": "T",
@@ -167,7 +167,7 @@ class TestTheErrorEnvelopeIsReachable:
 class TestTheEngineDefault:
     """The default is DuckDuckGo, and a wrong engine is refused.
 
-    `auto` used to be the default and it ran Google grounding first: ~90s
+    `auto` used to be the default and it ran Router search first: ~90s
     against ~5s, fewer sources, and it spends the account's quota. So a caller
     who expressed no preference was paying, slowly, for a search they had not
     chosen. DuckDuckGo is the safe floor because it costs nothing either way.
@@ -175,7 +175,7 @@ class TestTheEngineDefault:
 
     def _post(self, body):
         with patch(
-            "src.server.openai_server.routes.standard_routes._check_auth"
+            "src.server.openai_server.routes.standard_routes.search._check_auth"
         ) as check:
             check.return_value = {"name": "t", "auth_key": "k",
                                   "enabled": True}
@@ -205,7 +205,7 @@ class TestTheEngineDefault:
     @pytest.mark.anyio
     async def test_the_default_engine_is_not_charged(self):
         """The default must be the one that spends no quota."""
-        import src.core.providers.search_manager as sm
+        import src.tools.search.orchestration.manager as sm
 
         seen = []
         original = sm.execute_hybrid_search
@@ -234,12 +234,12 @@ class TestTheEngineDefault:
         msg = self._post({"query": "x", "search_engine": "bing"}) \
             .json()["error"]["message"]
 
-        for engine in ("duckduckgo", "google_grounding", "auto"):
+        for engine in ("duckduckgo",):
             assert engine in msg, f"{engine} not offered to the client"
 
     @pytest.mark.anyio
     async def test_an_explicit_engine_is_honoured(self):
-        import src.core.providers.search_manager as sm
+        import src.tools.search.orchestration.manager as sm
 
         seen = []
         original = sm.execute_hybrid_search
@@ -250,23 +250,23 @@ class TestTheEngineDefault:
 
         sm.execute_hybrid_search = spy
         try:
-            self._post({"query": "x", "search_engine": "google_grounding"})
+            self._post({"query": "x", "search_engine": "duckduckgo"})
         finally:
             sm.execute_hybrid_search = original
 
-        assert seen == ["google_grounding"], seen
+        assert seen == ["duckduckgo"], seen
 
 
 class TestOnlyTheGroundedSearchSpendsQuota:
     """Web search runs Router-owned DuckDuckGo citation search and makes no LLM call,
-    so neither duckduckgo nor legacy google_grounding consumes Gemini quota.
+    so neither duckduckgo nor the Router engine consumes Gemini quota.
     """
 
     def _charged(self, engine):
         import asyncio
 
         from src.core.limits.account_limiter import account_limiter as al
-        from src.core.providers.search_manager import execute_hybrid_search
+        from src.tools.search.orchestration.manager import execute_hybrid_search
 
         charged = []
 
@@ -281,9 +281,9 @@ class TestOnlyTheGroundedSearchSpendsQuota:
         original = al.acquire
         al.acquire = fake_acquire
         try:
-            with patch("src.tools.duckduckgo.search_with_citations",
+            with patch("src.tools.search.engine.manager.search_with_citations",
                        new=AsyncMock(side_effect=ddg)), \
-                 patch("src.core.providers.search_manager.api_manager") as am:
+                 patch("src.tools.search.orchestration.manager.api_manager") as am:
                 am.call_gemini = AsyncMock(return_value={
                     "response": None, "api_key": "k", "model_id": "m",
                     "input_tokens": 1, "output_tokens": 1})
@@ -297,5 +297,8 @@ class TestOnlyTheGroundedSearchSpendsQuota:
     def test_duckduckgo_is_not_charged(self):
         assert self._charged("duckduckgo") == 0
 
-    def test_google_grounding_is_not_charged(self):
-        assert self._charged("google_grounding") == 0
+    def test_router_search_is_not_charged(self):
+        assert self._charged("duckduckgo") == 0
+
+
+

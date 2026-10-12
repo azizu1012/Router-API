@@ -2,8 +2,8 @@ import pytest
 import time
 from unittest.mock import AsyncMock, patch
 
-from src.core.pool_manager import PoolManager
-from src.core.limits import gemini_rate_limiter
+from src.core.orchestration.pool_manager import PoolManager
+from src.core.limits.gemini import limiter as gemini_rate_limiter
 from src.core.router import router
 
 @pytest.mark.anyio
@@ -40,8 +40,8 @@ async def test_transient_rate_limit_adds_penalty_and_counts_stats(temp_db):
     class MockAPIError(Exception):
         pass
 
-    with patch("src.logical_HQ_translator.model_resolver.router.reserve_key", return_value=reservation), \
-         patch("src.core.pool_manager.acompletion", new_callable=AsyncMock) as mock_acompletion:
+    with patch("src.logical_HQ_translator.model.resolver.router.reserve_key", return_value=reservation), \
+         patch("src.core.orchestration.pool_manager.acompletion", new_callable=AsyncMock) as mock_acompletion:
          
         mock_acompletion.side_effect = MockAPIError("Resource has been exhausted (e.g. check quota). [429]")
 
@@ -72,7 +72,7 @@ async def test_transient_rate_limit_adds_penalty_and_counts_stats(temp_db):
 @pytest.mark.anyio
 async def test_dynamic_cooldowns_and_alignments(temp_db):
     from src.core.config_n_logg import config
-    from src.core.limits.gemini_rate_limiter import get_seconds_until_pacific_midnight, PENALTY_MAP
+    from src.core.limits.gemini.limiter import get_seconds_until_pacific_midnight, PENALTY_MAP
     
     # 1. Test Pacific midnight RPD remaining seconds calculation
     rem_sec = get_seconds_until_pacific_midnight()
@@ -103,4 +103,6 @@ async def test_dynamic_cooldowns_and_alignments(temp_db):
         assert PENALTY_MAP["server_error"]["duration"] == 20 * 3
     finally:
         config.KEY_UNKNOWN_ERROR_COOLDOWN_SECONDS = orig_unknown
+
+
 

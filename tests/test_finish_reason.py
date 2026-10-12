@@ -133,7 +133,7 @@ class TestReachesTheWire:
         assert out["choices"][0]["finish_reason"] == "tool_calls"
 
     def test_the_responses_route_normalizes(self):
-        from src.server.openai_server.routes.completions_routes import (
+        from src.server.openai_server.routes.completions.responses import (
             _extract_finish_reason,
         )
 

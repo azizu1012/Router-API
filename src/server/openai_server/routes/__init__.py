@@ -3,7 +3,7 @@ from fastapi.staticfiles import StaticFiles
 
 from .app_init import app
 from . import standard_routes as standard_routes
-from . import completions_routes as completions_routes
+from . import completions as completions
 from . import dashboard_routes as dashboard_routes
 from . import admin as admin  # admin/ package (keys, endpoints, accounts)
 from . import opencode_routes as opencode_routes
@@ -25,4 +25,5 @@ app.include_router(self_service.router)
 FRONTEND_DIR = Path(__file__).resolve().parent.parent.parent.parent / "frontend"
 app.mount("/", StaticFiles(directory=str(FRONTEND_DIR), html=True), name="frontend")
 
-__all__ = ["app", "standard_routes", "completions_routes", "dashboard_routes", "admin", "opencode_routes", "ws_routes", "gemini_routes"]
+__all__ = ["app", "standard_routes", "completions", "dashboard_routes", "admin", "opencode_routes", "ws_routes", "gemini_routes"]
+

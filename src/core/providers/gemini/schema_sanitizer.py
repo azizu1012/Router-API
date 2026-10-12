@@ -232,3 +232,4 @@ def _sanitize_schema_for_gemini(schema: dict) -> dict:
     _walk(cleaned, _fix)
 
     return cleaned
+

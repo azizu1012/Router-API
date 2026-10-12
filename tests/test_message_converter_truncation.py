@@ -5,7 +5,7 @@ import json
 # Ensure root is in path
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 
-from src.logical_HQ_translator.message_converter import _convert_messages, _GLOBAL_TOOL_NAME_CACHE
+from src.logical_HQ_translator.messages.converter import _convert_messages, _GLOBAL_TOOL_NAME_CACHE
 
 def test_conversion_normal_and_truncated():
     # 1. Test normal message flow where tool call is present
@@ -167,3 +167,5 @@ if __name__ == "__main__":
         def setattr(self, obj, attr, val):
             setattr(obj, attr, val)
     test_opencode_subagent_detection_and_response(DummyMonkeyPatch())
+
+

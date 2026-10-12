@@ -26,8 +26,8 @@ import pytest
 
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 
-from src.core import pool_manager as pm
-from src.core.providers import custom_endpoint_client
+import src.core.orchestration.pool_manager as pm
+from src.core.providers.custom_endpoint import client as custom_endpoint_client
 from src.core.router import router
 
 
@@ -248,3 +248,5 @@ async def test_gemini_keys_are_not_gated_by_the_custom_limit():
 def test_the_limit_itself_is_configured_per_minute():
     """Pins the number the tests above stand in for (120 RPM configured for concurrent sessions)."""
     assert custom_endpoint_client._CUSTOM_POOL_RPM == 120
+
+

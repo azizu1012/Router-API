@@ -7,10 +7,10 @@ from ..auth_session import _require_admin
 @app.get("/dashboard/admin/models")
 async def admin_get_models(request: Request):
     _require_admin(request)
-    from src.core.api_config import AVAILABLE_MODELS, MODEL_POOLS, active_pool_members
-    from src.backend.model_config import list_model_configs
-    from src.backend.endpoints import list_endpoints_db as list_endpoints
-    from src.backend.accounts import list_accounts_db
+    from src.core.config.api_config import AVAILABLE_MODELS, MODEL_POOLS, active_pool_members
+    from src.backend.models.config import list_model_configs
+    from src.backend.endpoints.manager import list_endpoints_db as list_endpoints
+    from src.backend.accounts.manager import list_accounts_db
 
     db_configs = {r["alias"]: r for r in list_model_configs()}
     all_accounts = {a["account_id"]: a.get("name", "") for a in list_accounts_db()}
@@ -128,7 +128,7 @@ async def admin_save_model(request: Request):
     if not alias:
         raise HTTPException(status_code=400, detail="alias is required")
 
-    from src.backend.model_config import save_model_config
+    from src.backend.models.config import save_model_config
     body.pop("alias", None)
     save_model_config(alias, **body)
 
@@ -136,18 +136,18 @@ async def admin_save_model(request: Request):
     # has that model enabled in its enabled_models list
     account_id = body.get("account_id") or ""
     if account_id:
-        from src.backend.model_config import list_model_configs
-        from src.backend.endpoints import list_endpoints_db
+        from src.backend.models.config import list_model_configs
+        from src.backend.endpoints.manager import list_endpoints_db
         for ep in list_endpoints_db():
             if ep.get("account_id") == account_id and alias in (ep.get("models") or []):
                 enabled = list(ep.get("enabled_models") or [])
                 if alias not in enabled:
                     enabled.append(alias)
-                    from src.backend.endpoints import update_endpoint_db
+                    from src.backend.endpoints.manager import update_endpoint_db
                     update_endpoint_db(ep["name"], enabled_models=enabled)
                 break
 
-    from src.core.api_config import AVAILABLE_MODELS, MODEL_POOLS, reload_model_config
+    from src.core.config.api_config import AVAILABLE_MODELS, MODEL_POOLS, reload_model_config
     reload_model_config()
 
     from .helpers import update_env_var
@@ -186,11 +186,11 @@ async def admin_delete_model(request: Request):
     if not alias:
         raise HTTPException(status_code=400, detail="alias is required")
 
-    from src.backend.model_config import delete_model_config
+    from src.backend.models.config import delete_model_config
     account_id = body.get("account_id") or ""
     result = delete_model_config(alias, account_id)
 
-    from src.core.api_config import reload_model_config
+    from src.core.config.api_config import reload_model_config
     reload_model_config()
 
     from .helpers import remove_env_var
@@ -224,7 +224,7 @@ async def admin_toggle_pool_member(request: Request):
     if not isinstance(enabled, bool):
         raise HTTPException(status_code=400, detail="enabled must be a boolean")
 
-    from src.core.api_config import MODEL_POOLS, AVAILABLE_MODELS, reload_model_config
+    from src.core.config.api_config import MODEL_POOLS, AVAILABLE_MODELS, reload_model_config
     if alias not in AVAILABLE_MODELS:
         raise HTTPException(status_code=404, detail=f"Model '{alias}' not found")
 
@@ -237,7 +237,7 @@ async def admin_toggle_pool_member(request: Request):
     # xoay vòng, mọi request vào pool alias sẽ timeout. Chặn ở đây thay vì để
     # admin tự phát hiện lúc production chết.
     if owner_pool and not enabled:
-        from src.core.api_config import is_model_enabled
+        from src.core.config.api_config import is_model_enabled
         remaining = [
             m for m in MODEL_POOLS[owner_pool].get("members", [])
             if m != alias and is_model_enabled(m)
@@ -249,14 +249,14 @@ async def admin_toggle_pool_member(request: Request):
                        f"tắt nó sẽ làm pool không còn model nào phục vụ",
             )
 
-    from src.backend.model_config import save_model_config
+    from src.backend.models.config import save_model_config
     save_model_config(alias, enabled=enabled)
 
     # reload_model_config() xoá cache ModelPool, nên member vừa tắt rời khỏi pool
     # ngay lượt request kế tiếp thay vì chờ restart.
     reload_model_config()
 
-    from src.core.api_config import active_pool_members
+    from src.core.config.api_config import active_pool_members
     return {
         "status": "success",
         "alias": alias,
@@ -264,3 +264,4 @@ async def admin_toggle_pool_member(request: Request):
         "pool": owner_pool,
         "active_members": active_pool_members(owner_pool) if owner_pool else [],
     }
+

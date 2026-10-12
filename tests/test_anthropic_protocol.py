@@ -25,7 +25,7 @@ from src.api.claude_proxy.handler.anthropic_spec import (
     map_stop_reason,
     thinking_signature,
 )
-from src.logical_HQ_translator.message_converter import _convert_messages
+from src.logical_HQ_translator.messages.converter import _convert_messages
 
 
 # ── Request params ──────────────────────────────────────────────────────────
@@ -406,5 +406,5 @@ def _assert_valid_anthropic_message(msg: dict):
 def test_spec_module_importable_from_route_layer():
     """The count_tokens route and the proxy must share one implementation."""
     from src.api.claude_proxy.handler.anthropic_spec import estimate_input_tokens as a
-    from src.server.openai_server.routes.completions_routes import estimate_input_tokens as b
+    from src.server.openai_server.routes.completions.anthropic import estimate_input_tokens as b
     assert a is b

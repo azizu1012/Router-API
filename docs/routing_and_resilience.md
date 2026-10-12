@@ -23,7 +23,7 @@ graph TD
 ```
 
 1. **Proxy Layer (Tầng chuyển đổi):** [ClaudeProxy](file:///d:/AI_Projects/router_api/src/api/claude_proxy/handler/proxy.py) và [OpenCodeProxy](file:///d:/AI_Projects/router_api/src/api/opencode_proxy/handler/proxy.py) chỉ đóng vai trò chuyển đổi định dạng request/response từ client thành định dạng dùng chung của hệ thống. Tầng này không chứa logic chọn key hay retry.
-2. **PoolManager (Tầng điều phối vòng lặp):** [PoolManager](file:///d:/AI_Projects/router_api/src/core/pool_manager.py) quản lý vòng lặp xoay vòng (rotation) qua các pool member và thực hiện retry khi gặp lỗi tạm thời. Khi chạy ở pool mode, PoolManager gọi `ModelPool.acquire()` để lấy slot cho mỗi member.
+2. **PoolManager (Tầng điều phối vòng lặp):** [PoolManager](file:///d:/AI_Projects/router_api/src/core/orchestration/pool_manager.py) quản lý vòng lặp xoay vòng (rotation) qua các pool member và thực hiện retry khi gặp lỗi tạm thời. Khi chạy ở pool mode, PoolManager gọi `ModelPool.acquire()` để lấy slot cho mỗi member.
 3. **KeyResolver & Router (Tầng quyết định):** [KeyResolver](file:///d:/AI_Projects/router_api/src/core/router/core/key_resolver.py) thực hiện việc tính toán độ ưu tiên (Priority Score), kiểm tra giới hạn RPM/TPM thực tế của từng key, và chọn key.
 
 ## 2. Cơ Chế Pool Concurrency (ModelPool)
@@ -55,7 +55,7 @@ Hệ thống sử dụng một cách tiếp cận hai tầng để phân loại 
 2.  **Chuỗi trạng thái:** Nếu không có mã HTTP rõ ràng, kiểm tra các chuỗi trạng thái như "RESOURCE_EXHAUSTED", "PERMISSION_DENIED", "INVALID_ARGUMENT", "UNAVAILABLE".
 3.  **So khớp chuỗi fallback:** Đối với các lỗi ít cấu trúc hơn, sử dụng regex/so khớp từ khóa trong `message`.
 
-#### **Tầng 2: Phân loại lỗi chung (`_classify_error` trong `src/core/pool_manager.py`)**
+#### **Tầng 2: Phân loại lỗi chung (`_classify_error` trong `src/core/orchestration/pool_manager.py`)**
 Đây là tầng phân loại thứ hai, hoạt động như một lưới an toàn. Nó gọi `classify(e)` từ tầng 1 trước. Nếu tầng 1 trả về "unknown", nó sẽ tiếp tục thực hiện so khớp dựa trên văn bản với các từ khóa rộng hơn để bắt các lỗi không được phân loại cụ thể bởi tầng Gemini.
 
 **Bảng Ánh Xạ Phân Loại Lỗi:**
@@ -70,7 +70,7 @@ Hệ thống sử dụng một cách tiếp cận hai tầng để phân loại 
 | Mã HTTP 429, "rate limit", "resource exhausted" | `rate_limit` | Vượt quá giới hạn yêu cầu hoặc token mỗi phút (RPM/TPM). | Soft Handling |
 | Mã HTTP 429, "quota exceeded", "daily" | `project_quota_429` | Vượt quá giới hạn yêu cầu mỗi ngày (RPD). | Soft Handling |
 | Mã HTTP 500, 503, 504, "unavailable", "overloaded", "timeout" | `unavailable` | Dịch vụ không khả dụng, lỗi máy chủ, hoặc timeout. | Soft Handling |
-| "grounding", "google_search", "tool is not allowed" | `grounding_fallback` | Lỗi liên quan đến công cụ tìm kiếm hoặc grounding. | Soft Handling |
+| "provider search", "web_search", "tool is not allowed" | `search_backend` | Lỗi liên quan đến công cụ tìm kiếm hoặc provider search. | Soft Handling |
 | Mọi lỗi khác                    | `unknown`       | Lỗi không xác định. | Soft Handling (mặc định) |
 
 ### Sự khác biệt trong cách xử lý:
@@ -135,7 +135,7 @@ Cơ chế này hoạt động như một van an toàn (Safety Valve) giúp hạ 
 
 ## 6. Cơ Chế Giới Hạn Tải Trượt (Sliding Window Deque) trong Concurrency
 
-Trong `GeminiRateLimiter` (`src/core/limits/gemini_rate_limiter.py`), các hàng đợi hai đầu (deque) được sử dụng để theo dõi số lượng yêu cầu (RPM) và token (TPM) trong cửa sổ trượt 60 giây. Để đảm bảo an toàn luồng và tính nguyên tử (atomicity) của các thao tác kiểm tra và cập nhật giới hạn, phương thức `acquire_quota` sử dụng một `asyncio.Lock()`.
+Trong `GeminiRateLimiter` (`src/core/limits/gemini/limiter.py`), các hàng đợi hai đầu (deque) được sử dụng để theo dõi số lượng yêu cầu (RPM) và token (TPM) trong cửa sổ trượt 60 giây. Để đảm bảo an toàn luồng và tính nguyên tử (atomicity) của các thao tác kiểm tra và cập nhật giới hạn, phương thức `acquire_quota` sử dụng một `asyncio.Lock()`.
 
 **Tác dụng:** `asyncio.Lock` bảo vệ toàn bộ khối mã kiểm tra giới hạn (chiều dài deque, tổng token) và cập nhật (thêm yêu cầu/token mới vào deque). Điều này ngăn chặn tình trạng race condition, đảm bảo rằng các thao tác này diễn ra một cách tuần tự và nhất quán, ngay cả khi có nhiều yêu cầu đồng thời trong cùng một tiến trình.
 
@@ -160,7 +160,7 @@ Trước đó, khi gặp lỗi Rate Limit (429) hoặc Overloaded (503), Claude 
 
 ## 8. Cơ Chế Tính Điểm Key (Priority Scoring)
 
-Logic tính điểm key ưu tiên nằm trong hàm `get_key_priority` (từ `src/core/limits/gemini_rate_limiter.py`), được sử dụng bởi `KeyResolverMixin` để chọn key hiệu quả nhất.
+Logic tính điểm key ưu tiên nằm trong hàm `get_key_priority` (từ `src/core/limits/gemini/limiter.py`), được sử dụng bởi `KeyResolverMixin` để chọn key hiệu quả nhất.
 
 #### **Các yếu tố được xem xét khi tính điểm:**
 
@@ -169,7 +169,7 @@ Logic tính điểm key ưu tiên nằm trong hàm `get_key_priority` (từ `src
 *   **`consecutive_failures` (Số lỗi liên tiếp):** Key có số lỗi liên tiếp gần đây sẽ bị phạt điểm. Số lỗi càng nhiều, hình phạt càng nặng.
 *   **`last_success` (Lần thành công gần nhất):** Key có yêu cầu thành công gần đây hơn sẽ được ưu tiên, phản ánh tính ổn định hiện tại của key.
 *   **`_score_penalties` (Hình phạt điểm):** Các hình phạt động được áp dụng cho key vì các lý do lỗi khác nhau (ví dụ: `rate_limit`, `unavailable`) sẽ làm giảm điểm của key đó. Các hình phạt này có thời gian hết hạn và được quản lý trong bộ nhớ và đồng bộ với DB.
-*   **`model_priority` (Ưu tiên model):** Một điểm ưu tiên cơ bản có thể cấu hình cho các bí danh model khác nhau (được định nghĩa trong `MODEL_PRIORITY` từ `src/core/api_config.py`).
+*   **`model_priority` (Ưu tiên model):** Một điểm ưu tiên cơ bản có thể cấu hình cho các bí danh model khác nhau (được định nghĩa trong `MODEL_PRIORITY` từ `src/core/config/api_config.py`).
 *   **Tier (Hạng của tài khoản):** Hạng của tài khoản người dùng (free, premium, admin) ảnh hưởng đến việc những key nào được xem xét. Key của hạng cao hơn có thể được ưu tiên truy cập vào các pool key chất lượng hơn.
 
 #### **Logic tổng thể:**
@@ -229,14 +229,14 @@ Test: `tests/test_effort_mapping.py` — pin cả hai chiều, kể cả việc 
 - **Lý do:** effort là tín hiệu người dùng đưa ra, và map sai nó không tạo lỗi nào để báo — model vẫn trả lời, chỉ là nghĩ sai mức.
 
 ### 2026-10-06 — `retry_attempt` luôn bằng 0 trong luồng stream
-- **File:** `src/core/pool_manager.py` — `call_stream()`
+- **File:** `src/core/orchestration/pool_manager.py` — `call_stream()`
 - **Trước:** `pool_try = -1` nằm **trong** vòng `while`, ngay trên `pool_try += 1` → biến thành 0 mỗi vòng. `retry_attempt` truyền vào `_resolve_model()` và `reserve_key()` luôn bằng 0. Trong `call_nonstream()` cùng biến đó nằm **ngoài** vòng lặp nên tăng đúng.
 - **Sau:** đặt `pool_try = -1` trước vòng `while`, khớp với `call_nonstream`.
 - **Hệ quả:** `retry_attempt` là tham số bật **Extreme Checking** ở attempt ≥ 10 (mục 5). Luồng stream lặp quá 10 lần vẫn không bao giờ bật van an toàn đó, trong đúng lúc tải nặng nhất — trong khi non-stream thì có. Hai nhánh là bản sao của nhau nên lệch nhau là sai.
 - **Test:** `tests/test_retry_counter.py` pin bất biến `seen == list(range(len(seen)))` cho cả hai đường. Đưa lại lỗi thì 4 test đỏ.
 
 ### 2026-10-07 — Mở rộng Pool 6 Flash & 3 Lite, Dynamic Resolution và Đồng bộ Hai chiều ENV ↔ DB
-- **Files:** `src/core/api_config.py`, `src/core/limits/account_limiter/capacity.py`, `src/backend/model_config.py`, `src/server/openai_server/routes/app_init.py`
+- **Files:** `src/core/config/api_config.py`, `src/core/limits/account_limiter/capacity.py`, `src/backend/models/config.py`, `src/server/openai_server/routes/app_init.py`
 - **Thay đổi:**
   - **Mở rộng Pool:** `gemini-flash` bao gồm 6 model thành viên (`gemini-flash-38`, `37`, `36`, `35`, `30`, `25`); `gemini-flash-lite` gồm 3 model (`gemini-flash-35-lite`, `gemini-flash-lite`, `gemini-flash-25-lite`).
   - **Loại bỏ Hardcode:** `capacity.py` chuyển sang hàm `_resolve_pool_model_ids()` tự động suy luận danh sách backing models từ `MODEL_POOLS` & `AVAILABLE_MODELS`.

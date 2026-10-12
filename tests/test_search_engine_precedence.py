@@ -4,7 +4,7 @@ The precedence is the whole design, so it is pinned here rather than described i
 prose. Three inputs exist and only three:
 
     1. search_engine in the request body   — the client asked, honour it
-    2. a hosted-search request             — grounding first, DuckDuckGo behind
+    2. a hosted-search request             — Router search first, DuckDuckGo behind
     3. everything else                     — DuckDuckGo, touching no Gemini key
 
 An account-level override used to sit between 1 and 2. Nothing in the dashboard
@@ -28,11 +28,11 @@ def _acct(**kw):
 
 class TestBodyWins:
     @pytest.mark.parametrize("engine", [
-        "auto", "duckduckgo", "google_grounding", "disabled",
+        "auto", "duckduckgo", "router_search", "disabled",
     ])
     def test_an_explicit_engine_is_honoured(self, engine):
         body = {"search_engine": engine, "web_search": True, "_hosted_search": True}
-        expected = "duckduckgo" if engine in ("auto", "google_grounding") else engine
+        expected = "duckduckgo" if engine in ("auto", "router_search") else engine
         assert resolve_search_engine(body, _acct()) == expected
 
     def test_case_and_whitespace_do_not_matter(self):
@@ -43,12 +43,12 @@ class TestBodyWins:
 
 
 class TestDialectDecides:
-    def test_a_responses_hosted_request_gets_grounding_first(self):
+    def test_a_responses_hosted_request_gets_router_search_first(self):
         body = {"web_search": True, "_hosted_search": True}
         assert resolve_search_engine(body, _acct()) == "duckduckgo"
 
     def test_an_ordinary_chat_request_gets_duckduckgo(self):
-        """The expensive case. Grounding here spends a Gemini call on every
+        """The expensive case. Router search here spends a Gemini call on every
         search, which is what the account override used to force on people."""
         assert resolve_search_engine({"web_search": True}, _acct()) == "duckduckgo"
 
@@ -62,7 +62,7 @@ class TestDialectDecides:
 
 
 class TestTheAccountOverrideIsGone:
-    @pytest.mark.parametrize("stale", ["disabled", "auto", "google_grounding", "duckduckgo"])
+    @pytest.mark.parametrize("stale", ["disabled", "auto", "router_search", "duckduckgo"])
     def test_no_stored_account_value_changes_the_outcome(self, stale):
         """Whatever an old row says, the dialect decides."""
         acct = _acct(search_engine=stale)
@@ -103,3 +103,5 @@ class TestEnableRulesUnchanged:
 
     def test_none_account_is_handled(self):
         assert should_enable_web_search({"web_search": True}, None) is True
+
+

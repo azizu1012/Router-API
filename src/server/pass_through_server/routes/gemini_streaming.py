@@ -7,8 +7,7 @@ from src.core.providers.genai_types import types as gt
 from src.core.config_n_logg import config
 from src.core.config_n_logg.logger import logger_api
 from src.core.providers import api_manager
-from src.core.providers.gemini.manager import ADKUnavailableError
-from src.core.usage_logger import log_usage
+from src.core.observability.usage_logger import log_usage
 from .gemini_error import gemini_error_chunk as _gemini_error_chunk
 from .gemini_error import detail_message as _detail_message
 
@@ -61,7 +60,7 @@ async def stream_gemini_native(
                 cand = chunk_dict["candidates"][0]
                 if cand.get("finishReason") or chunk_dict.get("usageMetadata"):
                     try:
-                        from src.core.providers.search_manager import _format_citations_footer
+                        from src.tools.search.orchestration.manager import _format_citations_footer
                         footer = _format_citations_footer(hybrid_citations)
                         if cand.get("content") and cand["content"].get("parts"):
                             first_part = cand["content"]["parts"][0]
@@ -87,10 +86,6 @@ async def stream_gemini_native(
                     0,
                     0,
                 )
-    except ADKUnavailableError:
-        # Not a stream failure to report: the caller can still be served
-        # without search, so the decision belongs to whoever owns the request.
-        raise
     except RuntimeError as e:
         logger_api.error("Streaming failed: %s", e)
         yield _gemini_error_chunk(500, str(e))
@@ -112,7 +107,7 @@ async def stream_custom_endpoint_native(
     auth_key_prefix: str,
     api_format: str = "openai",
 ) -> AsyncIterator[bytes]:
-    from src.core.providers.custom_endpoint_genai_adapter import stream_custom_as_genai
+    from src.core.providers.custom_endpoint.adapter import stream_custom_as_genai
 
     async for chunk in stream_custom_as_genai(
         api_base=base_url,
@@ -126,3 +121,4 @@ async def stream_custom_endpoint_native(
         api_format=api_format,  # type: ignore
     ):
         yield chunk
+

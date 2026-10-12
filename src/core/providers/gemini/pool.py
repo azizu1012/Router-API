@@ -138,3 +138,4 @@ class ClientPool:
     def resolve_tier(account: Optional[Dict[str, Any]] = None) -> str:
         tier = (account or {}).get("tier", "free")
         return tier if tier in ("admin", "premium", "free") else "free"
+

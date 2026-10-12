@@ -474,7 +474,7 @@ class TestCountTokens:
 
 class TestModelsEndpointShape:
     def test_superset_of_openai_and_anthropic(self):
-        from src.server.openai_server.routes.standard_routes import _model_entry
+        from src.server.openai_server.routes.standard_routes.models import _model_entry
         entry = _model_entry({"id": "gemini-flash", "display": "Gemini Flash",
                               "root": "gemini-3-flash", "context_length": 220000})
         # OpenAI client fields

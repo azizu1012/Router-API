@@ -9,10 +9,10 @@ from ..security import (
 )
 from src.core.config_n_logg.logger import logger_system as logger
 from src.backend.schema import init_config_tables, migrate_from_json
-from src.core.usage_logger import init_db, start_flush_loop
+from src.core.observability.usage_logger import init_db, start_flush_loop
 from src.core.limits import account_limiter
-from ...log_watcher import log_watcher
-from ...stats_pusher import stats_pusher
+from ...realtime.log_watcher import log_watcher
+from ...realtime.stats import stats_pusher
 
 app = FastAPI(title="Router API v2", version="2.0.0")
 
@@ -341,7 +341,7 @@ async def security_middleware(request: Request, call_next):
 # Watch .env file task
 async def _watch_env_file():
     from src.core.config_n_logg import ENV_PATH, reload_config
-    from src.backend.key_status import register_keys_in_db, set_key_tier_batch_db
+    from src.backend.keys.status import register_keys_in_db, set_key_tier_batch_db
     from src.core.limits import clear_rate_limiters
     from src.core.router import router
     from src.core.providers import api_manager
@@ -385,9 +385,9 @@ async def _watch_env_file():
                     api_manager.refresh_pool_size()
                     clear_rate_limiters()
 
-                    from src.core.api_config import reload_model_config
+                    from src.core.config.api_config import reload_model_config
                     reload_model_config()
-                    from src.backend.model_config import sync_env_to_db
+                    from src.backend.models.config import sync_env_to_db
                     sync_env_to_db()
 
                     logger.info("[EnvWatch] Keys and models successfully reloaded and synced to DB!")
@@ -427,5 +427,26 @@ async def _init_usage_db():
 
     log_watcher.start_all()
     stats_pusher.start()
+
+
+@app.on_event("shutdown")
+async def _shutdown_background_services():
+    """Stop app-owned tasks before test or process database cleanup."""
+    log_watcher.stop_all()
+    await stats_pusher.stop()
+
+    tasks = list(_background_tasks)
+    for task in tasks:
+        task.cancel()
+    if tasks:
+        await asyncio.gather(*tasks, return_exceptions=True)
+    _background_tasks.clear()
+
+    try:
+        from src.backend.keys.status import flush_pending_writes
+        await asyncio.to_thread(flush_pending_writes)
+    except Exception as shutdown_err:
+        logger.warning("[Shutdown] Failed to flush key-status writes: %s", shutdown_err)
+
 
 

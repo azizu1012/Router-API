@@ -24,11 +24,11 @@ async def admin_add_endpoint(request: Request):
             detail="api_format must be 'openai' or 'anthropic'",
         )
 
-    from src.backend.endpoints import add_endpoint_db
+    from src.backend.endpoints.manager import add_endpoint_db
     try:
         ep = add_endpoint_db(name, base_url, auth_key)
         if api_format != "openai":
-            from src.backend.endpoints import update_endpoint_db
+            from src.backend.endpoints.manager import update_endpoint_db
             from src.core.providers import _custom_endpoint_manager
 
             ep = update_endpoint_db(name, api_format=api_format) or ep
@@ -60,7 +60,7 @@ async def admin_set_endpoint_format(request: Request):
             detail="api_format must be 'openai' or 'anthropic'",
         )
 
-    from src.backend.endpoints import update_endpoint_db
+    from src.backend.endpoints.manager import update_endpoint_db
     from src.core.providers import _custom_endpoint_manager
 
     ep = update_endpoint_db(name, api_format=api_format)
@@ -81,7 +81,7 @@ async def admin_delete_endpoint(request: Request):
     if not name:
         raise HTTPException(status_code=400, detail="name is required")
 
-    from src.backend.endpoints import remove_endpoint_db
+    from src.backend.endpoints.manager import remove_endpoint_db
     ep = remove_endpoint_db(name)
     if ep:
         return {"status": "success"}
@@ -100,7 +100,7 @@ async def admin_toggle_endpoint(request: Request):
     if not name or not action:
         raise HTTPException(status_code=400, detail="name and action are required")
 
-    from src.backend.endpoints import enable_endpoint_db, disable_endpoint_db, set_fallback_db
+    from src.backend.endpoints.manager import enable_endpoint_db, disable_endpoint_db, set_fallback_db
     if action == "enable":
         enable_endpoint_db(name)
     elif action == "disable":
@@ -129,7 +129,7 @@ async def admin_assign_endpoint(request: Request):
     from src.core.providers import _custom_endpoint_manager
     try:
         if account_id:
-            from src.backend.accounts import find_account_by_name
+            from src.backend.accounts.manager import find_account_by_name
             acct = find_account_by_name(account_id)
             if not acct:
                 raise HTTPException(status_code=404, detail=f"Account '{account_id}' not found")
@@ -232,8 +232,8 @@ async def admin_assign_endpoint_to_key(request: Request):
     if not account_id:
         raise HTTPException(status_code=400, detail="account_id is required")
 
-    from src.backend.endpoints import assign_endpoint_to_key_db
-    from src.backend.accounts import find_account_by_name
+    from src.backend.endpoints.manager import assign_endpoint_to_key_db
+    from src.backend.accounts.manager import find_account_by_name
 
     # Verify account exists
     acct = find_account_by_name(account_id)
@@ -242,7 +242,7 @@ async def admin_assign_endpoint_to_key(request: Request):
 
     # Verify key exists and belongs to account
     if key_id:
-        from src.backend.account_keys import get_keys_for_account
+        from src.backend.keys.accounts import get_keys_for_account
         keys = get_keys_for_account(acct["account_id"])
         if not any(k["key_id"] == key_id for k in keys):
             raise HTTPException(
@@ -267,4 +267,5 @@ async def admin_assign_endpoint_to_key(request: Request):
         raise
     except Exception as e:
         raise HTTPException(status_code=400, detail=str(e))
+
 

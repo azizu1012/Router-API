@@ -20,7 +20,7 @@ def get_excluded_models(model_failures: Dict[str, int], model_alias: str) -> Lis
 
 
 def all_models_excluded(model_failures: Dict[str, int], model_alias: str) -> bool:
-    from src.core.api_config import MODEL_POOLS, active_pool_members, is_sunset_25
+    from src.core.config.api_config import MODEL_POOLS, active_pool_members, is_sunset_25
     excluded = get_excluded_models(model_failures, model_alias)
     pool_cfg = MODEL_POOLS.get(model_alias)
     if pool_cfg:
@@ -39,14 +39,13 @@ def prepare_tools(
     tools: Optional[List[types.Tool]], model_id: str,
     image_count: int, contents: List[types.Content], web_search: bool,
 ) -> tuple:
-    request_tools = list(tools) if tools else []
-    has_files = image_count > 0 or caller.has_media_or_files(contents)
-    use_grounding = web_search and ("gemini" in str(model_id).lower()) and not has_files
-    if use_grounding:
-        injected = caller.inject_grounding_tool(request_tools, model_id, has_files, web_search)
-        if injected:
-            request_tools = list(injected)
-    return use_grounding, request_tools
+    # Web search is Router-owned. Never pass provider-specific search tools to
+    # the Gemini SDK, even when a client uses the native Gemini wire shape.
+    request_tools = [
+        tool for tool in (tools or [])
+        if getattr(tool, "google_search", None) is None
+    ]
+    return False, request_tools
 
 
 async def wait_global_cooldown(attempt: int) -> None:
@@ -127,7 +126,7 @@ async def handle_error(
             pool.set_key_project(api_key, project_id)
             pool.freeze_project(project_id, model_id, float(config.GEMINI_PROJECT_FREEZE_SEC))
         else:
-            from src.core.limits.gemini_rate_limiter import get_key_rpd_status
+            from src.core.limits.gemini.limiter import get_key_rpd_status
             today_count, target_rpd, is_exhausted = get_key_rpd_status(api_key, model_id)
             if is_exhausted:
                 router.freeze_key(api_key, config.GEMINI_PROJECT_FREEZE_SEC, model_id, "rate_limit_rpd")
@@ -141,3 +140,4 @@ async def handle_error(
     apply_error_penalty(api_key, "rate_limit", model_id)
     if router.record_429():
         logger.warning("[Cascade] 15 consecutive 429s detected")
+

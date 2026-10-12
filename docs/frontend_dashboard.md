@@ -169,7 +169,7 @@ Hệ thống Log Stream thời gian thực được xây dựng bằng xterm.js 
    * Dropdown chọn kênh trong [LogHistoryModal.jsx](file:///d:/AI_Projects/router_api/frontend-src/src/components/LogHistoryModal.jsx) tự động lọc bỏ các kênh quản trị khi người dùng không phải là admin, ngăn chặn việc hiển thị nhầm lẫn.
 
 ### 7.4. Cơ chế Buffer & Fallback Chống Mất Dữ Liệu
-* **Pre-population**: Khi [LogWatcher.py](file:///d:/AI_Projects/router_api/src/server/log_watcher.py) khởi động, nó tự động đọc 1000 dòng đuôi file gần nhất từ đĩa để nạp vào buffer trong RAM. Khi user vừa mở modal, log lập tức hiển thị thay vì chờ phát sinh request mới.
+* **Pre-population**: Khi [LogWatcher.py](file:///d:/AI_Projects/router_api/src/server/realtime/log_watcher.py) khởi động, nó tự động đọc 1000 dòng đuôi file gần nhất từ đĩa để nạp vào buffer trong RAM. Khi user vừa mở modal, log lập tức hiển thị thay vì chờ phát sinh request mới.
 * **Disk Tail Fallback**: Khi client yêu cầu số lượng dòng lớn hơn buffer hiện có trong RAM, server tự động đọc phần còn thiếu trực tiếp từ đĩa.
 * **Kênh Chuẩn Hóa (`normalize_channel`)**: Hỗ trợ linh hoạt mọi định dạng channel như `proxy`, `log:proxy`, `proxy.log`, hoặc `log:proxy:endpoint` đảm bảo client và backend luôn đồng bộ.
 

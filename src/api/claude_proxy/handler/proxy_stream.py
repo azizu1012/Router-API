@@ -5,15 +5,14 @@ Pool/key/custom management is centralized in PoolManager.
 
 import asyncio
 import json
-import time
 import uuid
 from typing import Any, Dict, List, Optional, AsyncIterator
 
 from src.core.config_n_logg import config
 from src.core.config_n_logg.logger import logger_proxy as logger
 from src.core.router import router
-from src.core.pool_manager import pool_manager
-from src.core.usage_logger import log_usage
+from src.core.orchestration.pool_manager import pool_manager
+from src.core.observability.usage_logger import log_usage
 from src.logical_HQ_translator import (
     _convert_messages,
     _dict_to_sse_events,
@@ -41,60 +40,12 @@ from .anthropic_spec import (
     _search_citations,
 )
 from .compaction import _pre_compact_and_truncate
-
-# How often to emit a `ping` while waiting on the model, so proxies and clients
-# do not time out during long Gemini thinking phases.
-KEEPALIVE_INTERVAL = 4.0
-
-# Sentinel yielded by the keepalive wrapper; distinct from any real pool item.
-_KEEPALIVE = object()
-
-# How long one pull may take before the wrapper considers the model quiet.
-_POLL_TIMEOUT = 1.0
-
-
-async def _iter_with_keepalive(
-    stream: Any, keepalive_interval: float
-) -> AsyncIterator[Any]:
-    """Yield pool items, emitting a sentinel whenever the model goes quiet.
-
-    Module-level rather than a closure inside _stream_message_impl so it can be
-    tested on its own — this is the seam where the stream used to die.
-
-    The subtle part is the timeout. `shield` exists so an in-flight pull survives
-    a timeout, which makes the obvious `except: continue` the worst possible next
-    line: it starts a *second* `__anext__` on a generator that is still running,
-    and asyncio raises
-
-        RuntimeError: anext(): asynchronous generator is already running
-
-    which killed the whole stream. A thinking turn takes longer than one second,
-    so the first slow model response triggered it — exactly the case this
-    wrapper exists to handle. HTTP stayed 200 and the client got a well-formed
-    error event, so nothing upstream noticed.
-
-    So the pending pull is held in `pending` and awaited again on the next pass.
-    A ping costs latency; two concurrent pulls on one generator cost the response.
-    """
-    aiter_ = stream.__aiter__()
-    pending: asyncio.Future = asyncio.ensure_future(aiter_.__anext__())
-    last_emit = time.monotonic()
-    while True:
-        try:
-            item = await asyncio.wait_for(
-                asyncio.shield(pending), timeout=_POLL_TIMEOUT
-            )
-        except asyncio.TimeoutError:
-            if time.monotonic() - last_emit >= keepalive_interval:
-                last_emit = time.monotonic()
-                yield _KEEPALIVE
-            continue
-        except StopAsyncIteration:
-            return
-        yield item
-        last_emit = time.monotonic()
-        # Only now is the previous pull finished, so the next one is safe.
-        pending = asyncio.ensure_future(aiter_.__anext__())
+from .streaming import (
+    KEEPALIVE_INTERVAL,
+    _KEEPALIVE,
+    buffer_tool_calls,
+    iter_with_keepalive,
+)
 
 
 class ClaudeProxyStreamMixin:
@@ -153,14 +104,14 @@ class ClaudeProxyStreamMixin:
 
         from src.api.opencode_proxy.handler.websearch import should_enable_web_search
         from src.api.opencode_proxy.handler.proxy import _WEBSEARCH_TOOL_DEF, _resolve_thinking_config, _extract_thinking_params
-        from src.core.sub_agent_detect import is_sub_agent_body
+        from src.core.runtime.sub_agent_detect import is_sub_agent_body
         if not is_sub_agent_body(body) and should_enable_web_search(body, account) and not any(
             t.get("function", {}).get("name") in ("WebSearch", "web_search") for t in openai_tools
         ):
             openai_tools.append(_WEBSEARCH_TOOL_DEF)
             logger.info("[WebSearch] Injected WebSearch tool for Claude stream")
             
-        from src.core.compaction_detect import strip_tools_for_compaction
+        from src.core.runtime.compaction_detect import strip_tools_for_compaction
         strip_tools_for_compaction(body, openai_messages, openai_tools, is_claude_or_opencode=True)
 
         model_alias = router.resolve_model_alias(body.get("model", "")) or config.DEFAULT_MODEL_ALIAS
@@ -201,81 +152,6 @@ class ClaudeProxyStreamMixin:
         except Exception as e:
             logger.error("[Claude Stream] stream_message failed: %s", e, exc_info=True)
             raise e
-
-    def _buffer_tool_calls(self, delta, tool_buffers: Dict[int, Dict[str, Any]]) -> None:
-        """Accumulate streamed tool calls into tool_buffers, keyed by index.
-
-        Providers stream a tool call as one part carrying the name and id, then one
-        part per argument fragment carrying neither. Both shapes arrive in the wild —
-        some endpoints return plain dicts, some return objects — so both are handled
-        here rather than normalised upstream, which would mean rewriting what the pool
-        yields mid-stream.
-
-        Keyed by index because the arguments come after the name: the second fragment
-        for index 0 has to land in the buffer the first fragment created.
-        """
-        tool_calls_val = getattr(delta, "tool_calls", None)
-        if tool_calls_val is None and hasattr(delta, "get"):
-            tool_calls_val = delta.get("tool_calls")
-        if not tool_calls_val:
-            return
-        for tc in tool_calls_val:
-            if isinstance(tc, dict):
-                tc_idx = tc.get("index", 0)
-                fn = tc.get("function", {})
-                fn_name = fn.get("name", "") if isinstance(fn, dict) else (getattr(fn, "name", "") if hasattr(fn, "name") else "")
-                if tc_idx not in tool_buffers:
-                    tc_id = tc.get("id", f"toolu_{fn_name}_{uuid.uuid4().hex[:12]}" if fn_name else f"toolu_{uuid.uuid4().hex}")
-                    fn_args = fn.get("arguments") if isinstance(fn, dict) else (getattr(fn, "arguments", None) if hasattr(fn, "arguments") else None)
-                    tool_buffers[tc_idx] = {"id": tc_id, "name": fn_name, "args": ""}
-                    if fn_args:
-                        if isinstance(fn_args, dict):
-                            args_str = json.dumps(fn_args)
-                        elif not isinstance(fn_args, str):
-                            args_str = str(fn_args)
-                        else:
-                            args_str = fn_args
-                        tool_buffers[tc_idx]["args"] += args_str
-                else:
-                    if fn_name:
-                        tool_buffers[tc_idx]["name"] = fn_name
-                    fn_args = fn.get("arguments") if isinstance(fn, dict) else (getattr(fn, "arguments", None) if hasattr(fn, "arguments") else None)
-                    if fn_args:
-                        if isinstance(fn_args, dict):
-                            args_str = json.dumps(fn_args)
-                        elif not isinstance(fn_args, str):
-                            args_str = str(fn_args)
-                        else:
-                            args_str = fn_args
-                        tool_buffers[tc_idx]["args"] += args_str
-            else:
-                tc_idx = getattr(tc, "index", 0)
-                fn = getattr(tc, "function", {}) if hasattr(tc, "function") else {}
-                fn_name = getattr(fn, "name", "") if hasattr(fn, "name") else ""
-                if tc_idx not in tool_buffers:
-                    tc_id = getattr(tc, "id", f"toolu_{fn_name}_{uuid.uuid4().hex[:12]}" if fn_name else f"toolu_{uuid.uuid4().hex}")
-                    fn_args = getattr(fn, "arguments", None) if hasattr(fn, "arguments") else None
-                    tool_buffers[tc_idx] = {"id": tc_id, "name": fn_name, "args": ""}
-                    if fn_args:
-                        if isinstance(fn_args, dict):
-                            args_str = json.dumps(fn_args)
-                        elif not isinstance(fn_args, str):
-                            args_str = str(fn_args)
-                        else:
-                            args_str = fn_args
-                        tool_buffers[tc_idx]["args"] += args_str
-                else:
-                    if fn_name:
-                        tool_buffers[tc_idx]["name"] = fn_name
-                    fn_args = getattr(fn, "arguments", None) if hasattr(fn, "arguments") else None
-                    if fn_args:
-                        if isinstance(fn_args, dict):
-                            args_str = json.dumps(fn_args)
-                        elif not isinstance(fn_args, str):
-                            args_str = str(fn_args)
-                        else:
-                            args_str = fn_args
-                        tool_buffers[tc_idx]["args"] += args_str
 
     async def _stream_message_impl(
         self,
@@ -332,7 +208,7 @@ class ClaudeProxyStreamMixin:
             stop_sequences = (sampling_params or {}).get("stop_sequences")
 
             # NEW: Check for custom endpoint passthrough BEFORE pool logic
-            from src.core.providers.custom_endpoint_passthrough import (
+            from src.core.providers.custom_endpoint.passthrough import (
                 resolve_custom_endpoint_for_request,
                 call_custom_endpoint_passthrough,
             )
@@ -432,7 +308,7 @@ class ClaudeProxyStreamMixin:
             # Wrap the pool iterator so a `ping` is emitted whenever the model is
             # slow, not just once at the start. Without this, long Gemini thinking
             # phases leave the connection silent and intermediaries drop it.
-            async for item in _iter_with_keepalive(stream, KEEPALIVE_INTERVAL):
+            async for item in iter_with_keepalive(stream, KEEPALIVE_INTERVAL):
                 if item is _KEEPALIVE:
                     # Payload matches the docs exactly: {"type": "ping"}. The
                     # retry/reason fields this used to carry are not in the spec,
@@ -456,8 +332,8 @@ class ClaudeProxyStreamMixin:
                     if recursion_depth == 0:
                         # Warn before the model starts when the context is near the
                         # TPM ceiling, so the user can /compact instead of hitting 429.
-                        from src.core.sub_agent_detect import is_sub_agent_body
-                        from src.logical_HQ_translator.sse_cache_agent import is_claude_code_body
+                        from src.core.runtime.sub_agent_detect import is_sub_agent_body
+                        from src.logical_HQ_translator.streaming.cache_agent import is_claude_code_body
                         if input_tokens > (178000 if is_claude_code_body(body) else 170000) \
                                 and not is_sub_agent_body(body):
                             ctx_warn = (
@@ -584,7 +460,7 @@ class ClaudeProxyStreamMixin:
                                 })
                                 output_chars += len(norm_val)
 
-                self._buffer_tool_calls(delta, tool_buffers)
+                buffer_tool_calls(delta, tool_buffers)
                 if fr:
                     # Keep the provider's raw reason here. Mapping it to the
                     # Anthropic enum now loses information — "length" contains no
@@ -926,7 +802,7 @@ class ClaudeProxyStreamMixin:
         except Exception as e:
             logger.error("[Claude Stream Recurse] PoolManager failed: %s", e, exc_info=True)
             if recursion_depth == 0:
-                from src.core.sub_agent_detect import is_sub_agent_body
+                from src.core.runtime.sub_agent_detect import is_sub_agent_body
                 if is_sub_agent_body(body):
                     from .helpers import _classify_error_reason
                     reason = _classify_error_reason(str(e))

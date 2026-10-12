@@ -11,10 +11,9 @@ a word — no log, no error, just an answer that ignored the question:
 That last one matters most: a client asking for search and silently receiving an
 unsearched answer has no way to notice. It reads as a confident hallucination.
 
-The mapping also settles which search engine a request gets, which is why it
-lives here rather than in the route. A Responses client is asking for the hosted
-capability, so it gets grounding first with DuckDuckGo behind it. Everything else
-on the chat paths defaults to DuckDuckGo and spends no Gemini quota at all.
+The mapping also marks hosted search requests. The Router executes those through
+its own citation search service, so provider-specific search tools never reach a
+model endpoint.
 """
 
 from typing import Any, Dict, List, Tuple
@@ -91,10 +90,7 @@ def responses_to_chat_body(body: Dict[str, Any]) -> Dict[str, Any]:
     """Translate a Responses request into the chat-completions dialect.
 
     Search handling: a hosted web_search tool becomes the chat path's
-    web_search flag with search_engine auto, which is grounding first and
-    DuckDuckGo behind it. A Responses client asked for the hosted capability,
-    so it gets the stronger engine. Nothing else on the chat paths sets this
-    flag, and with it unset they stay on DuckDuckGo at no Gemini quota.
+    web_search flag and Router-owned search marker.
     """
     chat: Dict[str, Any] = {}
 
@@ -163,12 +159,10 @@ def responses_to_chat_body(body: Dict[str, Any]) -> Dict[str, Any]:
         # marker the injection gate reads "not asked" and Responses silently
         # loses search.
         chat["_hosted_search"] = True
-        # Only set the engine when the client did not name one. An explicit
-        # search_engine in the request outranks the dialect default, and this
-        # function is what builds the body, so clobbering it here would make
-        # resolve_search_engine's first precedence rule unreachable.
+        # Keep the explicit engine when supplied; otherwise the web search
+        # resolver selects the Router-owned default.
         if not chat.get("search_engine"):
-            chat["search_engine"] = "auto"
+            chat["search_engine"] = "duckduckgo"
     if wants_fetch:
         chat["web_fetch"] = True
 

@@ -9,7 +9,7 @@ import uuid
 import time
 from typing import Any, AsyncIterator, Dict, List, Optional
 
-from src.core.pool_manager import pool_manager
+from src.core.orchestration.pool_manager import pool_manager
 from src.core.config_n_logg import config
 from src.core.config_n_logg.logger import logger_proxy as logger
 from src.core.router import router
@@ -28,7 +28,7 @@ from .response import build_response, error_response
 from .stream_executor import execute_stream
 
 
-from src.core.sub_agent_detect import (
+from src.core.runtime.sub_agent_detect import (
     is_sub_agent_request_openai as _is_sub_agent_request,
 )
 
@@ -185,7 +185,7 @@ def _client_sampling_params(body: Dict[str, Any]) -> Dict[str, Any]:
 
 def _resolve_thinking_config(body: Dict[str, Any], model_id: str) -> Dict[str, Any]:
     """Convert request thinking params → GenAI SDK thinking_config dict."""
-    from src.core.providers.gemini_thinking import resolve_thinking_config
+    from src.core.providers.gemini.thinking import resolve_thinking_config
 
     p = _extract_thinking_params(body)
     if not p.get("thinking_level"):
@@ -302,7 +302,7 @@ class OpenCodeProxy:
         model_alias = await self._resolve_alias(body, account=account, is_opencode=is_opencode)
         messages, tools = body.get("messages", []), list(body.get("tools", []))
         
-        from src.core.compaction_detect import strip_tools_for_compaction
+        from src.core.runtime.compaction_detect import strip_tools_for_compaction
         strip_tools_for_compaction(body, messages, tools, is_claude_or_opencode=is_opencode)
         
         messages, tools = self._inject_websearch_tool(body, messages, tools, account)
@@ -376,7 +376,7 @@ class OpenCodeProxy:
         model_alias = await self._resolve_alias(body, account=account, is_opencode=is_opencode)
         messages, tools = body.get("messages", []), list(body.get("tools", []))
         
-        from src.core.compaction_detect import strip_tools_for_compaction
+        from src.core.runtime.compaction_detect import strip_tools_for_compaction
         strip_tools_for_compaction(body, messages, tools, is_claude_or_opencode=is_opencode)
         
         messages, tools = self._inject_websearch_tool(body, messages, tools, account)
@@ -502,3 +502,5 @@ _WEBSEARCH_TOOL_DEF = {
 
 
 opencode_proxy = OpenCodeProxy()
+
+

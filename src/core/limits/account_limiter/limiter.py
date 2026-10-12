@@ -139,11 +139,11 @@ class AccountRateLimiter:
     async def restore_rpd_counts(self) -> None:
         import datetime
         import aiosqlite
-        from src.core.usage_logger import _DB as db_path
+        from src.core.observability.usage_logger import _DB as db_path
         today_start = datetime.date.today().isoformat() + "T00:00:00"
         
         try:
-            from src.backend.accounts import list_accounts_db
+            from src.backend.accounts.manager import list_accounts_db
             accs = await asyncio.to_thread(list_accounts_db, True)
             prefix_to_id = {}
             for a in accs:
@@ -180,3 +180,4 @@ class AccountRateLimiter:
             logger.error("[AccountLimiter] Failed to restore RPD counts: %s", e)
 
 account_limiter = AccountRateLimiter()
+

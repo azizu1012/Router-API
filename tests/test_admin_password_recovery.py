@@ -16,7 +16,7 @@ from unittest.mock import patch
 import pytest
 from fastapi.testclient import TestClient
 
-from src.backend.password_recovery import ENV_KEY_NAME
+from src.backend.accounts.recovery import ENV_KEY_NAME
 
 
 @pytest.fixture
@@ -29,7 +29,7 @@ def client_with_admin(temp_db):
     no-key path while claiming to test the keyed one.
     """
     from src.core.accounts import account_manager
-    from src.backend.account_keys import set_password_db
+    from src.backend.keys.accounts import set_password_db
     from src.server.openai_server.routes.auth_session import _make_session_token
     from src.server.openai_server.routes.app_init import app
 
@@ -124,8 +124,8 @@ class TestHonestFailures:
     def test_an_account_predating_the_feature_is_reported(self, client_with_admin):
         """A row written before the column existed must not read as a blank password."""
         from src.backend import _db
-        from src.backend.accounts import create_account_db, find_account_by_name
-        from src.backend.account_keys import set_password_db
+        from src.backend.accounts.manager import create_account_db, find_account_by_name
+        from src.backend.keys.accounts import set_password_db
 
         client = client_with_admin
         create_account_db(name="legacy")
@@ -148,7 +148,7 @@ class TestHonestFailures:
     def test_a_row_whose_password_cannot_be_decrypted_says_so(self, client_with_admin):
         """Wrong key, or a blob from an older key — either way, no password out."""
         from src.backend import _db
-        from src.backend.accounts import find_account_by_name
+        from src.backend.accounts.manager import find_account_by_name
 
         client = client_with_admin
         blob = "not-a-valid-fernet-token"
@@ -163,3 +163,5 @@ class TestHonestFailures:
         res = _recovery(client, "peon").json()
         assert res["available"] is False
         assert res["password"] is None
+
+

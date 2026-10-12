@@ -14,7 +14,7 @@ import pytest
 
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 
-from src.core.providers.custom_endpoint_client import (
+from src.core.providers.custom_endpoint.client import (
     call_custom_nonstream,
     call_anthropic_nonstream,
 )

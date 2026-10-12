@@ -53,7 +53,7 @@ class TestOnePatchReachesEveryCaller:
     def test_the_pool_singleton_is_what_the_proxies_call(self, monkeypatch):
         fake = fp.text_scenario().install(monkeypatch)
 
-        from src.core.pool_manager import pool_manager
+        from src.core.orchestration.pool_manager import pool_manager
         from src.api.claude_proxy.handler import proxy_nonstream, proxy_stream
 
         assert proxy_nonstream.pool_manager is pool_manager
@@ -73,7 +73,7 @@ class TestOnePatchReachesEveryCaller:
         """
         fake = fp.text_scenario().install(monkeypatch)
 
-        from src.core.providers import gemini_facade
+        from src.core.providers.gemini import facade as gemini_facade
         from src.api.opencode_proxy.handler import nonstream_executor
 
         # `==`, not `is`: attribute access builds a fresh bound method each time,
@@ -450,7 +450,7 @@ class TestWebSearchIsLocal:
                                citations=[{"title": "P", "url": "https://e.org/p"}])
         search.install(monkeypatch)
 
-        from src.core.providers.search_manager import execute_hybrid_search
+        from src.tools.search.orchestration.manager import execute_hybrid_search
 
         text, citations = fp.run(execute_hybrid_search(
             ["capital of France"], search_engine="duckduckgo",
@@ -463,7 +463,7 @@ class TestWebSearchIsLocal:
         fake = fp.text_scenario().install(monkeypatch)
         fp.FakeSearch().install(monkeypatch)
 
-        from src.core.providers.search_manager import execute_hybrid_search
+        from src.tools.search.orchestration.manager import execute_hybrid_search
 
         fp.run(execute_hybrid_search(["capital of France"],
                                      search_engine="duckduckgo", account=ADMIN))
@@ -473,7 +473,7 @@ class TestWebSearchIsLocal:
     def test_the_fixture_records_the_queries_it_was_asked(self, monkeypatch):
         search = fp.FakeSearch().install(monkeypatch)
 
-        from src.core.providers.search_manager import execute_hybrid_search
+        from src.tools.search.orchestration.manager import execute_hybrid_search
 
         fp.run(execute_hybrid_search(["a", "b"], search_engine="duckduckgo",
                                      account=ADMIN))
@@ -500,13 +500,13 @@ class TestWebSearchIsLocal:
                                   "url": "https://e.org/p"}]
                       ).install_manager(monkeypatch)
 
-        with patch("src.server.openai_server.routes.standard_routes._check_auth") \
+        with patch("src.server.openai_server.routes.standard_routes.search._check_auth") \
                 as auth:
-            auth.return_value = dict(ADMIN, auth_key="test-key-long-enough")
+            auth.return_value = dict(ADMIN, auth_key="test-key-mock")
             response = TestClient(app).post(
                 "/v1/search", json={"query": "capital of France",
                                     "search_engine": "duckduckgo"},
-                headers={"Authorization": "Bearer test-key-long-enough"})
+                headers={"Authorization": "Bearer test-key-mock"})
 
         # Not a hard 200: an empty temp DB can rate-limit a request. What must
         # hold is that the route answered with the fixture, not with a model.

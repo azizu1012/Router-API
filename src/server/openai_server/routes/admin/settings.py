@@ -61,3 +61,4 @@ async def admin_update_settings(request: Request):
     reload_config()
 
     return {"status": "success"}
+

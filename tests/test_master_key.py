@@ -19,7 +19,7 @@ import pytest
 
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 
-from src.backend.account_keys import (
+from src.backend.keys.accounts import (
     MASTER_KEY_BODY_LEN,
     MASTER_KEY_BYTES,
     compose_token,
@@ -117,7 +117,7 @@ class TestMasterKeyIsNotAToken:
 
     def test_account_creation_rejects_collision_length_name(self, temp_db):
         """Account names of exactly 36 chars must be rejected to prevent token collision."""
-        from src.backend.accounts import create_account_db
+        from src.backend.accounts.manager import create_account_db
         with pytest.raises(ValueError, match="Account name must not be exactly 36"):
             create_account_db(name="A" * 36)
 
@@ -150,7 +150,7 @@ class TestRotationKeepsTheFormat:
         """The endpoint exists to invalidate a key, not to reshape one."""
         from src.backend import _db as db_mod
         from src.backend import schema as schema_mod
-        from src.backend.accounts import create_account_db
+        from src.backend.accounts.manager import create_account_db
         from src.core.accounts import account_manager
 
         fd, name = __import__("tempfile").mkstemp(suffix=".db")
@@ -188,7 +188,7 @@ class TestRotationKeepsTheFormat:
         from unittest.mock import patch
         from src.backend import _db as db_mod
         from src.backend import schema as schema_mod
-        from src.backend.accounts import create_account_db
+        from src.backend.accounts.manager import create_account_db
         from src.core.accounts import account_manager
 
         fd, name = tempfile.mkstemp(suffix=".db")
@@ -201,7 +201,7 @@ class TestRotationKeepsTheFormat:
             create_account_db(name="odd")
             # A freshly created account has a canonical key, so put an
             # off-shape one in place the way a hand-edited DB would have.
-            from src.backend.accounts import update_account_db
+            from src.backend.accounts.manager import update_account_db
             update_account_db("odd", auth_key=OFF_SHAPE_MASTER_KEY)
 
             with patch("src.core.config_n_logg.logger.logger_system") as mock_log:
@@ -224,7 +224,7 @@ class TestRotationKeepsTheFormat:
         from unittest.mock import patch
         from src.backend import _db as db_mod
         from src.backend import schema as schema_mod
-        from src.backend.accounts import create_account_db
+        from src.backend.accounts.manager import create_account_db
         from src.core.accounts import account_manager
 
         fd, name = tempfile.mkstemp(suffix=".db")
@@ -248,3 +248,5 @@ class TestRotationKeepsTheFormat:
                     os.unlink(name + suffix)
                 except OSError:
                     pass
+
+

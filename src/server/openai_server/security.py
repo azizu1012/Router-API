@@ -96,3 +96,4 @@ def add_security_headers(response):
     response.headers["x-xss-protection"] = "1; mode=block"
     response.headers["permissions-policy"] = "camera=(), microphone=(), geolocation=()"
     response.headers["strict-transport-security"] = "max-age=31536000; includeSubDomains"
+

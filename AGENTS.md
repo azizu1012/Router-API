@@ -58,7 +58,7 @@ Client → src/server/ (routes)
 | Sửa retry/backoff logic | `src/core/pool_manager.py` |
 | Sửa cách chọn key | `src/core/router/core/key_resolver.py` (Double Random) |
 | Sửa rate limit | `src/core/limits/gemini_rate_limiter.py` |
-| Thêm provider mới | `src/core/providers/`, `src/backend/endpoints.py` |
+| Thêm provider mới | `src/core/providers/`, `src/backend/endpoints/manager.py` |
 | Sửa response format | `src/api/<proxy>/handler/` |
 | Sửa DB schema | `src/backend/schema.py` + `_db.py` nếu bảng đọc lúc import |
 | Dashboard FE | `frontend-src/` (React build → `src/frontend/`) |

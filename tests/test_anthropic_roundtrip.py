@@ -23,7 +23,7 @@ sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")
 
 from src.api.claude_proxy.handler.anthropic_spec import extract_sampling_params
 from src.core.providers.anthropic_wire import openai_to_anthropic_body
-from src.logical_HQ_translator.message_converter import _convert_messages
+from src.logical_HQ_translator.messages.converter import _convert_messages
 
 
 def roundtrip(body, **kw):

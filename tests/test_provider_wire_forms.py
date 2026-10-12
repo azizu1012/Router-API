@@ -764,7 +764,7 @@ class TestNoProviderCallIsPossible:
     """
 
     def test_installing_the_fake_leaves_no_paid_host_reachable(self, monkeypatch):
-        from src.core.pool_manager import pool_manager
+        from src.core.orchestration.pool_manager import pool_manager
         from src.core.providers.gemini.manager import api_manager
 
         fake = fp.text_scenario().install(monkeypatch)
@@ -807,11 +807,11 @@ class TestNoProviderCallIsPossible:
         assert not network_guard.is_blocked_host(host.split(":")[0])
 
     def test_the_search_fixture_is_local(self, monkeypatch):
-        """Web search must not reach Gemini grounding either."""
+        """Web search must not reach Gemini Router search either."""
         fake = fp.text_scenario().install(monkeypatch)
         search = fp.FakeSearch(text="Paris.").install(monkeypatch)
 
-        from src.core.providers.search_manager import execute_hybrid_search
+        from src.tools.search.orchestration.manager import execute_hybrid_search
 
         text, _ = run(execute_hybrid_search(
             ["capital of France"], search_engine="duckduckgo",

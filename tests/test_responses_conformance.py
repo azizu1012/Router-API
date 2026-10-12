@@ -71,7 +71,7 @@ async def _chat(*pieces, usage=None, finish="stop", tool_calls=None):
 
 
 def _stream(*pieces, usage=None, finish="stop", tool_calls=None):
-    from src.server.openai_server.routes.completions_routes import _responses_sse_stream
+    from src.server.openai_server.routes.completions.responses import _responses_sse_stream
 
     async def go():
         raw = []
@@ -249,7 +249,7 @@ class TestUsageDialect:
 class TestNonStreamEnvelope:
     def test_the_non_stream_body_matches_the_official_response_model(self):
         pytest.importorskip("openai.types.responses")
-        from src.server.openai_server.routes.completions_routes import (
+        from src.server.openai_server.routes.completions.responses import (
             _output_message,
             _responses_envelope,
             _responses_usage,
@@ -270,7 +270,7 @@ class TestNonStreamEnvelope:
 
     def test_renaming_is_shared_by_both_paths(self):
         """The stream and non-stream routes must not drift apart on usage."""
-        from src.server.openai_server.routes.completions_routes import _responses_usage
+        from src.server.openai_server.routes.completions.responses import _responses_usage
 
         got = _responses_usage({"prompt_tokens": 7, "completion_tokens": 5,
                                 "total_tokens": 12})
@@ -404,7 +404,7 @@ def _TOOL_MODELS():
 
 class TestNonStreamToolCalls:
     def test_a_tool_turn_returns_a_function_call(self):
-        from src.server.openai_server.routes.completions_routes import (
+        from src.server.openai_server.routes.completions.responses import (
             _extract_response_tool_calls,
         )
 
@@ -419,7 +419,7 @@ class TestNonStreamToolCalls:
                         "arguments": '{"city":"Paris"}'}], got
 
     def test_a_plain_reply_has_no_tool_calls(self):
-        from src.server.openai_server.routes.completions_routes import (
+        from src.server.openai_server.routes.completions.responses import (
             _extract_response_tool_calls,
         )
 
@@ -427,7 +427,7 @@ class TestNonStreamToolCalls:
             {"choices": [{"message": {"content": "hi"}}]}) == []
 
     def test_dict_arguments_are_serialised_rather_than_dropped(self):
-        from src.server.openai_server.routes.completions_routes import (
+        from src.server.openai_server.routes.completions.responses import (
             _extract_response_tool_calls,
         )
 
@@ -450,7 +450,7 @@ class TestSearchCitationsInTheEnvelope:
 
     def test_the_envelope_carries_the_citations(self):
         pytest.importorskip("openai.types.responses")
-        from src.server.openai_server.routes.completions_routes import (
+        from src.server.openai_server.routes.completions.responses import (
             _output_message, _responses_envelope, _responses_usage,
         )
         import time
@@ -466,7 +466,7 @@ class TestSearchCitationsInTheEnvelope:
              "response": body}, strict=True, extra="forbid")
 
     def test_the_citations_are_present_in_the_output(self):
-        from src.server.openai_server.routes.completions_routes import (
+        from src.server.openai_server.routes.completions.responses import (
             _output_message,
         )
 
@@ -479,7 +479,7 @@ class TestSearchCitationsInTheEnvelope:
     def test_the_message_item_itself_validates_strictly(self):
         pytest.importorskip("openai.types.responses")
         from openai.types.responses import ResponseOutputMessage
-        from src.server.openai_server.routes.completions_routes import (
+        from src.server.openai_server.routes.completions.responses import (
             _output_message,
         )
 
@@ -490,7 +490,7 @@ class TestSearchCitationsInTheEnvelope:
     def test_the_search_item_and_the_message_together_validate(self):
         pytest.importorskip("openai.types.responses")
         from openai.types.responses import Response
-        from src.server.openai_server.routes.completions_routes import (
+        from src.server.openai_server.routes.completions.responses import (
             _output_message, _responses_envelope, _responses_usage,
             _web_search_call_item,
         )
@@ -519,7 +519,7 @@ class TestCompletedAlwaysCarriesUsage:
 
     def test_the_responses_stream_asks_the_chat_layer_for_usage(self):
         import inspect
-        from src.server.openai_server.routes import completions_routes
+        from src.server.openai_server.routes.completions import responses as completions_routes
 
         src = inspect.getsource(completions_routes.responses)
 
@@ -529,7 +529,7 @@ class TestCompletedAlwaysCarriesUsage:
 
     def test_a_usage_chunk_reaches_the_envelope(self):
         """The adapter already reads usage off a `choices: []` chunk."""
-        from src.server.openai_server.routes.completions_routes import (
+        from src.server.openai_server.routes.completions.responses import (
             _responses_usage,
         )
 
@@ -537,7 +537,7 @@ class TestCompletedAlwaysCarriesUsage:
                                  "completion_tokens": 7}) is not None
 
     def test_no_usage_at_all_yields_none_rather_than_a_fake_number(self):
-        from src.server.openai_server.routes.completions_routes import (
+        from src.server.openai_server.routes.completions.responses import (
             _responses_usage,
         )
 
@@ -556,7 +556,7 @@ class TestUsageIsNeverNullOnCompleted:
     def _events(self, chunks, hint=0):
         import asyncio
 
-        from src.server.openai_server.routes.completions_routes import (
+        from src.server.openai_server.routes.completions.responses import (
             _responses_sse_stream,
         )
 
@@ -609,7 +609,7 @@ class TestUsageIsNeverNullOnCompleted:
     """
 
     def _completed(self, *pieces, usage=None, hint=0):
-        from src.server.openai_server.routes.completions_routes import (
+        from src.server.openai_server.routes.completions.responses import (
             _responses_sse_stream,
         )
 
@@ -659,3 +659,5 @@ class TestUsageIsNeverNullOnCompleted:
         _models()["response.completed"].model_validate(
             {"type": "response.completed", "sequence_number": 0,
              "response": done}, strict=True, extra="forbid")
+
+

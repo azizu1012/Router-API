@@ -50,7 +50,7 @@ def _classify_error_reason(error_text: str, api_key: Optional[str] = None, model
         return "rate_limit_rpd"
     if reason == "rate_limit":
         if api_key and model_id:
-            from src.core.limits.gemini_rate_limiter import get_key_rpd_status
+            from src.core.limits.gemini.limiter import get_key_rpd_status
             _, _, is_exhausted = get_key_rpd_status(api_key, model_id)
             if is_exhausted:
                 return "rate_limit_rpd"

@@ -19,7 +19,7 @@ second, so this fired on the first slow model response — the exact case the
 keepalive exists for. HTTP status was still 200 and the client received a
 well-formed `error` SSE event, so nothing upstream flagged it.
 
-These drive the real `_iter_with_keepalive`, not a copy of it: a test that
+These drive the real `iter_with_keepalive`, not a copy of it: a test that
 reimplements the logic proves only that the copy is correct.
 """
 
@@ -31,11 +31,11 @@ import pytest
 
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 
-from src.api.claude_proxy.handler.proxy_stream import (
+from src.api.claude_proxy.handler.streaming.keepalive import (
     _KEEPALIVE,
     KEEPALIVE_INTERVAL,
     _POLL_TIMEOUT,
-    _iter_with_keepalive,
+    iter_with_keepalive,
 )
 
 
@@ -61,7 +61,7 @@ def _slow_stream(chunks, delay):
 async def _drain(stream, keepalive_interval=KEEPALIVE_INTERVAL):
     """Collect real items and keepalive pings separately."""
     items, pings = [], 0
-    async for got in _iter_with_keepalive(stream, keepalive_interval):
+    async for got in iter_with_keepalive(stream, keepalive_interval):
         if got is _KEEPALIVE:
             pings += 1
         else:
@@ -187,7 +187,7 @@ class TestKeepaliveShape:
         """
         import inspect
 
-        src = inspect.getsource(_iter_with_keepalive)
+        src = inspect.getsource(iter_with_keepalive)
         # Skip the docstring, which deliberately names __anext__ to explain the
         # bug. Count from the first statement instead.
         body = src[src.index("aiter_ = stream.__aiter__()"):]
@@ -210,3 +210,5 @@ class TestKeepaliveShape:
             "the next pull must be created after the item is yielded, so it "
             "cannot overlap the one that just finished"
         )
+
+

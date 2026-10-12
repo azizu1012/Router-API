@@ -131,3 +131,4 @@ def error_sse(error_resp: Dict[str, Any]) -> List[bytes]:
     chunks.append(f"data: {json.dumps(done, ensure_ascii=False)}\n\n".encode("utf-8"))
     chunks.append(b"data: [DONE]\n\n")
     return chunks
+

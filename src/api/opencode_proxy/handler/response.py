@@ -10,7 +10,7 @@ import uuid
 from typing import Any, Dict
 
 from src.core.config_n_logg.logger import logger_proxy as logger
-from src.core.usage_logger import log_usage
+from src.core.observability.usage_logger import log_usage
 from src.core.providers.finish_reason import normalize_finish_reason
 from src.api.claude_proxy.handler.helpers import get_system_status_summary
 from src.logical_HQ_translator import _get_simulated_cache_usage
@@ -28,7 +28,7 @@ def estimate_cost(input_tokens: int, output_tokens: int, model_alias: str) -> fl
     output_rate = 0.0003 if is_lite else 0.0006
 
     try:
-        from src.backend.model_prices import get_model_price
+        from src.backend.models.prices import get_model_price
         cfg = get_model_price(model_alias)
         if not cfg:
             pool_key = "gemini-flash-lite" if is_lite else "gemini-flash"
@@ -145,3 +145,4 @@ def _extract_text(choice: Any) -> str:
         parts = [p.get("text", "") for p in content if isinstance(p, dict) and p.get("type") == "text"]
         return "\n".join(parts)
     return str(content or "")
+

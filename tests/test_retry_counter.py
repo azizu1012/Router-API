@@ -23,7 +23,7 @@ import pytest
 
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 
-from src.core import pool_manager as pm
+import src.core.orchestration.pool_manager as pm
 from src.core.router import router
 
 
@@ -123,7 +123,7 @@ class TestRetireMember:
     """
 
     def test_releases_the_slot_and_records_the_member(self):
-        from src.core.pool_manager import _retire_member
+        from src.core.orchestration.pool_manager import _retire_member
 
         released = []
 
@@ -139,7 +139,7 @@ class TestRetireMember:
         assert exhausted == {"m1"}, "member will be handed out again"
 
     def test_is_safe_to_call_twice(self):
-        from src.core.pool_manager import _retire_member
+        from src.core.orchestration.pool_manager import _retire_member
         from src.core.router.pool import ModelPool
 
         pool = ModelPool({"members": ["m1"], "swap_failures": 5,

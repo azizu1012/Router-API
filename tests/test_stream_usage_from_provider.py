@@ -89,3 +89,5 @@ def test_char_count_still_used_when_provider_silent():
     ]
     usage = _usage_from(asyncio.run(_drain(items, body)))
     assert usage["output_tokens"] == 100, usage
+
+

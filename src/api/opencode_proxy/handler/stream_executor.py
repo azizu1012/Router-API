@@ -11,141 +11,27 @@ This module handles:
 
 import asyncio
 import json
-import uuid
 import time
+import uuid
 from typing import Any, Dict, List, AsyncIterator, Optional, cast
 
 from src.core.config_n_logg import config
 from src.core.config_n_logg.logger import logger_proxy as logger
-from src.core.usage_logger import log_usage
+from src.core.observability.usage_logger import log_usage
 from src.core.providers.finish_reason import normalize_finish_reason
 from src.logical_HQ_translator import (
     _get_simulated_cache_usage,
     StreamingTextNormalizer,
     XMLThinkingExtractor,
 )
-from src.core.pool_manager import pool_manager
-
-
-def _openai_sse(
-    model_name: str,
-    content: Optional[str] = None,
-    tool_calls: Optional[List[dict]] = None,
-    finish_reason: Optional[str] = None,
-    chunk_id: Optional[str] = None,
-    reasoning_content: Optional[str] = None,
-    thought_signature: Optional[str] = None,
-) -> bytes:
-    if not chunk_id:
-        chunk_id = f"chatcmpl-{uuid.uuid4().hex}"
-    data: Dict[str, Any] = {
-        "id": chunk_id,
-        "object": "chat.completion.chunk",
-        "created": int(time.time()),
-        "model": model_name,
-        "choices": [{"index": 0, "delta": {}, "finish_reason": finish_reason}],
-    }
-    if content is not None:
-        data["choices"][0]["delta"]["content"] = content
-    if reasoning_content is not None:
-        data["choices"][0]["delta"]["reasoning_content"] = reasoning_content
-    if tool_calls:
-        data["choices"][0]["delta"]["tool_calls"] = [
-            {
-                "index": idx,
-                "id": tc.get("id") or f"call_{uuid.uuid4().hex}",
-                "type": tc.get("type", "function"),
-                "function": {"name": tc.get("name", ""), "arguments": tc.get("arguments", "")},
-            }
-            for idx, tc in enumerate(tool_calls)
-        ]
-    if thought_signature is not None:
-        data["choices"][0]["delta"]["thought_signature"] = thought_signature
-    return f"data: {json.dumps(data, ensure_ascii=False)}\n\n".encode("utf-8")
-
-
-def _get_reasoning(delta_obj) -> Optional[str]:
-    if not delta_obj:
-        return None
-    for attr in ("reasoning_content", "thought", "reasoning"):
-        v = getattr(delta_obj, attr, None)
-        if v:
-            return v
-    if hasattr(delta_obj, "get"):
-        for key in ("reasoning_content", "thought", "reasoning"):
-            try:
-                v = delta_obj.get(key)
-                if v:
-                    return v
-            except Exception:
-                pass
-    for attr in ("model_extra", "extra_fields", "additional_kwargs"):
-        extra = getattr(delta_obj, attr, None)
-        if extra and isinstance(extra, dict):
-            for key in ("reasoning_content", "thought", "reasoning"):
-                if extra.get(key):
-                    return extra[key]
-    return None
-
-
-def _get_content(delta_obj) -> Optional[str]:
-    if not delta_obj:
-        return None
-    v = getattr(delta_obj, "content", None)
-    if v:
-        return v
-    if hasattr(delta_obj, "get"):
-        try:
-            v = delta_obj.get("content")
-            if v:
-                return v
-        except Exception:
-            pass
-    for attr in ("model_extra", "extra_fields", "additional_kwargs"):
-        extra = getattr(delta_obj, attr, None)
-        if extra and isinstance(extra, dict):
-            if extra.get("content"):
-                return extra["content"]
-    return None
-
-
-def _get_tool_calls(delta_obj) -> Optional[List[dict]]:
-    if not delta_obj:
-        return None
-    tcs = getattr(delta_obj, "tool_calls", None)
-    if tcs:
-        res = []
-        for tc in tcs:
-            if isinstance(tc, dict):
-                fn = tc.get("function", {})
-                fn_name = fn.get("name", "") if isinstance(fn, dict) else ""
-                fn_args = fn.get("arguments", "") if isinstance(fn, dict) else ""
-                tc_id = tc.get("id")
-                tc_type = tc.get("type", "function")
-            else:
-                tc_id = getattr(tc, "id", None)
-                tc_type = getattr(tc, "type", "function")
-                fn_name = getattr(tc.function, "name", "") if getattr(tc, "function", None) else ""
-                fn_args = getattr(tc.function, "arguments", "") if getattr(tc, "function", None) else ""
-            res.append({"id": tc_id, "type": tc_type, "name": fn_name, "arguments": fn_args})
-        return res
-    return None
-
-
-def _get_thought_signature(delta_obj) -> Optional[str]:
-    if not delta_obj:
-        return None
-    v = getattr(delta_obj, "thought_signature", None)
-    if v:
-        return v
-    if hasattr(delta_obj, "get"):
-        try:
-            v = delta_obj.get("thought_signature")
-            if v:
-                return v
-        except Exception:
-            pass
-    return None
+from src.core.orchestration.pool_manager import pool_manager
+from .streaming import (
+    get_content as _get_content,
+    get_reasoning as _get_reasoning,
+    get_thought_signature as _get_thought_signature,
+    get_tool_calls as _get_tool_calls,
+    openai_sse as _openai_sse,
+)
 
 
 async def _run_websearch_nonstream(
@@ -568,3 +454,4 @@ async def execute_stream(
     except Exception as e:
         logger.error("[OpenCode Stream Error] model=%s: %s", model_alias, e, exc_info=True)
         raise
+

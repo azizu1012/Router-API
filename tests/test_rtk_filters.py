@@ -5,7 +5,7 @@ import json
 # Ensure root is in path
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 
-from src.logical_HQ_translator.rtk import (
+from src.logical_HQ_translator.compression.rtk import (
     filter_git_diff,
     filter_git_status,
     filter_grep,
@@ -112,3 +112,5 @@ if __name__ == "__main__":
     test_smart_truncate_filter()
     test_compress_messages_integration()
     print("\nALL RTK FILTER TESTS PASSED SUCCESSFULY!")
+
+

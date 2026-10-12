@@ -23,11 +23,11 @@ sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")
 
 from src.api.claude_proxy.handler.anthropic_spec import extract_sampling_params, extract_tool_choice
 from src.api.opencode_proxy.handler.proxy import _client_sampling_params
-from src.core.providers.gemini_facade import _gemini_tool_config
+from src.core.providers.gemini.request_config import gemini_tool_config
 
 
 def fcc(choice):
-    out = _gemini_tool_config(choice)
+    out = gemini_tool_config(choice)
     return (out or {}).get("function_calling_config")
 
 
@@ -100,7 +100,7 @@ class TestGeminiGetsItsOwnSpelling:
 
     @pytest.mark.parametrize("value", [None, "", "weird", 123, {"type": "mystery"}])
     def test_anything_unrecognised_produces_no_config(self, value):
-        assert _gemini_tool_config(value) is None
+        assert gemini_tool_config(value) is None
 
 
 class TestTheSdkActuallyAcceptsWhatWeBuild:
@@ -110,7 +110,7 @@ class TestTheSdkActuallyAcceptsWhatWeBuild:
     def test_it_becomes_a_function_calling_config(self):
         from google.genai import types
 
-        out = _gemini_tool_config({"type": "function", "function": {"name": "f"}})
+        out = gemini_tool_config({"type": "function", "function": {"name": "f"}})
         cfg = types.GenerateContentConfig(tool_config=out)
         assert cfg.tool_config.function_calling_config.mode == (
             types.FunctionCallingConfigMode.ANY)

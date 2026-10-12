@@ -53,3 +53,4 @@ def _require_admin(request: Request) -> Dict[str, Any]:
     if payload.get("tier") != "admin":
         raise HTTPException(status_code=403, detail="Admin privilege required")
     return payload
+

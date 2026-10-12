@@ -5,7 +5,7 @@ import random
 from datetime import datetime, timedelta
 from typing import Any, Dict, Optional
 
-from src.core.api_config import (
+from src.core.config.api_config import (
     AVAILABLE_MODELS,
     MODEL_POOLS,
     active_pool_members,
@@ -14,12 +14,12 @@ from src.core.api_config import (
 )
 from src.core.config_n_logg import config
 from src.core.config_n_logg.logger import logger_keys as logger
-from src.backend.key_status import (
+from src.backend.keys.status import (
     get_key_tiers_db,
     atomic_reserve_key,
     atomic_record_success,
 )
-from src.core.limits.gemini_rate_limiter import (
+from src.core.limits.gemini.limiter import (
     get_key_priority,
     check_key_model_limits,
     record_key_model_usage,
@@ -57,7 +57,7 @@ class KeyResolverMixin:
         APIs with retries after repeated failures.
         """
         if reason in ("rate_limit_rpd", "project_quota_429"):
-            from src.core.limits.gemini_rate_limiter import get_seconds_until_pacific_midnight
+            from src.core.limits.gemini.limiter import get_seconds_until_pacific_midnight
             return get_seconds_until_pacific_midnight()
         if reason == "rate_limit" or reason == "429":
             return random.randint(config.KEY_429_COOLDOWN_SECONDS, config.KEY_429_COOLDOWN_SECONDS * 5)
@@ -223,7 +223,7 @@ class KeyResolverMixin:
                 return False
         else:
             # Tightens limits to 70% of actual capacity to prevent 429 cascades
-            from src.core.limits.gemini_rate_limiter import _key_model_requests, _key_model_tokens, _usage_lock
+            from src.core.limits.gemini.limiter import _key_model_requests, _key_model_tokens, _usage_lock
             k_m = f"{key}::{model_id}"
             with _usage_lock:
                 reqs = _key_model_requests.get(k_m)
@@ -412,3 +412,4 @@ class KeyResolverMixin:
         except Exception as exc:
             logger.error("reserve_key error: %s", exc)
             return None
+

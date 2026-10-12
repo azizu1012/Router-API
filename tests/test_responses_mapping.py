@@ -74,7 +74,7 @@ class TestInstructionsWereBeingDropped:
 
 class TestHostedSearchMapsToRouterNative:
     """The Responses dialect asks for the hosted capability, so it opts into
-    grounding. Other chat paths stay on DuckDuckGo at no Gemini quota."""
+    Router search. Other chat paths stay on DuckDuckGo at no Gemini quota."""
 
     def test_web_search_tool_turns_on_search(self):
         chat = responses_to_chat_body({
@@ -82,11 +82,11 @@ class TestHostedSearchMapsToRouterNative:
         })
         assert chat.get("web_search") is True, chat
 
-    def test_web_search_selects_the_grounding_first_engine(self):
+    def test_web_search_selects_router_engine(self):
         chat = responses_to_chat_body({
             "model": "m", "input": "hi", "tools": [{"type": "web_search"}],
         })
-        assert chat.get("search_engine") == "auto", chat
+        assert chat.get("search_engine") == "duckduckgo", chat
 
     @pytest.mark.parametrize("tool_type", [
         "web_search", "web_search_preview", "web_search_2025_08_26",
@@ -235,3 +235,5 @@ class TestHelpers:
     def test_a_body_with_no_model_does_not_invent_one(self):
         chat = responses_to_chat_body({"input": "hi"})
         assert "model" not in chat, chat
+
+

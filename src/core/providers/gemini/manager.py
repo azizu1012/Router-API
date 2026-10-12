@@ -12,53 +12,11 @@ from src.core.limits import get_rate_limiter
 from .pool import ClientPool
 from . import caller
 from . import error as gerror
-from src.core.providers.gemini_thinking import resolve_thinking_config
+from src.core.providers.gemini.thinking import resolve_thinking_config
 from .utils import (
     get_excluded_models, all_models_excluded, prepare_tools,
     wait_global_cooldown, backoff, accumulate_parts, extract_stream_usage, handle_error,
 )
-
-
-class ADKUnavailableError(RuntimeError):
-    """google-adk is not installed, so the ADK web-search path cannot run.
-
-    Raised before the retry loop so the caller sees an actionable message instead
-    of the import failure being caught, retried across every key, and finally
-    reported as a generic API error.
-    """
-
-
-def _load_adk_runner():
-    """Import the ADK runner, converting a missing dependency into a clear error."""
-    try:
-        from src.core.providers import adk_runner
-    except RuntimeError as e:
-        raise ADKUnavailableError(str(e)) from e
-    return adk_runner
-
-
-_ADK_CACHE: Dict[str, Any] = {}
-
-
-def _adk_runner_for_search(model_id: str, has_media: bool):
-    """The ADK runner if this call needs it, else None to ground natively.
-
-    The runner was resolved from `web_search` alone, so a client asking for
-    native grounding on a Gemini model — the documented way to search on this
-    endpoint — still died with `google-adk is required` when the package was
-    absent, even though nothing in that path uses it. Loading it only when the
-    ADK branch is genuinely selected keeps a missing optional dependency from
-    taking the endpoint down.
-    """
-    if "gemini" not in (model_id or "").lower() or has_media:
-        return None
-    if "loaded" not in _ADK_CACHE:
-        try:
-            _ADK_CACHE["module"] = _load_adk_runner()
-        except ADKUnavailableError as e:
-            _ADK_CACHE["error"] = str(e)
-        _ADK_CACHE["loaded"] = True
-    return _ADK_CACHE.get("module")
 
 
 class GeminiAPIManager:
@@ -113,15 +71,6 @@ class GeminiAPIManager:
         total_keys = self.pool.pool_size
         tier = self.pool.resolve_tier(account)
 
-        # The ADK runner is resolved per attempt, from the model this key
-        # actually selected — not from `web_search` alone. Resolving it eagerly
-        # meant a client asking for native grounding, the documented search path
-        # on this endpoint, still failed on a missing optional package that
-        # nothing in that path imports. Resolving it inside the loop but outside
-        # the `try` keeps a real failure from being counted as a model failure
-        # and retried against every key.
-        has_media = image_count > 0 or self._has_media_or_files(contents)
-
         for attempt in range(1, config.MAX_RETRIES + 1):
             await wait_global_cooldown(attempt)
             estimated_total = self._estimate_tokens(prompt_text, max_tokens, image_count)
@@ -160,49 +109,14 @@ class GeminiAPIManager:
                     await self.pool.throttle(api_key, self.pool.get_key_last_used(api_key))
                     self.pool.record_key_usage(api_key)
 
-                    target_model_id = model_id
-                    can_native_ground = (
-                        web_search
-                        and not has_media
-                        and ("gemini" in target_model_id.lower())
+                    _, request_tools = prepare_tools(tools, model_id, image_count, contents, web_search)
+                    tc = resolve_thinking_config(model_id, thinking_level, thinking_budget, include_thoughts)
+                    tc_obj = types.ThinkingConfig(**tc) if tc else None
+                    response = await caller.generate_content(
+                        self.pool, api_key, model_id, system_instruction, contents,
+                        max_tokens, temperature, top_p, tools=request_tools or None,
+                        tier=tier, thinking_config=tc_obj,
                     )
-                    adk = None
-                    if web_search and not can_native_ground:
-                        adk = _adk_runner_for_search(target_model_id, has_media)
-                        if adk is None:
-                            # Without the runner a Google model can still search:
-                            # its own grounding is the documented path. Refusing
-                            # here turned a missing optional package into a dead
-                            # endpoint for every model, not just the ones that
-                            # genuinely need the sub-agent.
-                            logger.info(
-                                "[Gemini] adk unavailable; grounding natively "
-                                "on %s", target_model_id)
-                            can_native_ground = True
-
-                    if adk is not None and not can_native_ground:
-                        # `adk` was resolved once, before the retry loop.
-                        auth_key_prefix = account.get("api_key", "")[:12] if account else "sk-no-account"
-                        resp_dict = await adk.run_adk_agent(
-                            model_id=model_id,
-                            api_key=api_key,
-                            system_instruction=system_instruction,
-                            contents=contents,
-                            auth_key_prefix=auth_key_prefix,
-                            account=account,
-                        )
-                        response = adk.MockGenerateContentResponse(resp_dict)
-                    else:
-                        use_grounding, request_tools = prepare_tools(
-                            tools, model_id, image_count, contents, web_search,
-                        )
-                        tc = resolve_thinking_config(model_id, thinking_level, thinking_budget, include_thoughts)
-                        tc_obj = types.ThinkingConfig(**tc) if tc else None
-                        response = await self._call_with_grounding_fallback(
-                            api_key, model_id, system_instruction, contents,
-                            max_tokens, temperature, top_p, request_tools,
-                            tier, use_grounding, thinking_config=tc_obj,
-                        )
 
                     usage = getattr(response, "usage_metadata", None)
                     input_tokens = getattr(usage, "prompt_token_count", 0) or 0
@@ -315,15 +229,6 @@ class GeminiAPIManager:
         total_keys = self.pool.pool_size
         tier = self.pool.resolve_tier(account)
 
-        # The ADK runner is resolved per attempt, from the model this key
-        # actually selected — not from `web_search` alone. Resolving it eagerly
-        # meant a client asking for native grounding, the documented search path
-        # on this endpoint, still failed on a missing optional package that
-        # nothing in that path imports. Resolving it inside the loop but outside
-        # the `try` keeps a real failure from being counted as a model failure
-        # and retried against every key.
-        has_media = image_count > 0 or self._has_media_or_files(contents)
-
         for attempt in range(1, config.MAX_RETRIES + 1):
             await wait_global_cooldown(attempt)
             estimated_total = self._estimate_tokens(prompt_text, max_tokens, image_count)
@@ -358,79 +263,14 @@ class GeminiAPIManager:
                     await self.pool.throttle(api_key, self.pool.get_key_last_used(api_key))
                     self.pool.record_key_usage(api_key)
 
-                    target_model_id = model_id
-                    can_native_ground = (
-                        web_search
-                        and not has_media
-                        and ("gemini" in target_model_id.lower())
+                    _, request_tools = prepare_tools(tools, model_id, image_count, contents, web_search)
+                    tc = resolve_thinking_config(model_id, thinking_level, thinking_budget, include_thoughts)
+                    tc_obj = types.ThinkingConfig(**tc) if tc else None
+                    stream_gen = caller.generate_content_stream(
+                        self.pool, api_key, model_id, system_instruction, contents,
+                        max_tokens, temperature, top_p, tools=request_tools or None,
+                        tier=tier, thinking_config=tc_obj,
                     )
-                    adk = None
-                    if web_search and not can_native_ground:
-                        adk = _adk_runner_for_search(target_model_id, has_media)
-                        if adk is None:
-                            # Without the runner a Google model can still search:
-                            # its own grounding is the documented path. Refusing
-                            # here turned a missing optional package into a dead
-                            # endpoint for every model, not just the ones that
-                            # genuinely need the sub-agent.
-                            logger.info(
-                                "[Gemini] adk unavailable; grounding natively "
-                                "on %s", target_model_id)
-                            can_native_ground = True
-
-                    if adk is not None and not can_native_ground:
-                        # `adk` was resolved once, before the retry loop.
-                        auth_key_prefix = account.get("api_key", "")[:12] if account else "sk-no-account"
-                        adk_stream = adk.run_adk_agent_stream(
-                            model_id=model_id,
-                            api_key=api_key,
-                            system_instruction=system_instruction,
-                            contents=contents,
-                            auth_key_prefix=auth_key_prefix,
-                            account=account,
-                        )
-
-                        class ADKStreamWrapper:
-                            def __init__(self, generator):
-                                self.generator = generator
-                            def __aiter__(self):
-                                return self
-                            async def __anext__(self):
-                                try:
-                                    chunk_dict = await self.generator.__anext__()
-                                    return adk.MockGenerateContentResponse(chunk_dict)  # type: ignore
-                                except StopAsyncIteration:
-                                    raise StopAsyncIteration
-
-                        stream_gen = ADKStreamWrapper(adk_stream)
-                    else:
-                        use_grounding, request_tools = prepare_tools(
-                            tools, model_id, image_count, contents, web_search,
-                        )
-                        tc = resolve_thinking_config(model_id, thinking_level, thinking_budget, include_thoughts)
-                        tc_obj = types.ThinkingConfig(**tc) if tc else None
-                        try:
-                            stream_gen = caller.generate_content_stream(
-                                self.pool, api_key, model_id,
-                                system_instruction, contents,
-                                max_tokens, temperature, top_p,
-                                tools=request_tools or None, tier=tier,
-                                thinking_config=tc_obj,
-                            )
-                        except Exception as ge_err:
-                            if use_grounding and gerror.is_grounding_suppression(str(ge_err)):
-                                logger.warning("Grounding stream failed on ...%s, retrying without.", api_key[-4:])
-                                non_grounding = [t for t in request_tools
-                                                 if getattr(t, "google_search", None) is None]
-                                stream_gen = caller.generate_content_stream(
-                                    self.pool, api_key, model_id,
-                                    system_instruction, contents,
-                                    max_tokens, temperature, top_p,
-                                    tools=non_grounding or None, tier=tier,
-                                    thinking_config=tc_obj,
-                                )
-                            else:
-                                raise ge_err
 
                     full_parts: List[str] = []
                     chunk = None
@@ -493,32 +333,6 @@ class GeminiAPIManager:
     def _commit_key(self, api_key: str, model_id: str) -> None:
         router.record_success(api_key, model_id)
 
-    async def _call_with_grounding_fallback(
-        self, api_key, model_id, system_instruction, contents,
-        max_tokens, temperature, top_p, request_tools, tier, use_grounding,
-        thinking_config=None,
-    ):
-        try:
-            return await caller.generate_content(
-                self.pool, api_key, model_id,
-                system_instruction, contents,
-                max_tokens, temperature, top_p,
-                tools=request_tools or None, tier=tier,
-                thinking_config=thinking_config,
-            )
-        except Exception as ge_err:
-            if use_grounding and gerror.is_grounding_suppression(str(ge_err)):
-                logger.warning("Grounding failed on ...%s, retrying without.", api_key[-4:])
-                non_grounding = [t for t in request_tools
-                                 if getattr(t, "google_search", None) is None]
-                return await caller.generate_content(
-                    self.pool, api_key, model_id,
-                    system_instruction, contents,
-                    max_tokens, temperature, top_p,
-                    tools=non_grounding or None, tier=tier,
-                    thinking_config=thinking_config,
-                )
-            raise ge_err
-
-
 api_manager = GeminiAPIManager()
+
+

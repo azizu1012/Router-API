@@ -47,7 +47,7 @@ def app_client():
     from fastapi.testclient import TestClient
     from src.backend import _db as db_mod
     from src.backend import schema as schema_mod
-    import src.core.usage_logger as usage_logger
+    import src.core.observability.usage_logger as usage_logger
 
     fd, name = tempfile.mkstemp(suffix=".db")
     os.close(fd)
@@ -76,7 +76,7 @@ def app_client():
 def _make_account(name, tier, password):
     """An account with a web credential and a live session token."""
     from src.core.accounts import account_manager
-    from src.backend.account_keys import set_password_db
+    from src.backend.keys.accounts import set_password_db
     from src.server.openai_server.routes.auth_session import _make_session_token
 
     acc = account_manager.create_account(name=name, tier=tier)
@@ -110,7 +110,7 @@ _LOGS = [""]
 @pytest.fixture(autouse=True)
 def _capture_logs_db(app_client):
     """Hand the usage-row helper the same temp path the app is reading from."""
-    import src.core.usage_logger as usage_logger
+    import src.core.observability.usage_logger as usage_logger
     _LOGS[0] = usage_logger._DB
     yield
 
@@ -407,3 +407,5 @@ async def peek(request: Request):
     return {"auth_key": "sk-secret"}
 '''
         assert "credential-reveal-without-admin-guard" in self._rules(src, tmp_path)
+
+

@@ -98,7 +98,7 @@ CATALOG: List[Dict[str, Any]] = [
                 "path": "/v1/responses",
                 "note": "tools dùng kiểu Responses. Gửi "
                         "\"tools\":[{\"type\":\"web_search\"}] để bật tìm kiếm server-side: "
-                        "router chạy grounding trước, DuckDuckGo fallback, nên client "
+                        "router chạy tìm kiếm Router-owned với trích dẫn, nên client "
                         "không phải tự vòng lặp. "
                         "\"instructions\" thành system message, \"reasoning\":{\"effort\"} "
                         "thành reasoning_effort, \"stream\": true trả SSE.",
@@ -150,8 +150,7 @@ CATALOG: List[Dict[str, Any]] = [
                 "path": "/v1/search",
                 "aliases": ["/search"],
                 "note": "\"search_engine\": duckduckgo (mặc định, 0 quota) | "
-                        "google_grounding (tốn quota, chất lượng cao hơn) | "
-                        "auto (grounding trước, DuckDuckGo fallback).",
+                        "duckduckgo (tìm kiếm Router-owned, không dùng quota model).",
                 "curl": _curl("POST", "/v1/search", '{"query":"tin tức Rust mới nhất",'
                         '"search_engine":"duckduckgo"}'),
             },
@@ -196,8 +195,8 @@ NOTES: List[Dict[str, str]] = [
     {
         "title": "Search trong chat khác gì /v1/search",
         "body": "Client chat tự lo search: gửi web_search true (Anthropic/OpenAI) hoặc "
-                "tools web_search (Responses). Responses thì grounding trước. "
-                "Còn lại đi DuckDuckGo. Còn app tự điều phối thì gọi /v1/search rồi đưa "
+                "tools web_search (Responses) đều đi qua tìm kiếm Router-owned. "
+                "Còn app tự điều phối thì gọi /v1/search rồi đưa "
                 "kết quả vào lượt sau — rẻ hơn vì không phải gọi lại model.",
     },
     {
@@ -211,3 +210,4 @@ NOTES: List[Dict[str, str]] = [
 def help_payload() -> Dict[str, Any]:
     """The whole catalog, as the dashboard consumes it."""
     return {"groups": CATALOG, "notes": NOTES}
+

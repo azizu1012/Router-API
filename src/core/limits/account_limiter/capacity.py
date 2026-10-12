@@ -10,7 +10,7 @@ async def get_active_account_counts() -> dict:
     now = time.time()
     if not _active_counts_cache or now - _active_counts_cache_ts > 5.0:
         try:
-            from src.backend.accounts import list_accounts_db
+            from src.backend.accounts.manager import list_accounts_db
             accs = await asyncio.to_thread(list_accounts_db, False)
             counts = {"free": 0, "premium": 0, "admin": 0}
             for a in accs:
@@ -38,7 +38,7 @@ def _resolve_pool_model_ids(pool_type: str, available_models: dict) -> set[str]:
     Đọc từ MODEL_POOLS và AVAILABLE_MODELS (đã nạp từ env & db).
     """
     try:
-        from src.core.api_config import active_pool_members
+        from src.core.config.api_config import active_pool_members
     except Exception:
         active_pool_members = None
 
@@ -46,7 +46,7 @@ def _resolve_pool_model_ids(pool_type: str, available_models: dict) -> set[str]:
     if active_pool_members:
         members = active_pool_members(target_pool_name)
     else:
-        from src.core.api_config import MODEL_POOLS
+        from src.core.config.api_config import MODEL_POOLS
         members = MODEL_POOLS.get(target_pool_name, {}).get("members", [])
 
     mids = set()
@@ -81,8 +81,8 @@ def calculate_key_capacities_by_pool(pool_type: str = "flash") -> dict:
     if pool_type not in _key_capacities_pool_cache or now - last_ts > 1.0:
         try:
             from src.core.router.core import router
-            from src.core.api_config import AVAILABLE_MODELS
-            from src.core.limits.gemini_rate_limiter import _key_usage, _usage_lock, _key_model_requests, _key_model_tokens
+            from src.core.config.api_config import AVAILABLE_MODELS
+            from src.core.limits.gemini.limiter import _key_usage, _usage_lock, _key_model_requests, _key_model_tokens
             
             Cap_free_rpm = 0
             Cap_free_tpm = 0
@@ -174,8 +174,8 @@ def calculate_key_capacities() -> dict:
     if _key_capacities_cache is None or now - _key_capacities_cache_ts > 1.0:
         try:
             from src.core.router.core import router
-            from src.core.api_config import AVAILABLE_MODELS
-            from src.core.limits.gemini_rate_limiter import _key_usage, _usage_lock, _key_model_requests, _key_model_tokens
+            from src.core.config.api_config import AVAILABLE_MODELS
+            from src.core.limits.gemini.limiter import _key_usage, _usage_lock, _key_model_requests, _key_model_tokens
             
             Cap_free_rpm = 0
             Cap_free_tpm = 0
@@ -254,8 +254,8 @@ def calculate_key_capacities() -> dict:
 
 def calculate_pool_capacities_for_user(user_tier: str, active_counts: Dict[str, int], account: Dict[str, Any]) -> dict:
     from src.core.router.core import router
-    from src.core.api_config import AVAILABLE_MODELS
-    from src.core.limits.gemini_rate_limiter import _key_usage, _usage_lock, _key_model_requests, _key_model_tokens
+    from src.core.config.api_config import AVAILABLE_MODELS
+    from src.core.limits.gemini.limiter import _key_usage, _usage_lock, _key_model_requests, _key_model_tokens
     
     if user_tier == "admin":
         allowed_tiers = {"free", "premium", "admin"}
@@ -344,3 +344,4 @@ def calculate_pool_capacities_for_user(user_tier: str, active_counts: Dict[str, 
                 pool_stats[pool_key][f"tokens_{label}_limit"] += int(tokens_capacity_total)
                 
     return pool_stats
+

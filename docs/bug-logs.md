@@ -39,7 +39,7 @@ Lần request sau gửi:       tool_use → agent_use {agent_type:"general-purpo
 
 ### Fix
 
-#### 1. INPUT: `src/logical_HQ_translator/message_converter.py:435`
+#### 1. INPUT: `src/logical_HQ_translator/messages/converter.py:435`
 
 **Before:** `t_name = block.get("name") or block.get("agent_type") or "Task"`
 
@@ -72,7 +72,7 @@ OpenCode proxy (`opencode_proxy/handler/`) dùng OpenAI-compatible format, khôn
 ### Files changed
 
 ```
-src/logical_HQ_translator/message_converter.py          | 2 +-
+src/logical_HQ_translator/messages/converter.py          | 2 +-
 src/api/claude_proxy/handler/proxy_stream.py             | 2 +-
 src/api/claude_proxy/handler/proxy_nonstream.py          | 2 +-
 src/api/claude_proxy/handler/stream_executor.py          | 2 +-
@@ -88,7 +88,7 @@ src/api/claude_proxy/stream.py                           | 6 +++---
 Deploy trên một máy chưa từng chạy Router API: app chết ngay lúc khởi động với `sqlite3.OperationalError: no such table: key_status`.
 
 ### Root cause
-`src/core/router/__init__.py` tạo `APIRouter()` ở **module level**, và constructor đó gọi `get_key_status_db()`. `custom_endpoint_manager` cũng dựng cache ở module level. Cả hai đọc DB **trong lúc import** — trước mọi startup hook của FastAPI. Trên máy có `usage.db` sẵn thì không sao vì bảng đã tồn tại; máy mới thì không có gì để đọc.
+`src/core/router/__init__.py` tạo `APIRouter()` ở **module level**, và constructor đó gọi `get_key_status_db()`. `custom_endpoint/manager` cũng dựng cache ở module level. Cả hai đọc DB **trong lúc import** — trước mọi startup hook của FastAPI. Trên máy có `usage.db` sẵn thì không sao vì bảng đã tồn tại; máy mới thì không có gì để đọc.
 
 Không phải mọi entrypoint đều qua `main.py`, nên sửa ở `main.py` là chưa đủ: bất kỳ `import app` nào cũng phải crash.
 
@@ -149,7 +149,7 @@ Ba ham thuoc tinh cua mot tang sai, nam o cho co the import nguoc len tren:
 
 | Ham | Nam o | Ai can no | Sai o gi |
 |-------|-------|-----------|---------|
-| `_sanitize_schema_for_gemini` + 6 helper | `logical_HQ_translator/message_converter.py` | `providers/gemini_format.py` | Tầng dưới import tầng trên |
+| `_sanitize_schema_for_gemini` + 6 helper | `logical_HQ_translator/message_converter.py` | `providers/gemini/format.py` | Tầng dưới import tầng trên |
 | `_GLOBAL_TOOL_NAME_CACHE` | cung tren | ca hai deu dung | Khong thuoc ve tang nao |
 | `is_sub_agent_body` | `logical_HQ_translator/sse_cache_agent.py` | `server/openai_server/auth.py` | Auth middleware import tầng proxy |
 
@@ -166,10 +166,10 @@ Ba ham chuyen ve nhung noi trung tinh ma ca hai dau deu dung:
 
 | File moi | Noi cu | Chu o ai dung |
 |----------|--------|---------------|
-| `src/core/providers/gemini/schema_sanitizer.py` | canh google-genai | `message_converter`, `gemini_format` |
-| `src/core/tool_name_cache.py` | state dung chung (cross-request) | `message_converter`, `gemini_format` |
-| `src/core/sub_agent_detect.py` | ham thuan tren raw body | `auth`, 2 proxy, `sse_cache_agent` |
-| `src/core/sse_format.py` | 1 dong f-string | `auth`, `proxy_stream`, `sse_cache_agent` |
+| `src/core/providers/gemini/schema_sanitizer.py` | canh google-genai | `message_converter`, `providers/gemini/format` |
+| `src/core/runtime/tool_name_cache.py` | state dung chung (cross-request) | `message_converter`, `providers/gemini/format` |
+| `src/core/runtime/sub_agent_detect.py` | ham thuan tren raw body | `auth`, 2 proxy, `sse_cache_agent` |
+| `src/core/runtime/sse_format.py` | 1 dong f-string | `auth`, `proxy_stream`, `sse_cache_agent` |
 
 `message_converter` gio import `schema_sanitizer` — **dung chieu** (translator
 nam tren providers). `sse_cache_agent` re-export de khong phai sua 4 proxy
@@ -335,7 +335,7 @@ Khi chạy test suite lớn (`test_master_key.py`), có ~1.1% xác suất test f
 Master key có format `sk-<43 ký tự urlsafe>`. Do base64url bao gồm cả ký tự `-`, nếu một master key ngẫu nhiên có dấu `-` rơi trúng vị trí cách đuôi 6 ký tự (ví dụ `sk-Vm3BpOw...-ab12cd`), hàm `parse_token()` cũ thực hiện `rsplit("-", 1)` và khớp được `token_code` 6 ký tự. Khi đó master key bị nhận diện nhầm thành structured token của một account rác, dẫn đến tra cứu DB thất bại hoặc bị kẹp rate limit sai.
 
 ### Fix
-Trong `src/backend/account_keys.py`:
+Trong `src/backend/keys/accounts.py`:
 1. Master key chuẩn có độ dài đúng 46 ký tự (`sk-` + 43 ký tự urlsafe). Thêm guard kiểm tra độ dài và tiền tố để loại trừ ngay lập tức trước khi parse.
 2. Kiểm tra tính hợp lệ của token code và name: phải là alphanumeric thuần túy, không chứa ký tự đặc biệt hoặc cấu trúc master key.
 
@@ -415,25 +415,25 @@ Build Vite bundle thành công (`npm run build`), kiểm tra `no-undef` bằng E
 
 ### Root cause
 1. **Giá ảo trong seed data**: Bảng `model_prices` lúc ban đầu được khởi tạo với bảng giá nháp/ước lượng quá cao, không khớp với bảng giá chính thức từ Google Gemini API.
-2. **Thiếu hỗ trợ alias và model mới trong Router**: `src/core/router/core/router.py` và `src/core/api_config.py` chưa khai báo alias cho các model `gemini-flash-36`, `37`, `38` và `gemini-flash-35-lite`.
+2. **Thiếu hỗ trợ alias và model mới trong Router**: `src/core/router/core/router.py` và `src/core/config/api_config.py` chưa khai báo alias cho các model `gemini-flash-36`, `37`, `38` và `gemini-flash-35-lite`.
 3. **Hardcode Capacity Limiter**: Trong `capacity.py`, hàm phân loại pool dựa vào chuỗi tĩnh thay vì đọc cấu hình pool từ config hoặc router, khiến các model mới không được hưởng hạn mức cao của pool ảo.
-4. **Thiếu cơ chế Two-Way Sync**: `src/backend/model_config.py` chỉ đọc/ghi SQLite, không có hook đồng bộ với `.env`, trong khi `src/core/api_config.py` đọc `.env` lúc khởi động mà không reload động khi file `.env` bị sửa.
+4. **Thiếu cơ chế Two-Way Sync**: `src/backend/models/config.py` chỉ đọc/ghi SQLite, không có hook đồng bộ với `.env`, trong khi `src/core/config/api_config.py` đọc `.env` lúc khởi động mà không reload động khi file `.env` bị sửa.
 
 ### Fix
 1. **Đồng bộ bảng giá thực tế Google Gemini API**:
-   - Cập nhật `DEFAULT_MODEL_PRICES` trong [src/backend/model_prices.py](file:///d:/AI_Projects/router_api/src/backend/model_prices.py) chuẩn xác theo biểu giá Google:
+   - Cập nhật `DEFAULT_MODEL_PRICES` trong [src/backend/models/prices.py](file:///d:/AI_Projects/router_api/src/backend/models/prices.py) chuẩn xác theo biểu giá Google:
      - 6 Flash models: $0.00015 / 1k input ($0.0003 >128k), $0.0006 / 1k output ($0.0012 >128k).
      - 3 Lite models: $0.000075 / 1k input ($0.00015 >128k), $0.0003 / 1k output ($0.0006 >128k).
      - Pro models: $0.00125 / 1k input ($0.0025 >128k), $0.005 / 1k output ($0.010 >128k).
    - Thêm auto-migration trong `init_db()` ([src/backend/schema.py](file:///d:/AI_Projects/router_api/src/backend/schema.py)) tự động sửa giá cũ nếu phát hiện giá ảo > 0.001 cho flash.
 2. **Mở rộng 6 Flash, 3 Lite và 2 Virtual Pools**:
-   - Thêm đầy đủ 6 Flash models (`gemini-flash-38` đến `25`), 3 Lite models (`gemini-flash-35-lite`, `lite`, `25-lite`) vào `.env`, `src/core/api_config.py`, và router mappings.
+   - Thêm đầy đủ 6 Flash models (`gemini-flash-38` đến `25`), 3 Lite models (`gemini-flash-35-lite`, `lite`, `25-lite`) vào `.env`, `src/core/config/api_config.py`, và router mappings.
    - 2 Virtual Pools: `gemini-flash` (gộp 6 models flash) và `gemini-flash-lite` (gộp 3 models lite) với cơ chế fallback tự động.
 3. **Dynamic Pool Resolution Trong Capacity Limiter**:
    - Xóa bỏ toàn bộ hardcode tên model trong [src/core/limits/capacity.py](file:///d:/AI_Projects/router_api/src/core/limits/capacity.py).
    - Bổ sung hàm `_resolve_pool_model_ids(pool_name)` tự động phân giải danh sách model trực tiếp từ `api_config.py` hoặc alias registry.
 4. **Cơ chế Two-Way Synchronization (.env ↔ DB)**:
-   - Triển khai `sync_env_to_db()` và `sync_db_to_env()` trong [src/backend/model_config.py](file:///d:/AI_Projects/router_api/src/backend/model_config.py).
+   - Triển khai `sync_env_to_db()` và `sync_db_to_env()` trong [src/backend/models/config.py](file:///d:/AI_Projects/router_api/src/backend/models/config.py).
    - Khi server khởi động: đồng bộ các model từ `.env` vào DB nếu chưa có.
    - Khi Admin cập nhật model qua Dashboard (`PUT /dashboard/admin/models/{id}`): cập nhật vào DB đồng thời ghi lại biến môi trường tương ứng trong `.env` (`update_env_var`).
    - Bổ sung `_watch_env_file()` tự động theo dõi file `.env` theo chu kỳ để hot-reload vào RAM cache mà không cần restart server.
@@ -487,7 +487,7 @@ Pool object dau tien duoc tao — voi ca 6 member — song lai ton tai het vong 
 
 | File | Thay doi |
 |---|---|
-| `src/core/api_config.py` | `is_model_enabled()` + `active_pool_members()`; doc `enabled` vao `AVAILABLE_MODELS` thay vi bo qua row; `_recompute_pool_aggregates` bo qua member da tat; `reload_model_config()` goi `ModelPool.reset_instances()` |
+| `src/core/config/api_config.py` | `is_model_enabled()` + `active_pool_members()`; doc `enabled` vao `AVAILABLE_MODELS` thay vi bo qua row; `_recompute_pool_aggregates` bo qua member da tat; `reload_model_config()` goi `ModelPool.reset_instances()` |
 | `src/core/router/pool.py` | `ModelPool.reset_instances()` |
 | `src/core/router/core/router.py` | `resolve_pool` + `list_models` doc qua `active_pool_members()` / `enabled` |
 | `src/core/router/core/key_resolver.py` | `reserve_key` doc qua `active_pool_members()`; chan request truc tiep vao model da tat |
@@ -1060,7 +1060,7 @@ chi thay `Internal Server Error` khong phai JSON.
 client -> POST /v1beta/models/gemini-flash:generateContent {"contents": [...]}
   -> web_search = True          (mac dinh cap account, du client khong hoi search)
   -> can_native_ground = False  (model khong phai lite)
-  -> _load_adk_runner()        (google-adk CHUA CAI)
+  -> _load_Router search_runner()        (optional search adapter CHUA CAI)
   -> nam trong retry loop -> bat `except Exception` -> dem la model failure
   -> thu lai moi key, moi pool member
   -> all_models_excluded -> RuntimeError("quota_exhausted")
@@ -1068,8 +1068,8 @@ client -> POST /v1beta/models/gemini-flash:generateContent {"contents": [...]}
 ```
 
 Ba tang, ca ba sai:
-1. `ADKUnavailableError` docstring ghi *"Raised before the retry loop"* — nhung
-   `adk = _load_adk_runner()` nam **trong** loop, dung nguoc docstring.
+1. `Router searchUnavailableError` docstring ghi *"Raised before the retry loop"* — nhung
+   `Router search = _load_Router search_runner()` nam **trong** loop, dung nguoc docstring.
 2. `quota_exhausted` chon sai hoan toan: nguyen nhan la mot package chua cai.
 3. Handler nem exception ra Starlette, nhan `500 text/plain`. Google API tra
    `{"error": {"code", "message", "status"}}`, va `google.genai.errors.APIError`
@@ -1080,7 +1080,7 @@ Ba tang, ca ba sai:
 duoc gi ca.
 
 ### Fix
-- `_load_adk_runner()` chuyen ra **truoc** retry loop, o ca `call_gemini` va
+- `_load_Router search_runner()` chuyen ra **truoc** retry loop, o ca `call_gemini` va
   `call_gemini_stream`. Dieu kien `web_search and not can_native_ground` khong
   doi theo key, attempt hay model nen tinh mot lan la du.
 - Handler phan biet **search client yeu cau** voi **mac dinh cap account**. Khong
@@ -1089,7 +1089,7 @@ duoc gi ca.
 - `gemini_error.py`: mot noi sinh envelope cua Google cho ca hai duong.
   Streaming het HTTP 200 roi nen body la cho duy nhat con lai de bao client.
 - Khong sua gi o `gemini_streaming.py` cho phep fallback — `except RuntimeError`
-  bat mat `ADKUnavailableError` truoc khi fallback co co hoi.
+  bat mat `Router searchUnavailableError` truoc khi fallback co co hoi.
 
 ### Bonus: SDK field lo bi ship ra client
 `GenerateContentResponse.sdk_http_response` la httpx response con s sung cua
@@ -1116,8 +1116,8 @@ import `src/server/`. `tests/test_layering.py` bat ngay. Helper chuyen xuong
 ### Test
 `tests/test_native_gemini_errors.py` — 20 test: envelope co dung field ma SDK
 doc, mapping status, `APIError` parse duoc body cua chung ta, phan loai loi
-(thieu ADK = 500 chu roi quota = 429), va hai test doc source bang `inspect` de
-khoa `adk` nam truoc `for attempt`.
+(thieu Router search = 500 chu roi quota = 429), va hai test doc source bang `inspect` de
+khoa `Router search` nam truoc `for attempt`.
 
 Xac nhan bang **google-genai that** qua HTTP that: `generateContent` tra loi binh
 thuong, `APIError` doc duoc loi cua chung ta, `streamGenerateContent` ra chunk
@@ -1155,7 +1155,7 @@ README cung quang bao "OpenAI **and** Anthropic schema superset".
 ### 3. `web_search: true` — router ro `WebSearch` tool ra client
 
 Route chat inject `_WEBSEARCH_TOOL_DEF`, gan voi hien `pool_manager` **khong co**
-tham so `web_search` nen khong the dung Google grounding. Tool do la co che tim
+tham so `web_search` nen khong the dung legacy provider search. Tool do la co che tim
 kiem duy nhat tren path nay — va **khong ai chay no**.
 
 Ket qua do moi cau hoi can search:
@@ -1214,7 +1214,7 @@ OpenAI noi ro trong docs Agents API:
 Ba tang sai, ke ca mot tang tu "auto" ma ban ghi:
 1. `gemini_handlers.py` bat search cho **moi** account ma `search_engine` khong
    literal la `"disabled"` — tuc la moi account, vi default la `"auto"`. Mot
-   cau hoi binh thuong bi day vao ADK path; thieu `google-adk` thi ca endpoint
+   cau hoi binh thuong bi day vao Router search path; thieu `optional search adapter` thi ca endpoint
    `:generateContent` chet (Bug #25).
 2. Chat dialect inject tool search ma khong gi chay no (Bug #26).
 3. Ket qua la client nhan `WebSearch` tren mot response rong.
@@ -1227,7 +1227,7 @@ Ba tang sai, ke ca mot tang tu "auto" ma ban ghi:
 - **Anthropic**: phat `server_tool_use` (id tien to `srvtoolu_`) + 
   `web_search_tool_result` noi bang `tool_use_id`. Khong phat client `tool_use`.
 - **Gemini native**: bo nhanh default-on. Client muon search thi gui
-  `google_search` tool; Google tu quyet dinh grounding — van dung.
+  `web_search` tool; Google tu quyet dinh provider search — van dung.
 - **Chat Completions**: khong co hosted search, khop spec OpenAI. Muon search thi
   dung `POST /v1/search`.
 - `drive_search_loop` tra them `trace` de moi dialect tu phat hinh dang cua no.
@@ -1248,7 +1248,7 @@ xong. Do la dinh dich, va no ghi ro trong docstring.
 `strict=True`, `server_tool_use` co `srvtoolu_`, result block noi bang
 `tool_use_id`, search fail -> `status: failed` / `error_code`, function tool
 that cua client **van** la `function_call`, va mot test doc source khoa rang native
-path chi bat search mot lan — o cho doc `google_search` tool cua client.
+path chi bat search mot lan — o cho doc `web_search` tool cua client.
 
 Xac nhan bang SDK that qua HTTP that:
 - OpenAI: `output=['web_search_call','message']`, status=completed, action=search
@@ -1379,41 +1379,41 @@ han cua mot gateway, va no duoc ghi ra day thay vi gia lao duoc ma hoa that.
 
 ---
 
-## Bug #30: `google_search` Tren Gemini Native Chết 500 Khi Thieu `google-adk` (2026-10-10)
+## Bug #30: `web_search` Tren Gemini Native Chết 500 Khi Thieu `optional search adapter` (2026-10-10)
 
 ### Muc do
-`POST /v1beta/models/{model}:generateContent` voi `tools: [{"google_search": {}}]`
+`POST /v1beta/models/{model}:generateContent` voi `tools: [{"web_search": {}}]`
 tra **500**. Day la duong search **native** cua Google — client chi can khai bao
 tool, Google lo phan con lai. Khong co gi sai ve protocol.
 
 ### Root cause
 
-`_load_adk_runner()` chay khi `web_search=True`, truoc ca khi xem co can den ADK
+`_load_Router search_runner()` chay khi `web_search=True`, truoc ca khi xem co can den Router search
 hay khong:
 
 ```python
-adk = _load_adk_runner() if web_search else None   # nem loi ngay
+Router search = _load_Router search_runner() if web_search else None   # nem loi ngay
 ...
-if adk is not None and not can_native_ground:       # quyet dinh o day, muon
+if Router search is not None and not can_native_ground:       # quyet dinh o day, muon
 ```
 
 `can_native_ground` cung yeu cau `is_lite`, nen `gemini-flash` (model mac dinh)
-luon roi sang nhanh ADK. Vay client hoi native grounding tren mot model Gemini
+luon roi sang nhanh Router search. Vay client hoi native provider search tren mot model Gemini
 — tai lieu cua chinh endpoint nay — van chet vi mot package optional chua cai,
 du khong tai nao tren duong do can import no.
 
-Comment ngay tren cung noi ro: *"Google decides grounding on its own when the
-client asks for it with a google_search tool"*. Code lam nguoc lai.
+Comment ngay tren cung noi ro: *"Google decides provider search on its own when the
+client asks for it with a web_search tool"*. Code lam nguoc lai.
 
 ### Fix
-- `_adk_runner_for_search(model_id, has_media)` — chi resolve ADK khi branch ADK
+- `_Router search_runner_for_search(model_id, has_media)` — chi resolve Router search khi branch Router search
   thu su tai can, va cache ca ket qua that bai.
-- Bo `is_lite` khoi `can_native_ground`: Google ho tro grounding tren ca Flash
-  va Lite. Khi ADK khong co, giu nhanh native thay vi tu choi.
+- Bo `is_lite` khoi `can_native_ground`: Google ho tro provider search tren ca Flash
+  va Lite. Khi Router search khong co, giu nhanh native thay vi tu choi.
 
 ### Test
-`tests/test_native_gemini_errors.py::TestAdkIsNotSwallowed` viet lai thanh test
-**hanh vi** thay vi test vi tri code. Hai test cu gan `src.index("_load_adk_runner()")
+`tests/test_native_gemini_errors.py::TestRouter searchIsNotSwallowed` viet lai thanh test
+**hanh vi** thay vi test vi tri code. Hai test cu gan `src.index("_load_Router search_runner()")
 < src.index("for attempt in range")` — chung kiem mot vi tri, khong kiem mot
 hành vi, va chính vi vay chung xanh khi endpoint chet.
 
@@ -1503,7 +1503,7 @@ vao them mot key `detail` nuaa:
                        "type": "invalid_request_error"}}}
 ```
 
-Trong khi **moi route khac** trong `completions_routes.py` deu
+Trong khi **moi route khac** trong `completions/` deu
 `JSONResponse(content={"error": {...}})`, ra top-level. Client OpenAI-shaped doc
 `body["error"]["message"]` — o day `body["error"]` khong ton tai.
 
@@ -1519,7 +1519,7 @@ Ca 400 va 500 chuyen sang `JSONResponse` cung convention voi phan con lai.
 Mutation: revert ve `HTTPException` → 2 fail.
 
 ### Them: results co chu nhung citations rong
-Grounding co the tra ve prose ma khong kem chunk, nen `results` 879 ky tu dien
+provider search co the tra ve prose ma khong kem chunk, nen `results` 879 ky tu dien
 `citations: []`. Hop le — nhung im lang, va client nhin giong het mot lan search
 khong tim duoc gi. Nay la warning, khong doi hanh vi: `[Search Endpoint] query
 … produced N chars with 0 citations`. Khong bia them nguon, chi phan biet duoc
@@ -1545,7 +1545,7 @@ khong phai.
 ### Muc do
 Mot cu goi `/v1/search` **khong** goi Gemini nao, van ton hao RPM/TPM/RPD cua
 account. Va client goi route ma khong khai engine nao se bi day xuong Google
-grounding — cham hon 15 lan.
+provider search — cham hon 15 lan.
 
 ### Root cause
 
@@ -1560,7 +1560,7 @@ Kiem chung don lap:
 
 ```
 duckduckgo         limiter.acquire=1   LLM calls=0
-google_grounding   limiter.acquire=1   LLM calls=1
+legacy_provider_search   limiter.acquire=1   LLM calls=1
 ```
 
 **2. Mac dinh la `auto`, va `auto` bat dau bang Google.** Do la engine cham
@@ -1569,7 +1569,7 @@ gi dang tra tien cho mot search ho chua chon.
 
 Do chay cung mot cau hoi:
 
-| Truy van | DuckDuckGo | Google grounding |
+| Truy van | DuckDuckGo | legacy provider search |
 |---|---|---|
 | AI/tech news Oct 2026 | 4236 ch, 5 nguon, 5.5s | 2337 ch, 4 nguon, 91.9s |
 | React 19 release notes | 4740 ch, 5 nguon, 5.4s | 1663 ch, 4 nguon, 102.0s |
@@ -1621,7 +1621,7 @@ Do la mot lo chuoi, va moi link deu dung ve:
 | `auth.py` | 197 | `_auth_key_prefix()` = `account["auth_key"][-8:]` |
 | `account_manager.py` | 55-57 | login bang master key → `auth_key` giu nguyen master key |
 | `account_manager.py` | 70 | login bang child token → `auth_key` **bi thay** bang token da compose |
-| `dashboard_routes.py` | 763-766 | map 8 ky tu cuoi → `full_key: ak` |
+| `dashboard_routes/account.py` | 763-766 | map 8 ky tu cuoi → `full_key: ak` |
 
 Dong 70 la thu giai thich tai sao du lieu that khong lo: `usage.db` cua chinh
 repo nay co **0/20** prefix trung voi master key, vi moi request deu dung child
@@ -1631,7 +1631,7 @@ token. Nguoi han khong thay vi chi doc code.
 ```
 GET /api/stats   (khong header Authorization)   ->   HTTP 200
 {"key_prefix": "6VjIPHDk", "account_name": "admin1",
- "full_key": "sk-8ANvyqoV-aZHnybv4vZREoK1e4IzO2vCp846VjIPHDk"}
+ "full_key": "sk-REDACTED-8ANvyqoV...6VjIPHDk"}
 >>> admin master key handed out: True
 ```
 
@@ -1670,7 +1670,7 @@ khau dung" — khong chung minh "la ai". Do la chuyen **authentication** sang
 - `/api/ping-model` len `_require_admin`: no goi custom endpoint bang chinh
   `auth_key` cua endpoint do, nen user tier thap co the dot quota cua operator.
 - Hai so sanh credential con lai chuyen sang `secrets.compare_digest`:
-  `dashboard_routes.py` (duong login legacy, noi duy nhat trong duong auth con
+  `dashboard_routes/account.py` (duong login legacy, noi duy nhat trong duong auth con
   dung `==`) va `admin/helpers.py`.
 
 ### Vì sao UI van dung duoc
@@ -1950,7 +1950,7 @@ Trung bình nhưng âm thầm: session thật bị đối xử như background q
 Cài 16–25 MCP tool vào Claude Code hoặc opencode thì router bắt đầu trả lời sai. Số tool không liên quan gì tới việc ai đang gọi, nhưng code lại dùng nó làm tín hiệu nhận dạng.
 
 ### Root cause
-Hai lỗi độc lập trong `src/core/sub_agent_detect.py`:
+Hai lỗi độc lập trong `src/core/runtime/sub_agent_detect.py`:
 
 1. **Heuristic đếm tool** — `tool_count = len(body.get("tools", []))` rồi `if 16 <= tool_count <= 25: return True`. Ngưỡng này không suy ra được từ đâu, nên nó chỉ "đúng" cho vài profile tool cụ thể. Phiên chính cài MCP rơi vào khoảng đó là bị dán nhãn sub-agent.
 2. **Thứ tự ưu tiên sai** — danh sách keyword sub-agent được check *trước* dấu hiệu phiên chính. System prompt gốc của Claude Code có sẵn câu "Use the Task tool to launch a general-purpose subagent", nên một phiên chính đúng chuẩn vẫn dính keyword `general-purpose agent` và bị trả về `True`.
@@ -1999,7 +1999,7 @@ Bug #39 sửa thứ tự ưu tiên và bỏ heuristic đếm tool. Ba hệ quả
 
 **A. Main-session indicator đảo verdict sub-agent rõ ràng nhất**
 
-`src/core/sub_agent_detect.py:42-46` + `:149-156`:
+`src/core/runtime/sub_agent_detect.py:42-46` + `:149-156`:
 
 ```python
 "main agent", "primary agent", "lead agent", "you are the main",   # dòng 42-46
@@ -2023,7 +2023,7 @@ Hai tín hiệu mạnh nhất (`"subagent"` trong keyword list, regex `you are (
 
 **B. Phiên chính opencode bị dán nhãn sub-agent khi thiếu boilerplate**
 
-`src/core/sub_agent_detect.py:177-179`:
+`src/core/runtime/sub_agent_detect.py:177-179`:
 
 ```python
 if "opencode" not in system_prompt_lower:
@@ -2031,11 +2031,11 @@ if "opencode" not in system_prompt_lower:
 return any(kw in system_prompt_lower for kw in OPENCODE_SUB_AGENT_KEYWORDS)
 ```
 
-Prompt `"You are opencode, an interactive coding assistant. Use the grep tool to search the repository"` → `True`. Không có `"interactive agent"` (chỉ có `"interactive coding assistant"`), nên `MAIN_SESSION_INDICATORS` không bắt được. Hậu quả theo call site: tắt thinking (`gemini_thinking.py:78`), tắt `XMLThinkingExtractor` (`stream_executor.py:331`), không inject WebSearch (`proxy.py:461`), không cảnh báo `/compact` (`proxy_stream.py:459`), và mọi lỗi trả 200 giả.
+Prompt `"You are opencode, an interactive coding assistant. Use the grep tool to search the repository"` → `True`. Không có `"interactive agent"` (chỉ có `"interactive coding assistant"`), nên `MAIN_SESSION_INDICATORS` không bắt được. Hậu quả theo call site: tắt thinking (`providers/gemini/thinking.py:78`), tắt `XMLThinkingExtractor` (`stream_executor.py:331`), không inject WebSearch (`proxy.py:461`), không cảnh báo `/compact` (`proxy_stream.py:459`), và mọi lỗi trả 200 giả.
 
 **C. Marker `[SUB-AGENT]` quét cả lịch sử**
 
-`src/core/sub_agent_detect.py:126-140` duyệt **mọi** user message, không giới hạn turn hiện tại. Detection stateless, tính lại mỗi request → một lần xuất hiện trong history sẽ ghim cả session. Body không có field `system` (client OpenAI-compat, curl, custom client) thì `if system_prompt_lower:` ở dòng 149 bỏ qua hoàn toàn, rơi thẳng xuống marker. User chỉ cần hỏi *"cái `[SUB-AGENT]` nghĩa là gì?"* là phiên của họ thành sub-agent.
+`src/core/runtime/sub_agent_detect.py:126-140` duyệt **mọi** user message, không giới hạn turn hiện tại. Detection stateless, tính lại mỗi request → một lần xuất hiện trong history sẽ ghim cả session. Body không có field `system` (client OpenAI-compat, curl, custom client) thì `if system_prompt_lower:` ở dòng 149 bỏ qua hoàn toàn, rơi thẳng xuống marker. User chỉ cần hỏi *"cái `[SUB-AGENT]` nghĩa là gì?"* là phiên của họ thành sub-agent.
 
 **D. Cùng một request nhận hai verdict khác nhau**
 
@@ -2049,13 +2049,13 @@ Hàm `_system_prompt_with_messages()` (`:105-119`) sinh ra chính để xử lý
 
 **E. `is_sub_agent_context` chưa từng được set**
 
-`src/core/router/core/router.py:28` khai báo, đọc ở `:371`, `:376`, `:553` và `gemini_rate_limiter.py:347`. Không có `.set()` nào trong toàn repo. `pool_manager.py:59` còn hardcode `is_sub_agent=False`.
+`src/core/router/core/router.py:28` khai báo, đọc ở `:371`, `:376`, `:553` và `gemini/limiter.py:347`. Không có `.set()` nào trong toàn repo. `pool_manager.py:59` còn hardcode `is_sub_agent=False`.
 
 Đây chính là đường rò rỉ sang phiên chính mà task này cần: key health (`_key_status`, `_consecutive_429_count`, `global_cooldown_until`, `_score_penalties`) là **global và dùng chung**. Sub-agent 429 tăng `_consecutive_429_count` (`:381`) cho tới khi trip **global** cooldown (`:382`); cooldown đó `is_global_cooldown_active()` trả về `True` cho *mọi* request kể cả phiên chính (`:371-373`). Một đợt sub-agent fan-out ồn ào làm treo session của user.
 
 **F. Race trên `logs/session_models.json`**
 
-`src/logical_HQ_translator/sse_cache_agent.py:180-201`: đọc → sửa → `open(path, "w")` truncate-then-write, không lock, không atomic rename.
+`src/logical_HQ_translator/streaming/cache_agent.py:180-201`: đọc → sửa → `open(path, "w")` truncate-then-write, không lock, không atomic rename.
 
 - **Lost update**: hai session ghi song song, cùng đọc map cũ, lần ghi thứ hai cắt mất entry của lần đầu.
 - **Xoá sạch**: `open(..., "w")` truncate về 0 byte *trước* khi ghi. Session thứ ba đọc đúng khoảnh khắc đó → `JSONDecodeError` → `except Exception: pass` (`:190`) nuốt mất → `models_map` vẫn là `{}` → lần ghi của nó xoá sạch mọi session khác.
@@ -2064,13 +2064,13 @@ Hàm `_system_prompt_with_messages()` (`:105-119`) sinh ra chính để xử lý
 
 **G. `_GLOBAL_TOOL_NAME_CACHE` là kênh rò rỉ giữa các session**
 
-`src/core/tool_name_cache.py:72`, fallback tại `message_converter.py:358` khi id không có trong `tool_name_map` per-request (`:301`). Không TTL, không namespace, không reset. Tool_call id do client tự chọn — client nào dùng id ngắn/liên tiếp (`call_1`, `toolu_1`) sẽ đụng id của session khác, và tên tool sai được ghi thẳng vào `tool_result` mà model nhìn thấy.
+`src/core/runtime/tool_name_cache.py:72`, fallback tại `message_converter.py:358` khi id không có trong `tool_name_map` per-request (`:301`). Không TTL, không namespace, không reset. Tool_call id do client tự chọn — client nào dùng id ngắn/liên tiếp (`call_1`, `toolu_1`) sẽ đụng id của session khác, và tên tool sai được ghi thẳng vào `tool_result` mà model nhìn thấy.
 
 Ngoài ra nó **không phải LRU**: `get()` không refresh recency, `set()` lên key đã tồn tại return sớm mà không chuyển phần tử xuống đuôi (`:50-52`) ⇒ loại FIFO, entry nóng bị đuổi trước.
 
 **H. Sub-agent notice rò vào phiên chính**
 
-`completions_routes.py:1051-1053` và `:1062-1064` biến **mọi** exception — kể cả 429 từ `_apply_account_limit` (`auth.py:187-195`) — thành `handle_sub_agent_error()`, luôn trả **200** với nội dung:
+`completions/:1051-1053` và `:1062-1064` biến **mọi** exception — kể cả 429 từ `_apply_account_limit` (`auth.py:187-195`) — thành `handle_sub_agent_error()`, luôn trả **200** với nội dung:
 
 > `[Notice: Sub-agent could not complete background query (rate_limit)]. Proceed with the current session context directly.`
 

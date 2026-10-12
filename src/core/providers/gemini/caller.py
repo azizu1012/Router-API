@@ -118,26 +118,6 @@ async def generate_content_stream(
             yield chunk
 
 
-def inject_grounding_tool(
-    tools: Optional[List[types.Tool]],
-    model_id: str,
-    has_files: bool,
-    web_search: bool,
-) -> Optional[List[types.Tool]]:
-    """Append a GoogleSearch tool if the model supports grounding."""
-    if not web_search:
-        return tools
-    request_tools = list(tools) if tools else []
-    has_search = any(getattr(t, "google_search", None) is not None for t in request_tools)
-    if not has_search and _model_supports_grounding(model_id) and not has_files:
-        request_tools.append(types.Tool(google_search=types.GoogleSearch()))
-    return request_tools or None
-
-
-def _model_supports_grounding(model_id: str) -> bool:
-    return "gemini" in model_id.lower()
-
-
 def has_media_or_files(contents: List[types.Content]) -> bool:
     for c in contents:
         for p in getattr(c, "parts", []) or []:
@@ -154,3 +134,4 @@ def flatten_contents_text(contents: List[types.Content]) -> str:
             if t:
                 chunks.append(t)
     return "\n".join(chunks)
+

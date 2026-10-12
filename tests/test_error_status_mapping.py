@@ -41,7 +41,7 @@ def _account(name):
 
 def _refuse(monkeypatch, status_code, detail):
     """Make the account limiter reject, exactly as a real limit would."""
-    import src.server.openai_server.routes.completions_routes as routes
+    import src.server.openai_server.routes.completions.chat as routes
     from fastapi import HTTPException
 
     async def refuse(account, body, is_opencode=False):
@@ -104,7 +104,7 @@ class TestTheTypeTable:
     """A status with no entry must not silently become api_error for a 4xx."""
 
     def test_every_4xx_we_can_raise_has_an_entry(self):
-        import src.server.openai_server.routes.completions_routes as routes
+        import src.server.openai_server.routes.completions.chat as routes
 
         for code in (400, 401, 403, 404, 429):
             assert routes._error_type(code) != "api_error", (
@@ -112,6 +112,6 @@ class TestTheTypeTable:
                 "would treat it as a server fault and retry")
 
     def test_a_server_error_is_an_api_error(self):
-        import src.server.openai_server.routes.completions_routes as routes
+        import src.server.openai_server.routes.completions.chat as routes
 
         assert routes._error_type(503) == "api_error"

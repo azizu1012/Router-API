@@ -50,7 +50,7 @@ def client():
 def _admin(client):
     """An admin account with a web credential, plus its session token."""
     from src.core.accounts import account_manager
-    from src.backend.account_keys import set_password_db
+    from src.backend.keys.accounts import set_password_db
     from src.server.openai_server.routes.auth_session import _make_session_token
 
     acc = account_manager.create_account(name="boss", tier="admin")
@@ -60,7 +60,7 @@ def _admin(client):
 
 def _user(client, name="dev", tier="free"):
     from src.core.accounts import account_manager
-    from src.backend.account_keys import set_password_db
+    from src.backend.keys.accounts import set_password_db
     from src.server.openai_server.routes.auth_session import _make_session_token
 
     acc = account_manager.create_account(name=name, tier=tier)

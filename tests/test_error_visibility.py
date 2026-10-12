@@ -29,7 +29,7 @@ from unittest.mock import patch
 
 import pytest
 
-from src.backend import key_status as ks
+from src.backend.keys import status as ks
 from src.core.router.core import router as router_singleton
 import sys as _sys
 
@@ -191,3 +191,5 @@ def test_garbage_never_raises(blob):
     with patch.object(ks, "_conn", lambda: c):
         rows = ks.get_key_status_db()
     assert "kg" in rows
+
+

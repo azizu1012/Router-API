@@ -16,11 +16,13 @@ def _account(name):
     return account_manager.create_account(name=name, tier="admin")["auth_key"]
 
 def _refuse(monkeypatch, status_code, detail):
-    import src.server.openai_server.routes.completions_routes as routes
+    import src.server.openai_server.routes.completions.legacy as routes
+    import src.server.openai_server.routes.completions.anthropic as anthropic_routes
     from fastapi import HTTPException
     async def refuse(account, body, is_opencode=False):
         raise HTTPException(status_code=status_code, detail=detail)
     monkeypatch.setattr(routes, "_apply_account_limit", refuse)
+    monkeypatch.setattr(anthropic_routes, "_apply_account_limit", refuse)
 
 def test_completions_error_format(client, monkeypatch):
     _refuse(monkeypatch, 429, {"error": {"message": "Limit", "type": "rate_limit_error"}})
@@ -39,3 +41,5 @@ def test_anthropic_error_format(client, monkeypatch):
     assert r.status_code == 429
     body = r.json()
     assert "error" in body, f"Expected 'error' at top level, got {body}"
+
+

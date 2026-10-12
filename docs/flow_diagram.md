@@ -31,12 +31,13 @@ Router API v2 acts as an intelligent, high-availability LLM gateway and proxy. I
                                                   v
 +--------------------------------------------------------------------------------------------------+
 |                                      ROUTING & ADMISSION LAYER                                   |
-|   * completions_routes.py (/v1/chat/completions, /v1/messages, /v1/completions, /v1/responses)   |
+|   * completions/ (chat.py, legacy.py, responses.py, anthropic.py)                                  |
+|     (/v1/chat/completions, /v1/messages, /v1/completions, /v1/responses)                          |
 |   * opencode_routes.py    (/opencode/v1/chat/completions)                                        |
 |   * gemini_routes.py      (/v1beta/models/*:generateContent, :streamGenerateContent)             |
 |   * mcp_routes            (/mcp cho Model Context Protocol Server)                               |
-|   * dashboard_routes.py   (/dashboard/login, /me, /my/keys, /register, /stats, /endpoints)       |
-|   * admin/                (accounts.py, endpoints.py, keys.py, models.py, settings.py)           |
+|   * dashboard_routes/     (/dashboard/login, /me, /my/keys, /register, /stats, /endpoints)       |
+|   * admin/                (accounts/, endpoints.py, keys.py, models.py, settings.py)              |
 |   * ws_routes.py          (WebSocket /dashboard/ws -> logs & telemetry broadcasting)             |
 +-------------------------------------------------+------------------------------------------------+
                                                   |
@@ -54,7 +55,7 @@ Router API v2 acts as an intelligent, high-availability LLM gateway and proxy. I
                                                   v
 +--------------------------------------------------------------------------------------------------+
 |                                     CENTRALIZED CORE ENGINE                                      |
-|                                   (src/core/pool_manager.py)                                     |
+|                                   (src/core/orchestration/pool_manager.py)                                     |
 |                                                                                                  |
 |   +-------------------------+    +--------------------------+    +---------------------------+   |
 |   |  Quota Pre-check        |    |  ModelPool State Machine |    |  Error Classifier         |   |
@@ -88,7 +89,7 @@ Router API v2 acts as an intelligent, high-availability LLM gateway and proxy. I
 
 ### Explanation:
 - **Scope & Direction:** Every inbound request flows from top to bottom: Client -> Server/Middleware -> Admission & Proxies -> PoolManager -> Providers -> SQLite.
-- **Central Component:** `PoolManager` (`src/core/pool_manager.py`) is the single orchestrator for retry loops, error recovery, key cooldowns, and member swapping.
+- **Central Component:** `PoolManager` (`src/core/orchestration/pool_manager.py`) is the single orchestrator for retry loops, error recovery, key cooldowns, and member swapping.
 - **Key Decoupling:** Proxies (`claude_proxy` and `opencode_proxy`) do not know anything about API keys or retries. They purely translate wire protocols and delegate execution to `PoolManager`.
 
 ---
@@ -99,14 +100,14 @@ Router API v2 acts as an intelligent, high-availability LLM gateway and proxy. I
 | :--- | :--- | :--- | :--- | :--- | :--- |
 | **Server / App Init** | `src/server/openai_server/routes/app_init.py`, `main.py` | FastAPI setup, middleware stack, lifespan events, .env file watcher | Uvicorn | `src.core.config_n_logg`, `src.backend.schema` | Background tasks, active request reset |
 | **Middlewares** | `app_init.py`, `src/server/openai_server/security.py` | Token limits enforcement, CORS handling, payload size gating, IP rate limiting | FastAPI pipeline | `token_limiter`, `auth.py` | `request.state.auth_account`, IP attempt counts |
-| **Auth Subsystem** | `src/server/openai_server/auth.py`, `src/core/accounts/account_manager.py` | Bearer extraction, token lookup, account caching (10s TTL), sub-agent error simulation | Route handlers | `src.backend.account_keys`, `src.backend.accounts` | In-memory token cache |
+| **Auth Subsystem** | `src/server/openai_server/auth.py`, `src/core/accounts/account_manager.py` | Bearer extraction, token lookup, account caching (10s TTL), sub-agent error simulation | Route handlers | `src.backend.keys.accounts`, `src.backend.accounts.manager` | In-memory token cache |
 | **Proxy Layer** | `src/api/opencode_proxy/`, `src/api/claude_proxy/` | Bi-directional format transformation (Anthropic/OpenAI), search context injection, SSE streaming | Route handlers | `PoolManager`, `logical_HQ_translator` | Temporary message buffers |
-| **Pool Manager** | `src/core/pool_manager.py` | Monolithic retry loop, error classification (transient vs hard), member failover | Proxies | `router`, `ModelPool`, `gemini_facade`, `limits` | Key frozen states, penalty scores |
-| **Router & Keys** | `src/core/router/core/router.py`, `key_resolver.py` | Double Random key selection, circuit breaker, tier verification, atomic key reservation | `PoolManager` | `src.backend.key_status`, `gemini_rate_limiter` | `key_status` in SQLite and memory |
-| **Rate Limiters** | `src/core/limits/token_limiter.py`, `account_limiter/`, `gemini_rate_limiter.py` | Concurrency semaphores, interval enforcement, per-pool sliding-window RPM/TPM/RPD | Middleware, Auth, Router | `src.backend._db` | Token slots, sliding deques, usage records |
-| **Providers** | `src/core/providers/gemini_facade.py`, `gemini/`, `custom_endpoint_manager.py` | Google GenAI SDK execution, OpenAI-compatible HTTP client, client pooling and pacing | `PoolManager` | `google-genai` SDK, `httpx` | Active HTTP connections |
-| **Database** | `src/backend/_db.py`, `schema.py`, `accounts.py`, `account_keys.py`, `key_status.py` | SQLite WAL connection factory with thread RLock, schema migration, CRUD operations | Auth, Router, Dashboard | SQLite file `usage.db` | Persistent tables on disk |
-| **Telemetry** | `src/core/usage_logger.py`, `src/server/stats_pusher.py`, `src/server/log_watcher.py` | Token counting, financial savings metrics, async DB write worker, WebSocket broadcasting | Route handlers, Lifespan | SQLite file `usage_logs.db` | Token metrics log entries |
+| **Pool Manager** | `src/core/orchestration/pool_manager.py` | Monolithic retry loop, error classification (transient vs hard), member failover | Proxies | `router`, `ModelPool`, `gemini_facade`, `limits` | Key frozen states, penalty scores |
+| **Router & Keys** | `src/core/router/core/router.py`, `key_resolver.py` | Double Random key selection, circuit breaker, tier verification, atomic key reservation | `PoolManager` | `src.backend.keys.status`, `gemini/limiter` | `keys/status` in SQLite and memory |
+| **Rate Limiters** | `src/core/limits/token_limiter.py`, `account_limiter/`, `gemini/limiter.py` | Concurrency semaphores, interval enforcement, per-pool sliding-window RPM/TPM/RPD | Middleware, Auth, Router | `src.backend._db` | Token slots, sliding deques, usage records |
+| **Providers** | `src/core/providers/gemini/`, `custom_endpoint/` | Google GenAI SDK execution, OpenAI-compatible HTTP client, client pooling and pacing | `PoolManager` | `google-genai` SDK, `httpx` | Active HTTP connections |
+| **Database** | `src/backend/_db.py`, `schema.py`, `accounts.py`, `account_keys.py`, `keys/status.py` | SQLite WAL connection factory with thread RLock, schema migration, CRUD operations | Auth, Router, Dashboard | SQLite file `usage.db` | Persistent tables on disk |
+| **Telemetry** | `src/core/observability/usage_logger.py`, `src/server/realtime/stats.py`, `src/server/realtime/realtime/log_watcher.py` | Token counting, financial savings metrics, async DB write worker, WebSocket broadcasting | Route handlers, Lifespan | SQLite file `usage_logs.db` | Token metrics log entries |
 
 ---
 
@@ -138,7 +139,7 @@ Router API v2 acts as an intelligent, high-availability LLM gateway and proxy. I
         |
         v
 +--------------------------------------------------------------------------------------------------+
-| STEP 3: ROUTE ADMISSION & CONTEXT LENGTH VALIDATION (e.g. completions_routes.py)                 |
+| STEP 3: ROUTE ADMISSION & CONTEXT LENGTH VALIDATION (completions/chat.py or legacy.py)            |
 | - Reads request.json()                                                                           |
 | - Estimates input tokens: len(prompt) // 4                                                       |
 | - Compares estimated tokens against model's context_length limit (MODEL_CONTEXT_LENGTH)          |
@@ -157,7 +158,7 @@ Router API v2 acts as an intelligent, high-availability LLM gateway and proxy. I
         |
         v
 +--------------------------------------------------------------------------------------------------+
-| STEP 5: CENTRAL POOL MANAGER EXECUTION (src/core/pool_manager.py)                                 |
+| STEP 5: CENTRAL POOL MANAGER EXECUTION (src/core/orchestration/pool_manager.py)                                 |
 | - Resolves target model alias to ModelPool or Standalone mode                                    |
 | - Acquires pool member worker lock (e.g., gemini-flash-35)                                       |
 | - Inside execution loop:                                                                         |
@@ -313,7 +314,7 @@ Router API v2 implements a two-tier token hierarchy, separating administrative r
                |                                        |                       |
                v                                        |                       |
     +-----------------------------------------------+   |                       |
-    | PoolManager (src/core/pool_manager.py)        |<--+                       |
+    | PoolManager (src/core/orchestration/pool_manager.py)        |<--+                       |
     | - Quota gate check                            |                           |
     | - Member acquisition & swap loop              |                           |
     | - Error classification & retry                |                           |
@@ -327,8 +328,8 @@ Router API v2 implements a two-tier token hierarchy, separating administrative r
 ```
 
 ### Explanation:
-- **Uniform Delegation:** Notice that both the OpenAI routes (`completions_routes.py`, `opencode_routes.py`) and Anthropic routes (`claude_proxy`) funnel directly into `PoolManager`.
-- **WebSocket Route (`ws_routes.py`):** Operates alongside REST APIs. Clients authenticate via session token and subscribe to `logs` or `stats` channels. `log_watcher.py` (file tailer) and `stats_pusher.py` (telemetry ticker) broadcast events asynchronously over these channels.
+- **Uniform Delegation:** Notice that both the OpenAI routes (`completions/chat.py`, `legacy.py`, `responses.py`) and Anthropic routes (`completions/anthropic.py`, `claude_proxy`) funnel directly into `PoolManager`.
+- **WebSocket Route (`ws_routes.py`):** Operates alongside REST APIs. Clients authenticate via session token and subscribe to `logs` or `stats` channels. `realtime/log_watcher.py` (file tailer) and `realtime/stats.py` (telemetry ticker) broadcast events asynchronously over these channels.
 
 ---
 
@@ -403,7 +404,7 @@ The system maintains two distinct SQLite databases configured in WAL (Write-Ahea
 * account_manager._cache (TTL 10s)         <-------->  * accounts & account_keys tables
 * APIRouter._key_status dict               <-------->  * key_status & key_penalties tables
 * APIRouter._model_health dict             <-------->  * Dynamic runtime score (mean reverting)
-* custom_endpoint_manager._cache (TTL 5s)  <-------->  * custom_endpoints table
+* custom_endpoint/manager._cache (TTL 5s)  <-------->  * custom_endpoints table
 * token_limiter concurrency slots          <-------->  * Ephemeral runtime counters
 * usage_logger._buffer deque               --------->  * usage_logs table (usage_logs.db)
 ```
@@ -458,7 +459,7 @@ The system maintains two distinct SQLite databases configured in WAL (Write-Ahea
                                         |
                                         v
 +--------------------------------------------------------------------------------------------------+
-| PROVIDER EXECUTION (src/core/providers/gemini_facade.py)                                         |
+| PROVIDER EXECUTION (src/core/providers/gemini/facade.py)                                         |
 |                                                                                                  |
 |  IF Provider == "gemini":                                                                        |
 |     - api_manager.pool.throttle(api_key) applies pacing (1.0s - 2.6s per key)                    |
@@ -526,14 +527,14 @@ The user interface is a React Single Page Application (SPA) located in `frontend
                HTTP REST API     |                                                | WebSocket
                (JSON Payloads)   v                                                v (/dashboard/ws)
 +--------------------------------------------------+ +---------------------------------------------+
-| REST ENDPOINTS (dashboard_routes.py & admin/)    | | WEBSOCKET PIPELINE (websocket_manager.py)   |
+| REST ENDPOINTS (dashboard_routes/ & admin/)      | | WEBSOCKET PIPELINE (realtime/websocket.py)   |
 |                                                  | |                                             |
 |  * POST /dashboard/login                         | |  1. Client connects with session token      |
 |  * POST /dashboard/register                      | |  2. Subscribes to channels:                 |
 |  * POST /dashboard/password (must_change warning) | |     - "logs": Real-time stdout stream       |
 |  * GET  /dashboard/me (user quota & limits)      | |     - "stats": Periodic system health tick  |
-|  * CRUD /dashboard/my/keys/* (self-service)      | |  3. log_watcher.py reads rotating log files |
-|  * CRUD /dashboard/admin/accounts/* (admin only) | |  4. stats_pusher.py polls internal telemetry|
+|  * CRUD /dashboard/my/keys/* (self-service)      | |  3. realtime/log_watcher.py reads rotating log files |
+|  * CRUD /dashboard/admin/accounts/* (admin only) | |  4. realtime/stats.py polls internal telemetry|
 |  * CRUD /dashboard/admin/endpoints/*             | |  5. ws_manager broadcasts to subscribers    |
 +--------------------------------------------------+ +---------------------------------------------+
                                  |                                                |
@@ -579,7 +580,7 @@ The test suite runs via `pytest` and verifies security, routing resilience, prot
 |                                                                                                  |
 |  [ DATABASE & BOOTSTRAP ]             [ SECURITY & SCRIPTS ]            [ TOOL & SEARCH ]        |
 |  * test_schema_bootstrap.py           * test_secret_scanner.py          * test_search_endpoint.py|
-|    - Table creation & migration         - Git leak prevention checks    * test_adk_runner.py     |
+|    - Table creation & migration         - Git leak prevention checks    * test_search_backend.py     |
 +--------------------------------------------------------------------------------------------------+
                                           |
                                           v
@@ -605,48 +606,48 @@ sides need live in `src/core/` directly (`sub_agent_detect`, `sse_format`,
 ```
 src.server.openai_server.routes.app_init
   |
-  +---> src.server.openai_server.routes.completions_routes
+  +---> src.server.openai_server.routes.completions
   |       |
   |       +---> src.api.claude_proxy.claude_proxy
   |       |       |
   |       |       +---> src.logical_HQ_translator
-  |       |       +---> src.core.sub_agent_detect        (no longer via translator)
-  |       |       +---> src.core.sse_format
+  |       |       +---> src.core.runtime.sub_agent_detect        (no longer via translator)
+  |       |       +---> src.core.runtime.sse_format
   |       |       |
-  |       |       +---> src.core.pool_manager.pool_manager
+  |       |       +---> src.core.orchestration.pool_manager.pool_manager
   |       |
   |       +---> src.api.opencode_proxy.opencode_proxy
   |               |
-  |               +---> src.core.pool_manager.pool_manager
+  |               +---> src.core.orchestration.pool_manager.pool_manager
   |
   +---> src.server.openai_server.routes.dashboard_routes
   |       |
-  |       +---> src.backend.account_keys
-  |       +---> src.backend.accounts
+  |       +---> src.backend.keys.accounts
+  |       +---> src.backend.accounts.manager
   |       +---> src.core.accounts.account_manager
   |
   +---> src.server.openai_server.auth
   |       |
-  |       +---> src.core.sub_agent_detect               (no longer imports src.api/)
-  |       +---> src.core.sse_format                     (no longer imports translator)
+  |       +---> src.core.runtime.sub_agent_detect               (no longer imports src.api/)
+  |       +---> src.core.runtime.sse_format                     (no longer imports translator)
   |
-  +---> src.core.pool_manager.pool_manager
+  +---> src.core.orchestration.pool_manager.pool_manager
           |
           +---> src.core.router.core.router (APIRouter)
           |       |
           |       +---> src.core.router.core.key_resolver (KeyResolverMixin)
           |       +---> src.core.router.pool (ModelPool)
-          |       +---> src.backend.key_status
+          |       +---> src.backend.keys.status
           |
-          +---> src.core.providers.gemini_facade
+          +---> src.core.providers.gemini.facade
           |       |
           |       +---> src.core.providers.gemini (GeminiAPIManager)
           |       +---> src.core.providers.gemini.schema_sanitizer
-          |       +---> src.core.providers.custom_endpoint_client
+          |       +---> src.core.providers.custom_endpoint.client
           |       |
-          |       +---> src.core.tool_name_cache          (via gemini_format)
+          |       +---> src.core.runtime.tool_name_cache          (via providers/gemini/format)
           |
-          +---> src.core.limits (token_limiter, account_limiter, gemini_rate_limiter)
+          +---> src.core.limits (token_limiter, account_limiter, gemini/limiter)
 ```
 
 ---
@@ -659,7 +660,7 @@ src.server.openai_server.routes.app_init
 2. **Legacy Master Key Login in Web UI:**
    - *Status:* Supported in `POST /dashboard/login`.
    - *Behavior:* If a user inputs an `auth_key` instead of a username/password pair, the endpoint resolves the account by key. New deployments should transition exclusively to username/password credentials.
-3. **Sunset Gemini 2.5 Models (`is_sunset_25()` in `src/core/api_config.py`):**
+3. **Sunset Gemini 2.5 Models (`is_sunset_25()` in `src/core/config/api_config.py`):**
    - *Status:* Dynamic deprecation switch.
    - *Behavior:* Filters out `gemini-2.5-flash` and `gemini-2.5-flash-lite` from pool rotation once the configured sunset date elapses.
 
@@ -667,7 +668,7 @@ src.server.openai_server.routes.app_init
 
 ## 12. CRITICAL COUPLING POINTS & REGRESSION RISKS
 
-1. **Monolithic `PoolManager` (`src/core/pool_manager.py`):**
+1. **Monolithic `PoolManager` (`src/core/orchestration/pool_manager.py`):**
    - *Design Choice:* Kept intentionally monolithic (600+ lines) to avoid fragmented state management during complex async retries.
    - *Regression Risk:* Modifying error classification or reservation logic in `PoolManager` directly impacts both Claude Code and OpenCode clients simultaneously.
 2. **Global SQLite Lock (`_LOCK` in `src/backend/_db.py`):**
