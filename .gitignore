@@ -88,6 +88,11 @@ tests/*
 !tests/test_tool_choice_wire.py
 !tests/test_response_format.py
 !tests/test_model_spoofing.py
+!tests/test_anthropic_roundtrip.py
+!tests/test_blocked_turn_reaches_client.py
+!tests/test_custom_endpoint_stream_circuit_breaker.py
+!tests/test_other_routes_error_mapping.py
+!tests/test_stream_usage_from_provider.py
 
 # The CI scanner is tracked; the rest of scripts/ is local tooling.
 !scripts/
