@@ -1,7 +1,6 @@
 import json
 import asyncio
 from typing import Dict, List, Tuple, Optional, Any
-from src.core.providers.genai_types import types as gt
 from src.core.config_n_logg.logger import logger_system as logger
 from src.core.providers.gemini_api_manager import api_manager
 
@@ -211,144 +210,27 @@ async def execute_hybrid_search(
     account: Optional[Dict[str, Any]] = None,
 ) -> Tuple[str, List[Dict[str, Any]]]:
     """Execute search and return (formatted_context, all_citations).
-    
-    search_engine controls which backend to use:
-      - "auto": Google Grounding first, DuckDuckGo fallback
-      - "google_grounding": Google Grounding only
-      - "duckduckgo": DuckDuckGo only
-    Each result is a structured snippet with inline source attribution.
-    The returned context string is ready to inject into the system instruction.
-    The citations list contains all unique sources for footer rendering.
+
+    Web search is Router-owned (DuckDuckGo with citations) and does not consume
+    Gemini quota. Legacy engine names ('auto', 'google_grounding') are accepted
+    for wire compatibility but routed to citation search directly.
     """
     if not queries:
         return "", []
 
-    logger.info("Executing WebSearch (Google Grounding first, DuckDuckGo fallback) for queries: %s", queries)
-
-    async def charge_account_quota(query: str) -> None:
-        """Charge the account's budget for one grounded model call.
-
-        Only the Google path below actually calls a model, so only it is charged.
-        This used to sit above the engine branch, which meant a DuckDuckGo search
-        — an HTTP scrape that never touches a Gemini key — still consumed the
-        account's RPM/TPM/RPD. That contradicts the documented promise that the
-        DuckDuckGo path costs no Gemini quota at all.
-        """
-        if not account:
-            return
-        try:
-            from src.core.limits.account_limiter import get_effective_limits_by_pool
-            from src.core.limits import account_limiter
-            estimated_tokens = len(query) // 4 + 300
-            eff_rpm, eff_tpm, eff_rpd = await get_effective_limits_by_pool(account, "lite")
-            effective = {**account, "rpm": eff_rpm, "tpm": eff_tpm, "rpd": eff_rpd}
-            allowed, reason = await account_limiter.acquire(effective, estimated_tokens, "lite")
-            if not allowed:
-                logger.warning("Account rate limit exceeded for lite pool in hybrid search: %s", reason)
-                raise RuntimeError(f"quota_exhausted: Account rate limit exceeded for lite pool in hybrid search: {reason}")
-        except Exception as s_err:
-            if "quota_exhausted" in str(s_err):
-                raise
-            logger.warning("Failed to check rate limit for hybrid search: %s", s_err)
+    logger.info("Executing WebSearch via DuckDuckGo citation search for queries: %s", queries)
 
     async def run_single_query(query: str) -> Dict[str, Any]:
-        """Run one grounded search query. Returns {"query", "snippet", "citations"}."""
-        # ── DuckDuckGo Only ──
-        if search_engine == "duckduckgo":
-            try:
-                logger.info("run_single_query searching DuckDuckGo for query: %s", query)
-                from src.tools.duckduckgo import search_with_citations
-                text, cits = await search_with_citations(query)
-                if text:
-                    logger.info("DuckDuckGo search successful for '%s' with %d citations.", query, len(cits))
-                    return {"query": query, "snippet": text, "citations": cits}
-            except Exception as ddg_err:
-                logger.warning("DuckDuckGo search failed for query '%s': %s", query, ddg_err)
-            return {"query": query, "snippet": "", "citations": []}
-
-        # ── Google Grounding (primary for auto/google_grounding) ──
-        if search_engine in ("auto", "google_grounding"):
-            # This branch spends a real model call, so this is the only one that
-            # is charged.
-            await charge_account_quota(query)
-            for model in ["gemini-flash-lite", "gemini-flash-25-lite", "gemini-flash"]:
-                try:
-                    logger.info("run_single_query running Google Grounding with model %s for query: %s", model, query)
-                    current_time_str = datetime.now().strftime("%A, %B %d, %Y, %I:%M %p")
-                    contents = [gt.Content(role="user", parts=[gt.Part.from_text(
-                        text=(
-                            f"Today is {current_time_str}. Search Google for: {query}\n\n"
-                            "Return a concise factual summary in 2-4 sentences. "
-                            "Include specific facts, dates, numbers, or names relevant to the query."
-                        )
-                    )])]
-
-                    gresult = await api_manager.call_gemini(
-                        model_alias=model,
-                        system_instruction=(
-                            "You are a factual search assistant. Provide a concise, accurate summary "
-                            "of search results. Include specific facts and be direct. 2-4 sentences max."
-                        ),
-                        contents=contents,
-                        max_tokens=400,
-                        temperature=0.1,
-                        web_search=True,
-                        account=account
-                    )
-                    logger.info("run_single_query Google Grounding returned with model %s: %s", model, query)
-
-                    response = gresult.get("response")
-                    snippet = (getattr(response, "text", "") or "").strip()
-
-                    used_key = gresult.get("api_key", "")
-                    kp = used_key[-8:] if used_key else "unknown"
-                    from src.core.usage_logger import log_usage
-                    await log_usage(
-                        model_alias=gresult.get("model_id", "gemini-3.1-flash-lite"),
-                        key_prefix=kp,
-                        prompt_tokens=gresult.get("input_tokens", 0),
-                        completion_tokens=gresult.get("output_tokens", 0),
-                        auth_key_prefix=auth_key_prefix,
-                    )
-
-                    citations: List[Dict[str, Any]] = []
-                    candidates = getattr(response, "candidates", None) or []
-                    if candidates:
-                        grounding = getattr(candidates[0], "grounding_metadata", None)
-                        if grounding:
-                            chunks = getattr(grounding, "grounding_chunks", []) or []
-                            seen_links: set = set()
-                            for chunk in chunks:
-                                web = getattr(chunk, "web", None)
-                                if web:
-                                    title = getattr(web, "title", "") or "Source"
-                                    uri = getattr(web, "uri", "")
-                                    if uri and uri not in seen_links:
-                                        seen_links.add(uri)
-                                        citations.append({"title": title, "url": uri})
-
-                    logger.info("run_single_query Google Grounding finished with model %s: %s with %d citations", model, query, len(citations))
-                    return {"query": query, "snippet": snippet, "citations": citations}
-
-                except Exception as e:
-                    err_str = str(e)
-                    if "quota_exhausted" in err_str:
-                        logger.warning("Google Grounding quota_exhausted for model %s, query '%s'.", model, query)
-                        break
-                    logger.warning("Google Grounding search failed with model %s for query '%s': %s", model, query, e)
-
-        # ── DuckDuckGo fallback (only for "auto" mode) ──
-        if search_engine == "auto":
-            try:
-                logger.info("Google Grounding failed for query '%s'. Falling back to DuckDuckGo...", query)
-                from src.tools.duckduckgo import search_with_citations
-                text, cits = await search_with_citations(query)
-                if text:
-                    logger.info("DuckDuckGo fallback successful with %d citations.", len(cits))
-                    return {"query": query, "snippet": text, "citations": cits}
-            except Exception as ddg_err:
-                logger.warning("DuckDuckGo fallback search failed for query '%s': %s", query, ddg_err)
-
+        """Run one search query via DuckDuckGo with citations. Returns {"query", "snippet", "citations"}."""
+        try:
+            logger.info("run_single_query searching DuckDuckGo for query: %s", query)
+            from src.tools.duckduckgo import search_with_citations
+            text, cits = await search_with_citations(query)
+            if text:
+                logger.info("DuckDuckGo search successful for '%s' with %d citations.", query, len(cits))
+                return {"query": query, "snippet": text, "citations": cits}
+        except Exception as ddg_err:
+            logger.warning("DuckDuckGo search failed for query '%s': %s", query, ddg_err)
         return {"query": query, "snippet": "", "citations": []}
 
     # Run up to 3 queries in parallel

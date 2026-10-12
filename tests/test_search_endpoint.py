@@ -258,11 +258,8 @@ class TestTheEngineDefault:
 
 
 class TestOnlyTheGroundedSearchSpendsQuota:
-    """A DuckDuckGo search makes no LLM call, so it must not be charged.
-
-    The limiter call sat above the engine branch, so a plain HTTP scrape —
-    which never touches a Gemini key — still consumed the account's RPM/TPM/RPD.
-    That contradicts what the docs promise about this path.
+    """Web search runs Router-owned DuckDuckGo citation search and makes no LLM call,
+    so neither duckduckgo nor legacy google_grounding consumes Gemini quota.
     """
 
     def _charged(self, engine):
@@ -300,5 +297,5 @@ class TestOnlyTheGroundedSearchSpendsQuota:
     def test_duckduckgo_is_not_charged(self):
         assert self._charged("duckduckgo") == 0
 
-    def test_google_grounding_is_charged(self):
-        assert self._charged("google_grounding") == 1
+    def test_google_grounding_is_not_charged(self):
+        assert self._charged("google_grounding") == 0

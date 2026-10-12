@@ -154,7 +154,8 @@ def build_mcp_app(host: str = "127.0.0.1", resource_server_url: str = "http://12
         from src.core.providers.search_manager import execute_hybrid_search
 
         queries = [query][:_MAX_QUERIES_PER_CALL]
-        engine_name = str(account.get("search_engine") or "duckduckgo")
+        # MCP search is Router-owned; never invoke legacy Gemini grounding.
+        engine_name = "duckduckgo"
         context, citations = await execute_hybrid_search(
             queries,
             search_engine=engine_name,

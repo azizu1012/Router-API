@@ -44,9 +44,14 @@ def resolve_search_engine(body: Dict[str, Any], account: Optional[Dict[str, Any]
     """
     body_engine = (body.get("search_engine") or "").strip().lower()
     if body_engine in VALID_ENGINES:
+        # Keep web search independent from Gemini quota.  Google Grounding is
+        # still accepted for wire compatibility, but intentionally routed to
+        # the Router API's citation search implementation below.
+        if body_engine in ("auto", "google_grounding"):
+            return "duckduckgo"
         return body_engine
     if body.get("web_search") is True and body.get("_hosted_search"):
-        return "auto"
+        return "duckduckgo"
     return "duckduckgo"
 
 def should_enable_web_search(body: Dict[str, Any], account: Optional[Dict[str, Any]]) -> bool:

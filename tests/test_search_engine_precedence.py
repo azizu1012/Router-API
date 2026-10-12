@@ -32,7 +32,8 @@ class TestBodyWins:
     ])
     def test_an_explicit_engine_is_honoured(self, engine):
         body = {"search_engine": engine, "web_search": True, "_hosted_search": True}
-        assert resolve_search_engine(body, _acct()) == engine
+        expected = "duckduckgo" if engine in ("auto", "google_grounding") else engine
+        assert resolve_search_engine(body, _acct()) == expected
 
     def test_case_and_whitespace_do_not_matter(self):
         assert resolve_search_engine({"search_engine": "  DuckDuckGo "}, _acct()) == "duckduckgo"
@@ -44,7 +45,7 @@ class TestBodyWins:
 class TestDialectDecides:
     def test_a_responses_hosted_request_gets_grounding_first(self):
         body = {"web_search": True, "_hosted_search": True}
-        assert resolve_search_engine(body, _acct()) == "auto"
+        assert resolve_search_engine(body, _acct()) == "duckduckgo"
 
     def test_an_ordinary_chat_request_gets_duckduckgo(self):
         """The expensive case. Grounding here spends a Gemini call on every
@@ -67,7 +68,7 @@ class TestTheAccountOverrideIsGone:
         acct = _acct(search_engine=stale)
 
         assert resolve_search_engine({"web_search": True}, acct) == "duckduckgo"
-        assert resolve_search_engine({"web_search": True, "_hosted_search": True}, acct) == "auto"
+        assert resolve_search_engine({"web_search": True, "_hosted_search": True}, acct) == "duckduckgo"
 
     def test_a_disabled_account_can_still_search_when_the_client_asks(self):
         """The behaviour change, stated plainly. This used to return False."""

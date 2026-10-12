@@ -24,6 +24,26 @@ from src.core.providers.custom_endpoint_client import (
 )
 
 
+def _match_endpoint_model(requested: str, models: List[str]) -> Optional[str]:
+    """Return the provider's canonical id, accepting a stripped namespace.
+
+    Aggregators such as 9router commonly advertise ``ag/opus-5.5`` while
+    clients send ``opus-5.5``.  The upstream id must be preserved on the wire.
+    """
+    wanted = (requested or "").strip().lower()
+    if not wanted:
+        return None
+    for candidate in models:
+        value = str(candidate).strip()
+        if value.lower() == wanted:
+            return value
+    for candidate in models:
+        value = str(candidate).strip()
+        if value.rsplit("/", 1)[-1].lower() == wanted:
+            return value
+    return None
+
+
 async def resolve_custom_endpoint_for_request(
     account: Optional[Dict[str, Any]],
     account_key_id: Optional[str] = None,
@@ -76,10 +96,11 @@ async def resolve_custom_endpoint_for_request(
                 continue
             raw_models = ep.get("enabled_models")
             models = raw_models if isinstance(raw_models, list) and len(raw_models) > 0 else (ep.get("models") or [])
-            if isinstance(models, list) and requested_model in models:
+            matched_model = _match_endpoint_model(requested_model, models) if isinstance(models, list) else None
+            if matched_model:
                 logger.info(
                     "[CustomEndpointPassthrough] Found model match %s on endpoint %s",
-                    requested_model, ep.get("name")
+                    matched_model, ep.get("name")
                 )
                 return ep
 
@@ -154,7 +175,7 @@ async def call_custom_endpoint_passthrough(
     enabled_models = endpoint.get("enabled_models", [])
     all_models = endpoint.get("models", [])
     if model and model.strip():
-        target_model = model.strip()
+        target_model = _match_endpoint_model(model, enabled_models or all_models) or model.strip()
     elif enabled_models:
         target_model = enabled_models[0]
     elif all_models:
