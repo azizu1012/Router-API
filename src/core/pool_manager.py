@@ -273,6 +273,9 @@ class PoolManager:
                         account, extra_body, pool_mode=False, is_stream=False, attempt=attempt,
                         thinking_params=thinking_params, sampling_params=sampling_params,
                     )
+                    is_custom = reservation.get("provider") == "custom"
+                    if is_custom:
+                        endpoint_manager.mark_endpoint_success(reservation.get("name", model_alias))
                     return {
                         "response": resp,
                         "api_key": api_key_val,
@@ -286,6 +289,11 @@ class PoolManager:
                         model_id_val = e.model_id
                         reservation = e.reservation or {}
                         e = e.original_error
+                    is_custom = reservation.get("provider") == "custom"
+                    if is_custom:
+                        logger.warning("[PoolManager] Standalone custom endpoint error (attempt %d): %s", attempt, e)
+                        endpoint_manager.mark_endpoint_failure(reservation.get("name", model_alias))
+                        raise e
                     reason = _classify_error(e)
                     logger.warning("[PoolManager] Standalone error (attempt %d): %s", attempt, e)
                     if reason in TRANSIENT_REASONS:
@@ -486,6 +494,7 @@ class PoolManager:
                 pool.release(member)
         else:
             # --- CHẾ ĐỘ ĐƠN LẺ STREAM (STANDALONE STREAM MODE) ---
+            committed = False
             for attempt in range(config.MAX_RETRIES):
                 api_key_val = None
                 model_id_val = None
@@ -535,6 +544,7 @@ class PoolManager:
 
                         gen = await acompletion(**kwargs)
                         async for chunk in gen:
+                            committed = True
                             yield {
                                 "chunk": chunk,
                                 "api_key": api_key_val,
@@ -549,6 +559,9 @@ class PoolManager:
                         if api_key_val:
                             router.release_key(api_key_val)
                 except Exception as e:
+                    if committed:
+                        logger.error("[PoolManager] Standalone stream interrupted after committing: %s", e)
+                        raise
                     reason = _classify_error(e)
                     logger.warning("[PoolManager] Standalone stream attempt %d failed: %s", attempt, e)
 

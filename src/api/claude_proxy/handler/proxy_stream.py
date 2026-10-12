@@ -38,7 +38,6 @@ from .anthropic_spec import (
     _search_citations,
 )
 from .compaction import _pre_compact_and_truncate
-from .helpers import get_system_status_summary
 
 # How often to emit a `ping` while waiting on the model, so proxies and clients
 # do not time out during long Gemini thinking phases.
@@ -877,7 +876,11 @@ class ClaudeProxyStreamMixin:
                 if is_sub_agent_body(body):
                     from .helpers import _classify_error_reason
                     reason = _classify_error_reason(str(e))
-                    summary_text = get_system_status_summary(model_alias, reason, str(e))
+                    # ponytail: inform main agent to proceed directly rather than triggering an infinite retry crash loop
+                    summary_text = (
+                        f"[Notice: Sub-agent could not complete background query ({reason})]. "
+                        "Proceed with the current session context directly."
+                    )
                     fake_result = {
                         "id": "msg_err_" + uuid.uuid4().hex[:8],
                         "type": "message",

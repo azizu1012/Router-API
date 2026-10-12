@@ -245,6 +245,6 @@ async def test_gemini_keys_are_not_gated_by_the_custom_limit():
     assert "gate" not in calls, "a Gemini key was run through the custom endpoint rate limit"
 
 
-def test_the_limit_itself_is_ten_per_minute():
-    """Pins the number the tests above stand in for."""
-    assert custom_endpoint_client._CUSTOM_POOL_RPM == 10
+def test_the_limit_itself_is_configured_per_minute():
+    """Pins the number the tests above stand in for (120 RPM configured for concurrent sessions)."""
+    assert custom_endpoint_client._CUSTOM_POOL_RPM == 120
