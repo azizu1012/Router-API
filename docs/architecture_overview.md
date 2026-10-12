@@ -28,18 +28,19 @@ router_api/
     ├── api/                      # Các Proxy chuyển đổi định dạng
     │   ├── claude_proxy/         # Anthropic→Gemini proxy
     │   └── opencode_proxy/       # OpenCode→Gemini proxy (OpenAI-compatible)
-    ├── logical_HQ_translator/    # Các bộ chuyển đổi & tiện ích dùng chung
+    ├── logical_HQ_translator/    # Compression, messages, model resolution, normalization, streaming
     ├── core/                     # Các module cốt lõi của Router
-    │   ├── api_config.py         # Định nghĩa toàn bộ model
-    │   ├── pool_manager.py       # TRUNG TÂM: pool loop, key rotation, quota, retry
+    │   ├── config/               # Cấu hình API & .env (api_config.py)
+    │   ├── orchestration/        # TRUNG TÂM: pool loop, key rotation, quota, retry (pool_manager.py)
     │   ├── config_n_logg/        # Cấu hình & Ghi nhật ký
     │   ├── accounts/             # Quản lý tài khoản
-    │   ├── limits/               # Giới hạn Rate Limit, Account, Token
-    │   ├── providers/            # Gemini Facade, Custom Endpoints, Search, Thinking
+    │   ├── limits/               # Giới hạn Rate Limit, Account, Token (gemini/limiter.py)
+    │   ├── providers/            # Gemini (facade, manager, caller), Custom Endpoints
+    │   ├── runtime/              # Sub-agent detection, tool cache, sse format
     │   └── router/               # APIRouter, ModelPool, KeyResolver
-    ├── backend/                  # Tầng DB SQLite
-    ├── console/                  # CLI admin
-    └── server/                   # FastAPI Server, routes (kể cả /mcp cho Web Search), WebSocket Manager
+    ├── backend/                  # Tầng DB SQLite (accounts/, endpoints/, keys/, models/)
+    ├── console/                  # CLI admin (cli.py, interactive/)
+    └── server/                   # FastAPI Server, routes, realtime (log_watcher, websocket, stats)
 ```
 
 ## 3. Các Thành Phần Chính & Vai Trò
@@ -175,7 +176,7 @@ Hệ thống Router API được thiết kế như một lớp trừu tượng, 
     *   **Độ tươi Liên kết (Coupled Freshness):** Chỉ thưởng điểm độ tươi (năm hiện tại, tháng, mốc thời gian) khi xuất hiện **cùng câu** với các từ khóa truy vấn, loại bỏ tình trạng nhồi nhét từ khóa năm ("2026") của trang tin đồn.
     *   **Mật độ Thông tin Kỹ thuật (Technical Information Density):** Tăng điểm cho các trang chứa bảng thông số so sánh Markdown, khối code cú pháp, hoặc số liệu benchmark định lượng (`ms`, `%`, token).
     *   **Hồ sơ Truy vấn Động (Dynamic Profiles):** Tự động phân loại `tech_spec`, `realtime_news`, `code_howto`, `general` để áp dụng trọng số chấm điểm tối ưu theo bản chất câu hỏi.
-*   **Cấu hình linh hoạt qua biến môi trường (`duckduckgo.py`):**
+*   **Cấu hình linh hoạt qua biến môi trường (`src/tools/search/engine/manager.py`):**
     *   `SEARCH_GROUNDED_TOP_LINKS`: Số liên kết web tải sâu song song (mặc định: `8`).
     *   `SEARCH_TOP_RESULTS_LIMIT`: Số lượng kết quả tìm kiếm tối đa (mặc định: `10`).
     *   `SEARCH_DEEP_READ_MAX_CHARS`: Giới hạn ký tự tối đa khi cào sâu một trang (mặc định: `8000`).
@@ -185,14 +186,14 @@ Hệ thống Router API được thiết kế như một lớp trừu tượng, 
     *   **KHÔNG** đổi logic trích đoạn về `evidence[:evidence_max]` từ đầu trang (sẽ dính rác header/menu/intro).
     *   Giữ nguyên chữ ký hàm `search_with_citations(query: str) -> Tuple[str, List[Dict[str, str]]]`.
 
-**Luồng chung:** Tất cả các proxy đều ủy quyền cho `PoolManager`. `PoolManager` sau đó sử dụng `APIRouter` để giải quyết key và `gemini_facade` để thực hiện cuộc gọi API thực tế đến Gemini hoặc Custom Endpoint, và cuối cùng xử lý phản hồi trước khi trả về cho proxy để định dạng lại cho client.
+**Luồng chung:** Tất cả các proxy đều ủy quyền cho `PoolManager`. `PoolManager` sau đó sử dụng `APIRouter` để giải quyết key và `gemini/facade` để thực hiện cuộc gọi API thực tế đến Gemini hoặc Custom Endpoint, và cuối cùng xử lý phản hồi trước khi trả về cho proxy để định dạng lại cho client.
 
 ## 4. Luồng Yêu Cầu API Tổng Quan
 
 ```mermaid
 graph TD
     Client[Client Request (Claude Code/OpenCode)] --> API_Server[FastAPI Server]
-    API_Server --> Route_Handler[Route Handlers (opencode_routes.py / standard_routes.py)]
+    API_Server --> Route_Handler[Route Handlers (opencode_routes.py / completions/ / standard_routes/)]
     Route_Handler --> Auth_Limit[Authentication & Account Limiter]
     Auth_Limit --> PoolManager[PoolManager: Orchestrates Key/Model Selection & Retry Loop]
     PoolManager --> APIRouter[APIRouter: Resolves Model, Acquires Key]

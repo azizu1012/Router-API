@@ -350,9 +350,9 @@ khởi động — kể cả trên DB hoàn toàn trống.
 
 ### Step 2: Register Routes
 
-Routes are auto-registered in `src/server/webapp.py`:
-- Admin routes: `routes/admin/` → `/dashboard/admin/aliases/*`
-- Member routes: `endpoints.py` → `/api/me/aliases/*`
+Routes are auto-registered in `src/server/openai_server/routes/app_init.py`:
+- Admin routes: `routes/admin/admin_aliases.py` → `/dashboard/admin/aliases/*`
+- Member routes: `routes/self_service/aliases.py` → `/api/me/aliases/*`
 
 ### Step 3: Build Frontend
 

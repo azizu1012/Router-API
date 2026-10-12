@@ -46,24 +46,24 @@ Một request đi qua các tầng theo thứ tự sau. Xác định task chạm 
 ```
 Client → src/server/ (routes)
   → src/api/<proxy>/handler/proxy.py  (format converter, ko có logic pool/key)
-    → src/core/pool_manager.py         (retry loop, error classify, swap member)
+    → src/core/orchestration/pool_manager.py (retry loop, error classify, swap member)
       → src/core/router/               (APIRouter, KeyResolver, ModelPool)
         → src/core/limits/             (GeminiRateLimiter, TokenRateLimiter, RPM/TPM)
-          → src/core/providers/        (gemini_facade, custom_endpoint_manager)
+          → src/core/providers/        (gemini/facade, custom_endpoint/manager)
 ```
 
 | Task | File(s) chạm |
 |------|-------------|
-| Thêm/xoá model alias | `src/core/router/core/router.py`, `src/core/api_config.py` |
-| Sửa retry/backoff logic | `src/core/pool_manager.py` |
+| Thêm/xoá model alias | `src/core/router/core/router.py`, `src/core/config/api_config.py` |
+| Sửa retry/backoff logic | `src/core/orchestration/pool_manager.py` |
 | Sửa cách chọn key | `src/core/router/core/key_resolver.py` (Double Random) |
-| Sửa rate limit | `src/core/limits/gemini_rate_limiter.py` |
+| Sửa rate limit | `src/core/limits/gemini/limiter.py` |
 | Thêm provider mới | `src/core/providers/`, `src/backend/endpoints/manager.py` |
 | Sửa response format | `src/api/<proxy>/handler/` |
 | Sửa DB schema | `src/backend/schema.py` + `_db.py` nếu bảng đọc lúc import |
 | Dashboard FE | `frontend-src/` (React build → `src/frontend/`) |
-| Admin console CLI | `src/console/admin_console/` |
-**PoolManager (581 dòng)** là monolithic intentional (`docs/architecture_overview.md` mục 6). Không cần decompose — chỉ cần focus vào nhánh transient error vs hard error + pool vs standalone.
+| Admin console CLI | `src/console/` (`cli.py`, `interactive/`, `admin_console.py`) |
+**PoolManager** (`src/core/orchestration/pool_manager.py`, 631 dòng) là monolithic intentional (`docs/architecture_overview.md` mục 6). Không cần decompose — chỉ cần focus vào nhánh transient error vs hard error + pool vs standalone.
 
 ## 7. Phân tầng — tầng dưới KHÔNG được import tầng trên
 

@@ -16,7 +16,7 @@ Hệ thống sử dụng **2 DB SQLite độc lập**: `usage.db` cho cấu hìn
 | `src/api/` | Proxy Route / Handler (`claude_proxy`, v.v) | 21 | Scanned (100%) |
 | `src/core/router/` | `APIRouter`, `KeyResolver`, `ModelPool` | 4 | Scanned (100%) |
 | `src/core/limits/` | Quota & Tokens (`GeminiRateLimiter`) | 9 | Scanned (100%) |
-| `src/core/providers/`| `gemini_facade`, `Router search_runner`, Custom Endpoints| 8 | Scanned (100%) |
+| `src/core/providers/`| `gemini/facade`, Custom Endpoints | 8 | Scanned (100%) |
 | `src/core/` (other) | `PoolManager`, Accounts, System Config | 29 | Scanned (100%) |
 | `src/backend/` | SQLite DAL (`_db.py`, `keys/status.py`) | 10 | Scanned (100%) |
 | `src/logical_HQ_translator/`| Translation peer of Core | 7 | Scanned (100%) |

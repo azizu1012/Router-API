@@ -76,7 +76,7 @@ Router API v2 acts as an intelligent, high-availability LLM gateway and proxy. I
 |            (src/core/providers/)                 | |                 (src/backend/)              |
 |                                                  | |                                             |
 |   +------------------------------------------+   | |   +-------------------------------------+   |
-|   | gemini_facade (acompletion entrypoint)   |   | |   | usage.db (SQLite WAL Mode, RLock)   |   |
+|   | gemini/facade (acompletion entrypoint)   |   | |   | usage.db (SQLite WAL Mode, RLock)   |   |
 |   |   |                                      |   | |   |  - accounts, account_keys           |   |
 |   |   +--> PATH 1: Google GenAI SDK (Native) |   | |   |  - account_credentials, invite_codes|   |
 |   |   |    (api_manager client pool & pacing)|   | |   |  - custom_endpoints, model_config  |   |
@@ -102,12 +102,12 @@ Router API v2 acts as an intelligent, high-availability LLM gateway and proxy. I
 | **Middlewares** | `app_init.py`, `src/server/openai_server/security.py` | Token limits enforcement, CORS handling, payload size gating, IP rate limiting | FastAPI pipeline | `token_limiter`, `auth.py` | `request.state.auth_account`, IP attempt counts |
 | **Auth Subsystem** | `src/server/openai_server/auth.py`, `src/core/accounts/account_manager.py` | Bearer extraction, token lookup, account caching (10s TTL), sub-agent error simulation | Route handlers | `src.backend.keys.accounts`, `src.backend.accounts.manager` | In-memory token cache |
 | **Proxy Layer** | `src/api/opencode_proxy/`, `src/api/claude_proxy/` | Bi-directional format transformation (Anthropic/OpenAI), search context injection, SSE streaming | Route handlers | `PoolManager`, `logical_HQ_translator` | Temporary message buffers |
-| **Pool Manager** | `src/core/orchestration/pool_manager.py` | Monolithic retry loop, error classification (transient vs hard), member failover | Proxies | `router`, `ModelPool`, `gemini_facade`, `limits` | Key frozen states, penalty scores |
+| **Pool Manager** | `src/core/orchestration/pool_manager.py` | Monolithic retry loop, error classification (transient vs hard), member failover | Proxies | `router`, `ModelPool`, `gemini/facade`, `limits` | Key frozen states, penalty scores |
 | **Router & Keys** | `src/core/router/core/router.py`, `key_resolver.py` | Double Random key selection, circuit breaker, tier verification, atomic key reservation | `PoolManager` | `src.backend.keys.status`, `gemini/limiter` | `keys/status` in SQLite and memory |
 | **Rate Limiters** | `src/core/limits/token_limiter.py`, `account_limiter/`, `gemini/limiter.py` | Concurrency semaphores, interval enforcement, per-pool sliding-window RPM/TPM/RPD | Middleware, Auth, Router | `src.backend._db` | Token slots, sliding deques, usage records |
 | **Providers** | `src/core/providers/gemini/`, `custom_endpoint/` | Google GenAI SDK execution, OpenAI-compatible HTTP client, client pooling and pacing | `PoolManager` | `google-genai` SDK, `httpx` | Active HTTP connections |
-| **Database** | `src/backend/_db.py`, `schema.py`, `accounts.py`, `account_keys.py`, `keys/status.py` | SQLite WAL connection factory with thread RLock, schema migration, CRUD operations | Auth, Router, Dashboard | SQLite file `usage.db` | Persistent tables on disk |
-| **Telemetry** | `src/core/observability/usage_logger.py`, `src/server/realtime/stats.py`, `src/server/realtime/realtime/log_watcher.py` | Token counting, financial savings metrics, async DB write worker, WebSocket broadcasting | Route handlers, Lifespan | SQLite file `usage_logs.db` | Token metrics log entries |
+| **Database** | `src/backend/_db.py`, `schema.py`, `accounts/manager.py`, `keys/accounts.py`, `keys/status.py` | SQLite WAL connection factory with thread RLock, schema migration, CRUD operations | Auth, Router, Dashboard | SQLite file `usage.db` | Persistent tables on disk |
+| **Telemetry** | `src/core/observability/usage_logger.py`, `src/server/realtime/stats.py`, `src/server/realtime/log_watcher.py` | Token counting, financial savings metrics, async DB write worker, WebSocket broadcasting | Route handlers, Lifespan | SQLite file `usage_logs.db` | Token metrics log entries |
 
 ---
 
@@ -164,7 +164,7 @@ Router API v2 acts as an intelligent, high-availability LLM gateway and proxy. I
 | - Inside execution loop:                                                                         |
 |     1. _resolve_model() -> invokes router.reserve_key() via Double Random algorithm              |
 |     2. router.acquire_quota() -> checks per-model RPM and TPM limits                             |
-|     3. gemini_facade.acompletion() -> dispatches to GenAI SDK or Custom Endpoint                 |
+|     3. gemini/facade.acompletion() -> dispatches to GenAI SDK or Custom Endpoint                 |
 |     4. If error occurs -> _classify_error():                                                     |
 |          * Transient Error (429, timeout, overloaded): records 429, freezes key, applies penalty |
 |            If consecutive failures >= 3 -> SWAPS member (flash-35 -> flash-30 -> flash-25)      |

@@ -11,8 +11,8 @@ Tầng dưới **không được** import tầng trên. Quy tắc đầy đủ �
 `tests/test_layering.py` **fail** khi vi phạm — nếu bạn thấy test đó đỏ sau khi sửa
 import, đó là báo đúng, không phải test sai.
 
-Helper dùng chung cho cả hai bên thì đặt vào `src/core/` như hàm thuần:
-`src/core/sub_agent_detect.py`, `sse_format.py`, `tool_name_cache.py`.
+Helper dùng chung cho cả hai bên thì đặt vào `src/core/runtime/` như hàm thuần:
+`src/core/runtime/sub_agent_detect.py`, `sse_format.py`, `tool_name_cache.py`.
 Lý do và lịch sử: `docs/bug-logs.md` Bug #6.
 
 ## Quy tắc code
@@ -37,7 +37,7 @@ Các quy tắc và kiến trúc liên quan đến Pool & Key được mô tả c
 
 - Pool hiện tại là concurrent worker pool (`src/core/router/pool.py`) — ModelPool singleton với slot-based `acquire`/`release`, lock-protected. Custom endpoint là first-class member của pool thông qua `pool_assignments`.
 - Model ngoài `MODEL_POOLS` chạy standalone mode (không qua pool acquire/release).
-- `pool_manager.py` hiện tại 631 dòng.
+- `PoolManager` hiện tại nằm ở `src/core/orchestration/pool_manager.py` (631 dòng).
 
 ## Điều phối Sub-Agent OpenCode (Hybrid Co-working & Support Worker)
 
