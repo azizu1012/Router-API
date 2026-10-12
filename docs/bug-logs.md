@@ -1938,3 +1938,45 @@ Nghiêm trọng đối với người dùng sử dụng Custom Endpoint chuẩn 
 - Mọi nội dung `thinking` phải đi tới cuối ống mà không bị lệch 1 byte nào.
 - Dù System truyền theo khối, chỉ tối đa 4 marker `cache_control` được áp dụng (luật của Anthropic).
 - Nếu không có thẻ `cache_control`, hệ thống vẫn tự động gộp text cho nhẹ payload.
+
+---
+
+## Bug #39: Phiên Chính Cài MCP Tool Bị Nhận Nhầm Làm Sub-Agent (2026-10-12)
+
+### Mức độ
+Trung bình nhưng âm thầm: session thật bị đối xử như background query. Hậu quả là nó mất hosted web search, và khi key hết quota nhận 429, client nhận về một dòng cảnh báo "Sub-agent could not complete" thay vì lỗi thật — user chỉ thấy agent "trả lời sai" mà không thấy lỗi.
+
+### Mô tả
+Cài 16–25 MCP tool vào Claude Code hoặc opencode thì router bắt đầu trả lời sai. Số tool không liên quan gì tới việc ai đang gọi, nhưng code lại dùng nó làm tín hiệu nhận dạng.
+
+### Root cause
+Hai lỗi độc lập trong `src/core/sub_agent_detect.py`:
+
+1. **Heuristic đếm tool** — `tool_count = len(body.get("tools", []))` rồi `if 16 <= tool_count <= 25: return True`. Ngưỡng này không suy ra được từ đâu, nên nó chỉ "đúng" cho vài profile tool cụ thể. Phiên chính cài MCP rơi vào khoảng đó là bị dán nhãn sub-agent.
+2. **Thứ tự ưu tiên sai** — danh sách keyword sub-agent được check *trước* dấu hiệu phiên chính. System prompt gốc của Claude Code có sẵn câu "Use the Task tool to launch a general-purpose subagent", nên một phiên chính đúng chuẩn vẫn dính keyword `general-purpose agent` và bị trả về `True`.
+
+Cùng lý do đó, `is_sub_agent_request_openai()` cũng chết: keyword của nó gồm `search`, `find`, `grep`, `explore` — những từ mà prompt của phiên chính opencode dùng đầy đủ.
+
+Đo lại trên code cũ:
+
+| Body | Cũ | Mới |
+|------|----|----|
+| Claude Code main + 20 tools | `True` (sai) | `False` |
+| opencode main + 20 tools | `True` (sai) | `False` |
+| Prompt trống ("Be concise.") + 18 tools | `True` (sai) | `False` |
+| opencode worker thật | `True` | `True` |
+
+### Fix
+- Xoá hẳn heuristic đếm tool. Không có tín hiệu nào suy ra từ body có bao nhiêu tool.
+- Đưa `MAIN_SESSION_INDICATORS` lên module-level và check **trước mọi heuristic khác** trong cả hai hàm: phiên chính tự mô tả mình, còn lại đều là suy đoán — tự khai báo thắng suy đoán.
+- Một danh sách dùng chung cho cả hai detector, nên cùng một body không thể bị xếp loại khác nhau tùy proxy nào nhận.
+- Hai detector giờ đọc system prompt qua cùng một helper (`_system_prompt_with_messages`), có fallback sang `messages[0]` role `system`/`developer` — client OpenAI-compat thường không gửi field `system`.
+- Gom phần đọc system prompt và phần quét marker `[SUB-AGENT]` ra helper riêng, xử lý luôn `system`/`messages` là `None` hoặc thiếu.
+
+### Vì sao không đổi marker `[SUB-AGENT]`?
+Marker trong user message là tín hiệu *tường minh* của client, nhưng nó vẫn nằm sau kiểm tra phiên chính. Đây là đánh đổi có chủ đích: theo yêu cầu, phiên chính phải `return False` ngay. Nếu sau này thấy client nào vừa gửi system prompt phiên chính vừa gắn `[SUB-AGENT]`, hãy dời `_has_sub_agent_marker` lên trên `MAIN_SESSION_INDICATORS` — chỗ đó dành riêng cho tín hiệu tường minh.
+
+### Test
+- `tests/test_layering.py` — module giữ nguyên vị trí tầng `src/core/`, không import mới (`re`, `typing`).
+- `tests/test_message_converter_truncation.py::test_opencode_subagent_detection_and_response` — vẫn xanh.
+- Edge case chạy tay: 19 ca gồm main session nhiều tool (16/18/20/25), system dạng string / content-block / `messages[0]`, sub-agent thật, marker `[SUB-AGENT]` dạng string và content-block, opencode worker, `body=None`, `messages=None`, thiếu field.
