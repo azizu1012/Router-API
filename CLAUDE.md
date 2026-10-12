@@ -39,19 +39,18 @@ Các quy tắc và kiến trúc liên quan đến Pool & Key được mô tả c
 - Model ngoài `MODEL_POOLS` chạy standalone mode (không qua pool acquire/release).
 - `pool_manager.py` hiện tại 631 dòng.
 
-## Điều phối Sub-Agent OpenCode (Multi-Agent Orchestration — Default Coding Worker)
+## Điều phối Sub-Agent OpenCode (Hybrid Co-working & Support Worker)
 
-### 1. Nguyên tắc cốt lõi: Claude là Architect/Reviewer, OpenCode là Coding Worker chính
-Để tối ưu chi phí (rẻ/free) và giữ context của phiên chính luôn sạch, **mặc định Claude KHÔNG tự viết/sửa code số lượng lớn**. Claude đóng vai trò **Tech Lead**:
-- Lên kế hoạch (Planning), chia nhỏ bài toán thành các chỉ thị chi tiết.
-- Giao việc tự động cho **OpenCode CLI** thực thi trên đĩa.
-- Thẩm định, nghiệm thu và sửa các lỗi tồn đọng sau khi OpenCode làm xong.
+### 1. Nguyên tắc cốt lõi: Claude làm chính (Primary Engineer), OpenCode trợ lực khi cần
+- **Mặc định Claude tự tay thực hiện**: Các task thông thường, sửa bug, viết tính năng vừa/nhỏ, tối ưu logic lõi, refactor cục bộ và chạy test sẽ do **Claude trực tiếp làm và kiểm tra**.
+- **Không thụ động khoán trắng**: OpenCode là công cụ hỗ trợ (worker assistant), không thay thế vai trò xử lý trực tiếp của Claude. Kể cả khi điều động OpenCode, Claude vẫn là người đồng hành (thiết kế luồng, xử lý logic tinh vi, soát lại toàn bộ và vá lỗi).
 
-### 2. Tiêu chí Tự Động Kích Hoạt (Autonomous Trigger Criteria)
-Claude **luôn tự động gọi OpenCode** mà người dùng KHÔNG cần phải nhắc trong các trường hợp:
-- Bất kỳ task triển khai tính năng, refactor, sửa bug, tối ưu mã nguồn hoặc viết unit test/boilerplate.
-- Bất kỳ task quét/đọc phân tích sâu trên nhiều file cùng lúc.
-*(Chỉ trừ các tác vụ siêu nhỏ 1-2 dòng typo hiển nhiên hoặc trả lời câu hỏi lý thuyết/kiến trúc thuần túy thì Claude trả lời trực tiếp).*
+### 2. Tiêu chí Kích Hoạt OpenCode (Trigger Criteria)
+Chỉ kích hoạt OpenCode CLI hỗ trợ khi gặp các trường hợp sau:
+1. **Tác động diện rộng (Bulk / Broad impact)**: Refactor, đổi tên symbol/pattern hoặc di chuyển code đồng loạt trên nhiều file (> 3-4 files).
+2. **Cày boilerplate & Viết test số lượng lớn**: Viết hàng loạt unit test/mock hoặc sinh code lặp lại tốn nhiều lượt token.
+3. **Độ khó / phức tạp cao hoặc quét phân tích sâu**: Cần phân nhánh xử lý song song, hoặc quét/phân tích sâu ngữ cảnh khổng lồ trên toàn bộ repo mà không muốn làm đầy context phiên chính.
+4. **Người dùng yêu cầu cụ thể**: Khi người dùng chỉ định dùng OpenCode để làm task.
 
 ### 3. Các Model trong OpenCode & Chiến lược phân bổ:
 1. `opencode/space-bunny-free`:
@@ -61,7 +60,7 @@ Claude **luôn tự động gọi OpenCode** mà người dùng KHÔNG cần ph�
    - Dùng khi cần suy luận logic sâu hoặc khi model 1 hết quota.
    - *Lưu ý*: Nếu chạy qua local gateway bị lag/treo > 30s ➔ Lập tức fallback về `space-bunny-free`.
 
-### 4. Quy trình Thực thi & Nghiệm thu nghiêm ngặt (Quality Gate):
+### 4. Quy trình Thực thi & Nghiệm thu khi dùng OpenCode (Quality Gate):
 1. **Giao việc an toàn & Tiết kiệm token tối đa**:
    - Tạo file chỉ thị tạm (e.g. `opencode_task.txt`), chạy:
      `opencode run --model <model> --auto -f opencode_task.txt "<prompt ngắn gọi thực thi file>"`, sau đó xóa file tạm.
@@ -70,7 +69,7 @@ Claude **luôn tự động gọi OpenCode** mà người dùng KHÔNG cần ph�
    - Chạy `git diff` để rà soát chi tiết từng dòng OpenCode đã sửa.
    - Dùng **CodeGraph** (`codegraph_explore`) để kiểm tra lại call-graph và symbol topology: xác nhận OpenCode sửa có bị sót nhánh, thiếu điều kiện rẽ nhánh, vi phạm import layering hoặc gây gãy logic ở các module phụ thuộc không.
 3. **Chạy test xác nhận**: Chạy `python -m pytest tests/` liên quan.
-4. **Vá lỗi tồn đọng (Patching)**: Nếu OpenCode sửa còn sót lỗi nhỏ hoặc edge case tinh tế, Claude đích thân vá lại phần còn thiếu trước khi bàn giao cho người dùng.
+4. **Vá lỗi tồn đọng & Hoàn thiện (Co-working)**: Claude đích thân hoàn thiện, vá lại các edge case tinh tế hoặc logic còn thiếu trước khi bàn giao cho người dùng.
 
 <!-- claude-reflect: learned rules (saved from the band; edit freely) -->
 ## Learned rules

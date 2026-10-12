@@ -28,6 +28,15 @@ class AdvancedSearchManager(SearchRankingMixin):
         self.search_lock = asyncio.Lock()
         self.cache_lock = asyncio.Lock()
         self.inflight_search_tasks: Dict[str, asyncio.Task] = {}
+        # Bound every layer of fan-out so a burst of hosted searches cannot
+        # exhaust the event-loop executor or hold all API requests open.
+        self.search_concurrency = max(1, int(os.getenv("SEARCH_CONCURRENCY", "8")))
+        self.intent_concurrency = max(1, int(os.getenv("SEARCH_INTENT_CONCURRENCY", "3")))
+        self.evidence_concurrency = max(1, int(os.getenv("SEARCH_EVIDENCE_CONCURRENCY", "4")))
+        self.search_semaphore = asyncio.Semaphore(self.search_concurrency)
+        self.intent_semaphore = asyncio.Semaphore(self.intent_concurrency)
+        self.evidence_semaphore = asyncio.Semaphore(self.evidence_concurrency)
+        self.search_timeout_seconds = max(1.0, float(os.getenv("SEARCH_TIMEOUT_SECONDS", "30")))
         self.failed_search_cooldowns: Dict[str, float] = {}
 
         self.fallback_provider_limit = int(os.getenv("SEARCH_FALLBACK_PROVIDER_LIMIT", "2"))
@@ -135,7 +144,11 @@ class AdvancedSearchManager(SearchRankingMixin):
                         return list(ddgs.text(query, max_results=fetch_limit, timelimit=timelimit))
                     return list(ddgs.text(query, max_results=fetch_limit))
 
-            results = await asyncio.to_thread(_do_search)
+            async with self.search_semaphore:
+                results = await asyncio.wait_for(
+                    asyncio.to_thread(_do_search),
+                    timeout=self.search_timeout_seconds,
+                )
             items: List[Dict[str, str]] = []
             for item in results[:fetch_limit]:
                 url_raw = item.get("href") or item.get("url") or ""
@@ -269,8 +282,14 @@ class AdvancedSearchManager(SearchRankingMixin):
         if self.search_web_mode == "grounded":
             top_records = ranked[:self.search_grounded_top_links]
             if top_records:
+                async def _evidence(rec):
+                    async with self.evidence_semaphore:
+                        return await asyncio.wait_for(
+                            self._fetch_page_data(rec.get("url", "")),
+                            timeout=self.search_timeout_seconds,
+                        )
                 evidence_results = await asyncio.gather(
-                    *(self._fetch_page_data(rec.get("url", "")) for rec in top_records),
+                    *(_evidence(rec) for rec in top_records),
                     return_exceptions=True,
                 )
                 for rec, res in zip(top_records, evidence_results):
@@ -299,7 +318,11 @@ class AdvancedSearchManager(SearchRankingMixin):
         if len(intents) > 1:
             self.logger.info(f"Subquery fanout enabled. Running {len(intents)} search intents fully in parallel.")
 
-        tasks = [self._search_single_intent(intent, force_fallback) for intent in intents]
+        async def _intent(intent):
+            async with self.intent_semaphore:
+                return await self._search_single_intent(intent, force_fallback)
+
+        tasks = [_intent(intent) for intent in intents]
         results = await asyncio.gather(*tasks, return_exceptions=True)
 
         final_sections = []
@@ -475,7 +498,11 @@ async def web_search(queries: Union[str, List[str]], max_results: int = 4) -> st
     if not queries:
         return "No queries provided."
 
-    tasks = [search_manager.run_search_apis(q) for q in queries]
+    async def _query(q):
+        async with search_manager.intent_semaphore:
+            return await search_manager.run_search_apis(q)
+
+    tasks = [_query(q) for q in queries]
     results = await asyncio.gather(*tasks, return_exceptions=True)
 
     formatted_results = []

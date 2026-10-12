@@ -28,7 +28,11 @@ class ModelPool:
     def __init__(self, pool_config: dict, custom_endpoint_members: Optional[Set[str]] = None):
         self.members = list(pool_config["members"])
         self.swap_failures = int(pool_config["swap_failures"])
-        self.max_retry_seconds = int(pool_config.get("max_retry_seconds", 120))
+        # Do not hold every request for two minutes when a pool is exhausted.
+        # Callers can raise this explicitly for slow providers.
+        self.max_retry_seconds = max(1, int(pool_config.get("max_retry_seconds", 30)))
+        self.acquire_poll_interval = max(0.01, float(pool_config.get("acquire_poll_interval", 0.05)))
+        self.acquire_deadline = max(1, int(pool_config.get("acquire_deadline", self.max_retry_seconds)))
         self._custom_members: Set[str] = custom_endpoint_members or set()
         self._gemini_members: Set[str] = {m for m in self.members if m not in self._custom_members}
         self._locks: Dict[str, asyncio.Lock] = {m: asyncio.Lock() for m in self.members}
@@ -43,8 +47,9 @@ class ModelPool:
                 if ep_name not in self._locks:
                     self._locks[ep_name] = asyncio.Lock()
 
-    async def acquire(self, skip: Optional[Set[str]] = None, timeout: float = 120) -> str:
+    async def acquire(self, skip: Optional[Set[str]] = None, timeout: Optional[float] = None) -> str:
         skip = skip or set()
+        timeout = self.acquire_deadline if timeout is None else max(0.01, timeout)
         start = time.time()
         while time.time() - start < timeout:
             # Priority 1: custom endpoint members (free ones only)
@@ -63,7 +68,7 @@ class ModelPool:
                     continue
                 await self._locks[member].acquire()
                 return member
-            await asyncio.sleep(0.05)
+            await asyncio.sleep(self.acquire_poll_interval)
         raise TimeoutError(f"Pool {self.members}: no free member after {timeout}s")
 
     def release(self, member: str) -> None:

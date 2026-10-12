@@ -974,3 +974,286 @@ class TestTheStreamedSearchHonoursMaxUses:
                    if isinstance(r["content"], dict)]
         assert refused, "the refused attempt was reported as a result list"
         assert refused[0]["content"]["error_code"] == "max_uses_exceeded"
+
+
+# ── Anthropic WebFetch: answered by the search manager ───────────────────────
+#
+# WebFetch used to open an aiohttp session against whatever url the model named
+# and hand the raw page back as the tool result. Claude Code issues WebFetch
+# against whatever model is configured, so with a custom provider the router was
+# the only thing that would ever have fetched it — a turn that could call a tool
+# could pull an arbitrary url into its own context.
+#
+# It runs on `execute_hybrid_search` now, the seam WebSearch already uses, with
+# the url reduced to a query. Everything below is deterministic: the one
+# collaborator is a faked search, and `aiohttp` is booby-trapped so that any
+# route back to the socket fails loudly instead of reaching the network.
+
+FETCH_URL = "https://www.example.org/blog/why-caching-fails?utm_source=rss"
+FETCH_CITATIONS = [{"title": "Caching", "url": "https://example.org/caching"},
+                   {"title": "Notes", "url": "https://example.net/notes"}]
+
+
+def _no_outbound_http(monkeypatch):
+    """Make an outbound request impossible, so a direct fetch cannot pass."""
+    aiohttp = pytest.importorskip("aiohttp")
+
+    def bomb(*a, **kw):
+        raise AssertionError("the router opened an HTTP session of its own")
+
+    monkeypatch.setattr(aiohttp, "ClientSession", bomb, raising=False)
+
+
+def _fetch_call(url=FETCH_URL, id_="call_1", name="WebFetch"):
+    return {"id": id_, "type": "function",
+            "function": {"name": name, "arguments": json.dumps({"url": url})}}
+
+
+def _run_server_tool(name, args, fake_search, monkeypatch, *, limits=None):
+    """Run one server tool with the search manager faked out."""
+    from src.api.claude_proxy.handler.anthropic_spec import run_server_tool
+    from src.core.providers import search_manager
+
+    seen = {}
+
+    async def spy(queries, **kwargs):
+        seen["queries"] = list(queries)
+        seen["kwargs"] = kwargs
+        return await fake_search(queries, **kwargs)
+
+    monkeypatch.setattr(search_manager, "execute_hybrid_search", spy)
+    return asyncio.run(run_server_tool(
+        name, args, body={"model": "gemini-flash"}, account=None,
+        auth_key_prefix="kp", limits=limits or {"max_uses": 3}, used=0)), seen
+
+
+class TestTheUrlBecomesTheQuery:
+    """What the model typed as a url is scored as a query."""
+
+    def _q(self, url):
+        from src.api.claude_proxy.handler.anthropic_spec import (
+            _fetch_query_from_url,
+        )
+
+        return _fetch_query_from_url(url)
+
+    def test_the_scheme_and_the_path_separators_are_dropped(self):
+        assert self._q("https://example.org/blog/post") == "example.org blog post"
+
+    def test_the_query_string_and_fragment_are_dropped(self):
+        assert "utm_source" not in self._q(FETCH_URL)
+
+    def test_the_words_stay_readable(self):
+        assert self._q(FETCH_URL) == "example.org blog why caching fails"
+
+    def test_a_bare_host_is_the_whole_query(self):
+        assert self._q("https://example.org/") == "example.org"
+
+    def test_www_and_the_port_are_noise(self):
+        assert self._q("https://www.example.org:8443/x") == "example.org x"
+
+    def test_a_string_that_is_not_a_url_is_still_searchable(self):
+        """Better a poor query than an empty one."""
+        assert self._q("not a url at all") == "not a url at all"
+
+    def test_no_url_yields_no_query(self):
+        assert self._q("") == ""
+
+
+class TestWebFetchRunsOnTheSearchManager:
+    @staticmethod
+    async def _ok(*a, **kw):
+        return "Caching is hard.", FETCH_CITATIONS
+
+    def test_the_url_is_never_fetched(self, monkeypatch):
+        """The guarantee, stated as a test: no socket, only a search."""
+        _no_outbound_http(monkeypatch)
+
+        (result, citations, error), _ = _run_server_tool(
+            "WebFetch", {"url": FETCH_URL}, self._ok, monkeypatch)
+
+        assert error is None
+        assert "Caching is hard." in result
+        assert [c["url"] for c in citations] == [c["url"] for c in FETCH_CITATIONS]
+
+    def test_the_search_is_asked_for_the_url_as_a_query(self, monkeypatch):
+        _, seen = _run_server_tool("WebFetch", {"url": FETCH_URL}, self._ok,
+                                   monkeypatch)
+
+        assert seen["queries"] == ["example.org blog why caching fails"]
+
+    def test_the_fetch_uses_the_same_engine_resolution_as_search(self, monkeypatch):
+        """Not a second implementation — the existing search path, unchanged."""
+        _, seen = _run_server_tool("WebFetch", {"url": FETCH_URL}, self._ok,
+                                   monkeypatch)
+
+        assert seen["kwargs"]["search_engine"] == "duckduckgo"
+
+    def test_the_sources_are_listed_with_the_result(self, monkeypatch):
+        (result, _, _), _ = _run_server_tool("WebFetch", {"url": FETCH_URL},
+                                             self._ok, monkeypatch)
+
+        assert "https://example.org/caching" in result
+        assert "https://example.net/notes" in result
+
+    def test_a_search_that_matched_nothing_is_not_an_error(self, monkeypatch):
+        async def nothing(*a, **kw):
+            return "", []
+
+        (result, citations, error), _ = _run_server_tool(
+            "WebFetch", {"url": FETCH_URL}, nothing, monkeypatch)
+
+        assert error is None
+        assert citations == []
+
+    def test_a_failing_search_becomes_a_fetch_error(self, monkeypatch):
+        async def boom(*a, **kw):
+            raise RuntimeError("backend down")
+
+        (result, citations, error), _ = _run_server_tool(
+            "WebFetch", {"url": FETCH_URL}, boom, monkeypatch)
+
+        assert result == "WebFetch error: backend down"
+        assert error == "unavailable"
+        assert citations == []
+
+    def test_the_failure_text_is_read_as_a_failure(self, monkeypatch):
+        """`_search_failed` decides the wire shape; it must know this prefix."""
+        from src.api.claude_proxy.handler.anthropic_spec import _search_failed
+
+        assert _search_failed("WebFetch error: backend down") is True
+        assert _search_failed("No fetch results found.") is False
+
+    def test_a_fetch_with_no_url_is_invalid_input(self, monkeypatch):
+        (result, _, error), seen = _run_server_tool(
+            "WebFetch", {}, self._ok, monkeypatch)
+
+        assert error == "invalid_tool_input"
+        assert "queries" not in seen, "an empty fetch still ran a search"
+
+    def test_the_error_code_is_one_the_sdk_declares(self, monkeypatch):
+        import typing
+        pytest.importorskip("anthropic")
+        from anthropic.types import WebSearchToolResultErrorCode
+
+        _, _, error = _run_server_tool("WebFetch", {}, self._ok,
+                                       monkeypatch)[0]
+
+        assert error in typing.get_args(WebSearchToolResultErrorCode)
+
+    def test_blocked_domains_apply_to_a_fetch_too(self, monkeypatch):
+        _, citations, _ = _run_server_tool(
+            "WebFetch", {"url": FETCH_URL}, self._ok, monkeypatch,
+            limits={"max_uses": 3, "blocked_domains": ["example.net"]})[0]
+
+        assert [c["url"] for c in citations] == ["https://example.org/caching"]
+
+    def test_an_unknown_tool_is_left_alone(self, monkeypatch):
+        result, citations, error = _run_server_tool(
+            "get_weather", {"city": "Paris"}, self._ok, monkeypatch)[0]
+
+        assert (result, citations, error) == ("", [], None)
+        assert "queries" not in _run_server_tool(
+            "get_weather", {"city": "Paris"}, self._ok, monkeypatch)[1]
+
+
+class TestTheFetchReachesTheClientUnchanged:
+    """The wire shape is the contract; only where the bytes came from moved."""
+
+    def _message(self, monkeypatch, fake_search, *, tools=None, url=FETCH_URL):
+        import src.api.claude_proxy.handler.proxy_nonstream as ns
+        from src.api.claude_proxy import claude_proxy
+        from src.core.providers import search_manager
+
+        async def fake_log_usage(*a):
+            return None
+
+        monkeypatch.setattr(ns.pool_manager, "call_nonstream",
+                            _scripted_model(
+                                _Message(tool_calls=[_fetch_call(url)]),
+                                _Message("Answered from the sources.")))
+        monkeypatch.setattr(search_manager, "execute_hybrid_search", fake_search)
+        monkeypatch.setattr(ns, "log_usage", fake_log_usage, raising=False)
+
+        body = {"model": "gemini-flash",
+                "messages": [{"role": "user", "content": "summarise it"}],
+                "tools": tools if tools is not None else [SEARCH_TOOL]}
+        return asyncio.run(claude_proxy.create_message(body))
+
+    @staticmethod
+    async def _ok(*a, **kw):
+        return "Caching is hard.", FETCH_CITATIONS
+
+    def test_the_use_block_still_reports_the_url(self, monkeypatch):
+        _no_outbound_http(monkeypatch)
+
+        msg = self._message(monkeypatch, self._ok)
+
+        use = next(b for b in msg["content"]
+                   if b["type"] == "server_tool_use")
+        assert use["name"] == "web_fetch"
+        assert use["input"] == {"url": FETCH_URL}
+        assert use["id"].startswith("srvtoolu_"), use["id"]
+
+    def test_the_blocks_appear_in_the_declared_order(self, monkeypatch):
+        msg = self._message(monkeypatch, self._ok)
+
+        assert [b["type"] for b in msg["content"]] == [
+            "server_tool_use", "web_search_tool_result", "text"]
+
+    def test_the_result_block_pairs_with_its_use(self, monkeypatch):
+        msg = self._message(monkeypatch, self._ok)
+
+        use = next(b for b in msg["content"] if b["type"] == "server_tool_use")
+        result = next(b for b in msg["content"]
+                      if b["type"] == "web_search_tool_result")
+        assert result["tool_use_id"] == use["id"]
+
+    def test_the_result_block_carries_the_sources(self, monkeypatch):
+        msg = self._message(monkeypatch, self._ok)
+
+        result = next(b for b in msg["content"]
+                      if b["type"] == "web_search_tool_result")
+        assert [c["url"] for c in result["content"]] == [
+            c["url"] for c in FETCH_CITATIONS]
+        assert result["content"][0]["title"] == "Caching"
+
+    def test_the_answer_carries_the_citations(self, monkeypatch):
+        msg = self._message(monkeypatch, self._ok)
+
+        text = next(b for b in msg["content"] if b["type"] == "text")
+        assert [c["type"] for c in text["citations"]] == [
+            "web_search_result_location"] * 2
+        assert text["citations"][0]["url"] == "https://example.org/caching"
+
+    def test_the_usage_counts_the_fetch(self, monkeypatch):
+        msg = self._message(monkeypatch, self._ok)
+
+        assert msg["usage"]["server_tool_use"] == {"web_search_requests": 0,
+                                                   "web_fetch_requests": 1}
+
+    def test_no_client_tool_use_block_is_emitted(self, monkeypatch):
+        msg = self._message(monkeypatch, self._ok)
+
+        assert not [b for b in msg["content"] if b["type"] == "tool_use"]
+
+    def test_a_failing_search_reaches_the_client_as_an_error(self, monkeypatch):
+        async def boom(*a, **kw):
+            raise RuntimeError("backend down")
+
+        msg = self._message(monkeypatch, boom)
+
+        result = next(b for b in msg["content"]
+                      if b["type"] == "web_search_tool_result")
+        assert result["content"] == {
+            "type": "web_search_tool_result_error", "error_code": "unavailable"}
+        # An attempt that failed is not a fetch, the same way a search refused
+        # past `max_uses` is not a search.
+        assert "server_tool_use" not in msg["usage"], msg["usage"]
+
+    def test_the_whole_message_validates(self, monkeypatch):
+        pytest.importorskip("anthropic.types")
+        from anthropic.types import Message
+
+        Message.model_validate(self._message(monkeypatch, self._ok),
+                               strict=True, extra="forbid")

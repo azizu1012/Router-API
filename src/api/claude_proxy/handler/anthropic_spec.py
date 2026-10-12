@@ -16,6 +16,7 @@ Covered here:
 
 import hashlib
 from typing import Any, Dict, List, Optional, Tuple
+from urllib.parse import unquote, urlsplit
 
 from src.core.config_n_logg.logger import logger_proxy as logger
 
@@ -262,6 +263,42 @@ _SEARCH_NAMES = ("web_search", "WebSearch")
 _FETCH_NAMES = ("web_fetch", "WebFetch")
 
 
+def _fetch_query_from_url(url: str) -> str:
+    """Turn the url a model asked to fetch into a query the search engines can use.
+
+    WebFetch used to be an HTTP GET against whatever url the model named, so it
+    never needed a query. It is answered by the search manager now (see
+    `run_server_tool`), and a raw url is a bad query: nearly every token in
+    `https://example.com/blog/why-caching-fails?utm_source=rss` is scheme,
+    separator or tracking parameter, and the one word that carries meaning is
+    the shortest.
+
+    What survives is what a human would have typed — the host without `www.`, the
+    path read with its separators as spaces — and nothing from the query string
+    or fragment. A bare host is then the whole query. If the split leaves nothing
+    at all the raw url is passed through: a search keyed on the url is poor, a
+    search keyed on an empty string is nothing.
+    """
+    raw = (url or "").strip()
+    if not raw:
+        return ""
+    try:
+        parts = urlsplit(raw if "://" in raw else "//" + raw, scheme="http")
+        # `urlsplit` raises on a malformed IPv6 literal; unquote and friends do
+        # not, so this is the only call worth guarding.
+        host = unquote(parts.netloc).lower().rsplit("@", 1)[-1]
+        if host.startswith("www."):
+            host = host[len("www."):]
+        host = host.split(":", 1)[0]  # the port is not the page's identity
+        segments = [seg.replace("-", " ").replace("_", " ")
+                    for seg in unquote(parts.path).split("/")]
+        query = " ".join(part for part in [host, *segments] if part.strip())
+        query = " ".join(query.split())
+    except Exception:
+        query = ""
+    return query or raw
+
+
 async def run_server_tool(
     name: str,
     args: Dict[str, Any],
@@ -274,10 +311,23 @@ async def run_server_tool(
 ) -> Tuple[str, List[Dict[str, Any]], Optional[str]]:
     """Run one search the model asked for. Returns (result, citations, error_code).
 
+    WebSearch and WebFetch are the same request here. WebFetch used to open an
+    aiohttp session against the url the model named and feed the raw page back,
+    so any turn that could call a tool could pull an arbitrary url into its own
+    context — and Claude Code does exactly that against a custom model/provider,
+    where nothing upstream of the router would have fetched it for us. Both are
+    answered by the search manager now, with the url reduced to a query by
+    `_fetch_query_from_url`; the router no longer fetches a url a model chose.
+
     Both proxy paths call this, because the alternative was two copies of the
     same logic and they had drifted: the streaming copy enforced none of the
     client's declared limits and kept no citations, so a streamed search lost
     its sources while an identical non-streamed one kept them.
+
+    `max_uses` is read off the *web_search* tool only — Anthropic's
+    `web_fetch_20250910` declares its own, and `server_search_limits` parses
+    neither — so a fetch does not consume the search cap. What bounds it is the
+    proxy's five-turn recursion, not this.
     """
     if name in _SEARCH_NAMES:
         if not _search_budget_left(limits, used):
@@ -286,50 +336,45 @@ async def run_server_tool(
             return "max_uses_exceeded", [], "max_uses_exceeded"
         query = str(args.get("query") or "")
         logger.info("[ClaudeProxy] server search query=%r", query[:160])
-        try:
-            from src.api.opencode_proxy.handler.websearch import (
-                resolve_search_engine,
-            )
-            from src.core.providers.search_manager import execute_hybrid_search
-
-            engine = resolve_search_engine(body, account)
-            context, citations = await execute_hybrid_search(
-                [query], search_engine=engine,
-                auth_key_prefix=auth_key_prefix, account=account)
-        except Exception as e:
-            logger.warning("[ClaudeProxy] server search failed: %s", e)
-            return f"Search error: {e}", [], "unavailable"
-        citations = filter_citations(citations, limits)
-        if not context or not citations:
-            return "No search results found.", [], None
-        lines = [context]
-        links = []
-        for c in citations:
-            if c.get("url"):
-                links.append(f"- [{c.get('title') or 'Source'}]({c['url']})")
-        if links:
-            lines.append("\n**Sources / Citations:**\n" + "\n".join(links))
-        return "\n".join(lines), citations, None
-
-    if name in _FETCH_NAMES:
+        error_prefix, empty_result = "Search error", "No search results found."
+    elif name in _FETCH_NAMES:
         url = str(args.get("url") or "")
-        logger.info("[ClaudeProxy] server fetch url=%r", url[:200])
-        try:
-            import aiohttp
+        if not url.strip():
+            # The url is the tool's only input, so there is nothing to look up.
+            return "WebFetch error: no url given.", [], "invalid_tool_input"
+        query = _fetch_query_from_url(url)
+        logger.info("[ClaudeProxy] server fetch url=%r query=%r",
+                    url[:200], query[:160])
+        error_prefix, empty_result = "WebFetch error", "No fetch results found."
+    else:
+        return "", [], None
 
-            timeout = aiohttp.ClientTimeout(total=10)
-            headers = {"User-Agent": "Mozilla/5.0 (Router API; +http://127.0.0.1:58100)"}
-            async with aiohttp.ClientSession() as session:
-                async with session.get(url, timeout=timeout, headers=headers) as r:
-                    if r.status != 200:
-                        return f"HTTP error {r.status}", [], "unavailable"
-                    body_text = (await r.text())[:8000]
-        except Exception as e:
-            logger.warning("[ClaudeProxy] server fetch failed: %s", e)
-            return f"WebFetch error: {e}", [], "unavailable"
-        return body_text, [{"url": url, "title": url, "snippet": body_text[:500]}], None
+    try:
+        from src.api.opencode_proxy.handler.websearch import (
+            resolve_search_engine,
+        )
+        from src.core.providers.search_manager import execute_hybrid_search
 
-    return "", [], None
+        engine = resolve_search_engine(body, account)
+        context, citations = await execute_hybrid_search(
+            [query], search_engine=engine,
+            auth_key_prefix=auth_key_prefix, account=account)
+    except Exception as e:
+        logger.warning("[ClaudeProxy] server %s failed: %s", name, e)
+        return f"{error_prefix}: {e}", [], "unavailable"
+    citations = filter_citations(citations, limits)
+    if not context or not citations:
+        # Ran and matched nothing. Anthropic spells that an empty content list,
+        # not an error, so the code stays None either way.
+        return empty_result, [], None
+    lines = [context]
+    links = []
+    for c in citations:
+        if c.get("url"):
+            links.append(f"- [{c.get('title') or 'Source'}]({c['url']})")
+    if links:
+        lines.append("\n**Sources / Citations:**\n" + "\n".join(links))
+    return "\n".join(lines), citations, None
 
 
 def _search_budget_left(limits: Dict[str, Any], used: int) -> bool:

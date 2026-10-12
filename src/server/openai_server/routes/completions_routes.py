@@ -50,13 +50,30 @@ def _spoof_model_name_in_response(result: dict, original_name: str) -> dict:
     return result
 
 
+def _response_text_value(value: Any) -> str:
+    """Normalize OpenAI content, including the list form used by some clients."""
+    if isinstance(value, str):
+        return value
+    if isinstance(value, list):
+        parts: list[str] = []
+        for item in value:
+            if isinstance(item, str):
+                parts.append(item)
+            elif isinstance(item, dict):
+                text = item.get("text")
+                if isinstance(text, str):
+                    parts.append(text)
+        return "".join(parts)
+    return "" if value is None else str(value)
+
+
 def _extract_response_text(result: dict) -> str:
     """Extract text content from an OpenAI-format response dict."""
     choices = result.get("choices", [])
     if not choices:
         return ""
-    msg = choices[0].get("message", {})
-    return msg.get("content", "") or ""
+    msg = choices[0].get("message", {}) or {}
+    return _response_text_value(msg.get("content"))
 
 
 def _extract_finish_reason(result: dict) -> str:
