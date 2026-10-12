@@ -410,10 +410,11 @@ class SearchUtilsMixin(SearchDataMixin):
         time_sensitive = self._is_time_sensitive_query(clean)
         timelimit = self._time_sensitive_timelimit(clean) if time_sensitive else None
 
-        if time_sensitive and not self._contains_year(clean):
-            current_year = str(datetime.now().year)
-            clean = f"{clean} {current_year}".strip()
-
+        # Do not append the server year to vague temporal queries. A query such as
+        # ``latest AI releases`` must remain open-ended; injecting a year can make
+        # the provider search for a future/unsupported year when the host clock or
+        # provider index is ahead of the available news corpus. Freshness is already
+        # conveyed by ``timelimit`` and the server-side ranking clock.
         return clean, timelimit
 
     def _format_source_line(self, rec: Dict[str, str]) -> str:

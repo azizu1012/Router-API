@@ -267,7 +267,10 @@ class AdvancedSearchManager(SearchEvidenceMixin, DuckDuckGoProviderMixin, Search
             output = await task
             if not output and time_sensitive and not force_fallback:
                 absolute_date = datetime.now().strftime("%d/%m/%Y")
-                forced_query = f"{clean_query} ngay {absolute_date}"
+                # Keep the original wording; adding the server date can overfit
+                # provider indexes and produce zero results for generic latest/news
+                # queries. The time limit already carries freshness semantics.
+                forced_query = clean_query
                 self.logger.info(
                     f"Time-sensitive query produced empty result. Retrying forced fallback query='{forced_query[:80]}'."
                 )
