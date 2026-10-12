@@ -52,7 +52,9 @@ CHAT_BODY = {"model": "gemini-flash",
 
 NATIVE_BODY = {"contents": [{"role": "user", "parts": [{"text": "capital of France?"}]}]}
 
-ADMIN = {"name": "test-account", "tier": "admin", "enabled": True,
+# Provider wire tests use the fake upstream and must not consume the persisted
+# account rate-limit budget from usage.db (or fail on a fresh CI database).
+ADMIN = {"name": "anonymous", "tier": "admin", "enabled": True,
          "auth_key": "test-key-long-enough"}
 
 # A tool the client declared, in the three dialects. The native one is the

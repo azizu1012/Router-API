@@ -166,6 +166,25 @@ def _real_database_is_not_a_scratchpad(_schema_exists_before_any_test,
 
 
 @pytest.fixture(autouse=True)
+def _no_shared_account_rate_limit():
+    """Keep provider wire tests independent of persisted/account limiter state.
+
+    The provider fixtures replace the upstream provider, so consuming the real
+    account TPM/RPM budget would test SQLite-backed throttling rather than the
+    wire adapter.  CI starts with a fresh database and therefore exposes this
+    ordering leak much more reliably than a developer checkout.
+    """
+    from src.core.limits.account_limiter import account_limiter
+    from src.core.limits import token_limiter
+
+    account_limiter.reset()
+    token_limiter.reset()
+    yield
+    account_limiter.reset()
+    token_limiter.reset()
+
+
+@pytest.fixture(autouse=True)
 def _no_shared_ip_rate_limit():
     """Clear the per-IP dashboard/login counters around each test.
 
