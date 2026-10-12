@@ -51,12 +51,19 @@ def _compute_thinking_for_model(
     if not thinking_params:
         return None
     from src.core.providers.gemini_thinking import resolve_thinking_config
+    # Read the request's verdict from the context rather than hardcoding False.
+    # The pool is the only place that knows which concrete model was picked, so
+    # it is also the last chance to drop thinking for a worker — with the flag
+    # pinned to False here, everything the router's sub-agent bypass does was
+    # decided somewhere the pool could still see. See docs/bug-logs.md Bug #40
+    # item E.
+    from src.core.router.core.router import is_sub_agent_context
     res = resolve_thinking_config(
         model_id=model_id,
         thinking_level=thinking_params.get("thinking_level"),
         thinking_budget=thinking_params.get("thinking_budget"),
         include_thoughts=thinking_params.get("include_thoughts"),
-        is_sub_agent=False,
+        is_sub_agent=is_sub_agent_context.get(),
     )
     return res if res else None
 

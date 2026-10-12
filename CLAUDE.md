@@ -62,8 +62,10 @@ Claude **luôn tự động gọi OpenCode** mà người dùng KHÔNG cần ph�
    - *Lưu ý*: Nếu chạy qua local gateway bị lag/treo > 30s ➔ Lập tức fallback về `space-bunny-free`.
 
 ### 4. Quy trình Thực thi & Nghiệm thu nghiêm ngặt (Quality Gate):
-1. **Giao việc an toàn**: Tạo file chỉ thị tạm (e.g. `opencode_task.txt`), chạy:
-   `opencode run --model <model> --auto -f opencode_task.txt "<prompt ngắn gọi thực thi file>"`, sau đó xóa file tạm.
+1. **Giao việc an toàn & Tiết kiệm token tối đa**:
+   - Tạo file chỉ thị tạm (e.g. `opencode_task.txt`), chạy:
+     `opencode run --model <model> --auto -f opencode_task.txt "<prompt ngắn gọi thực thi file>"`, sau đó xóa file tạm.
+   - **Tuyệt đối không poll/sleep/tail/read lắt nhắt** trong nhiều turn gây phình context và tốn token của người dùng. Để OpenCode tự chạy độc lập một mạch ở tầng dưới và nhận thẳng kết quả/báo cáo tổng hợp khi xong.
 2. **Hậu kiểm với CodeGraph & Git Diff**:
    - Chạy `git diff` để rà soát chi tiết từng dòng OpenCode đã sửa.
    - Dùng **CodeGraph** (`codegraph_explore`) để kiểm tra lại call-graph và symbol topology: xác nhận OpenCode sửa có bị sót nhánh, thiếu điều kiện rẽ nhánh, vi phạm import layering hoặc gây gãy logic ở các module phụ thuộc không.

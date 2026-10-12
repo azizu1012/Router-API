@@ -13,7 +13,9 @@ Các chức năng chính bao gồm:
 import datetime
 import hashlib
 import json
+import os
 import re
+import threading
 from pathlib import Path
 from typing import Any, Dict, Iterator, Optional
 
@@ -22,6 +24,8 @@ from src.core.sse_format import sse_event as _sse
 
 _PROJECT_ROOT = Path(__file__).resolve().parents[2]
 _log_path = _PROJECT_ROOT / "logs" / "claude_request.log"
+_SESSION_MODELS_LOCK = threading.Lock()
+_SESSION_MODELS_CACHE: Dict[str, Any] = {}
 
 
 def _get_simulated_cache_usage(body: Dict[str, Any], input_tokens: int) -> Dict[str, int]:
@@ -182,22 +186,28 @@ def save_resolved_model_for_cwd(system_prompt: Any, model_alias: str, model_id: 
         mapping_file = _PROJECT_ROOT / "logs" / "session_models.json"
         mapping_file.parent.mkdir(parents=True, exist_ok=True)
 
-        models_map = {}
+        disk_map = {}
         if mapping_file.exists():
             try:
                 with open(mapping_file, "r", encoding="utf-8") as mf:
-                    models_map = json.load(mf)
+                    disk_map = json.load(mf)
             except Exception:
                 pass
 
-        models_map[cwd] = {
-            "model_alias": model_alias,
-            "model_id": model_id,
-            "timestamp": int(time.time())
-        }
+        with _SESSION_MODELS_LOCK:
+            if isinstance(disk_map, dict):
+                _SESSION_MODELS_CACHE.update(disk_map)
 
-        with open(mapping_file, "w", encoding="utf-8") as mf:
-            json.dump(models_map, mf, ensure_ascii=False, indent=2)
+            _SESSION_MODELS_CACHE[cwd] = {
+                "model_alias": model_alias,
+                "model_id": model_id,
+                "timestamp": int(time.time())
+            }
+
+            tmp_file = mapping_file.with_suffix(".tmp")
+            with open(tmp_file, "w", encoding="utf-8") as tf:
+                json.dump(dict(_SESSION_MODELS_CACHE), tf, ensure_ascii=False, indent=2)
+            os.replace(tmp_file, mapping_file)
 
         logger.info("[Statusline Sync] Saved resolved model for cwd %s: %s (id: %s)", cwd, model_alias, model_id)
     except Exception as ex:

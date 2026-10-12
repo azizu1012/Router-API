@@ -200,7 +200,13 @@ def _resolve_thinking_config(body: Dict[str, Any], model_id: str) -> Dict[str, A
         thinking_level=p.get("thinking_level"),
         thinking_budget=p.get("thinking_budget"),
         include_thoughts=p.get("include_thoughts", True),
-        is_sub_agent=_is_sub_agent_request({"system": body.get("system", "")}),
+        # The whole body, not `{"system": ...}`: on the OpenAI chat dialects
+        # there is no top-level `system` key, the prompt lives in messages[0],
+        # and the detector reads it from there via _system_prompt_with_messages.
+        # Truncating it here gave every request a False verdict while
+        # response.py and stream_executor.py, asking about the full body, gave
+        # True — one request, two answers. See docs/bug-logs.md Bug #40 item D.
+        is_sub_agent=_is_sub_agent_request(body),
     )
 
 

@@ -15,13 +15,23 @@ real cycle first. See docs/bug-logs.md Bug #6.
 
 Precedence, both detectors, same order:
 
-    1. MAIN_SESSION_INDICATORS in the system prompt -> False. A prompt that
+    1. "you are a/an/the ... sub-agent" in the system prompt -> True. This is
+       the only signal where the *caller states its own role* in the first
+       person, so it outranks everything below. It used to sit third, behind
+       MAIN_SESSION_INDICATORS, which meant a worker's closing instruction —
+       "..., then report back to the main agent" — flipped its verdict. See
+       docs/bug-logs.md Bug #40.
+    2. MAIN_SESSION_INDICATORS in the system prompt -> False. A prompt that
        states it is the interactive/main session is the client talking to a
-       human. This short-circuits before any keyword heuristic, because every
-       other signal here is a heuristic and the main-session boilerplate is
-       self-declared. See docs/bug-logs.md Bug #39.
-    2. Sub-agent keywords in the system prompt -> True.
-    3. An explicit [SUB-AGENT] marker in a user message -> True.
+       human. See docs/bug-logs.md Bug #39.
+    3. Sub-agent keywords in the system prompt -> True.
+    4. An explicit [SUB-AGENT] marker on the user turn being answered -> True.
+
+The dangerous direction here is asymmetric on purpose: a main session
+misclassified as a sub-agent loses thinking, loses web search, and has its
+errors answered with a fabricated HTTP 200, while a sub-agent misclassified as
+main only keeps thinking it did not need. Every rule below therefore prefers the
+main-session verdict unless the evidence is a self-declaration.
 
 There is deliberately no signal derived from how many tools the request carries:
 tool count says nothing about who is calling, and a main agent with MCP servers
@@ -33,16 +43,26 @@ from typing import Any, Dict
 # Phrases a client uses to introduce the session it is actually driving. Checked
 # first, and shared by both detectors so a main session can never be classified
 # differently depending on which proxy handled it.
+#
+# Every entry carries a subject. The bare noun phrases that used to be here —
+# "main agent", "primary agent", "lead agent", "you are the main" — matched a
+# *mention* of a parent rather than a declaration of self, and a worker prompt
+# ends with "report back to the main agent" more often than not, so those four
+# strings turned real sub-agents into main sessions. See docs/bug-logs.md Bug #40.
 MAIN_SESSION_INDICATORS = (
     "you are an interactive agent",
     "you are claude code",
     "you are the claude code cli",
     "interactive cli",
     "interactive agent",
-    "main agent",
-    "primary agent",
-    "lead agent",
-    "you are the main",
+    # Not "interactive agent": opencode ships "an interactive coding assistant",
+    # which the phrase above misses, and its main prompt then falls through to
+    # the keyword list. See docs/bug-logs.md Bug #40 item B.
+    "interactive coding assistant",
+    "you are opencode",
+    "you are the main agent",
+    "you are the primary agent",
+    "you are the lead agent",
     "you are the primary",
 )
 
@@ -68,22 +88,31 @@ SUB_AGENT_KEYWORDS = (
 
 # Opencode ships its agent prompts with a much vaguer vocabulary, so the same
 # keyword list cannot tell a worker from the main session on its own.
+#
+# These used to be plain English words — "explore", "search", "find", "glob",
+# "grep", "browse", "read file" — which any coding assistant's prompt contains
+# several times over. That made the whole list a coin flip on ordinary main
+# sessions, and the ten boilerplate phrases above the only thing holding the
+# line. What is left are phrases that name a *role*, not an activity. See
+# docs/bug-logs.md Bug #40 item B.
 OPENCODE_SUB_AGENT_KEYWORDS = (
-    "explore",
-    "read file",
-    "search",
-    "find",
-    "glob",
-    "grep",
+    "explore agent",
+    "general-purpose agent",
+    "read-only exploration",
     "task agent",
     "subagent",
     "sub-agent",
-    "read files",
-    "browse",
 )
 
 _SUB_AGENT_TAG = "[SUB-AGENT]"
-_RE_YOU_ARE_SUB_AGENT = re.compile(r"you are (a|an|the)[\s\w\-]*sub.?agent")
+
+# "you are a sub-agent", "you are the research sub-agent", "you are an explore
+# sub-agent". The gap is capped at two words and cannot cross a sentence or line
+# boundary, which is what keeps the outranking rule in the module docstring
+# honest: with an unbounded gap, "you are the main agent that coordinates
+# sub-agents" also matched, and the main session that owns workers would have
+# declared itself one.
+_RE_YOU_ARE_SUB_AGENT = re.compile(r"you are (?:a|an|the)(?:\s+\w+){0,2}?\s+sub[\s-]?agent")
 
 
 def _flatten_system(value: Any) -> str:
@@ -123,20 +152,61 @@ def _is_main_session(system_prompt_lower: str) -> bool:
     return any(indicator in system_prompt_lower for indicator in MAIN_SESSION_INDICATORS)
 
 
-def _has_sub_agent_marker(body: Dict[str, Any]) -> bool:
-    """Explicit [SUB-AGENT] tag on a user message, string or content-block form."""
+def _declares_sub_agent(system_prompt_lower: str) -> bool:
+    """The prompt introduces itself, in the first person, as a worker."""
+    return bool(_RE_YOU_ARE_SUB_AGENT.search(system_prompt_lower))
+
+
+def _last_user_message(body: Dict[str, Any]) -> Dict[str, Any]:
+    """The user turn being answered — the last one in the array.
+
+    Not the last message of any role: a tool-result turn can be the final entry
+    without changing whose turn it is.
+    """
+    last_user = None
     for msg in body.get("messages") or []:
-        if not isinstance(msg, dict) or msg.get("role") != "user":
-            continue
-        content = msg.get("content")
-        if isinstance(content, str):
-            if _SUB_AGENT_TAG in content:
-                return True
-        elif isinstance(content, list):
-            for block in content:
-                if isinstance(block, dict) and block.get("type") == "text":
-                    if _SUB_AGENT_TAG in str(block.get("text", "")):
-                        return True
+        if isinstance(msg, dict) and msg.get("role") == "user":
+            last_user = msg
+    return last_user
+
+
+def _opens_with_tag(text: str) -> bool:
+    """`text` opens with the tag and nothing else on that line."""
+    stripped = text.lstrip()
+    if not stripped.startswith(_SUB_AGENT_TAG):
+        return False
+    rest = stripped[len(_SUB_AGENT_TAG):].lstrip(" \t")
+    return rest == "" or rest[:1] in ("\r", "\n")
+
+
+def _has_sub_agent_marker(body: Dict[str, Any]) -> bool:
+    """Explicit [SUB-AGENT] tag on the turn being answered.
+
+    Three constraints, each closing a way a main session used to get pinned.
+    Detection is stateless and recomputed per request, so anything looser
+    applies for the rest of the conversation, not just for one turn:
+
+    * only the last user message. Scanning the history meant a single quoted
+      worker transcript anywhere above locked the whole session;
+    * the tag must open the message. A user asking what "[SUB-AGENT]" means is
+      asking a question, not dispatching a worker;
+    * the tag must be alone on its line. "[SUB-AGENT] finished the migration" is
+      a main agent reporting a worker's result, and every character after the
+      tag is that report rather than a prompt for one.
+    """
+    last_user = _last_user_message(body)
+    if last_user is None:
+        return False
+
+    content = last_user.get("content")
+    if isinstance(content, str):
+        return _opens_with_tag(content)
+    if isinstance(content, list):
+        # First text block only — the blocks after it are quoted material by
+        # construction.
+        for block in content:
+            if isinstance(block, dict) and block.get("type") == "text":
+                return _opens_with_tag(str(block.get("text", "")))
     return False
 
 
@@ -147,12 +217,13 @@ def is_sub_agent_body(body: Dict[str, Any]) -> bool:
     system_prompt_lower = _system_prompt_with_messages(body).lower()
 
     if system_prompt_lower:
-        # Main session first: self-declared, so it outranks every heuristic below.
+        # A first-person self-declaration outranks the main-session indicators:
+        # a worker says what it is before it says who dispatched it.
+        if _declares_sub_agent(system_prompt_lower):
+            return True
         if _is_main_session(system_prompt_lower):
             return False
         if any(kw in system_prompt_lower for kw in SUB_AGENT_KEYWORDS):
-            return True
-        if _RE_YOU_ARE_SUB_AGENT.search(system_prompt_lower):
             return True
 
     return _has_sub_agent_marker(body)
@@ -165,9 +236,9 @@ def is_sub_agent_request_openai(body: Dict[str, Any]) -> bool:
 
     system_prompt_lower = _system_prompt_with_messages(body).lower()
 
-    # Same precedence as is_sub_agent_body: an opencode main session mentions
-    # "search", "find" and "explore" all over its own prompt, so the keyword
-    # list below is unusable unless the main-session check runs first.
+    # Main session first: an opencode main session mentions its tools all over
+    # its own prompt, so the opencode keyword list is only meaningful once the
+    # self-declared main session has been taken out of the running.
     if _is_main_session(system_prompt_lower):
         return False
 

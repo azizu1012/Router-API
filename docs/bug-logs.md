@@ -1980,3 +1980,113 @@ Marker trong user message là tín hiệu *tường minh* của client, nhưng n
 - `tests/test_layering.py` — module giữ nguyên vị trí tầng `src/core/`, không import mới (`re`, `typing`).
 - `tests/test_message_converter_truncation.py::test_opencode_subagent_detection_and_response` — vẫn xanh.
 - Edge case chạy tay: 19 ca gồm main session nhiều tool (16/18/20/25), system dạng string / content-block / `messages[0]`, sub-agent thật, marker `[SUB-AGENT]` dạng string và content-block, opencode worker, `body=None`, `messages=None`, thiếu field.
+
+---
+
+## Bug #40: Edge Case Của Chính Fix Bug #39 — Sub-Agent Detection Rò Vào Phiên Chính, Lớp Bảo Vệ Là Dead Code (2026-10-12)
+
+### Mức độ
+Cao. Ba nhóm lỗi độc lập nhưng cùng hướng: **một phiên chính bị dán nhãn `sub-agent` thì nhận câu trả lời bịa, còn lớp cách ly được viết ra để chặn đúng việc đó thì chưa bao giờ chạy.**
+
+### Mô tả
+Bug #39 sửa thứ tự ưu tiên và bỏ heuristic đếm tool. Ba hệ quả của bản sửa đó chưa được ai nhìn tới:
+
+1. `MAIN_SESSION_INDICATORS` chứa `"main agent"`, `"primary agent"`, `"lead agent"` — đây là **danh từ**, không phải tự mô tả. Một sub-agent thật luôn kết thúc prompt bằng *"report back to the main agent"*, và `_is_main_session()` short-circuit **trước** cả `SUB_AGENT_KEYWORDS` lẫn `_RE_YOU_ARE_SUB_AGENT`. Thêm một mệnh đề vô nghĩa là verdict đảo.
+2. `is_sub_agent_request_openai()` vẫn chết vì `OPENCODE_SUB_AGENT_KEYWORDS` chứa `search`, `find`, `grep`, `explore`, `glob`, `browse`. Bug #39 chỉ vá bằng cách thêm `MAIN_SESSION_INDICATORS` lên trước — nghĩa là **10 câu boilerplate giờ là toàn bộ chống chịu**. Bỏ một câu là xuyên.
+3. `is_sub_agent_context` (`router.py:28`) được đọc ở 4 chỗ nhưng **không nơi nào `.set()`**. Toàn bộ "Sub-Agent Bypass" trong docstring `freeze_key` là văn kiện, không phải code.
+
+### Root cause
+
+**A. Main-session indicator đảo verdict sub-agent rõ ràng nhất**
+
+`src/core/sub_agent_detect.py:42-46` + `:149-156`:
+
+```python
+"main agent", "primary agent", "lead agent", "you are the main",   # dòng 42-46
+
+if _is_main_session(system_prompt_lower):   # dòng 151 — short-circuit
+    return False
+if any(kw in system_prompt_lower for kw in SUB_AGENT_KEYWORDS):   # dòng 153 — không bao giờ tới
+    return True
+if _RE_YOU_ARE_SUB_AGENT.search(system_prompt_lower):             # dòng 155 — không bao giờ tới
+    return True
+```
+
+Đo trên code hiện tại:
+
+| System prompt | `is_sub_agent_body` |
+|---|---|
+| `"You are a subagent. Read the files and summarise them."` | `True` ✅ |
+| `"...summarise them, then report back to the main agent."` | `False` ❌ |
+
+Hai tín hiệu mạnh nhất (`"subagent"` trong keyword list, regex `you are (a|an|the)...sub.?agent`) đều nằm **sau** một cụm từ không liên quan.
+
+**B. Phiên chính opencode bị dán nhãn sub-agent khi thiếu boilerplate**
+
+`src/core/sub_agent_detect.py:177-179`:
+
+```python
+if "opencode" not in system_prompt_lower:
+    return False
+return any(kw in system_prompt_lower for kw in OPENCODE_SUB_AGENT_KEYWORDS)
+```
+
+Prompt `"You are opencode, an interactive coding assistant. Use the grep tool to search the repository"` → `True`. Không có `"interactive agent"` (chỉ có `"interactive coding assistant"`), nên `MAIN_SESSION_INDICATORS` không bắt được. Hậu quả theo call site: tắt thinking (`gemini_thinking.py:78`), tắt `XMLThinkingExtractor` (`stream_executor.py:331`), không inject WebSearch (`proxy.py:461`), không cảnh báo `/compact` (`proxy_stream.py:459`), và mọi lỗi trả 200 giả.
+
+**C. Marker `[SUB-AGENT]` quét cả lịch sử**
+
+`src/core/sub_agent_detect.py:126-140` duyệt **mọi** user message, không giới hạn turn hiện tại. Detection stateless, tính lại mỗi request → một lần xuất hiện trong history sẽ ghim cả session. Body không có field `system` (client OpenAI-compat, curl, custom client) thì `if system_prompt_lower:` ở dòng 149 bỏ qua hoàn toàn, rơi thẳng xuống marker. User chỉ cần hỏi *"cái `[SUB-AGENT]` nghĩa là gì?"* là phiên của họ thành sub-agent.
+
+**D. Cùng một request nhận hai verdict khác nhau**
+
+`src/api/opencode_proxy/handler/proxy.py:203`:
+
+```python
+is_sub_agent=_is_sub_agent_request({"system": body.get("system", "")}),   # vứt bỏ `messages`
+```
+
+Hàm `_system_prompt_with_messages()` (`:105-119`) sinh ra chính để xử lý "opencode đặt prompt ở `messages[0]`" — nhưng call này cắt mất `messages` trước khi hỏi. Trong khi `proxy.py:461`, `response.py:53`, `stream_executor.py:328` đều hỏi trên body đầy đủ và nhận `True`. Cùng một request: `thinking` theo phiên chính, `extractor` theo sub-agent.
+
+**E. `is_sub_agent_context` chưa từng được set**
+
+`src/core/router/core/router.py:28` khai báo, đọc ở `:371`, `:376`, `:553` và `gemini_rate_limiter.py:347`. Không có `.set()` nào trong toàn repo. `pool_manager.py:59` còn hardcode `is_sub_agent=False`.
+
+Đây chính là đường rò rỉ sang phiên chính mà task này cần: key health (`_key_status`, `_consecutive_429_count`, `global_cooldown_until`, `_score_penalties`) là **global và dùng chung**. Sub-agent 429 tăng `_consecutive_429_count` (`:381`) cho tới khi trip **global** cooldown (`:382`); cooldown đó `is_global_cooldown_active()` trả về `True` cho *mọi* request kể cả phiên chính (`:371-373`). Một đợt sub-agent fan-out ồn ào làm treo session của user.
+
+**F. Race trên `logs/session_models.json`**
+
+`src/logical_HQ_translator/sse_cache_agent.py:180-201`: đọc → sửa → `open(path, "w")` truncate-then-write, không lock, không atomic rename.
+
+- **Lost update**: hai session ghi song song, cùng đọc map cũ, lần ghi thứ hai cắt mất entry của lần đầu.
+- **Xoá sạch**: `open(..., "w")` truncate về 0 byte *trước* khi ghi. Session thứ ba đọc đúng khoảnh khắc đó → `JSONDecodeError` → `except Exception: pass` (`:190`) nuốt mất → `models_map` vẫn là `{}` → lần ghi của nó xoá sạch mọi session khác.
+
+Đây là file statusline đọc để chọn model hiển thị ⇒ triệu chứng là các session hiện model của nhau.
+
+**G. `_GLOBAL_TOOL_NAME_CACHE` là kênh rò rỉ giữa các session**
+
+`src/core/tool_name_cache.py:72`, fallback tại `message_converter.py:358` khi id không có trong `tool_name_map` per-request (`:301`). Không TTL, không namespace, không reset. Tool_call id do client tự chọn — client nào dùng id ngắn/liên tiếp (`call_1`, `toolu_1`) sẽ đụng id của session khác, và tên tool sai được ghi thẳng vào `tool_result` mà model nhìn thấy.
+
+Ngoài ra nó **không phải LRU**: `get()` không refresh recency, `set()` lên key đã tồn tại return sớm mà không chuyển phần tử xuống đuôi (`:50-52`) ⇒ loại FIFO, entry nóng bị đuổi trước.
+
+**H. Sub-agent notice rò vào phiên chính**
+
+`completions_routes.py:1051-1053` và `:1062-1064` biến **mọi** exception — kể cả 429 từ `_apply_account_limit` (`auth.py:187-195`) — thành `handle_sub_agent_error()`, luôn trả **200** với nội dung:
+
+> `[Notice: Sub-agent could not complete background query (rate_limit)]. Proceed with the current session context directly.`
+
+Nếu detector nhận nhầm (A/B/C), user nhận một lượt trả lời trông như bình thường nhưng toàn bookkeeping của router. Rate limit biến mất, prompt bị nuốt, không có cách nào phân biệt với câu trả lời thật.
+
+### Fix đề xuất
+
+1. **`MAIN_SESSION_INDICATORS`**: bỏ `"main agent"`, `"primary agent"`, `"lead agent"`, `"you are the main"`. Thay bằng dạng tự mô tả có chủ ngữ: `"you are the main agent"`, `"you are a subagent"` thì **ưu tiên sub-agent chứ không phải main**. Đổi thứ tự trong `is_sub_agent_body`: regex + `SUB_AGENT_KEYWORDS` (tường minh) → `MAIN_SESSION_INDICATORS` (suy đoán yếu hơn) → marker.
+2. **Thay heuristic từ khoá bằng cấu trúc**: sub-agent thật luôn có `tools` hẹp (chỉ read/grep/glob) và **không** có `Task`/`Agent` tool. Đây là tín hiệu có cấu trúc, không phải đếm tool (Bug #39 đã bác bỏ đếm tool *đơn thuần*, nhưng *loại* tool thì khác).
+3. **`_has_sub_agent_marker` chỉ soi turn cuối** và yêu cầu marker ở đầu chuỗi (`content.lstrip().startswith(_SUB_AGENT_TAG)`), không phải `in`.
+4. **`proxy.py:203` truyền `body` nguyên vẹn** — `resolve_thinking_config` chỉ cần `system`, nhưng detector đã tự đọc `messages` qua `_system_prompt_with_messages`.
+5. **Set `is_sub_agent_context`** ở biên request (FastAPI middleware hoặc decorator trên route), `token = is_sub_agent_context.set(...)` trước khi gọi pool, `reset(token)` trong `finally`. Bỏ hardcode `is_sub_agent=False` ở `pool_manager.py:59`.
+6. **`session_models.json`**: `threading.Lock` + ghi ra `*.tmp` rồi `os.replace()` (atomic trên cả POSIX lẫn Windows). Đừng nuốt `JSONDecodeError` — log và giữ map cũ.
+7. **`_GLOBAL_TOOL_NAME_CACHE`**: thêm TTL và khoá theo `session_id`/hash của `messages[0]`, hoặc bỏ fallback toàn cục và chỉ dùng `tool_name_map` per-request. Sửa `set()` để move-to-tail và `get()` để refresh recency nếu giữ tên `ToolNameCache`.
+8. **Trước khi trả 200 giả**: `handle_sub_agent_error` phải log ở mức `error` kèm `reason` và model thật, để một transcript bị nhiễu còn truy được. Cân nhắc chỉ dùng fake-200 cho lỗi **transient** (`pool_exhausted`, `rate_limit`, `unavailable`), còn lỗi cấu hình thì trả lỗi thật.
+
+### Test
+`tests/test_sub_agent_detection_edge_cases.py` — 15 test, tất cả là assertion của hành vi *mong muốn* nên đỏ trên code hiện tại. Hai race (F) được tái hiện tất định bằng `threading.Barrier`, không flaky. Không cần server, key hay DB thật.
+

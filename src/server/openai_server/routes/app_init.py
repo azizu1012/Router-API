@@ -1,4 +1,5 @@
 import asyncio
+import json
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import JSONResponse
 from src.core.config_n_logg import config
@@ -264,6 +265,54 @@ async def http_access_log_middleware(request: Request, call_next):
     if status >= 400:
         logger.warning("[Access] %s %s -> %d", method, path, status)
     return response
+
+
+@app.middleware("http")
+async def sub_agent_context_middleware(request: Request, call_next):
+    """Bind this request's sub-agent verdict to `is_sub_agent_context`.
+
+    The router reads that flag in `is_global_cooldown_active`, `record_429`,
+    `freeze_key` and the gemini rate limiter, and every one of those decisions
+    is about key health that is *global and shared*: a worker that trips the
+    cooldown trips it for every interactive session on the same keys too. The
+    isolation those reads describe was written down and never wired — nothing
+    in the repo called `.set()`, so the flag sat at its False default and a
+    noisy sub-agent fan-out could still stall the user's session. The "Sub-Agent
+    Bypass" in `freeze_key`'s docstring was documentation, not code. See
+    docs/bug-logs.md Bug #40 item E.
+
+    The request boundary is the one point every model route passes through,
+    streaming and non-streaming alike. BaseHTTPMiddleware runs the rest of the
+    app in a task that copies this context, so the value set here reaches the
+    route and its streaming generator, and `reset` restores the middleware's own
+    context instead of leaving the flag set for whatever this worker serves
+    next. `request.body()` caches, so the route still reads its own body.
+    """
+    path = request.scope.get("path", "/")
+    if request.method != "POST" or not _is_model_route(path):
+        return await call_next(request)
+
+    try:
+        raw = await request.body()
+        body = json.loads(raw) if raw else None
+    except Exception:
+        # Not ours to reject: a body we cannot parse is a body the route will
+        # reject on its own terms, with a status the client understands.
+        return await call_next(request)
+
+    if not isinstance(body, dict):
+        return await call_next(request)
+
+    from src.core.router.core.router import is_sub_agent_context
+    from ..auth import is_sub_agent_request
+
+    token = is_sub_agent_context.set(
+        is_sub_agent_request(body, is_opencode=path.startswith("/opencode/"))
+    )
+    try:
+        return await call_next(request)
+    finally:
+        is_sub_agent_context.reset(token)
 
 
 @app.middleware("http")
