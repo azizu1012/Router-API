@@ -80,19 +80,20 @@ class ClientPool:
 
     async def throttle(self, api_key: str, last_used: float) -> None:
         """Apply global + per-key jittered interval before the next API call."""
+        sleep_duration = 0.0
         async with self._throttle_lock:
             now = time.time()
-
             global_interval = max(0.2, config.GEMINI_API_GLOBAL_INTERVAL)
             jitter = random.uniform(-global_interval * 0.4, global_interval * 0.4)
             target_global = max(0.2, global_interval + jitter)
-            since_last_global = now - self._last_api_time
-            if since_last_global < target_global:
-                await asyncio.sleep(target_global - since_last_global)
-            self._last_api_time = time.time()
-            # Lưu lại thời gian gốc cho key-interval bên dưới
-            now = time.time()
+            scheduled_time = max(now, self._last_api_time + target_global)
+            sleep_duration = scheduled_time - now
+            self._last_api_time = scheduled_time
 
+        if sleep_duration > 0:
+            await asyncio.sleep(sleep_duration)
+
+        now = time.time()
         key_interval = max(0.3, config.GEMINI_API_KEY_INTERVAL)
         key_jitter = random.uniform(-key_interval * 0.3, key_interval * 0.3)
         target_key = max(0.3, key_interval + key_jitter)

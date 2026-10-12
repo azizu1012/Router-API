@@ -47,6 +47,19 @@ async def _resolve_model(body: Dict[str, Any], pool_alias_override: Optional[str
         model_alias = router.resolve_model_alias(body.get("model", ""), account=account)
     if not model_alias:
         model_alias = config.DEFAULT_MODEL_ALIAS
+
+    from src.core.api_config import is_model_enabled, is_sunset_25
+    if is_sunset_25() and model_alias in ("gemini-flash-25", "gemini-flash-25-lite"):
+        raise HTTPException(
+            status_code=400,
+            detail={"type": "error", "error": {"type": "invalid_request_error", "message": f"Model '{model_alias}' has been discontinued."}}
+        )
+    if not is_model_enabled(model_alias):
+        raise HTTPException(
+            status_code=400,
+            detail={"type": "error", "error": {"type": "invalid_request_error", "message": f"Model '{model_alias}' is currently disabled."}}
+        )
+
     model_id = router.get_model_id(model_alias)
 
     # Step 0: Member override in pool mode — route directly to the acquired member
@@ -146,8 +159,8 @@ async def _resolve_model(body: Dict[str, Any], pool_alias_override: Optional[str
                     logger.warning("[CustomPoolEndpoint] %s ping error: %s", ep_name, e)
 
     # In pool_mode, don't wait long — the pool loop handles retry timing.
-    # In standalone mode, wait up to KEY_429_COOLDOWN × 2 for a key to become available.
-    max_wait = config.GEMINI_API_KEY_INTERVAL * 2 if pool_mode else config.KEY_429_COOLDOWN_SECONDS * 2
+    # In standalone mode, keep key acquisition wait bounded so requests don't hang.
+    max_wait = config.GEMINI_API_KEY_INTERVAL * 2 if pool_mode else min(float(config.KEY_429_COOLDOWN_SECONDS), 2.0)
     start_time = time.time()
     attempt = 0
     while True:
@@ -156,17 +169,6 @@ async def _resolve_model(body: Dict[str, Any], pool_alias_override: Optional[str
             if reservation:
                 actual_model_id = reservation["model_id"]
                 api_key = reservation["key"]
-                
-                # Spacing and throttling (random jitter + global spacing) to be safe
-                try:
-                    from src.core.providers.gemini_api_manager import api_manager
-                    last_used = api_manager.pool.get_key_last_used(api_key)
-                    logger.info("[Throttle] key=...%s last_used=%.1fs ago", api_key[-8:], time.time() - last_used)
-                    await api_manager.pool.throttle(api_key, last_used)
-                    api_manager.pool.record_key_usage(api_key)
-                except Exception as e:
-                    logger.warning("[Throttling] Failed to apply api_manager pacing delay: %s", e)
-                
                 return model_alias, actual_model_id, api_key, actual_model_id, reservation
         
         elapsed = time.time() - start_time

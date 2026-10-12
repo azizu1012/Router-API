@@ -303,6 +303,9 @@ class PoolManager:
                         raise e
                     reason = _classify_error(e)
                     logger.warning("[PoolManager] Standalone error (attempt %d): %s", attempt, e)
+                    if reason not in TRANSIENT_REASONS and reason not in ("invalid_key", "permission_denied"):
+                        logger.error("[PoolManager] Standalone hard error %s: %s", reason, e)
+                        raise e
                     if reason in TRANSIENT_REASONS:
                         count_transient_error(reason)
                         if reason == "rate_limit":
@@ -581,6 +584,10 @@ class PoolManager:
                     if is_custom:
                         endpoint_manager.mark_endpoint_failure(reservation.get("name", model_alias_val))
                         raise
+
+                    if reason not in TRANSIENT_REASONS and reason not in ("invalid_key", "permission_denied"):
+                        logger.error("[PoolManager] Standalone stream hard error %s: %s", reason, e)
+                        raise e
 
                     if reason in TRANSIENT_REASONS:
                         count_transient_error(reason)

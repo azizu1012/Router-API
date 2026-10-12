@@ -274,9 +274,6 @@ def _convert_messages(body: Dict[str, Any]) -> Tuple[List[Dict[str, Any]], List[
         import logging
         _log = logging.getLogger("proxy")
         _log.info("[SystemPrompt] raw system instruction (%d chars)", len(system_instruction))
-        with open("logs/system_prompt_dump.txt", "a", encoding="utf-8") as spf:
-            if any(x in system_instruction.lower() for x in ["anthro", "claude", "skill", "workflow", "agent"]):
-                spf.write(f"\n{'='*60}\n[{datetime.now()}]\n{'='*60}\n{system_instruction}\n")
         cleaned = _clean_system_prompt(system_instruction)
         has_wref = any(x in system_instruction.lower() for x in ["web_search", "webfetch", "websearch"])
         if not has_wref:
