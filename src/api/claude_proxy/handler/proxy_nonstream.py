@@ -320,6 +320,20 @@ class ClaudeProxyNonstreamMixin:
             if cites:
                 text_block["citations"] = cites
             content_blocks.append(text_block)
+        elif server_tool_calls and not raw_tool_calls:
+            # Fail-safe: An Anthropic message must not finish with web_search_tool_result as the final block.
+            fallback_text = ""
+            for stc in server_tool_calls:
+                if not stc.get("failed") and stc.get("result"):
+                    fallback_text = stc["result"]
+                    break
+            if not fallback_text:
+                fallback_text = "Không tìm thấy kết quả phù hợp trên mạng hoặc đã xảy ra lỗi trong quá trình tìm kiếm."
+            text_block = {"type": "text", "text": fallback_text}
+            cites = _search_citations(server_tool_calls)
+            if cites:
+                text_block["citations"] = cites
+            content_blocks.append(text_block)
 
         if isinstance(msg, dict):
             raw_tool_calls = msg.get("tool_calls")

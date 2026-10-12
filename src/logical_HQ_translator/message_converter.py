@@ -327,9 +327,9 @@ def _convert_messages(body: Dict[str, Any]) -> Tuple[List[Dict[str, Any]], List[
                     else:
                         sr_text = str(chunks)
                     text_parts.append(sr_text)
-                elif b_type in ("tool_use", "agent_use"):
+                elif b_type in ("tool_use", "agent_use", "server_tool_use"):
                     t_id = block.get("id")
-                    t_name = block.get("name") or ("Agent" if b_type == "agent_use" else "Task")
+                    t_name = block.get("name") or ("Agent" if b_type == "agent_use" else "web_search" if b_type == "server_tool_use" else "Task")
                     t_input = block.get("input") or {"prompt": block.get("prompt", "")}
                     if isinstance(t_input, dict):
                         t_input = {k: v for k, v in t_input.items() if v != "" and v is not None}
@@ -341,18 +341,24 @@ def _convert_messages(body: Dict[str, Any]) -> Tuple[List[Dict[str, Any]], List[
                         "type": "function",
                         "function": {"name": t_name, "arguments": json.dumps(t_input)},
                     })
-                elif b_type in ("tool_result", "agent_result"):
-                    t_id = block.get("tool_use_id") or block.get("agent_use_id")
+                elif b_type in ("tool_result", "agent_result", "web_search_tool_result"):
+                    t_id = block.get("tool_use_id") or block.get("agent_use_id") or block.get("id")
                     t_content = block.get("content", "")
                     if isinstance(t_content, list):
-                        extracted = [c.get("text", "") for c in t_content if isinstance(c, dict) and c.get("type") == "text"]
-                        t_content = "\n".join(extracted)
+                        extracted = []
+                        for c in t_content:
+                            if isinstance(c, dict):
+                                if c.get("type") == "text":
+                                    extracted.append(c.get("text", ""))
+                                elif c.get("encrypted_content"):
+                                    extracted.append(f"[{c.get('title', 'Source')}]({c.get('url', '')}): {c.get('encrypted_content')}")
+                        t_content = "\n".join(extracted) if extracted else str(t_content)
                     elif not isinstance(t_content, str):
                         t_content = str(t_content)
                     if not t_content or not t_content.strip():
                         t_content = "(empty)"
                     
-                    tool_name = tool_name_map.get(t_id) or _GLOBAL_TOOL_NAME_CACHE.get(t_id) or "Task"
+                    tool_name = tool_name_map.get(t_id) or _GLOBAL_TOOL_NAME_CACHE.get(t_id) or ("web_search" if b_type == "web_search_tool_result" else "Task")
                     
                     if t_id not in seen_tool_calls:
                         # Fallback: Convert orphaned tool result to a user message

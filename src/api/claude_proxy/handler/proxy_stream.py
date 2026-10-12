@@ -32,6 +32,7 @@ from .anthropic_spec import (
     thinking_signature,
     server_search_limits,
     run_server_tool,
+    _search_budget_left,
     _server_tool_record,
     _server_tool_use_block,
     _web_search_result_block,
@@ -756,10 +757,23 @@ class ClaudeProxyStreamMixin:
                 new_messages = list(openai_messages)
                 new_messages.extend([assistant_msg, tool_result_msg])
 
+                # Prevent model from getting stuck in an infinite search loop in recursive turns.
+                # If search budget is exhausted or any search has run, filter out web_search so
+                # the model is forced to formulate its final answer using the search results.
+                recurse_tools = openai_tools
+                if recurse_tools:
+                    remaining_budget = _search_budget_left(search_limits, len(server_tool_calls))
+                    if not remaining_budget or any(r.get("name") in ("web_search", "WebSearch") for r in server_tool_calls):
+                        filtered_tools = [
+                            t for t in recurse_tools
+                            if t.get("function", {}).get("name") not in ("web_search", "WebSearch")
+                        ]
+                        recurse_tools = filtered_tools if filtered_tools else None
+
                 async for chunk in self._stream_message_impl(
                     body=body,
                     openai_messages=new_messages,
-                    openai_tools=openai_tools,
+                    openai_tools=recurse_tools,
                     model_alias=model_alias,
                     temperature=temperature,
                     max_tokens=max_tokens,
@@ -824,6 +838,36 @@ class ClaudeProxyStreamMixin:
                                 })
                             yield _sse("content_block_stop", {"type": "content_block_stop", "index": next_block_idx})
                         next_block_idx += 1
+
+                # Fail-safe: An Anthropic response MUST NOT finish with a web_search_tool_result block
+                # as the last content block when stop_reason is end_turn. If the model produced no text
+                # after search, synthesize a fallback text block so the client receives a valid turn.
+                if not text_started and server_tool_calls:
+                    fallback_text = ""
+                    for stc in server_tool_calls:
+                        if not stc.get("failed") and stc.get("result"):
+                            fallback_text = stc["result"]
+                            break
+                    if not fallback_text:
+                        fallback_text = "Không tìm thấy kết quả phù hợp trên mạng hoặc đã xảy ra lỗi trong quá trình tìm kiếm."
+
+                    yield _sse("content_block_start", {
+                        "type": "content_block_start",
+                        "index": next_block_idx,
+                        "content_block": {"type": "text", "text": ""},
+                    })
+                    yield _sse("content_block_delta", {
+                        "type": "content_block_delta",
+                        "index": next_block_idx,
+                        "delta": {"type": "text_delta", "text": fallback_text},
+                    })
+                    yield _sse("content_block_stop", {
+                        "type": "content_block_stop",
+                        "index": next_block_idx,
+                    })
+                    accumulated_text.append(fallback_text)
+                    text_started = True
+                    next_block_idx += 1
 
                 output_tokens = max(provider_output_tokens,
                                     max(1, output_chars // 4) + len(tool_buffers) * 50)

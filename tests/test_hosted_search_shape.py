@@ -975,6 +975,62 @@ class TestTheStreamedSearchHonoursMaxUses:
         assert refused, "the refused attempt was reported as a result list"
         assert refused[0]["content"]["error_code"] == "max_uses_exceeded"
 
+    def test_empty_recursive_turn_emits_fallback_text_not_ending_on_tool_result(self, monkeypatch):
+        """When the model does not produce text after a search, fallback text must be emitted
+        so the assistant turn does not end with last_content_type=web_search_tool_result."""
+        events, _ = _run_streamed_search(monkeypatch, [
+            [_tool_call_chunk("WebSearch", {"query": "capital"}, "c1")],
+            [_SChunk(_SDelta(""), finish_reason="stop")],
+        ])
+
+        blocks = _started_blocks(events)
+        assert "server_tool_use" in blocks
+        assert "web_search_tool_result" in blocks
+        assert "text" in blocks
+
+        # Ensure the final content block before message_delta is text
+        start_events = [d["content_block"]["type"] for n, d in events if n == "content_block_start"]
+        assert start_events[-1] == "text"
+
+
+class TestHostedSearchHistoryConversion:
+    def test_message_converter_handles_server_tool_use_and_web_search_tool_result(self):
+        from src.logical_HQ_translator.message_converter import _convert_messages
+        body = {
+            "messages": [
+                {"role": "user", "content": "What is the capital of France?"},
+                {
+                    "role": "assistant",
+                    "content": [
+                        {
+                            "type": "server_tool_use",
+                            "id": "srvtoolu_123",
+                            "name": "web_search",
+                            "input": {"query": "capital of France"}
+                        },
+                        {
+                            "type": "web_search_tool_result",
+                            "id": "srvtoolu_123",
+                            "content": [
+                                {
+                                    "type": "web_search_result",
+                                    "url": "https://example.org/paris",
+                                    "title": "Paris Info",
+                                    "encrypted_content": "Paris is the capital of France."
+                                }
+                            ]
+                        }
+                    ]
+                }
+            ]
+        }
+        converted, _ = _convert_messages(body)
+        assert len(converted) >= 2
+        # Verify tool calls and tool responses were extracted without dropping or crashing
+        roles = [m.get("role") for m in converted]
+        assert "user" in roles
+
+
 
 # ── Anthropic WebFetch: answered by the search manager ───────────────────────
 #

@@ -334,7 +334,9 @@ async def run_server_tool(
             # Anthropic hands back an error result rather than searching past
             # the cap, so the model can still answer from what it has.
             return "max_uses_exceeded", [], "max_uses_exceeded"
-        query = str(args.get("query") or "")
+        query = str(args.get("query") or "").strip()
+        if not query:
+            return "Search error: no query provided.", [], "invalid_tool_input"
         logger.info("[ClaudeProxy] server search query=%r", query[:160])
         error_prefix, empty_result = "Search error", "No search results found."
     elif name in _FETCH_NAMES:
