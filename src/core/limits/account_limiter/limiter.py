@@ -27,6 +27,16 @@ class AccountRateLimiter:
         self._minute_tokens.setdefault(account_id, deque())
         self._rpd_count.setdefault(account_id, 0)
 
+    def reset(self) -> None:
+        """Clear in-process quota state between deterministic test scenarios."""
+        self._minute_req_ts.clear()
+        self._minute_tokens.clear()
+        self._rpd_count.clear()
+        self._locks.clear()
+        self._last_activity.clear()
+        self._last_cleanup = 0.0
+        self._rpd_date = datetime.date.today()
+
     async def _maybe_cleanup(self) -> None:
         now = time.time()
         if now - self._last_cleanup < self.CLEANUP_INTERVAL:
