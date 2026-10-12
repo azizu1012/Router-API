@@ -104,9 +104,9 @@ async def get_effective_limits(account: Dict[str, Any]) -> tuple[int, int, int]:
     
     # Cap by configured limits
     if tier == "admin":
-        eff_rpm = int(min(cfg_rpm, l_admin_rpm))
-        eff_tpm = int(min(cfg_tpm, l_admin_tpm))
-        eff_rpd = int(min(cfg_rpd, l_admin_rpd))
+        eff_rpm = int(min(cfg_rpm, l_admin_rpm)) if l_admin_rpm > 0 else cfg_rpm
+        eff_tpm = int(min(cfg_tpm, l_admin_tpm)) if l_admin_tpm > 0 else cfg_tpm
+        eff_rpd = int(min(cfg_rpd, l_admin_rpd)) if l_admin_rpd > 0 else cfg_rpd
     elif tier == "premium":
         eff_rpm = int(min(cfg_rpm, l_prem_rpm))
         eff_tpm = int(min(cfg_tpm, l_prem_tpm))
@@ -228,9 +228,9 @@ async def get_effective_limits_by_pool(account: Dict[str, Any], pool_type: str =
     
     # Cap by configured limits
     if tier == "admin":
-        eff_rpm = int(min(cfg_rpm, l_admin_rpm))
-        eff_tpm = int(min(cfg_tpm, l_admin_tpm))
-        eff_rpd = int(min(cfg_rpd, l_admin_rpd))
+        eff_rpm = int(min(cfg_rpm, l_admin_rpm)) if l_admin_rpm > 0 else cfg_rpm
+        eff_tpm = int(min(cfg_tpm, l_admin_tpm)) if l_admin_tpm > 0 else cfg_tpm
+        eff_rpd = int(min(cfg_rpd, l_admin_rpd)) if l_admin_rpd > 0 else cfg_rpd
     elif tier == "premium":
         eff_rpm = int(min(cfg_rpm, l_prem_rpm))
         eff_tpm = int(min(cfg_tpm, l_prem_tpm))

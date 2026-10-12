@@ -163,19 +163,20 @@ async def _handle_gemini_native_inner(
                 }
             }
         )
-    pool_type = "lite" if is_lite else "flash"
-    from src.core.limits.account_limiter import get_effective_limits_by_pool
-    eff_rpm, eff_tpm, eff_rpd = await get_effective_limits_by_pool(account, pool_type)
-    effective = dict(account)
-    effective["rpm"] = eff_rpm
-    effective["tpm"] = eff_tpm
-    effective["rpd"] = eff_rpd
-    allowed, reason = await account_limiter.acquire(effective, estimated_input_tokens + max_tokens, pool_type)
-    if not allowed:
-        raise HTTPException(
-            status_code=429,
-            detail={"error": {"message": f"Account rate limit exceeded: {reason}", "type": "rate_limit_error"}}
-        )
+    if account.get("name") not in {"anonymous", "legacy-env-token"}:
+        pool_type = "lite" if is_lite else "flash"
+        from src.core.limits.account_limiter import get_effective_limits_by_pool
+        eff_rpm, eff_tpm, eff_rpd = await get_effective_limits_by_pool(account, pool_type)
+        effective = dict(account)
+        effective["rpm"] = eff_rpm
+        effective["tpm"] = eff_tpm
+        effective["rpd"] = eff_rpd
+        allowed, reason = await account_limiter.acquire(effective, estimated_input_tokens + max_tokens, pool_type)
+        if not allowed:
+            raise HTTPException(
+                status_code=429,
+                detail={"error": {"message": f"Account rate limit exceeded: {reason}", "type": "rate_limit_error"}}
+            )
     web_search = False
     has_media = image_count > 0 or api_manager._has_media_or_files(contents)
     auth_key_prefix = _auth_key_prefix(account)
