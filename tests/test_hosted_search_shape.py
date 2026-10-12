@@ -992,6 +992,32 @@ class TestTheStreamedSearchHonoursMaxUses:
         start_events = [d["content_block"]["type"] for n, d in events if n == "content_block_start"]
         assert start_events[-1] == "text"
 
+    def test_multi_hop_search_allows_distinct_queries_up_to_cap(self, monkeypatch):
+        """Smart budgeting allows multi-hop search for distinct queries up to cap (3)."""
+        turns = [
+            [_tool_call_chunk("WebSearch", {"query": "who acquired GitHub"}, "c1")],
+            [_tool_call_chunk("WebSearch", {"query": "Microsoft stock price"}, "c2")],
+            [_SChunk(_SDelta("Microsoft acquired GitHub and its stock is..."), finish_reason="stop")],
+        ]
+        events, calls = _run_streamed_search(monkeypatch, turns)
+        assert calls["search"] == 2
+        text_deltas = [
+            d["delta"]["text"] for n, d in events
+            if n == "content_block_delta" and d["delta"].get("type") == "text_delta"
+        ]
+        assert any("Microsoft" in t for t in text_deltas)
+
+    def test_redundant_query_is_stripped_and_synthesized(self, monkeypatch):
+        """Repeating the identical query triggers duplicate protection."""
+        turns = [
+            [_tool_call_chunk("WebSearch", {"query": "capital of France"}, "c1")],
+            [_tool_call_chunk("WebSearch", {"query": "capital of France"}, "c2")],
+            [_SChunk(_SDelta("Paris is the capital."), finish_reason="stop")],
+        ]
+        events, calls = _run_streamed_search(monkeypatch, turns)
+        # 2nd call was redundant, loop terminated and answered
+        assert calls["search"] == 2
+
 
 class TestHostedSearchHistoryConversion:
     def test_message_converter_handles_server_tool_use_and_web_search_tool_result(self):

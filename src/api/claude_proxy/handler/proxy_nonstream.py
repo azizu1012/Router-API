@@ -25,6 +25,9 @@ from .anthropic_spec import (
     _server_tool_use_block,
     _web_search_result_block,
     _search_citations,
+    _search_budget_left,
+    _MAX_SMART_BUDGET_CAP,
+    is_redundant_query,
     server_search_limits,
     run_server_tool,
 )
@@ -297,6 +300,22 @@ class ClaudeProxyNonstreamMixin:
                 _server_tool_record(name, tc_id or "", args, tool_result,
                                     search_citations, search_error)
             )
+
+            # Smart Budgeting: filter out web_search if budget is exhausted or query was redundant
+            if openai_tools:
+                remaining_budget = _search_budget_left(search_limits, len(server_tool_calls), cap_override=_MAX_SMART_BUDGET_CAP)
+                past_queries = [
+                    (r.get("args") or {}).get("query", "")
+                    for r in server_tool_calls
+                    if r.get("name") in ("web_search", "WebSearch")
+                ]
+                is_redundant = is_redundant_query(args.get("query", ""), past_queries[:-1]) if len(past_queries) > 1 else False
+                if not remaining_budget or is_redundant:
+                    openai_tools = [
+                        t for t in openai_tools
+                        if t.get("function", {}).get("name") not in ("web_search", "WebSearch")
+                    ] or None
+
             recursion_depth += 1
 
         content_blocks = []

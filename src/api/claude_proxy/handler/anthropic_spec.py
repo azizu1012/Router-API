@@ -258,6 +258,7 @@ def thinking_signature(thinking_text: str) -> str:
 
 _SERVER_TOOL_PREFIX = "srvtoolu_"
 _DEFAULT_MAX_USES = 5
+_MAX_SMART_BUDGET_CAP = 3
 
 _SEARCH_NAMES = ("web_search", "WebSearch")
 _FETCH_NAMES = ("web_fetch", "WebFetch")
@@ -379,7 +380,7 @@ async def run_server_tool(
     return "\n".join(lines), citations, None
 
 
-def _search_budget_left(limits: Dict[str, Any], used: int) -> bool:
+def _search_budget_left(limits: Dict[str, Any], used: int, cap_override: Optional[int] = None) -> bool:
     """Whether another search is within the client's `max_uses`.
 
     A client that omitted `max_uses` gets the API default of 5, which is also
@@ -389,7 +390,21 @@ def _search_budget_left(limits: Dict[str, Any], used: int) -> bool:
     cap = limits.get("max_uses")
     if cap is None:
         cap = _DEFAULT_MAX_USES
+    if cap_override is not None:
+        cap = min(cap, cap_override)
     return used < cap
+
+
+def is_redundant_query(new_query: str, past_queries: List[str]) -> bool:
+    """Detect if a query has already been executed or is trivially redundant."""
+    norm_new = " ".join((new_query or "").strip().lower().split())
+    if not norm_new:
+        return True
+    for past in past_queries or []:
+        norm_past = " ".join((past or "").strip().lower().split())
+        if norm_new == norm_past:
+            return True
+    return False
 
 
 def server_search_limits(body: Dict[str, Any]) -> Dict[str, Any]:

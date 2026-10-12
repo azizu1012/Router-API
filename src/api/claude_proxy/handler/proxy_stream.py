@@ -33,6 +33,8 @@ from .anthropic_spec import (
     server_search_limits,
     run_server_tool,
     _search_budget_left,
+    _MAX_SMART_BUDGET_CAP,
+    is_redundant_query,
     _server_tool_record,
     _server_tool_use_block,
     _web_search_result_block,
@@ -757,13 +759,21 @@ class ClaudeProxyStreamMixin:
                 new_messages = list(openai_messages)
                 new_messages.extend([assistant_msg, tool_result_msg])
 
-                # Prevent model from getting stuck in an infinite search loop in recursive turns.
-                # If search budget is exhausted or any search has run, filter out web_search so
-                # the model is forced to formulate its final answer using the search results.
+                # Smart Budgeting & Loop Prevention:
+                # Allow multi-hop searching up to the budget cap (default 3), but filter out
+                # web_search when the budget is exhausted or if redundant query is detected,
+                # forcing the model to synthesize the final answer.
                 recurse_tools = openai_tools
                 if recurse_tools:
-                    remaining_budget = _search_budget_left(search_limits, len(server_tool_calls))
-                    if not remaining_budget or any(r.get("name") in ("web_search", "WebSearch") for r in server_tool_calls):
+                    remaining_budget = _search_budget_left(search_limits, len(server_tool_calls), cap_override=_MAX_SMART_BUDGET_CAP)
+                    past_queries = [
+                        (r.get("args") or {}).get("query", "")
+                        for r in server_tool_calls
+                        if r.get("name") in ("web_search", "WebSearch")
+                    ]
+                    # If this last search was redundant or budget is now exhausted, strip web_search
+                    is_redundant = is_redundant_query(args.get("query", ""), past_queries[:-1]) if len(past_queries) > 1 else False
+                    if not remaining_budget or is_redundant:
                         filtered_tools = [
                             t for t in recurse_tools
                             if t.get("function", {}).get("name") not in ("web_search", "WebSearch")
