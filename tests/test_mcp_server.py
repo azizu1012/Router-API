@@ -18,7 +18,6 @@ import os
 import sys
 
 import pytest
-
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 
 JSONRPC_INIT = {
@@ -106,7 +105,18 @@ class TestMcpOnlyIsScopedToTheTool:
                            json={"model": "gemini-flash", "max_tokens": 8,
                                  "messages": [{"role": "user", "content": "hi"}]})
 
-    def test_a_normal_account_still_calls_models(self, client):
+    def test_a_normal_account_still_calls_models(self, client, provider):
+        """A normal account is not gated, so this one reaches the provider.
+
+        Which is why the provider is stubbed. The assertion is about the
+        account's *permission* — not 403 — so the model behind it is
+        irrelevant, and an unstubbed run made a billed Gemini call to prove a
+        fact about an auth flag. The socket guard turns that into a 12-retry
+        wall and then a failure, which is the guard doing its job.
+        """
+        import fake_provider
+
+        provider(fake_provider.text_scenario("hi"))
         key = _account("normal_caller")["auth_key"]
 
         assert self._model_call(client, key).status_code != 403

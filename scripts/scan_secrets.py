@@ -283,8 +283,16 @@ def _exempt(path: str) -> bool:
     return any(norm == e or norm.endswith("/" + e) for e in SELF_EXEMPT)
 
 
-def scan(roots: Iterable[str], use_git: bool = False) -> list[Finding]:
-    if use_git:
+def scan(roots: Iterable[str], use_git: bool = False,
+         git_diff_range: str | None = None) -> list[Finding]:
+    if git_diff_range:
+        import subprocess
+        out = subprocess.run(
+            ["git", "diff", "--name-only", "--diff-filter=ACMR", "-z", git_diff_range],
+            capture_output=True, text=True, check=True,
+        ).stdout
+        paths = [Path(p) for p in out.split("\0") if p]
+    elif use_git:
         import subprocess
         out = subprocess.run(
             ["git", "ls-files", "-z", *roots],
@@ -293,6 +301,9 @@ def scan(roots: Iterable[str], use_git: bool = False) -> list[Finding]:
         paths = [Path(p) for p in out.split("\0") if p]
     else:
         paths = list(iter_files(roots))
+
+    # A diff may include a deleted or inaccessible path between the name-only
+    # query and the read below; the existing OSError handling skips it safely.
 
     findings: list[Finding] = []
     for path in paths:
@@ -335,13 +346,15 @@ def main(argv: list[str] | None = None) -> int:
                     help="files or directories to scan (default: whole tree)")
     ap.add_argument("--git", action="store_true",
                     help="scan only files tracked by git")
+    ap.add_argument("--git-diff", metavar="RANGE",
+                    help="scan only files changed in a git diff range")
     ap.add_argument("--json", action="store_true", help="emit JSON")
     ap.add_argument("--warn-only", action="store_true",
                     help="exit 0 even when critical findings exist")
     args = ap.parse_args(argv)
 
     roots = args.paths or ["."]
-    findings = scan(roots, use_git=args.git)
+    findings = scan(roots, use_git=args.git, git_diff_range=args.git_diff)
 
     if args.json:
         print(json.dumps([asdict(f) for f in findings], indent=2))

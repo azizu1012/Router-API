@@ -183,7 +183,21 @@ class TestTheEngineDefault:
                                headers={"Authorization": "Bearer test-key"})
 
     @pytest.mark.anyio
-    async def test_no_engine_still_runs_a_search(self):
+    async def test_no_engine_still_runs_a_search(self, fake_search):
+        """The default engine really executes, against a local scrape.
+
+        This is the one test in the file that used to reach the network. It
+        patched only auth, so `/v1/search` fell through to the real
+        `execute_hybrid_search` and the real DuckDuckGo backend — 12.7 seconds
+        of live HTTP on every full-suite run, against a third party, asserting
+        a 200 and nothing else.
+
+        Nothing caught it. The socket guard is scoped to *paid* hosts, so a
+        free scrape passes through it by design; and the assertion is one a
+        local fixture satisfies just as well. The engine dispatch still runs
+        for real underneath — `fake_search` replaces the scrape, not the
+        function — so what this test claims is still exactly what it checks.
+        """
         r = self._post({"query": "capital of France"})
 
         assert r.status_code == 200, f"HTTP {r.status_code}: {r.text[:160]}"

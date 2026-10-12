@@ -31,6 +31,32 @@ def client(temp_db):
         yield c
 
 
+@pytest.fixture(autouse=True)
+def _no_paid_provider(provider):
+    """These tests assert *routing*, so a routing test must not buy tokens.
+
+    Each one posts a real body to `/v1/messages` or `/v1/chat/completions` with
+    a real account key, and nothing downstream was stubbed: the request ran the
+    whole stack — reserve a key, call Gemini, convert the answer back. The
+    assertions only ask that the route was reached and answered with something
+    other than 404/405, and a 429 satisfies that. So on a machine whose
+    key table happened to be empty these passed without ever reaching a
+    provider, and on one holding keys they spent them — the same assertion, two
+    different bills, decided by the contents of `usage.db`.
+
+    That is the exact dependency `temp_db` exists to remove, and the socket
+    guard in `tests/network_guard.py` turns it into a 12-retry wall: the
+    blocked call is a provider error, `pool_manager` classifies it as
+    retryable, and each test spent 120s discovering it.
+
+    The thing under test is the mount, so the provider is stubbed and the
+    answer becomes an honest 200.
+    """
+    import fake_provider
+
+    provider(fake_provider.text_scenario("hi"))
+
+
 def _headers():
     from src.core.accounts import account_manager
 

@@ -18,12 +18,24 @@ two. Point the offending test at the `temp_db` fixture to satisfy it.
 """
 import os
 import sqlite3
+import sys
 import time
 
 import pytest
 
 from src.backend import _db as db_mod
 from src.backend import schema as schema_mod
+
+# The guard and the fake-provider kit are sibling modules, not a package. pytest
+# puts this directory on sys.path when it imports this file, but only when it is
+# running as the suite root's conftest — say it out loud rather than relying on
+# it, because the resulting ImportError is otherwise very confusing.
+_TESTS_DIR = os.path.dirname(os.path.abspath(__file__))
+if _TESTS_DIR not in sys.path:
+    sys.path.insert(0, _TESTS_DIR)
+
+import fake_provider          # noqa: E402  (needs the sys.path line above)
+import network_guard          # noqa: E402
 
 REAL_DB = 'usage.db'
 
@@ -229,3 +241,89 @@ def temp_db():
                 os.unlink(path + suffix)
             except OSError:
                 pass
+
+
+# ── no paid LLM calls ──────────────────────────────────────────────────────
+#
+# The database guard above and this one are the same argument applied to a
+# different resource. A test that writes to usage.db corrupts the developer's
+# state; a test that calls a real provider spends money, needs a credential CI
+# does not have, and asserts against whatever the provider returned today. Both
+# failures are silent — the test passes, or fails for an unrelated reason.
+#
+# See tests/network_guard.py for why the block sits on the socket rather than on
+# any one client.
+
+
+@pytest.fixture(autouse=True)
+def _no_paid_provider_network(request):
+    """Fail the test if it tried to reach a paid LLM host.
+
+    Autouse and function-scoped, so it wraps every test in the run. The guard
+    raises on the connect *and* records it: the raise is what a test sees when
+    nothing catches the exception, and the record is what catches the case that
+    matters more — the retry loops in pool_manager handle provider errors on
+    purpose, so a blocked call would otherwise be swallowed and leave the test
+    green while asserting nothing.
+    """
+    if network_guard.guard_exempt(request.node):
+        yield                       # live test, explicitly opted into
+        return
+
+    mark = len(network_guard.attempts())
+    restore = network_guard.install()
+    try:
+        yield
+    finally:
+        restore()
+        try:
+            network_guard.assert_no_blocked_attempts(mark)
+        except network_guard.BlockedHostError as exc:
+            pytest.fail(str(exc))
+
+
+def pytest_collection_modifyitems(items):
+    """Leave `live` tests out of the run unless they were opted into.
+
+    A test marked `@pytest.mark.live` costs money, so it is skipped by default
+    rather than merely discouraged — and the marker on its own is not enough to
+    lift the network guard either (see `network_guard.guard_exempt`).
+    """
+    network_guard.skip_unallowed_live(items)
+
+
+# ── the deterministic test kit ─────────────────────────────────────────────
+#
+# Fixtures over tests/fake_provider.py. Tests can import that module directly;
+# these exist so the common case is one argument instead of a two-step
+# install, and so the kit has a documented entry point in one place.
+
+
+@pytest.fixture
+def provider(monkeypatch):
+    """Build a scripted provider and install it for this test.
+
+        def test_x(provider):
+            provider(fake_provider.text_scenario("hi"))
+
+    or, for a bare provider with no install:
+
+        provider(fake_provider.text_scenario("hi"), install=False)
+    """
+    def _provider(fake: fake_provider.FakeProvider, install: bool = True, **kw):
+        return fake.install(monkeypatch, **kw) if install else fake
+
+    return _provider
+
+
+@pytest.fixture
+def fake_search(monkeypatch):
+    """A local, deterministic web search.
+
+    Patches the DuckDuckGo scrape rather than the search manager, so
+    `execute_hybrid_search` still runs for real — the engine dispatch is part of
+    what the test is checking, and the HTTP scrape is the only part that would
+    touch the network. Use `fake_search.install_manager(...)` for route-level
+    tests that only need the finished `(text, citations)` pair.
+    """
+    return fake_provider.FakeSearch().install(monkeypatch)

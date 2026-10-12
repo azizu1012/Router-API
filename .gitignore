@@ -93,6 +93,16 @@ tests/*
 !tests/test_custom_endpoint_stream_circuit_breaker.py
 !tests/test_other_routes_error_mapping.py
 !tests/test_stream_usage_from_provider.py
+!tests/test_fake_provider.py
+!tests/test_network_guard.py
+!tests/test_provider_wire_forms.py
+
+# The provider kit and its socket guard are imported by conftest.py, which is
+# tracked. `tests/*` below re-excludes the directory, so without these lines
+# they are ignored *and* required: a clone gets a conftest that fails on
+# `import fake_provider` and every suite errors before collection.
+!tests/fake_provider.py
+!tests/network_guard.py
 
 # The CI scanner is tracked; the rest of scripts/ is local tooling.
 !scripts/
