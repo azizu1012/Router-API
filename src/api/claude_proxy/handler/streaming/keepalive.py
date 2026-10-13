@@ -23,7 +23,7 @@ _POLL_TIMEOUT = 1.0
 # starves every other request. 30 s is well past any real inter-token gap
 # on Flash/Lite while releasing the slot before the pool is exhausted.
 # Callers that need a longer window (reasoning models) pass stall_timeout.
-STREAM_STALL_TIMEOUT = 30.0
+STREAM_STALL_TIMEOUT = 60.0
 
 
 class StreamStalled(asyncio.TimeoutError):
