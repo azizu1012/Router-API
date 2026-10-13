@@ -93,6 +93,16 @@ _DEFAULT_TOOLS_TO_STRIP = [
     "workflow-skill-creator"
 ]
 
+ACCOUNT_TIER_ADMIN = "admin"
+ACCOUNT_TIER_PREMIUM = "premium"
+ACCOUNT_TIER_FREE = "free"
+
+BASE_RPD_LIMITS = {
+    ACCOUNT_TIER_ADMIN: 999999999,  # Unlimited RPD for admin
+    ACCOUNT_TIER_PREMIUM: 40000,    # 2x Free tier
+    ACCOUNT_TIER_FREE: 20000,      # Base RPD
+}
+
 
 def _load_tools_to_strip() -> List[str]:
     val = os.getenv("TOOLS_TO_STRIP")

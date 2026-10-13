@@ -552,4 +552,11 @@ async def execute_stream(
         logger.error("[OpenCode Stream Error] model=%s: %s", model_alias, e, exc_info=True)
         yield _openai_sse(model_name, finish_reason="error", chunk_id=chunk_id)
         raise
+    finally:
+        # Ensure the underlying stream is closed
+        try:
+            if hasattr(stream, "aclose"):
+                await stream.aclose()
+        except Exception as e:
+            logger.warning("[OpenCode Stream] Error closing underlying stream: %s", e)
 

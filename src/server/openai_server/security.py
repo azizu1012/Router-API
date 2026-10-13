@@ -77,16 +77,17 @@ async def clear_login_rate(ip: str):
         _login_hits[ip].clear()
 
 
-def clear_dashboard_rate(ip: str):
+async def clear_dashboard_rate(ip: str):
     """Reset the dashboard hit counter for one IP.
 
-    Sync on purpose — it touches no awaitable, so it does not need the lock.
+    Now uses asyncio.Lock to ensure thread-safety for _dash_hits.
     Sits next to clear_login_rate so the two counters do not drift apart in how
     they get reset. Exists because /dashboard/* is capped at 60 req/min/IP and
     every TestClient in a suite shares one host, so a test file that makes a
     realistic number of dashboard calls trips a production limiter.
     """
-    _dash_hits.pop(ip, None)
+    async with _lock:
+        _dash_hits.pop(ip, None)
 
 
 def add_security_headers(response):

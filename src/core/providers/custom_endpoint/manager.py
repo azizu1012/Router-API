@@ -8,7 +8,7 @@ import aiohttp
 
 from src.core.config_n_logg.logger import logger_api as logger
 from ..anthropic_wire import is_anthropic_format
-from src.server.realtime.websocket import ws_manager
+# from src.server.realtime.websocket import ws_manager # Layering violation
 from src.backend.endpoints.manager import (
     list_endpoints_db,
     get_endpoint_db,
@@ -400,18 +400,6 @@ class CustomEndpointManager:
                               result: dict) -> None:
         if not endpoint_name:
             return
-        try:
-            await ws_manager.broadcast(f"live:{endpoint_name}", {
-                "type": "live_api_call",
-                "endpoint": endpoint_name,
-                "model": model,
-                "status": status,
-                "latency_ms": latency_ms,
-                "input_tokens": result.get("input_tokens", 0),
-                "output_tokens": result.get("output_tokens", 0),
-            })
-        except Exception:
-            pass
 
     async def fetch_models(self, name: str, verify_chat: bool = True) -> List[str]:
         ep = get_endpoint_db(name)

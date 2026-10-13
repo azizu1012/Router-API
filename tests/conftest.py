@@ -19,6 +19,7 @@ two. Point the offending test at the `temp_db` fixture to satisfy it.
 import os
 import sqlite3
 import sys
+sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 import time
 
 import pytest

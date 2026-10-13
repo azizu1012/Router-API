@@ -1023,7 +1023,7 @@ class ClaudeProxyStreamMixin:
                 try:
                     await log_usage(
                         used_model_id or model_alias,
-                        (used_api_key or "")[-8:],
+                        "[REDACTED]",
                         final_usage["input_tokens"],
                         final_usage["output_tokens"],
                         auth_key_prefix,
@@ -1075,3 +1075,10 @@ class ClaudeProxyStreamMixin:
                     yield _sse("message_stop", {"type": "message_stop"})
             else:
                 raise e
+        finally:
+            # Ensure the underlying stream is closed
+            try:
+                if hasattr(stream, "aclose"):
+                    await stream.aclose()
+            except Exception as e:
+                logger.warning("[Claude Stream] Error closing underlying stream: %s", e)

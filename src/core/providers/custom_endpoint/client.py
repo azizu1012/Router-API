@@ -27,16 +27,18 @@ TIMEOUT = 120
 # ponytail: 120 RPM custom pool rate; adjust when per-endpoint RPM config is added
 _CUSTOM_POOL_RPM = 120
 _custom_pool_usage: Dict[str, List[float]] = defaultdict(list)
+_custom_pool_lock = asyncio.Lock()
 
 
 async def check_custom_pool_rate(model_id: str) -> bool:
     """Sliding-window RPM check. Returns True if under limit."""
     now = time.time()
     window = now - 60
-    _custom_pool_usage[model_id] = [t for t in _custom_pool_usage[model_id] if t > window]
-    if len(_custom_pool_usage[model_id]) >= _CUSTOM_POOL_RPM:
-        return False
-    _custom_pool_usage[model_id].append(now)
+    async with _custom_pool_lock:
+        _custom_pool_usage[model_id] = [t for t in _custom_pool_usage[model_id] if t > window]
+        if len(_custom_pool_usage[model_id]) >= _CUSTOM_POOL_RPM:
+            return False
+        _custom_pool_usage[model_id].append(now)
     return True
 
 

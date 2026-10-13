@@ -2,7 +2,14 @@ import asyncio
 import datetime
 import time
 from collections import deque
-from typing import Any, Dict
+from typing import Any, Dict, Optional
+
+from src.core.config_n_logg.config import (
+    ACCOUNT_TIER_ADMIN,
+    ACCOUNT_TIER_PREMIUM,
+    ACCOUNT_TIER_FREE,
+    BASE_RPD_LIMITS,
+)
 
 class AccountRateLimiter:
     CLEANUP_INTERVAL = 3600
@@ -17,6 +24,7 @@ class AccountRateLimiter:
         self._last_activity: Dict[str, float] = {}
         self._dict_lock = asyncio.Lock()
         self._last_cleanup = 0.0
+        self._account_tiers: Dict[str, str] = {} # Mock or loaded from DB
 
     def _get_lock(self, account_id: str) -> asyncio.Lock:
         if account_id not in self._locks:
@@ -27,6 +35,77 @@ class AccountRateLimiter:
         self._minute_req_ts.setdefault(account_id, deque())
         self._minute_tokens.setdefault(account_id, deque())
         self._rpd_count.setdefault(account_id, 0)
+
+    def _get_account_tier(self, account_id: str) -> str:
+        # TODO: Implement actual lookup from DB/config for account tiers
+        # For now, a mock implementation
+        if account_id.startswith("admin_"):
+            return ACCOUNT_TIER_ADMIN
+        elif account_id.startswith("premium_"):
+            return ACCOUNT_TIER_PREMIUM
+        else:
+            return ACCOUNT_TIER_FREE
+
+    async def _get_account_rpd_limit(self, account_id: str, current_key_rpd_limit: int) -> int:
+        account_tier = self._get_account_tier(account_id)
+        base_account_rpd = BASE_RPD_LIMITS.get(account_tier, BASE_RPD_LIMITS[ACCOUNT_TIER_FREE])
+
+        # Implement dynamic throttling ("bóp lại") logic here
+        # This is a simplified implementation. In a real system, you would fetch
+        # the actual number of active keys and virtual models from a real-time
+        # monitoring system or a shared state.
+
+        # Placeholder for active keys and virtual models
+        # In a real system, these would come from a global state or a dedicated manager
+        active_gemini_keys = await self._get_active_gemini_keys(account_id)
+        active_virtual_models = await self._get_active_virtual_models(account_id)
+
+        # Calculate a throttling factor. This is a heuristic and can be refined.
+        # For simplicity, let's say if there are many active keys/models,
+        # we might want to reduce the per-key limit.
+        throttling_factor = 1.0
+        if active_gemini_keys > 5:  # Example threshold
+            throttling_factor *= (5 / active_gemini_keys)
+        if active_virtual_models > 10: # Example threshold
+            throttling_factor *= (10 / active_virtual_models)
+
+        # Ensure throttling_factor doesn't drop too low, e.g., minimum 0.1
+        throttling_factor = max(0.1, throttling_factor)
+
+        # Apply throttling to the base RPD limit
+        effective_rpd_limit = int(base_account_rpd * throttling_factor)
+
+        # Account tier specific adjustments
+        if account_tier == ACCOUNT_TIER_PREMIUM:
+            # Premium gets 2x free tier, so their effective limit should reflect that
+            effective_rpd_limit = max(effective_rpd_limit, BASE_RPD_LIMITS[ACCOUNT_TIER_FREE] * 2)
+        elif account_tier == ACCOUNT_TIER_FREE:
+            # Free tier gets equal sharing. If there are many free users, this might be lower.
+            # The throttling factor already handles this.
+            pass
+
+        return min(effective_rpd_limit, current_key_rpd_limit)
+
+    async def _get_active_gemini_keys(self, account_id: str) -> int:
+        # Placeholder: In a real system, this would query a real-time system
+        # to get the count of active Gemini keys for the given account_id.
+        # For now, return a dummy value.
+        return 1
+
+    async def _get_active_virtual_models(self, account_id: str) -> int:
+        # Placeholder: In a real system, this would query a real-time system
+        # to get the count of active virtual models (flash/lite) for the given account_id.
+        # For now, return a dummy value.
+        return 1
+        # adjust current_key_rpd_limit.
+
+        # Example of how throttling might work (conceptual):
+        # total_account_rpd_used = await self.db.get_total_rpd_for_account(account_id) # Placeholder
+        # if total_account_rpd_used > base_account_rpd * 0.8: # If 80% of total quota is used
+        #     throttled_limit = max(1, int(current_key_rpd_limit * (1 - (total_account_rpd_used / base_account_rpd))))
+        #     return min(current_key_rpd_limit, throttled_limit)
+
+        return base_account_rpd
 
     def reset(self) -> None:
         """Clear in-process quota state between deterministic test scenarios."""
@@ -95,10 +174,12 @@ class AccountRateLimiter:
             self._ensure_account_state(pool_account_id) # For RPM/TPM
             self._global_rpd_count.setdefault(account_id, 0) # Ensure global RPD count exists
 
-            # Global RPD check first
-            global_rpd_limit = int(account.get("rpd") or 0) # This is the global RPD limit for the account
-            if global_rpd_limit > 0 and self._global_rpd_count[account_id] >= global_rpd_limit:
-                return False, f"daily request limit exceeded for account {account_id}"
+            # Global RPD check first (with dynamic throttling)
+            global_rpd_limit = int(account.get("rpd") or 0) # This is the base global RPD limit for the account from its config
+            effective_rpd_limit = await self._get_account_rpd_limit(account_id, global_rpd_limit)
+
+            if effective_rpd_limit > 0 and self._global_rpd_count[account_id] >= effective_rpd_limit:
+                return False, f"daily request limit exceeded for account {account_id} (throttled)"
 
             # Per-pool RPD, RPM, TPM checks (existing logic)
             req_q = self._minute_req_ts[pool_account_id]
@@ -109,7 +190,7 @@ class AccountRateLimiter:
                 tok_q.popleft()
 
             # Note: rpd here is the per-pool RPD limit from account config, not global
-            rpd_per_pool = int(account.get(f"rpd_{pool_type}") or global_rpd_limit or 0) # Fallback to global RPD if not per-pool defined
+            rpd_per_pool = int(account.get(f"rpd_{pool_type}") or effective_rpd_limit or 0) # Fallback to effective global RPD if not per-pool defined
             if rpd_per_pool > 0 and self._rpd_count[pool_account_id] >= rpd_per_pool:
                 return False, f"daily request limit exceeded for pool {pool_type}"
             if rpm > 0 and len(req_q) >= rpm:

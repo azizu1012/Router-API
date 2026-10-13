@@ -126,8 +126,8 @@ async def generate_content_stream(
             if close is not None:
                 try:
                     await close()
-                except Exception:
-                    pass
+                except Exception as e:
+                    logger.warning("[GeminiCaller] Error closing stream: %s", e)
 
 
 def has_media_or_files(contents: List[types.Content]) -> bool:

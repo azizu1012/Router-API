@@ -6,6 +6,8 @@ from src.core.config_n_logg.logger import logger_system as logger
 from src.core.limits.gemini.limiter import _rate_limiters, _key_model_requests, _score_penalties, _transient_429_count, _transient_503_count
 from src.server.realtime.websocket import ws_manager
 
+_stats_lock = asyncio.Lock()
+
 
 class StatsPusher:
     def __init__(self, interval: float = 2.0):
@@ -26,8 +28,9 @@ class StatsPusher:
             logger.warning("[StatsPusher] Failed to pre-initialize rate limiters: %s", e)
 
         model_stats = {}
-        for alias, limiter in dict(_rate_limiters).items():
-            rpm_remaining = max(0, limiter.rpm_limit - len(limiter._minute_req_ts))
+        async with _stats_lock:
+            for alias, limiter in dict(_rate_limiters).items():
+                rpm_remaining = max(0, limiter.rpm_limit - len(limiter._minute_req_ts))
             tpm_used = sum(t for ts, t in limiter._minute_tokens if now - ts < 60)
             tpm_remaining = max(0, limiter.tpm_limit - tpm_used)
 
@@ -45,8 +48,9 @@ class StatsPusher:
         # Include custom pool models stats dynamically
         try:
             from src.core.providers.custom_endpoint.client import _custom_pool_usage, _CUSTOM_POOL_RPM
-            for model_id, ts_list in dict(_custom_pool_usage).items():
-                rpm_used = sum(1 for ts in ts_list if now - ts < 60)
+            async with _stats_lock:
+                for model_id, ts_list in dict(_custom_pool_usage).items():
+                    rpm_used = sum(1 for ts in ts_list if now - ts < 60)
                 stats_entry = {
                     "rpm_remaining": max(0, _CUSTOM_POOL_RPM - rpm_used),
                     "rpm_limit": _CUSTOM_POOL_RPM,
@@ -61,33 +65,36 @@ class StatsPusher:
             logger.warning("[StatsPusher] Failed to include custom pool stats: %s", e)
 
         active_keys = 0
-        for km, reqs in dict(_key_model_requests).items():
-            cutoff = now - 60
+        async with _stats_lock:
+            for km, reqs in dict(_key_model_requests).items():
+                cutoff = now - 60
             active = sum(1 for t in reqs if t > cutoff - 5)
             active_keys += active
 
         penalty_count = 0
-        for pk, pdata in dict(_score_penalties).items():
-            if pdata.get("expires", 0) > now:
-                penalty_count += 1
+        async with _stats_lock:
+            for pk, pdata in dict(_score_penalties).items():
+                if pdata.get("expires", 0) > now:
+                    penalty_count += 1
 
         global _transient_429_count, _transient_503_count
         from src.core.observability.usage_logger import get_recent_requests
         recent_reqs = await get_recent_requests(20)
 
-        return {
-            "type": "stats_snapshot",
-            "channel": "stats:overview",
-            "timestamp": int(now * 1000),
-            "models": model_stats,
-            "connections": ws_manager.get_connection_count(),
-            "channels": ws_manager.get_channel_count(),
-            "active_keys": active_keys,
-            "penalties": penalty_count,
-            "rate_limits_429": _transient_429_count,
-            "unavailable_503": _transient_503_count,
-            "recent_requests": recent_reqs,
-        }
+        async with _stats_lock:
+            return {
+                "type": "stats_snapshot",
+                "channel": "stats:overview",
+                "timestamp": int(now * 1000),
+                "models": model_stats,
+                "connections": ws_manager.get_connection_count(),
+                "channels": ws_manager.get_channel_count(),
+                "active_keys": active_keys,
+                "penalties": penalty_count,
+                "rate_limits_429": _transient_429_count,
+                "unavailable_503": _transient_503_count,
+                "recent_requests": recent_reqs,
+            }
 
     async def _loop(self):
         self._running = True

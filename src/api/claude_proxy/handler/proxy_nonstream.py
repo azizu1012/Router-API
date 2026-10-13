@@ -527,7 +527,7 @@ class ClaudeProxyNonstreamMixin:
         try:
             await log_usage(
                 used_model_id or model_alias,
-                (used_api_key or "")[-8:],
+                "[REDACTED]",
                 usage["input_tokens"],
                 usage["output_tokens"],
                 auth_key_prefix,
