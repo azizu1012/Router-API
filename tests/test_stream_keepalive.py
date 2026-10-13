@@ -26,6 +26,7 @@ reimplements the logic proves only that the copy is correct.
 import asyncio
 import os
 import sys
+import time
 
 import pytest
 
@@ -164,7 +165,100 @@ class TestFastStreamUnaffected:
         assert items == ["only"]
 
 
+class TestKeepaliveCancellation:
+    @pytest.mark.anyio
+    async def test_cancelling_the_wrapper_cancels_the_inflight_pull(self):
+        cancelled = asyncio.Event()
+
+        class _Cancellable:
+            async def _gen(self):
+                try:
+                    await asyncio.Event().wait()
+                    yield {"text": "never"}
+                finally:
+                    cancelled.set()
+
+            def __aiter__(self):
+                return self._gen()
+
+        task = asyncio.create_task(_drain(_Cancellable()))
+        await asyncio.sleep(_POLL_TIMEOUT * 1.5)
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+
+        await asyncio.wait_for(cancelled.wait(), timeout=1.0)
+
+
 # ── the shape, so a reintroduce is caught cheaply ───────────────────────────
+
+class TestSilentStreamIsNotWaitedOnForever:
+    """The stall that froze the whole server, reproduced as a test.
+
+    A provider that stopped sending made this loop ping the client forever: the
+    connection stayed healthy, so the client kept waiting on content that would
+    never arrive, and the coroutine held the event loop while it did. Everything
+    else on the process — including the dashboard — queued behind it.
+    """
+
+    @pytest.mark.anyio
+    async def test_a_stream_that_goes_silent_eventually_fails(self):
+        from src.api.claude_proxy.handler.streaming.keepalive import StreamStalled
+
+        class _Dead:
+            async def _gen(self):
+                await asyncio.Event().wait()      # never yields, never ends
+                yield {}                          # unreachable
+
+            def __aiter__(self):
+                return self._gen()
+
+        started = time.monotonic()
+        with pytest.raises(StreamStalled):
+            async for _ in iter_with_keepalive(_Dead(), 0.05, stall_timeout=0.3):
+                pass
+        assert time.monotonic() - started < 5
+
+    @pytest.mark.anyio
+    async def test_a_slow_stream_still_delivers(self):
+        """Silence is what kills a stream, not being slow.
+
+        A pull that eventually returns after several keepalives is healthy and
+        must pass through untouched — bounding the deadline must not turn a
+        merely slow model into a failure.
+        """
+        from src.api.claude_proxy.handler.streaming.keepalive import StreamStalled
+
+        class _Slow:
+            async def _gen(self):
+                await asyncio.sleep(0.25)
+                yield {"text": "arrived"}
+                await asyncio.sleep(0.25)
+                yield {"text": "and again"}
+
+            def __aiter__(self):
+                return self._gen()
+
+        items = []
+        async for got in iter_with_keepalive(_Slow(), 0.05, stall_timeout=2.0):
+            if got is not _KEEPALIVE:
+                items.append(got["text"])
+        assert items == ["arrived", "and again"], items
+
+    @pytest.mark.anyio
+    async def test_the_stall_is_a_timeout_so_the_pool_rotates(self):
+        """It must classify as transient, or a dead member is reported as a
+        client-facing failure instead of being swapped out."""
+        from src.core.orchestration.pool_manager import _classify_error
+        from src.api.claude_proxy.handler.streaming.keepalive import StreamStalled
+
+        assert _classify_error(StreamStalled("silence")) == "timeout"
+
+    def test_the_default_bound_is_finite(self):
+        from src.api.claude_proxy.handler.streaming.keepalive import STREAM_STALL_TIMEOUT
+
+        assert 0 < STREAM_STALL_TIMEOUT < float("inf")
+
 
 class TestKeepaliveShape:
     def test_the_poll_timeout_is_shorter_than_the_ping_interval(self):

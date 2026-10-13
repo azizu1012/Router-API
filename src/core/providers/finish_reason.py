@@ -43,13 +43,23 @@ _FILTER_REASONS = frozenset({
 def normalize_finish_reason(
     reason: Optional[Any],
     has_tool_calls: bool = False,
+    incomplete_tool_call: bool = False,
 ) -> str:
     """Map an upstream finish reason onto the OpenAI enum.
 
     `has_tool_calls` wins over the reported reason: if a function call came back
     in the payload, the useful thing to tell the client is that there is
     something to run, whatever upstream called the turn.
+
+    `incomplete_tool_call` outranks even that. A call whose arguments were cut
+    off is the one case where reporting success is actively harmful — the client
+    executes it against arguments that do not parse, and a `tool_calls` reason
+    tells it the call is ready. Reporting `length` instead is what lets the
+    caller raise its ceiling and ask again.
     """
+    if incomplete_tool_call:
+        return LENGTH
+
     if has_tool_calls:
         return TOOL_CALLS
 

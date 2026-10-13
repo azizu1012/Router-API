@@ -16,6 +16,8 @@ from typing import Any, AsyncIterator, Dict, List, Optional
 
 import aiohttp
 
+from src.core.config_n_logg.logger import logger_proxy as logger
+
 from ..anthropic_wire import is_anthropic_format
 
 TIMEOUT = 120
@@ -87,6 +89,111 @@ def _make_tool_call(tc: dict) -> Any:
     obj.function.name = tc.get("function", {}).get("name", "")
     obj.function.arguments = tc.get("function", {}).get("arguments", "")
     return obj
+
+
+def _drop_orphaned_tool_results(
+    messages: Optional[List[Dict[str, Any]]],
+) -> List[Dict[str, Any]]:
+    """Remove tool-result messages whose ``tool_use`` no longer exists.
+
+    Both custom-endpoint dialects enforce the same pairing, and both reject the
+    entire request when it is broken. Anthropic is explicit about it — ``400
+    orphaned tool_result in conversation history`` — and the OpenAI-compatible
+    servers that validate ``role: "tool"`` against a preceding assistant
+    ``tool_calls`` fail the same way. One endpoint can serve both formats, so
+    this runs for both.
+
+    Several stages above rewrite message history, and each can break a pair for
+    its own reasons:
+
+    * ``ensure_tool_ids_in_messages`` synthesises an id for an empty
+      ``tool_use.id`` but leaves the paired result's ``tool_use_id`` empty, so
+      the two sides disagree from the very first hop.
+    * ``compress_messages`` (RTK) rewrites tool output in place.
+    * ``emergency_truncate_to_limit`` prunes the middle, and its cut point is a
+      message boundary rather than a tool-exchange boundary.
+    * ``strip_tools_for_compaction`` rewrites the body for /compact requests.
+
+    Every one of those runs *after* the converter's own orphan handling, so
+    nothing upstream can be trusted to leave the history consistent. This sits
+    at the last point before the request is serialised, which is the only place
+    the invariant holds for all of them at once.
+
+    Dropping rather than rebuilding the pair is deliberate: the cut has already
+    been accounted for against the token budget, and re-attaching the assistant
+    turn would put the request back over it. The truncation notice already tells
+    the model that middle turns were dropped.
+    """
+    if not messages:
+        return []
+
+    # An empty id is a real id here. A tool_calls entry that carries no `id`
+    # produces a tool_use with id "", and the tool message answering it carries
+    # tool_call_id "" as well — the two match, so dropping that pair would leave
+    # the tool_use unanswered, which is its own 400.
+    called: set = set()
+    for msg in messages:
+        if msg.get("role") == "assistant":
+            for tc in msg.get("tool_calls") or []:
+                if isinstance(tc, dict):
+                    called.add(str(tc.get("id") or ""))
+
+    kept: List[Dict[str, Any]] = []
+    for msg in messages:
+        role = str(msg.get("role") or "")
+        if role == "tool" or role.startswith("tool"):
+            cid = str(msg.get("tool_call_id") or "")
+            if cid not in called:
+                logger.warning(
+                    "[CustomEndpoint] dropped orphaned tool_result (tool_call_id=%r)",
+                    cid,
+                )
+                continue
+        kept.append(msg)
+
+    return _merge_adjacent_assistant_turns(kept)
+
+
+def _merge_adjacent_assistant_turns(
+    messages: List[Dict[str, Any]],
+) -> List[Dict[str, Any]]:
+    """Join assistant turns that a drop left next to each other.
+
+    A ``tool`` message is a user turn once it reaches the wire, so it is what
+    keeps an assistant turn from butting up against the next one. Removing an
+    orphan removes that separator: a history shaped like
+
+        assistant(tool_calls A) / tool(orphan) / assistant("done")
+
+    becomes two adjacent assistant turns, and Anthropic rejects consecutive
+    assistant messages as firmly as it rejects an orphaned tool_result. Without
+    this the guard would trade one 400 for another.
+
+    Tool calls are collected rather than dropped so that merging cannot silently
+    discard a call the model made.
+    """
+    merged: List[Dict[str, Any]] = []
+    for msg in messages:
+        if (
+            merged
+            and msg.get("role") == "assistant"
+            and merged[-1].get("role") == "assistant"
+        ):
+            prev = merged[-1]
+            calls = list(prev.get("tool_calls") or []) + list(msg.get("tool_calls") or [])
+            text = "\n".join(
+                part for part in (prev.get("content"), msg.get("content"))
+                if isinstance(part, str) and part
+            )
+            joined = dict(prev)
+            if text:
+                joined["content"] = text
+            if calls:
+                joined["tool_calls"] = calls
+            merged[-1] = joined
+            continue
+        merged.append(msg)
+    return merged
 
 
 def _build_payload(
@@ -177,7 +284,7 @@ async def call_anthropic_nonstream(
     # sending one it does not declare fails the whole request.
     passthrough.pop("response_format", None)
     payload = openai_to_anthropic_body(
-        model, messages,
+        model, _drop_orphaned_tool_results(messages),
         max_tokens=max_tokens, temperature=temperature,
         stream=False, tools=tools, extra_body=passthrough,
     )
@@ -258,8 +365,9 @@ async def call_custom_nonstream(
         "Content-Type": "application/json",
         "Authorization": f"Bearer {api_key}",
     }
-    payload = _build_payload(model, messages, False, temperature, max_tokens, tools,
-                          extra_body, tool_choice, parallel_tool_calls, response_format)
+    payload = _build_payload(model, _drop_orphaned_tool_results(messages), False,
+                             temperature, max_tokens, tools,
+                             extra_body, tool_choice, parallel_tool_calls, response_format)
 
     async with aiohttp.ClientSession(headers=headers) as session:
         async with session.post(
@@ -348,7 +456,7 @@ class CustomEndpointStreamGen:
             "Authorization": f"Bearer {self._api_key}",
         }
         payload = _build_payload(
-            self._model, self._messages, True,
+            self._model, _drop_orphaned_tool_results(self._messages), True,
             self._temperature, self._max_tokens, self._tools, self._extra_body,
             self._tool_choice, self._parallel_tool_calls, self._response_format,
         )
@@ -383,7 +491,7 @@ class CustomEndpointStreamGen:
             passthrough["tool_choice"] = self._tool_choice
         passthrough.pop("response_format", None)
         payload = openai_to_anthropic_body(
-            self._model, self._messages,
+            self._model, _drop_orphaned_tool_results(self._messages),
             max_tokens=self._max_tokens, temperature=self._temperature,
             stream=True, tools=self._tools, extra_body=passthrough,
         )

@@ -208,6 +208,8 @@ async def execute_hybrid_search(
     search_engine: str = "duckduckgo",
     auth_key_prefix: str = "",
     account: Optional[Dict[str, Any]] = None,
+    result_limit: Optional[int] = None,
+    evidence_chars: Optional[int] = None,
 ) -> Tuple[str, List[Dict[str, Any]]]:
     """Execute search and return (formatted_context, all_citations).
 
@@ -223,7 +225,11 @@ async def execute_hybrid_search(
         try:
             logger.info("run_single_query searching DuckDuckGo for query: %s", query)
             from src.tools.search.engine.manager import search_with_citations
-            text, cits = await search_with_citations(query)
+            text, cits = await search_with_citations(
+                query,
+                max_results=result_limit,
+                max_evidence_chars=evidence_chars,
+            )
             if text:
                 logger.info("DuckDuckGo search successful for '%s' with %d citations.", query, len(cits))
                 return {"query": query, "snippet": text, "citations": cits}

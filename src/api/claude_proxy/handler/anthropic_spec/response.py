@@ -13,6 +13,7 @@ def map_stop_reason(
     has_tool_calls: bool = False,
     stop_sequences: Optional[List[str]] = None,
     emitted_text: str = "",
+    incomplete_tool_call: bool = False,
 ) -> Tuple[str, Optional[str]]:
     """Map a provider finish_reason to the Anthropic `stop_reason` enum.
 
@@ -25,6 +26,16 @@ def map_stop_reason(
 
     if fr in _REFUSAL_FINISH_REASONS:
         return "refusal", None
+
+    # A tool call whose arguments never finished parsing was cut off mid-call.
+    # Anthropic's guidance for that case is to report `max_tokens`, since the
+    # prescribed remedy is "raise max_tokens and retry". A client told
+    # `end_turn` has no signal that anything went wrong and just carries on as
+    # if the model chose to stop. The provider frequently reports a plain
+    # `stop` in this situation rather than `length`, so it cannot be inferred
+    # from the finish reason.
+    if incomplete_tool_call:
+        return "max_tokens", None
 
     # Pending tool calls outrank every other reason: the client only executes them
     # when we say `tool_use`, so reporting anything else would strand the calls and

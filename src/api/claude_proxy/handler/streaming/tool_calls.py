@@ -71,5 +71,23 @@ def buffer_tool_calls(delta: Any, tool_buffers: Dict[int, Dict[str, Any]]) -> No
                 args_str = fn_args
             else:
                 args_str = str(fn_args)
-            tool_buffers[tc_idx]["args"] += args_str
+            # Providers disagree about how arguments arrive across chunks, and
+            # every disagreement used to end in the same place: the arguments
+            # string was concatenated past valid JSON, and the client was handed
+            # a tool_use it could not parse.
+            #
+            #   * fragments      '{"a":' + '"b":1}'   -> concatenate
+            #   * placeholder    '{}' then the body    -> replace the '{}'
+            #   * repeat         the same fragment sent again with the final
+            #                   chunk -> ignore it
+            #
+            # The repeat is not hypothetical: a provider that re-sends the whole
+            # tool_call alongside finish_reason turned one call into two.
+            current = tool_buffers[tc_idx]["args"]
+            if current == args_str:
+                continue
+            if current == "{}":
+                tool_buffers[tc_idx]["args"] = args_str
+            else:
+                tool_buffers[tc_idx]["args"] = current + args_str
 

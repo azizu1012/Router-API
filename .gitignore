@@ -52,6 +52,7 @@ tests/*
 !tests/test_dashboard_tokens.py
 !tests/test_master_key.py
 !tests/test_retry_counter.py
+!tests/test_stream_open_timeout.py
 !tests/test_error_classification.py
 !tests/test_empty_stream_retry.py
 !tests/test_hosted_search_evidence_bound.py

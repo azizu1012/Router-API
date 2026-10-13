@@ -106,62 +106,81 @@ async def _sdk_stream(
     await api_manager.pool.throttle(api_key, api_manager.pool.get_key_last_used(api_key))
     api_manager.pool.record_key_usage(api_key)
     client = await api_manager.pool.get_client(api_key)
-    stream = await asyncio.wait_for(
-        client.aio.models.generate_content_stream(
-            model=model_id,
-            contents=contents,
-            config=sdk_config,
-        ),
-        timeout=app_config.REQUEST_TIMEOUT_SECONDS,
-    )
-    async for chunk in stream:
-        candidates_raw = chunk.candidates or []
-        candidates_out = []
-        for cand in candidates_raw:
-            parts_out = []
-            content = cand.content
-            if content:
-                for part in (content.parts or []):
-                    part_d: Dict[str, Any] = {}
-                    if part.text is not None:
-                        part_d["text"] = part.text
-                    if part.thought:
-                        part_d["thought"] = True
-                    
-                    ts = getattr(part, "thought_signature", None) or getattr(part, "thoughtSignature", None)
-                    if ts is not None:
-                        import base64
-                        if isinstance(ts, bytes):
-                            part_d["thought_signature"] = base64.b64encode(ts).decode("utf-8")
-                        else:
-                            part_d["thought_signature"] = str(ts)
-                    fc = part.function_call
-                    if fc:
-                        part_d["functionCall"] = {"name": fc.name, "args": dict(fc.args or {})}
-                    if part_d:
-                        parts_out.append(part_d)
-            cand_d: Dict[str, Any] = {
-                "content": {"parts": parts_out, "role": "model"},
-            }
-            fr = cand.finish_reason
-            if fr:
-                cand_d["finishReason"] = fr.name if hasattr(fr, "name") else str(fr)
-            candidates_out.append(cand_d)
+    try:
+        stream = await asyncio.wait_for(
+            client.aio.models.generate_content_stream(
+                model=model_id,
+                contents=contents,
+                config=sdk_config,
+            ),
+            timeout=min(
+                app_config.STREAM_OPEN_TIMEOUT_SECONDS,
+                app_config.REQUEST_TIMEOUT_SECONDS,
+            ),
+        )
+    except asyncio.TimeoutError as exc:
+        logger.warning(
+            "[Gemini SDK Stream] Stream open timeout (%ss) for model=%s",
+            app_config.STREAM_OPEN_TIMEOUT_SECONDS,
+            model_id,
+        )
+        raise TimeoutError("gemini_stream_open_timeout") from exc
+    try:
+        async for chunk in stream:
+            candidates_raw = chunk.candidates or []
+            candidates_out = []
+            for cand in candidates_raw:
+                parts_out = []
+                content = cand.content
+                if content:
+                    for part in (content.parts or []):
+                        part_d: Dict[str, Any] = {}
+                        if part.text is not None:
+                            part_d["text"] = part.text
+                        if part.thought:
+                            part_d["thought"] = True
 
-        usage_out: Optional[Dict[str, Any]] = None
-        um = chunk.usage_metadata
-        if um:
-            usage_out = {
-                "promptTokenCount": getattr(um, "prompt_token_count", 0) or 0,
-                "candidatesTokenCount": getattr(um, "candidates_token_count", 0) or 0,
-                "thoughtsTokenCount": getattr(um, "thoughts_token_count", 0) or 0,
-                "totalTokenCount": getattr(um, "total_token_count", 0) or 0,
-            }
+                        ts = getattr(part, "thought_signature", None) or getattr(part, "thoughtSignature", None)
+                        if ts is not None:
+                            import base64
+                            if isinstance(ts, bytes):
+                                part_d["thought_signature"] = base64.b64encode(ts).decode("utf-8")
+                            else:
+                                part_d["thought_signature"] = str(ts)
+                        fc = part.function_call
+                        if fc:
+                            part_d["functionCall"] = {"name": fc.name, "args": dict(fc.args or {})}
+                        if part_d:
+                            parts_out.append(part_d)
+                cand_d: Dict[str, Any] = {
+                    "content": {"parts": parts_out, "role": "model"},
+                }
+                fr = cand.finish_reason
+                if fr:
+                    cand_d["finishReason"] = fr.name if hasattr(fr, "name") else str(fr)
+                candidates_out.append(cand_d)
 
-        out: Dict[str, Any] = {"candidates": candidates_out}
-        if usage_out:
-            out["usageMetadata"] = usage_out
-        yield out
+            usage_out: Optional[Dict[str, Any]] = None
+            um = chunk.usage_metadata
+            if um:
+                usage_out = {
+                    "promptTokenCount": getattr(um, "prompt_token_count", 0) or 0,
+                    "candidatesTokenCount": getattr(um, "candidates_token_count", 0) or 0,
+                    "thoughtsTokenCount": getattr(um, "thoughts_token_count", 0) or 0,
+                    "totalTokenCount": getattr(um, "total_token_count", 0) or 0,
+                }
+
+            out: Dict[str, Any] = {"candidates": candidates_out}
+            if usage_out:
+                out["usageMetadata"] = usage_out
+            yield out
+    finally:
+        close = getattr(stream, "aclose", None)
+        if close is not None:
+            try:
+                await close()
+            except Exception:
+                pass
 
 # -- Response wrapping -------------------------------------------------------
 
@@ -275,6 +294,13 @@ class _SDKStreamGen:
 
     def __aiter__(self):
         return self
+
+    async def aclose(self) -> None:
+        """Close the SDK iterator when the downstream client disconnects."""
+        if self._gen is not None:
+            close = getattr(self._gen, "aclose", None)
+            if close is not None:
+                await close()
 
     async def __anext__(self) -> _NativeChunk:
         if self._buf:

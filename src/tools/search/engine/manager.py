@@ -300,7 +300,36 @@ class AdvancedSearchManager(SearchEvidenceMixin, DuckDuckGoProviderMixin, Search
                 if current is task:
                     del self.inflight_search_tasks[normalized_key]
 
-    async def search_with_citations(self, query: str) -> Tuple[str, List[Dict[str, str]]]:
+    @staticmethod
+    def _compact_citation_excerpt(text: str, max_chars: int) -> str:
+        """Keep complete paragraphs where possible for hosted-tool citations."""
+        value = str(text or "").strip()
+        limit = max(200, int(max_chars))
+        if len(value) <= limit:
+            return value
+
+        paragraphs = [part.strip() for part in value.split("\n\n") if part.strip()]
+        if paragraphs:
+            kept: List[str] = []
+            used = 0
+            for paragraph in paragraphs:
+                extra = len(paragraph) + (2 if kept else 0)
+                if used + extra > limit:
+                    break
+                kept.append(paragraph)
+                used += extra
+            if kept:
+                return "\n\n".join(kept).rstrip() + " …"
+
+        return value[:limit].rstrip() + " …"
+
+    async def search_with_citations(
+        self,
+        query: str,
+        *,
+        max_results: Optional[int] = None,
+        max_evidence_chars: Optional[int] = None,
+    ) -> Tuple[str, List[Dict[str, str]]]:
         raw_query = query or ""
         clean_query = raw_query.replace("[FORCE FALLBACK]", "").strip()
         if not clean_query:
@@ -378,16 +407,44 @@ class AdvancedSearchManager(SearchEvidenceMixin, DuckDuckGoProviderMixin, Search
                         elif isinstance(res, str):
                             rec["evidence"] = res
 
-            formatted = self._format_final_search_result(selected_topic, intent, ranked, required_sources)
+            display_limit = (
+                self.search_top_results_limit
+                if max_results is None
+                else max(1, min(int(max_results), self.search_top_results_limit))
+            )
+            grounded_limit = min(self.search_grounded_top_links, display_limit)
+            formatted = self._format_final_search_result(
+                selected_topic,
+                intent,
+                ranked,
+                required_sources,
+                result_limit=display_limit,
+                grounded_limit=grounded_limit,
+                evidence_max_chars=max_evidence_chars,
+            )
             all_formatted.append(formatted)
 
-            display_records = self._domain_diversify_records(ranked, self.search_top_results_limit, True)
+            display_records = self._domain_diversify_records(ranked, display_limit, True)
             for rec in display_records:
                 title = rec.get("title") or "Source"
                 url = rec.get("url") or ""
                 if url and url not in seen_urls:
                     seen_urls.add(url)
-                    all_citations.append({"title": title, "url": url})
+                    evidence = rec.get("evidence") or rec.get("snippet") or ""
+                    if rec.get("evidence"):
+                        evidence = self._extract_query_highlight(
+                            evidence,
+                            intent,
+                            max_evidence_chars or 900,
+                        )
+                    all_citations.append({
+                        "title": title,
+                        "url": url,
+                        "snippet": self._compact_citation_excerpt(
+                            evidence,
+                            max_evidence_chars or 900,
+                        ),
+                    })
 
         return "\n\n".join(all_formatted), all_citations
 
@@ -419,6 +476,15 @@ async def web_search(queries: Union[str, List[str]], max_results: int = 4) -> st
     return "\n\n".join(formatted_results).strip() if formatted_results else "No results found."
 
 
-async def search_with_citations(query: str) -> Tuple[str, List[Dict[str, str]]]:
-    return await search_manager.search_with_citations(query)
+async def search_with_citations(
+    query: str,
+    *,
+    max_results: Optional[int] = None,
+    max_evidence_chars: Optional[int] = None,
+) -> Tuple[str, List[Dict[str, str]]]:
+    return await search_manager.search_with_citations(
+        query,
+        max_results=max_results,
+        max_evidence_chars=max_evidence_chars,
+    )
 

@@ -19,6 +19,7 @@ import json
 import re
 from typing import Any, Dict, List, Optional
 
+from src.core.config_n_logg.logger import logger_api as logger
 from src.core.providers.gemini.schema_sanitizer import _sanitize_schema_for_gemini
 from src.core.runtime.tool_name_cache import _GLOBAL_TOOL_NAME_CACHE
 
@@ -127,10 +128,23 @@ def convert_messages_to_contents(messages: List[Dict[str, Any]]) -> Dict[str, An
                 for tc in tool_calls:
                     if tc.get("type") != "function":
                         continue
-                    try:
-                        args = json.loads(tc.get("function", {}).get("arguments", "{}"))
-                    except (json.JSONDecodeError, ValueError):
-                        args = {}
+                    args = _tool_call_args_for_gemini(tc)
+                    if args is None:
+                        # A tool call whose arguments never parsed cannot be
+                        # expressed to Gemini: `functionCall.args` must be an
+                        # object, and there is no partial form to send. Coercing
+                        # it to {} — what this did — turned a truncated call into
+                        # a well-formed one that runs against an empty input.
+                        #
+                        # Dropping it keeps the history honest. An assistant turn
+                        # with no callable content is legal, so the turn survives
+                        # and the model simply proceeds without the call.
+                        logger.warning(
+                            "[GeminiFormat] dropped tool call %s: arguments are "
+                            "not valid JSON, the provider stopped mid-call",
+                            (tc.get("function") or {}).get("name", "?"),
+                        )
+                        continue
                     p_dict: Dict[str, Any] = {
                         "functionCall": {
                             "name": sanitize_function_name(tc["function"]["name"]),
@@ -253,6 +267,27 @@ def _extract_text_content(content: Any) -> str:
                 texts.append(item)
         return "\n".join(texts)
     return str(content) if content else ""
+
+
+def _tool_call_args_for_gemini(tc: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+    """The argument object to send for one tool call, or None if unusable.
+
+    An empty or absent ``arguments`` is a tool that takes no parameters and is
+    not a failure. A *non-empty* string that will not parse is a truncated call,
+    which is a different thing: there is no way to represent half an object in
+    ``functionCall.args``, and passing an empty dict would look to the model like
+    a complete call with no arguments.
+    """
+    raw = (tc.get("function") or {}).get("arguments", "{}")
+    if isinstance(raw, dict):
+        return raw
+    if not isinstance(raw, str) or not raw.strip():
+        return {}
+    try:
+        parsed = json.loads(raw)
+    except (json.JSONDecodeError, ValueError):
+        return None
+    return parsed if isinstance(parsed, dict) else None
 
 
 def _convert_content_to_parts(content: Any) -> List[Dict[str, Any]]:

@@ -37,6 +37,42 @@ from .anthropic_spec import (
 from .compaction import _pre_compact_and_truncate
 
 
+def _tool_call_was_cut_off(resp: Any) -> bool:
+    """Whether the response's last tool call has arguments that are not JSON.
+
+    Anthropic is explicit that a stream can stop at ``max_tokens`` midway
+    through a parameter and that the accumulated input is not guaranteed to be
+    valid JSON — there is no buffering or validation to guarantee it, so this is
+    a normal outcome rather than a malformed one.
+
+    Only a *non-empty* argument string that fails to parse counts. An empty one
+    is a tool that genuinely takes no parameters, and the caller handles that
+    separately rather than retrying forever.
+    """
+    choices = getattr(resp, "choices", None) or []
+    if not choices:
+        return False
+    msg = getattr(choices[0], "message", None)
+    if msg is None:
+        return False
+    tool_calls = (
+        msg.get("tool_calls") if isinstance(msg, dict)
+        else getattr(msg, "tool_calls", None)
+    ) or []
+    for tc in tool_calls:
+        fn = tc.get("function") if isinstance(tc, dict) else getattr(tc, "function", None)
+        if fn is None:
+            continue
+        raw = fn.get("arguments") if isinstance(fn, dict) else getattr(fn, "arguments", None)
+        if not isinstance(raw, str) or not raw.strip():
+            continue
+        try:
+            json.loads(raw)
+        except (json.JSONDecodeError, TypeError):
+            return True
+    return False
+
+
 class ClaudeProxyNonstreamMixin:
     """
     `ClaudeProxyNonstreamMixin` cung cấp logic để xử lý các yêu cầu hoàn thành chat không streaming
@@ -151,7 +187,7 @@ class ClaudeProxyNonstreamMixin:
             alias_info=body.get("_alias_info"),
         )
 
-        while recursion_depth < 5:
+        async def _call_provider(budget):
             if custom_ep:
                 # Custom endpoint: pure passthrough, no pool, no retry
                 logger.info("[Claude NonStream] Using custom endpoint passthrough: %s", custom_ep.get("name"))
@@ -162,12 +198,12 @@ class ClaudeProxyNonstreamMixin:
                         messages=openai_messages,
                         stream=False,
                         temperature=temperature,
-                        max_tokens=max_tokens,
+                        max_tokens=budget,
                         tools=openai_tools or None,
                         extra_body=sampling_params,
                         tool_choice=tool_choice,
                     )
-                    result = {
+                    return {
                         "response": resp,
                         "api_key": custom_ep["auth_key"],
                         "model_id": body.get("model", ""),
@@ -177,20 +213,33 @@ class ClaudeProxyNonstreamMixin:
                     error_msg = str(e)
                     logger.error("[Claude NonStream] Custom endpoint error: %s", error_msg)
                     raise RuntimeError(f"Custom endpoint failed: {error_msg}")
-            else:
-                # Standard pool logic for Gemini keys
-                result = await pool_manager.call_nonstream(
-                    model_alias=model_alias,
-                    messages=openai_messages,
-                    tools=openai_tools or None,
-                    temperature=temperature,
-                    max_tokens=max_tokens,
-                    thinking_config=thinking_config,
-                    account=account,
-                    extra_body=None,
-                    thinking_params=thinking_params,
-                    sampling_params=sampling_params,
-                )
+            return await pool_manager.call_nonstream(
+                model_alias=model_alias,
+                messages=openai_messages,
+                tools=openai_tools or None,
+                temperature=temperature,
+                max_tokens=budget,
+                thinking_config=thinking_config,
+                account=account,
+                extra_body=None,
+                thinking_params=thinking_params,
+                sampling_params=sampling_params,
+            )
+
+        while recursion_depth < 5:
+            result = await _call_provider(max_tokens)
+            if _tool_call_was_cut_off(result["response"]):
+                # Anthropic's prescription for a response cut off mid tool_use is
+                # to "retry the request with a higher max_tokens value to get the
+                # full tool use". Nothing has been sent to the client yet, so the
+                # retry is invisible; only the final attempt is reported.
+                bigger = min(max_tokens * 2, config.MAX_OUTPUT_TOKENS)
+                if bigger > max_tokens:
+                    logger.warning(
+                        "[Claude NonStream] tool call cut off by max_tokens=%s, "
+                        "retrying at %s", max_tokens, bigger)
+                    max_tokens = bigger
+                    result = await _call_provider(max_tokens)
 
             resp = result["response"]
             used_api_key = result.get("api_key", "") or ""
@@ -383,6 +432,7 @@ class ClaudeProxyNonstreamMixin:
         else:
             raw_tool_calls = getattr(msg, "tool_calls", None) if msg else None
         has_tool_calls = False
+        incomplete_tool_call = False
         if raw_tool_calls:
             for tc in raw_tool_calls:
                 if isinstance(tc, dict):
@@ -398,10 +448,26 @@ class ClaudeProxyNonstreamMixin:
                 if name:
                     has_tool_calls = True
                     if isinstance(args, str):
-                        try:
-                            args = json.loads(args)
-                        except (json.JSONDecodeError, TypeError):
-                            pass
+                        if args.strip():
+                            try:
+                                args = json.loads(args)
+                            except (json.JSONDecodeError, TypeError):
+                                # Guard the parse. A provider that stops at
+                                # max_tokens mid-parameter leaves a string that
+                                # is not JSON. Coercing it to {} below would tell
+                                # the client to run the tool with no arguments at
+                                # all, which is worse than not emitting it: the
+                                # call is unfinished, not empty.
+                                logger.warning(
+                                    "[Claude NonStream] dropping %s (id=%s): arguments are "
+                                    "not valid JSON, the provider stopped mid-call",
+                                    name, tc_id,
+                                )
+                                has_tool_calls = False
+                                incomplete_tool_call = True
+                                continue
+                        else:
+                            args = {}
                     if router_hosted_tools_enabled() and name in (
                             "web_search", "WebSearch", "web_fetch", "WebFetch"):
                         # Reached only when the recursion ran out. This is not a
@@ -442,6 +508,7 @@ class ClaudeProxyNonstreamMixin:
             has_tool_calls=has_tool_calls,
             stop_sequences=stop_sequences,
             emitted_text=text or "",
+            incomplete_tool_call=incomplete_tool_call,
         )
 
         client_input_tokens = estimate_input_tokens(body)

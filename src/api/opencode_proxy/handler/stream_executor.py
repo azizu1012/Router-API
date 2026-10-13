@@ -17,6 +17,16 @@ from typing import Any, Dict, List, AsyncIterator, Optional, cast
 
 from src.core.config_n_logg import config
 from src.core.config_n_logg.logger import logger_proxy as logger
+
+# Shared with the Claude proxy so both dialects bound a silent stream the same
+# way. Layering note: this is an import from src/api/claude_proxy into
+# src/api/opencode_proxy — sibling protocol clients, neither above the other —
+# so it does not invert a layer. If that ever changes, the constant moves down
+# to src/core/runtime instead.
+from src.api.claude_proxy.handler.streaming.keepalive import (
+    STREAM_STALL_TIMEOUT,
+    StreamStalled,
+)
 from src.core.observability.usage_logger import log_usage
 from src.core.providers.finish_reason import normalize_finish_reason
 from src.logical_HQ_translator import (
@@ -46,7 +56,11 @@ async def _run_websearch_nonstream(
     Returns (text, search_context, new_messages_with_result).
     """
     from .websearch import resolve_search_engine
-    from .search import execute_opencode_search
+    from .search import (
+        HOSTED_SEARCH_MAX_EVIDENCE_CHARS,
+        HOSTED_SEARCH_MAX_RESULTS,
+        execute_opencode_search,
+    )
 
     thinking_config: Dict[str, Any] = {}
     max_tokens = min(int(body.get("max_tokens", config.MAX_OUTPUT_TOKENS)), config.MAX_OUTPUT_TOKENS)
@@ -98,6 +112,8 @@ async def _run_websearch_nonstream(
         search_context, combined_citations = await execute_opencode_search(
             [query], model_alias_or_name=model_alias, search_engine=se,
             auth_key_prefix=auth_key_prefix, account=account,
+            result_limit=HOSTED_SEARCH_MAX_RESULTS,
+            evidence_chars=HOSTED_SEARCH_MAX_EVIDENCE_CHARS,
         )
         if search_context:
             result_lines = [search_context]
@@ -124,6 +140,20 @@ async def _run_websearch_nonstream(
     tool_result_msg = {"role": "tool", "tool_call_id": web_call["id"], "content": search_context}
     new_messages = list(messages) + [assistant_msg, tool_result_msg]
     return text, search_context, new_messages
+
+
+def _arguments_are_valid_json(raw: str) -> bool:
+    """Whether an accumulated argument fragment is parseable.
+
+    An empty string is not a failure: it is a tool that takes no parameters.
+    """
+    if not raw.strip():
+        return True
+    try:
+        json.loads(raw)
+    except (json.JSONDecodeError, TypeError):
+        return False
+    return True
 
 
 async def execute_stream(
@@ -220,6 +250,13 @@ async def execute_stream(
     _BUF_FLUSH_SIZE = 80
     stream_finish_reason = None
     has_tool_calls = False
+    # Tool calls are held back until the stream ends so an unfinished one can be
+    # discarded. Forwarding fragments as they arrive means a call that
+    # max_tokens cut mid-argument reaches the client labelled as complete, and
+    # the client executes it with arguments that do not parse — a failure the
+    # stream reports as success. Buffering costs nothing here: tool arguments
+    # are only meaningful whole.
+    tool_buffers: dict = {}
     thinking_enabled = bool(thinking_config)
     reasoning_received = False
 
@@ -341,20 +378,43 @@ async def execute_stream(
         __anext__ alive through a timeout, so starting another one on the next
         pass raises "asynchronous generator is already running". The pending
         pull is awaited again instead.
+
+        A quiet model is kept alive; a silent one is not. Without the stall bound
+        this loop yielded a keepalive forever while the provider had stopped
+        responding, holding the request open and the coroutine on the event loop
+        for as long as the client was willing to wait.
         """
         yield first_item
         it = gen.__aiter__()
         pending: asyncio.Future = asyncio.ensure_future(it.__anext__())
-        while True:
-            try:
-                item = await asyncio.wait_for(asyncio.shield(pending), timeout=4.0)
-            except asyncio.TimeoutError:
-                yield None          # keepalive; the pull is still in flight
-                continue
-            except StopAsyncIteration:
-                return
-            yield item
-            pending = asyncio.ensure_future(it.__anext__())
+        last_item = time.monotonic()
+        try:
+            while True:
+                try:
+                    item = await asyncio.wait_for(asyncio.shield(pending), timeout=4.0)
+                except asyncio.TimeoutError:
+                    now = time.monotonic()
+                    if now - last_item >= STREAM_STALL_TIMEOUT:
+                        raise StreamStalled(
+                            f"provider sent nothing for {now - last_item:.0f}s"
+                        ) from None
+                    yield None          # keepalive; the pull is still in flight
+                    continue
+                except StopAsyncIteration:
+                    return
+                yield item
+                last_item = time.monotonic()
+                pending = asyncio.ensure_future(it.__anext__())
+        finally:
+            if not pending.done():
+                pending.cancel()
+            await asyncio.gather(pending, return_exceptions=True)
+            close = getattr(it, "aclose", None)
+            if close is not None:
+                try:
+                    await close()
+                except Exception:
+                    pass
 
     try:
         async for item in _iter_with_keepalive():
@@ -395,8 +455,28 @@ async def execute_stream(
                     async for c in _process_content(content, bool(reasoning)):
                         yield c
             if tool_calls:
-                has_tool_calls = True
-                yield _openai_sse(model_name, tool_calls=tool_calls, thought_signature=ts, chunk_id=chunk_id)
+                for tc in tool_calls:
+                    idx = tc.get("index", 0)
+                    buf = tool_buffers.setdefault(
+                        idx, {"id": None, "type": "function", "name": "", "args": ""},
+                    )
+                    if tc.get("id"):
+                        buf["id"] = tc["id"]
+                    if tc.get("name"):
+                        buf["name"] = tc["name"]
+                    raw = tc.get("arguments") or ""
+                    if isinstance(raw, dict):
+                        raw = json.dumps(raw)
+                    # Same three shapes the Claude proxy has to survive: real
+                    # fragments concatenate, a `{}` placeholder is replaced by
+                    # the body that follows it, and a fragment a provider repeats
+                    # alongside finish_reason is not counted twice.
+                    if buf["args"] == raw:
+                        continue
+                    if buf["args"] == "{}":
+                        buf["args"] = raw
+                    else:
+                        buf["args"] += raw
 
         if extractor:
             async for c in _flush_reasoning():
@@ -415,8 +495,24 @@ async def execute_stream(
             async for c in _yield_text(flushed):
                 yield c
 
+        incomplete_tool_call = False
+        for idx in sorted(tool_buffers):
+            buf = tool_buffers[idx]
+            if buf["args"] and not _arguments_are_valid_json(buf["args"]):
+                logger.warning(
+                    "[OpenCode Stream] dropping %s (id=%s): arguments are not valid "
+                    "JSON, the provider stopped mid-call", buf["name"], buf["id"])
+                incomplete_tool_call = True
+                continue
+            has_tool_calls = True
+            yield _openai_sse(model_name, tool_calls=[{
+                "id": buf["id"], "type": buf["type"],
+                "index": idx, "name": buf["name"], "arguments": buf["args"],
+            }], thought_signature=ts, chunk_id=chunk_id)
+
         stop_reason = normalize_finish_reason(stream_finish_reason,
-                                          has_tool_calls=has_tool_calls)
+                                          has_tool_calls=has_tool_calls,
+                                          incomplete_tool_call=incomplete_tool_call)
         yield _openai_sse(model_name, finish_reason=stop_reason, chunk_id=chunk_id)
 
         out_tokens = max(1, out_len // 4)

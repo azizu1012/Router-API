@@ -50,8 +50,9 @@ class ModelPool:
     async def acquire(self, skip: Optional[Set[str]] = None, timeout: Optional[float] = None) -> str:
         skip = skip or set()
         timeout = self.acquire_deadline if timeout is None else max(0.01, timeout)
-        start = time.time()
-        while time.time() - start < timeout:
+        # A wall-clock adjustment must not extend a request's pool deadline.
+        start = time.monotonic()
+        while time.monotonic() - start < timeout:
             # Priority 1: custom endpoint members (free ones only)
             for member in self._custom_members:
                 if member in skip:

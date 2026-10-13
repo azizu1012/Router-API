@@ -53,6 +53,10 @@ MAIN_SESSION_INDICATORS = (
     "you are an interactive agent",
     "you are claude code",
     "you are the claude code cli",
+    # Claude Code versions that omit the first-person sentence still identify
+    # themselves with this stable marker in the system prompt.
+    "cc_version=",
+    "claude-code",
     "interactive cli",
     "interactive agent",
     # Not "interactive agent": opencode ships "an interactive coding assistant",
@@ -217,8 +221,18 @@ def is_sub_agent_body(body: Dict[str, Any]) -> bool:
     system_prompt_lower = _system_prompt_with_messages(body).lower()
 
     if system_prompt_lower:
-        # A first-person self-declaration outranks the main-session indicators:
-        # a worker says what it is before it says who dispatched it.
+        # These are identity markers from the interactive Claude Code client,
+        # not mentions of a worker role. They win over quoted worker keywords
+        # embedded in the large Claude system prompt.
+        if any(marker in system_prompt_lower for marker in (
+            "you are claude code",
+            "you are the claude code cli",
+            "cc_version=",
+            "claude-code",
+        )):
+            return False
+        # A first-person self-declaration outranks the generic main-session
+        # indicators when no client identity marker is present.
         if _declares_sub_agent(system_prompt_lower):
             return True
         if _is_main_session(system_prompt_lower):

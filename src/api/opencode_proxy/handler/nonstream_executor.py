@@ -99,13 +99,19 @@ async def _resolve_gemini_with_tools_stream(
             query = args.get("query", "")
             logger.info("[OpenCode WebSearch] executing query=%r model=%s", query[:160], kwargs.get("model", "-"))
 
-            from .search import execute_opencode_search
+            from .search import (
+                HOSTED_SEARCH_MAX_EVIDENCE_CHARS,
+                HOSTED_SEARCH_MAX_RESULTS,
+                execute_opencode_search,
+            )
             from .websearch import resolve_search_engine
             se = resolve_search_engine(body, account)
             search_context, combined_citations = await execute_opencode_search(
                 [query], model_alias_or_name=kwargs.get("model", "-"),
                 search_engine=se,
-                auth_key_prefix=auth_key_prefix, account=account
+                auth_key_prefix=auth_key_prefix, account=account,
+                result_limit=HOSTED_SEARCH_MAX_RESULTS,
+                evidence_chars=HOSTED_SEARCH_MAX_EVIDENCE_CHARS,
             )
 
             if search_context:
@@ -207,10 +213,19 @@ async def _resolve_gemini_with_tools(
             query = args.get("query", "")
             logger.info("[OpenCode WebSearch] executing query=%r model=%s", query[:160], kwargs.get("model", "-"))
 
-            from .search import execute_opencode_search
+            from .search import (
+                HOSTED_SEARCH_MAX_EVIDENCE_CHARS,
+                HOSTED_SEARCH_MAX_RESULTS,
+                execute_opencode_search,
+            )
             from .websearch import resolve_search_engine
             se = resolve_search_engine(body, account)
-            search_context, combined_citations = await execute_opencode_search([query], model_alias_or_name=kwargs.get("model", "-"), search_engine=se, auth_key_prefix=auth_key_prefix, account=account)
+            search_context, combined_citations = await execute_opencode_search(
+                [query], model_alias_or_name=kwargs.get("model", "-"),
+                search_engine=se, auth_key_prefix=auth_key_prefix, account=account,
+                result_limit=HOSTED_SEARCH_MAX_RESULTS,
+                evidence_chars=HOSTED_SEARCH_MAX_EVIDENCE_CHARS,
+            )
 
             if search_context:
                 result_lines = [search_context]

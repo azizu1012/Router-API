@@ -299,8 +299,8 @@ class TestThinkingBlock:
 # ── Seam 1d: tool-call buffering (lines 374-431) ───────────────────────────
 
 class TestToolCallBuffering:
-    def _run_tools(self, deltas):
-        return Harness([Chunk(Delta(tool_calls=deltas))]).run()[0]
+    def _run_tools(self, deltas, finish_reason="tool_calls"):
+        return Harness([Chunk(Delta(tool_calls=deltas), finish_reason=finish_reason)]).run()[0]
 
     def test_a_dict_tool_call_is_buffered_and_emitted(self):
         events = self._run_tools([{
@@ -375,35 +375,220 @@ class TestToolCallBuffering:
     def test_object_shaped_second_fragment_can_set_the_name(self):
         events = self._run_tools([
             ToolCall(0, None, "{}", id="t0"),
-            ToolCall(0, "Read", "{}"),
+            ToolCall(0, "Read", None),
         ])
         tool_starts = [d for n, d in events if n == "content_block_start"
                        and d["content_block"]["type"] == "tool_use"]
         assert tool_starts[0]["content_block"]["name"] == "Read", tool_starts
 
+    def test_an_empty_object_placeholder_is_replaced_not_concatenated(self):
+        """`{}` then the real arguments must yield the arguments, not `{}{...}`.
 
-# ── Seam 1e: the large-context warning ──────────────────────────────────────
+        A provider that announces the call with an empty object and streams the
+        body afterwards put `{}{"file_path": ...}` on the wire, which does not
+        parse, so the client got a tool call it could not run.
+        """
+        events = self._run_tools([
+            ToolCall(0, "Write", "{}", id="t0"),
+            ToolCall(0, None, '{"file_path": "/a.py", "content": "x"}'),
+        ])
+        partials = [d["partial_json"] for d in deltas_of(events, "input_json_delta")]
+        assert "".join(partials) == '{"file_path": "/a.py", "content": "x"}', partials
 
-class TestContextWarning:
-    """The warning keys off the token count the pool reports, not the body size.
+    def test_a_repeated_fragment_is_not_counted_twice(self):
+        """A provider that re-sends the whole tool_call must not double it.
 
-    Line 235 compares input_tokens, which arrives on each stream item. A large
-    request body does not trigger it — only a pool that reports a large estimate
-    does. Confirmed by the first run of this test, which passed a 900k-char body
-    and got no warning.
+        Concatenating an identical fragment yields '{"a":1}{"a":1}', which is
+        not JSON, so the call reached the client unusable.
+        """
+        events = self._run_tools([
+            {"index": 0, "id": "t0",
+             "function": {"name": "Bash", "arguments": '{"command":"ls"}'}},
+            {"index": 0, "id": "t0",
+             "function": {"name": "Bash", "arguments": '{"command":"ls"}'}},
+        ])
+        partials = [d["partial_json"] for d in deltas_of(events, "input_json_delta")]
+        assert "".join(partials) == '{"command":"ls"}', partials
+
+    def test_a_call_cut_mid_arguments_is_not_handed_to_the_client(self):
+        """max_tokens or a dropped connection ends the stream without an error.
+
+        The buffer then holds half an object. Emitting it tells the client a
+        call is ready to execute while handing it arguments that do not parse —
+        or none at all, which runs the tool against an empty input.
+        """
+        events = self._run_tools([
+            {"index": 0, "id": "toolu_1",
+             "function": {"name": "Write", "arguments": '{"file_path": "/a.py", "cont'}},
+        ])
+        starts = [d for n, d in events if n == "content_block_start"
+                  and d["content_block"]["type"] == "tool_use"]
+        assert not starts, starts
+        assert not deltas_of(events, "input_json_delta"), events
+
+    def test_the_stop_reason_counters_are_assigned_before_the_branches(self):
+        """The intercepted-search path recurses and then falls through.
+
+        It never enters the branch that emits client tool blocks, so a counter
+        declared only in that branch is unbound by the time the stop reason is
+        computed — a NameError on the one path that runs a server tool, and the
+        hardest path to reach by hand. `ast.walk` gives no ordering guarantee,
+        so this compares line numbers against the branch they have to precede.
+        """
+        import inspect
+
+        import src.api.claude_proxy.handler.proxy_stream as ps
+
+        lines = inspect.getsource(ps).splitlines()
+        branch_line = next(
+            i for i, l in enumerate(lines)
+            if "if intercepted_tool_idx is not None:" in l
+        )
+        for name in ("emitted_tool_blocks", "dropped_incomplete_tool"):
+            assigns = [
+                i for i, l in enumerate(lines)
+                if f"{name} =" in l and "if " not in l
+            ]
+            assert assigns, f"{name} is never assigned"
+            assert min(assigns) < branch_line, (
+                f"{name} is first assigned at line {min(assigns) + 1}, after the "
+                f"intercepted branch at {branch_line + 1} that bypasses it"
+            )
+
+    def test_a_cut_tool_call_is_reported_as_max_tokens(self):
+        """Dropping the block is only half the job — say why it is missing.
+
+        Anthropic's remedy for a truncated tool use is to raise max_tokens and
+        retry. A client told `end_turn` sees nothing wrong and continues the
+        conversation as though the model had chosen to stop, so the turn is lost
+        silently.
+        """
+        events = self._run_tools([
+            {"index": 0, "id": "toolu_1",
+             "function": {"name": "Write", "arguments": '{"file_path": "/a.py", "cont'}},
+        ], finish_reason="stop")
+        md = [d for n, d in events if n == "message_delta"]
+        assert md, events
+        assert md[0]["delta"]["stop_reason"] == "max_tokens", md[0]
+
+    def test_a_complete_tool_call_still_reports_tool_use(self):
+        events = self._run_tools([
+            {"index": 0, "id": "toolu_1",
+             "function": {"name": "Write", "arguments": '{"file_path": "/a.py"}'}},
+        ])
+        md = [d for n, d in events if n == "message_delta"]
+        assert md[0]["delta"]["stop_reason"] == "tool_use", md[0]
+
+class TestTruncatedToolCallRecovery:
+    """The retry does not replay text, so it costs no latency.
+
+    A stream cannot be resumed token-perfect, which is why retrying after output
+    has been emitted normally duplicates it. Re-issuing only to recover the tool
+    call avoids that: the client keeps the first attempt's text and never sees
+    the retry's.
     """
 
-    def test_a_huge_reported_context_gets_a_compact_warning(self):
+    @staticmethod
+    def _run(second_arg, retry_text=None, first_text=None):
+        import asyncio
+        from unittest.mock import patch
+
+        from src.api.claude_proxy import claude_proxy
+
+        def factory(**kwargs):
+            async def gen():
+                if kwargs["max_tokens"] > 4096:
+                    if retry_text:
+                        yield item(Chunk(Delta(content=retry_text)))
+                    yield item(Chunk(Delta(tool_calls=[{
+                        "index": 0, "id": "toolu_2",
+                        "function": {"name": "Write", "arguments": second_arg},
+                    }])))
+                else:
+                    if first_text:
+                        yield item(Chunk(Delta(content=first_text)))
+                    yield item(Chunk(Delta(tool_calls=[{
+                        "index": 0, "id": "toolu_1",
+                        "function": {"name": "Write", "arguments": '{"path": "/a'},
+                    }])))
+            return gen()
+
+        with patch("src.api.claude_proxy.handler.proxy_stream.pool_manager.call_stream",
+                   factory):
+            async def collect():
+                return [e async for e in claude_proxy.stream_message(
+                    {"model": "gemini-flash", "max_tokens": 4096,
+                     "messages": [{"role": "user", "content": "go"}]})]
+
+            return parse_sse(asyncio.run(collect()))
+
+    @staticmethod
+    def _tool_use(events):
+        return [d["content_block"] for n, d in events
+                if n == "content_block_start"
+                and d["content_block"]["type"] == "tool_use"]
+
+    def test_a_matching_retry_yields_a_usable_tool_call(self):
+        events = self._run('{"path": "/a"}')
+        assert self._tool_use(events), events
+        partials = [d["partial_json"] for d in deltas_of(events, "input_json_delta")]
+        assert "".join(partials) == '{"path": "/a"}', partials
+
+    def test_a_diverging_retry_is_discarded_rather_than_mispaired(self):
+        """A retry that changed its mind must not attach a call to old text.
+
+        The first attempt streamed "reading /a.py"; the retry came back talking
+        about /somewhere/else. Taking its tool call would pair a decision with
+        reasoning the client never saw.
+        """
+        events = self._run(
+            '{"path": "/somewhere/else"}',
+            retry_text="Now I will write to /somewhere/else instead.",
+            first_text="Reading /a.py.",
+        )
+        assert not self._tool_use(events), events
+        md = [d for n, d in events if n == "message_delta"]
+        assert md[0]["delta"]["stop_reason"] == "max_tokens", md[0]
+
+    def test_matching_text_with_a_complete_retry_is_accepted(self):
+        """The guard is a match test, not a blanket refusal.
+
+        Same words, whole arguments this time: that is the case worth
+        recovering, and refusing it would waste a turn for nothing.
+        """
+        events = self._run(
+            '{"path": "/a"}',
+            retry_text="Reading /a.py.",
+            first_text="Reading /a.py.",
+        )
+        assert self._tool_use(events), events
+
+    def test_a_retry_that_is_itself_cut_off_is_discarded(self):
+        events = self._run('{"path": "/a", "cont')
+        assert not self._tool_use(events), events
+        md = [d for n, d in events if n == "message_delta"]
+        assert md[0]["delta"]["stop_reason"] == "max_tokens", md[0]
+
+
+class TestContextCompaction:
+    """Large context is handled internally and never becomes chat text.
+
+    The provider usage value is diagnostic only. Claude Chat cannot execute
+    Claude Code's ``/compact`` command, so the proxy must not inject that
+    terminal instruction into the assistant answer.
+    """
+
+    def test_a_huge_reported_context_does_not_get_a_terminal_instruction(self):
         events, _ = Harness([Chunk(Delta(content="ok"))], input_tokens=200_000).run()
-        assert "/compact" in text_of(events), text_of(events)[:400]
+        assert text_of(events) == "ok"
 
-    def test_a_small_reported_context_gets_no_warning(self):
+    def test_a_small_reported_context_is_unchanged(self):
         events, _ = Harness([Chunk(Delta(content="ok"))], input_tokens=1000).run()
-        assert "/compact" not in text_of(events), text_of(events)[:400]
+        assert text_of(events) == "ok"
 
-    def test_the_threshold_is_not_crossed_at_170k(self):
+    def test_the_threshold_is_not_visible_at_170k(self):
         events, _ = Harness([Chunk(Delta(content="ok"))], input_tokens=170_000).run()
-        assert "/compact" not in text_of(events), text_of(events)[:400]
+        assert text_of(events) == "ok"
 
 
 # ── Seam 2: end-of-stream flush (lines 440-508) ─────────────────────────────
@@ -479,9 +664,12 @@ class TestWebSearchInterception:
         fake_call_stream, calls = self._two_turn_stream(turn)
         seen = {}
 
-        async def fake_search(queries, search_engine=None, auth_key_prefix=None, account=None):
+        async def fake_search(queries, search_engine=None, auth_key_prefix=None,
+                              account=None, result_limit=None, evidence_chars=None):
             seen["queries"] = queries
             seen["engine"] = search_engine
+            seen["result_limit"] = result_limit
+            seen["evidence_chars"] = evidence_chars
             return search_result, (citations or [])
 
         async def fake_log_usage(*a, **k):
@@ -503,6 +691,20 @@ class TestWebSearchInterception:
         _, calls, seen = self._run_with_search("results")
         assert seen["queries"] == ["rust"], seen
         assert calls["n"] == 2, "the proxy did not re-enter itself after the search"
+
+    def test_hosted_search_is_capped_at_the_presentation_budget(self):
+        """Chat clients must not receive the engine's full internal result set.
+
+        A recursive synthesis turn re-sends the search context, so an unbounded
+        excerpt list multiplies the prompt on every hop until it hits the
+        provider's TPM ceiling. The budget is passed at the seam, so it is
+        observable from here without asserting on formatted text.
+        """
+        from src.api.claude_proxy.handler.anthropic_spec import search as spec_search
+
+        _, _, seen = self._run_with_search("results")
+        assert seen["result_limit"] == spec_search._HOSTED_SEARCH_MAX_RESULTS, seen
+        assert seen["evidence_chars"] == spec_search._HOSTED_SEARCH_MAX_EVIDENCE_CHARS, seen
 
     def test_the_tool_call_never_reaches_the_client(self):
         events, _, _ = self._run_with_search("results")

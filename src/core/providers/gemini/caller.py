@@ -106,16 +106,28 @@ async def generate_content_stream(
     client = await pool.get_client(api_key)
     async with ClientPool.get_semaphore(tier):
         gen_config = _build_config(system_instruction, temperature, top_p, max_tokens, tools, thinking_config)
-        stream = await asyncio.wait_for(
-            client.aio.models.generate_content_stream(
-                model=model_id,
-                contents=contents,
-                config=gen_config,
-            ),
-            timeout=config.REQUEST_TIMEOUT_SECONDS,
-        )
-        async for chunk in stream:
-            yield chunk
+        stream = None
+        try:
+            stream = await asyncio.wait_for(
+                client.aio.models.generate_content_stream(
+                    model=model_id,
+                    contents=contents,
+                    config=gen_config,
+                ),
+                timeout=min(
+                    config.STREAM_OPEN_TIMEOUT_SECONDS,
+                    config.REQUEST_TIMEOUT_SECONDS,
+                ),
+            )
+            async for chunk in stream:
+                yield chunk
+        finally:
+            close = getattr(stream, "aclose", None)
+            if close is not None:
+                try:
+                    await close()
+                except Exception:
+                    pass
 
 
 def has_media_or_files(contents: List[types.Content]) -> bool:

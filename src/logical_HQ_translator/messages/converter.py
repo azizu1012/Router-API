@@ -4,6 +4,7 @@ from datetime import datetime
 from typing import Any, Dict, List, Optional, Tuple
 
 from src.core.config_n_logg import config
+from src.core.config_n_logg.logger import logger_proxy as logger
 from src.core.providers.gemini.schema_sanitizer import _sanitize_schema_for_gemini
 from src.core.runtime.tool_name_cache import _GLOBAL_TOOL_NAME_CACHE
 
@@ -75,6 +76,64 @@ def ensure_tool_ids_in_messages(messages: List[Dict[str, Any]]) -> None:
                             block["tool_use_id"] = new_id
                         if block.get("agent_use_id") is not None:
                             block["agent_use_id"] = new_id
+
+    _repair_tool_result_pairing(messages)
+
+
+def _repair_tool_result_pairing(messages: List[Dict[str, Any]]) -> None:
+    """Give an id-less ``tool_result`` the id of the ``tool_use`` it answers.
+
+    ``ensure_tool_ids_in_messages`` above synthesises an id when a ``tool_use``
+    block has none, but the guard that rewrites the matching ``tool_result``
+    side is ``if tid and ...`` — an empty ``tool_use_id`` is falsy, so it is
+    left empty. The pair then disagrees, and an id that matches nothing is an
+    orphaned ``tool_result``, which Anthropic rejects with a 400 for the entire
+    request.
+
+    Anthropic pairs parallel tool calls by position, so this does the same:
+    walk each user turn's ``tool_result`` blocks in order and hand out the ids
+    of the nearest preceding assistant turn that are still unclaimed. A
+    ``tool_result`` that has a real id is left alone — it is only ever asked
+    for a value when it has none to be wrong about.
+    """
+    unclaimed: List[str] = []
+    for msg in messages:
+        if msg.get("role") == "assistant":
+            content = msg.get("content")
+            if isinstance(content, list):
+                unclaimed = [
+                    b.get("id") for b in content
+                    if isinstance(b, dict)
+                    and b.get("type") in ("tool_use", "agent_use")
+                    and b.get("id")
+                ]
+            continue
+
+        if not unclaimed:
+            continue
+        content = msg.get("content")
+        if not isinstance(content, list):
+            continue
+        repaired = 0
+        for block in content:
+            if not isinstance(block, dict):
+                continue
+            if block.get("type") not in ("tool_result", "agent_result"):
+                continue
+            key = "tool_use_id" if block.get("tool_use_id") is not None else "agent_use_id"
+            if block.get(key):
+                continue          # already answers a specific call
+            if not unclaimed:
+                break
+            block[key] = unclaimed.pop(0)
+            repaired += 1
+        if not unclaimed:
+            unclaimed = []
+        if repaired:
+            logger.warning(
+                "[Converter] re-paired %d id-less tool_result block(s) with their tool_use",
+                repaired,
+            )
 
 
 def fix_missing_tool_responses(messages: List[Dict[str, Any]]) -> None:

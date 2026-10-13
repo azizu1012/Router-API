@@ -4,6 +4,10 @@ from typing import Any, Dict, List, Optional, Set
 
 from fastapi import WebSocket
 
+# A subscriber that has not accepted a frame within this long is not keeping
+# up. It is disconnected rather than waited on: the log feed pushes one event
+# per line, so a stalled reader would otherwise stall every other reader too.
+_SEND_TIMEOUT = 5.0
 
 
 class ConnectionManager:
@@ -49,26 +53,45 @@ class ConnectionManager:
                 if not subs:
                     del self._channels[channel]
 
-    async def broadcast(self, channel: str, message: dict) -> int:
+    async def broadcast(self, channel: str, message: dict) -> int:  # noqa: D401
+        """Fan a message out to every subscriber of a channel.
+
+        Sends run concurrently and under a timeout. Awaiting them one at a time
+        meant a single slow reader held the loop for as long as its TCP window
+        stayed open, and because the log watcher awaits broadcast per line it
+        could not read another line meanwhile — one slow dashboard tab could
+        stop the whole feed and, with it, the event loop every request shares.
+        A subscriber that cannot keep up is dropped rather than allowed to
+        decide the latency for everyone else.
+        """
         payload = json.dumps(message, ensure_ascii=False, default=str)
         sent = 0
         async with self._lock:
             subs = list(self._channels.get(channel, set()))
-        for ws in subs:
-            try:
-                await ws.send_text(payload)
+        if not subs:
+            return 0
+
+        results = await asyncio.gather(
+            *(self._send_one(ws, payload) for ws in subs),
+            return_exceptions=True,
+        )
+        for ws, ok in zip(subs, results):
+            if ok is True:
                 sent += 1
-            except Exception:
+            elif ok is not True:
                 await self.disconnect(ws)
         return sent
 
-    async def send_to(self, ws: WebSocket, message: dict) -> bool:
+    async def _send_one(self, ws: WebSocket, payload: str) -> bool:
         try:
-            await ws.send_text(json.dumps(message, ensure_ascii=False, default=str))
+            await asyncio.wait_for(ws.send_text(payload), timeout=_SEND_TIMEOUT)
             return True
         except Exception:
-            await self.disconnect(ws)
             return False
+
+    async def send_to(self, ws: WebSocket, message: dict) -> bool:
+        payload = json.dumps(message, ensure_ascii=False, default=str)
+        return await self._send_one(ws, payload)
 
     def get_subscribers(self, channel: str) -> List[WebSocket]:
         return list(self._channels.get(channel, set()))

@@ -75,7 +75,12 @@ class LogWatcher:
         with open(filepath, "r", encoding="utf-8", errors="replace") as f:
             f.seek(0, 2)
             while True:
-                line = f.readline()
+                # The file read is synchronous, so it belongs off the event
+                # loop: a burst of log lines from an active pool would
+                # otherwise stall every other coroutine once per line. Yielding
+                # unconditionally also means a broadcast that blocks cannot
+                # turn this into a tight, non-yielding read loop.
+                line = await asyncio.to_thread(f.readline)
                 if not line:
                     await asyncio.sleep(0.2)
                     continue

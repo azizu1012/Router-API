@@ -154,6 +154,10 @@ class RouterApiConfig:
     # Model defaults
     DEFAULT_MODEL_ALIAS: str = field(default_factory=lambda: (os.getenv("ROUTER_API_DEFAULT_MODEL_ALIAS") or "gemini-flash").strip())
     REQUEST_TIMEOUT_SECONDS: int = _get_int("ROUTER_API_REQUEST_TIMEOUT_SEC", 300, 5, 600)
+    # Opening a provider stream has its own bound.  The general request timeout
+    # may be large for non-streaming generations, but a hung stream-open must
+    # yield back to PoolManager so it can rotate the member.
+    STREAM_OPEN_TIMEOUT_SECONDS: int = _get_int("ROUTER_API_STREAM_OPEN_TIMEOUT_SEC", 30, 5, 120)
     MAX_OUTPUT_TOKENS: int = _get_int("ROUTER_API_MAX_OUTPUT_TOKENS", 65536, 128, 1000000)
     MAX_RETRIES: int = _get_int("ROUTER_API_MAX_RETRIES", 5, 1, 20)
 

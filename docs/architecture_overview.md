@@ -268,7 +268,10 @@ Hiện tại, hệ thống được thiết kế để hoạt động ổn đị
 | `GEMINI_API_KEY_1..N` | — | Các khóa API Gemini |
 | `ROUTER_API_PORT` | `58100` | Cổng Server |
 | `ROUTER_API_MAX_RETRIES` | `5` | Số lần thử lại tối đa ở chế độ độc lập |
+| `ROUTER_API_REQUEST_TIMEOUT_SEC` | `300` | Timeout tổng cho request non-stream |
+| `ROUTER_API_STREAM_OPEN_TIMEOUT_SEC` | `30` | Timeout mở stream provider trước khi pool xoay member |
 | `POOL_SWAP_FAILURES` | `5` | Số lỗi tạm thời trước khi swap thành viên pool |
+| `POOL_RETRY_SECONDS` | `30` | Ngân sách thời gian retry của một pool request |
 | `POOL_MAX_ATTEMPTS` | `15` | Số lần thử lại tối đa trong vòng lặp pool |
 | `KEY_429_COOLDOWN_SECONDS` | `15` | Thời gian đóng băng key sau rate-limit |
 | `KEY_INVALID_COOLDOWN_SECONDS` | `3600` | Thời gian đóng băng key sau lỗi invalid/billing |

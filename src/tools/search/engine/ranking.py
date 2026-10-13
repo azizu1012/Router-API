@@ -363,14 +363,46 @@ class SearchRankingMixin(SearchUtilsMixin):
 
         return diverse[:limit]
 
-    def _format_final_search_result(self, topic: str, query: str, ranked_records: List[Dict[str, str]], required_sources: int) -> str:
+    def _format_final_search_result(
+        self,
+        topic: str,
+        query: str,
+        ranked_records: List[Dict[str, str]],
+        required_sources: int,
+        *,
+        result_limit: Optional[int] = None,
+        grounded_limit: Optional[int] = None,
+        evidence_max_chars: Optional[int] = None,
+    ) -> str:
+        """Render ranked sources with an optional compact presentation budget.
+
+        The search engine can keep a wider internal ranking for quality checks,
+        while hosted chat only needs a small, diverse evidence set. Limiting at
+        the source boundary avoids cutting a markdown block in half and keeps
+        citations attached to the excerpt they support.
+        """
         profile = self._detect_query_profile(query)
         top_lines = []
         additional_lines = []
         quality_domains = set()
-        display_records = self._domain_diversify_records(ranked_records, self.search_top_results_limit, True)
+        display_limit = (
+            self.search_top_results_limit
+            if result_limit is None
+            else max(1, int(result_limit))
+        )
+        grounded_read_limit = (
+            self.search_grounded_top_links
+            if grounded_limit is None
+            else max(0, int(grounded_limit))
+        )
+        evidence_limit = (
+            getattr(self, "search_evidence_max_chars", 2500)
+            if evidence_max_chars is None
+            else max(200, int(evidence_max_chars))
+        )
+        display_records = self._domain_diversify_records(ranked_records, display_limit, True)
 
-        top_target = min(self.search_top_results_limit, max(required_sources, 3))
+        top_target = min(display_limit, max(required_sources, 3))
         for idx, rec in enumerate(display_records):
             line = self._format_source_line(rec)
             if idx < top_target:
@@ -384,14 +416,13 @@ class SearchRankingMixin(SearchUtilsMixin):
 
         deep_lines = []
         if self.search_web_mode == "grounded":
-            evidence_max = getattr(self, "search_evidence_max_chars", 2500)
-            for rec in display_records[:self.search_grounded_top_links]:
+            for rec in display_records[:grounded_read_limit]:
                 evidence = rec.get("evidence", "")
                 if not evidence:
                     continue
                 title = rec.get("title") or "Không có tiêu đề"
                 url = rec.get("url") or ""
-                snippet = self._extract_query_highlight(evidence, query, evidence_max)
+                snippet = self._extract_query_highlight(evidence, query, evidence_limit)
                 if snippet:
                     date_badge = ""
                     if rec.get("pub_date_str"):
@@ -407,7 +438,7 @@ class SearchRankingMixin(SearchUtilsMixin):
             f"- Mode: {self.search_web_mode}",
             f"- Top results: {len(display_records)}",
             f"- Unique domains: {len(unique_domains)}",
-            f"- Grounded reads: {self.search_grounded_top_links if self.search_web_mode == 'grounded' else 0}",
+            f"- Grounded reads: {min(grounded_read_limit, len(display_records)) if self.search_web_mode == 'grounded' else 0}",
             f"- Required quality sources: {required_sources}",
             f"- Quality sources found: {len(quality_domains)}",
             "",

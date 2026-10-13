@@ -97,22 +97,28 @@ def get_tool_calls(delta_obj: Any) -> Optional[List[dict]]:
     if not tool_calls:
         return None
     result = []
-    for tool_call in tool_calls:
+    for pos, tool_call in enumerate(tool_calls):
         if isinstance(tool_call, dict):
             fn = tool_call.get("function", {})
             fn_name = fn.get("name", "") if isinstance(fn, dict) else ""
             fn_args = fn.get("arguments", "") if isinstance(fn, dict) else ""
             call_id = tool_call.get("id")
             call_type = tool_call.get("type", "function")
+            # Providers key parallel calls by index and omit it from later
+            # fragments. Carrying it through is what lets a caller reassemble
+            # two interleaved argument streams instead of concatenating them.
+            call_index = tool_call.get("index", pos)
         else:
             function = getattr(tool_call, "function", None)
             call_id = getattr(tool_call, "id", None)
             call_type = getattr(tool_call, "type", "function")
             fn_name = getattr(function, "name", "") if function else ""
             fn_args = getattr(function, "arguments", "") if function else ""
+            call_index = getattr(tool_call, "index", pos)
         result.append({
             "id": call_id,
             "type": call_type,
+            "index": call_index,
             "name": fn_name,
             "arguments": fn_args,
         })

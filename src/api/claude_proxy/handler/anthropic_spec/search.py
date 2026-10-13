@@ -14,6 +14,14 @@ _DEFAULT_MAX_USES = 5
 
 _MAX_SMART_BUDGET_CAP = 3
 
+# Hosted chat needs enough independent sources to synthesize a reliable answer,
+# but sending every search excerpt back on every recursive turn can multiply the
+# context. These are presentation limits; the ranking/evidence pipeline still
+# evaluates its full internal result set.
+_HOSTED_SEARCH_MAX_RESULTS = 5
+_HOSTED_SEARCH_MAX_EVIDENCE_CHARS = 900
+_HOSTED_SEARCH_MAX_CITATION_CHARS = 1200
+
 # A provider can return an empty synthesis turn after the router has already
 # executed a hosted search. The raw search context is an internal tool payload,
 # so it must never be used as the assistant's visible answer.
@@ -27,6 +35,27 @@ def is_raw_search_context(text: Any) -> bool:
     """Return whether model text is the router's internal search payload."""
     value = str(text or "")
     return "[Web Search Results" in value or "[End of Web Search Results]" in value
+
+
+def _bounded_excerpt(text: Any, max_chars: int = _HOSTED_SEARCH_MAX_CITATION_CHARS) -> str:
+    """Bound one citation without repeating the full search context per source."""
+    value = str(text or "").strip()
+    limit = max(200, int(max_chars))
+    if len(value) <= limit:
+        return value
+    paragraphs = [part.strip() for part in value.split("\n\n") if part.strip()]
+    if paragraphs:
+        kept: List[str] = []
+        used = 0
+        for paragraph in paragraphs:
+            extra = len(paragraph) + (2 if kept else 0)
+            if used + extra > limit:
+                break
+            kept.append(paragraph)
+            used += extra
+        if kept:
+            return "\n\n".join(kept).rstrip() + " …"
+    return value[:limit].rstrip() + " …"
 
 _ROUTER_HOSTED_TOOLS = "ROUTER_CLAUDE_HOSTED_TOOLS"
 
@@ -142,7 +171,10 @@ async def run_server_tool(
         engine = resolve_search_engine(body, account)
         context, citations = await execute_hybrid_search(
             [query], search_engine=engine,
-            auth_key_prefix=auth_key_prefix, account=account)
+            auth_key_prefix=auth_key_prefix, account=account,
+            result_limit=_HOSTED_SEARCH_MAX_RESULTS,
+            evidence_chars=_HOSTED_SEARCH_MAX_EVIDENCE_CHARS,
+        )
     except Exception as e:
         logger.warning("[ClaudeProxy] server %s failed: %s", name, e)
         return f"{error_prefix}: {e}", [], "unavailable"
@@ -296,10 +328,15 @@ def _web_search_result_block(rec: Dict[str, Any]) -> Dict[str, Any]:
         return {"type": "web_search_tool_result", "tool_use_id": rec["id"],
                 "content": []}
     content = []
-    for c in citations:
+    for index, c in enumerate(citations):
         # The search engines report a url and title per hit, not a per-result
-        # excerpt, so the excerpt handed back is the text the model read.
-        excerpt = c.get("snippet") or c.get("content") or rec.get("result") or ""
+        # excerpt. New citations carry their own bounded snippet. For older or
+        # mocked callers, use the full result only once instead of multiplying
+        # it by every citation in the result list.
+        excerpt = c.get("snippet") or c.get("content") or ""
+        if not excerpt and index == 0:
+            excerpt = rec.get("result") or ""
+        excerpt = _bounded_excerpt(excerpt)
         entry = {"type": "web_search_result",
                  "url": c["url"],
                  "title": c.get("title") or c["url"],

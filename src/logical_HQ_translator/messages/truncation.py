@@ -9,6 +9,52 @@ from typing import Any, Dict, List
 from src.core.config_n_logg.logger import logger_proxy as logger
 
 
+def _is_tool_result_msg(msg: Dict[str, Any]) -> bool:
+    """Match the same role spelling that anthropic_wire uses to build tool_result blocks."""
+    role = str(msg.get("role") or "")
+    return role == "tool" or role.startswith("tool")
+
+
+def _drop_orphaned_tool_results(
+    msgs: List[Dict[str, Any]],
+) -> List[Dict[str, Any]]:
+    """Remove tool results whose ``tool_use`` was pruned along with the middle.
+
+    ``split_idx`` is a message boundary, not a tool-exchange boundary, so it can
+    land between an assistant's ``tool_calls`` and the ``role: "tool"`` messages
+    that answer them. Keeping only the tail then produces a ``tool_result`` with
+    no ``tool_use`` behind it.
+
+    The converter already guards this case for orphans present in the *client's*
+    request (see ``converter.py``), but this truncation runs after conversion, so
+    it creates an orphan the converter never gets a chance to see. Reassembling
+    the pair here would exceed the budget this function exists to enforce, so
+    the result is dropped instead — which is what the injected notice already
+    tells the model happened.
+
+    A dangling ``tool_use`` cannot occur the same way: ``recent_msgs`` is a
+    contiguous suffix, so an assistant's tool_calls survives only when the tool
+    messages answering it survive too.
+    """
+    answered = set()
+    for m in msgs:
+        if m.get("role") == "assistant":
+            for tc in (m.get("tool_calls") or []):
+                if isinstance(tc, dict) and tc.get("id"):
+                    answered.add(str(tc["id"]))
+
+    kept = []
+    for m in msgs:
+        if _is_tool_result_msg(m) and str(m.get("tool_call_id") or "") not in answered:
+            logger.warning(
+                "[Emergency] dropped a tool_result whose tool_use was truncated (id=%s)",
+                m.get("tool_call_id"),
+            )
+            continue
+        kept.append(m)
+    return kept
+
+
 def emergency_truncate_to_limit(messages: List[Dict[str, Any]], limit: int) -> List[Dict[str, Any]]:
     """Prune intermediate chat messages from the middle, preserving 
     System messages, the first User message (original task goal), and 
@@ -73,20 +119,31 @@ def emergency_truncate_to_limit(messages: List[Dict[str, Any]], limit: int) -> L
     if not recent_msgs and len(chat_msgs) > start_idx:
         recent_msgs = [chat_msgs[-1]]
 
+    recent_msgs = _drop_orphaned_tool_results(recent_msgs)
+
     # Ensure alternating roles and insert notice
     final_chat = []
     if first_user_msg:
-        first_user_msg_copy = dict(first_user_msg)
         notice = "\n\n[... Một số lượt hội thoại trung gian đã được Proxy lược bớt để tối ưu hóa context tránh lỗi 429 TPM ...]\n\n"
-        content = first_user_msg_copy.get("content")
+        # Copy the blocks, not just the message. A shallow `dict()` copy leaves
+        # `content` shared with the caller's list, so writing the notice into the
+        # first text block below mutated the caller's message in place. This
+        # function runs twice over the same body — once for the opening turn and
+        # again for the recursive turn after a hosted search — so the notice
+        # compounded, and the caller's history was quietly rewritten.
+        first_user_msg_copy = dict(first_user_msg)
+        content = first_user_msg.get("content")
         if isinstance(content, str):
             first_user_msg_copy["content"] = content + notice
         elif isinstance(content, list):
-            text_blocks = [b for b in content if isinstance(b, dict) and b.get("type") == "text"]
+            copied = [dict(b) if isinstance(b, dict) else b for b in content]
+            first_user_msg_copy["content"] = copied
+            text_blocks = [b for b in copied
+                           if isinstance(b, dict) and b.get("type") == "text"]
             if text_blocks:
                 text_blocks[0]["text"] = text_blocks[0].get("text", "") + notice
             else:
-                content.append({"type": "text", "text": notice})
+                copied.append({"type": "text", "text": notice})
 
         final_chat.append(first_user_msg_copy)
 

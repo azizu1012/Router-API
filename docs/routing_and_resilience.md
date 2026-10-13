@@ -258,6 +258,8 @@ Test: `tests/test_effort_mapping.py` — pin cả hai chiều, kể cả việc 
 | `GEMINI_FLASH_LITE_RPD` | `540` | Tổng RPD cho `gemini-flash-lite` pool (20+500+20) |
 | `POOL_SWAP_FAILURES` | `5` | Số lần thất bại liên tiếp trước khi đổi sang pool member tiếp theo |
 | `POOL_MAX_ATTEMPTS` | `15` | Số lần thử lại tối đa qua toàn bộ các pool members |
+| `POOL_RETRY_SECONDS` | `30` | Ngân sách thời gian retry của một pool request |
+| `ROUTER_API_STREAM_OPEN_TIMEOUT_SEC` | `30` | Giới hạn mở stream trước khi xoay member; tách khỏi timeout request tổng |
 | `KEY_429_COOLDOWN_SECONDS` | `15` | Thời gian cooldown khi key dính rate limit tạm thời |
 | `KEY_INVALID_COOLDOWN_SECONDS` | `3600` | Thời gian đóng băng khi key invalid |
 | `MODEL_CONTEXT_LENGTH` | `220000` | Độ dài ngữ cảnh tối đa của mô hình |

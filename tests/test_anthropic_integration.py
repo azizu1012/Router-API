@@ -238,6 +238,171 @@ class TestNonStreamResponseShape:
         thinking = [b for b in msg["content"] if b["type"] == "thinking"]
         assert thinking and thinking[0]["signature"].startswith("gmni_")
 
+    def test_a_tool_call_cut_mid_arguments_is_not_run_with_no_arguments(
+        self, proxy, capture, monkeypatch):
+        """Guard the parse on the non-stream path too.
+
+        The provider stopped at max_tokens mid-parameter, so the arguments are
+        not JSON. Coercing that to {} told the client to execute the tool with
+        no arguments at all, which is how a truncated call becomes a real
+        command with an empty input. The call is unfinished, not empty.
+        """
+        import src.api.claude_proxy.handler.proxy_nonstream as ns
+
+        async def fake_call_nonstream(**kwargs):
+            return {
+                "response": FakeResponse(FakeMessage(content="", tool_calls=[{
+                    "id": "toolu_1",
+                    "function": {"name": "Write",
+                                 "arguments": '{"file_path": "/a.py", "cont'},
+                    }])),
+                "api_key": "key-abcdef123456", "model_id": "gemini-3-flash",
+                "input_tokens": 1000, "reservation": {},
+            }
+
+        monkeypatch.setattr(ns.pool_manager, "call_nonstream", fake_call_nonstream)
+        msg = self._run(proxy, capture, {
+            "model": "gemini-flash", "messages": [{"role": "user", "content": "hi"}]})
+
+        uses = [b for b in msg["content"] if b["type"] == "tool_use"]
+        assert not uses, uses
+        # Anthropic's remedy for a truncated tool use is a higher max_tokens and
+        # a retry, so the client has to be told that is what happened.
+        assert msg["stop_reason"] == "max_tokens", msg["stop_reason"]
+
+    def test_a_complete_tool_call_still_emits_its_input(
+        self, proxy, capture, monkeypatch):
+        import src.api.claude_proxy.handler.proxy_nonstream as ns
+
+        async def fake_call_nonstream(**kwargs):
+            return {
+                "response": FakeResponse(FakeMessage(content="", tool_calls=[{
+                    "id": "toolu_1",
+                    "function": {"name": "Write",
+                                 "arguments": '{"file_path": "/a.py"}'},
+                    }])),
+                "api_key": "key-abcdef123456", "model_id": "gemini-3-flash",
+                "input_tokens": 1000, "reservation": {},
+            }
+
+        monkeypatch.setattr(ns.pool_manager, "call_nonstream", fake_call_nonstream)
+        msg = self._run(proxy, capture, {
+            "model": "gemini-flash", "messages": [{"role": "user", "content": "hi"}]})
+        uses = [b for b in msg["content"] if b["type"] == "tool_use"]
+        assert uses and uses[0]["input"] == {"file_path": "/a.py"}, uses
+        assert msg["stop_reason"] == "tool_use", msg["stop_reason"]
+
+    def test_a_cut_tool_call_is_retried_with_a_bigger_max_tokens(
+        self, proxy, capture, monkeypatch):
+        """Anthropic: "retry the request with a higher max_tokens value".
+
+        Nothing has reached the client yet, so the retry is invisible and the
+        client gets a usable tool call instead of a lost turn.
+        """
+        import src.api.claude_proxy.handler.proxy_nonstream as ns
+
+        seen_budgets = []
+
+        async def fake_call_nonstream(**kwargs):
+            seen_budgets.append(kwargs["max_tokens"])
+            cut = len(seen_budgets) == 1
+            args = ('{"file_path": "/a.py", "cont' if cut
+                    else '{"file_path": "/a.py", "content": "x"}')
+            return {
+                "response": FakeResponse(FakeMessage(content="", tool_calls=[{
+                    "id": "toolu_1",
+                    "function": {"name": "Write", "arguments": args},
+                    }])),
+                "api_key": "key-abcdef123456", "model_id": "gemini-3-flash",
+                "input_tokens": 1000, "reservation": {},
+            }
+
+        monkeypatch.setattr(ns.pool_manager, "call_nonstream", fake_call_nonstream)
+        msg = self._run(proxy, capture, {
+            "model": "gemini-flash", "max_tokens": 4096,
+            "messages": [{"role": "user", "content": "hi"}]})
+
+        assert len(seen_budgets) == 2, seen_budgets
+        assert seen_budgets[1] > seen_budgets[0], seen_budgets
+        uses = [b for b in msg["content"] if b["type"] == "tool_use"]
+        assert uses and uses[0]["input"] == {"file_path": "/a.py", "content": "x"}, uses
+        assert msg["stop_reason"] == "tool_use", msg["stop_reason"]
+
+    def test_the_retry_is_bounded_and_the_cap_is_respected(
+        self, proxy, capture, monkeypatch):
+        """One retry only, and never above the configured output ceiling."""
+        import src.api.claude_proxy.handler.proxy_nonstream as ns
+
+        seen = []
+
+        async def always_cut(**kwargs):
+            seen.append(kwargs["max_tokens"])
+            return {
+                "response": FakeResponse(FakeMessage(content="", tool_calls=[{
+                    "id": "toolu_1",
+                    "function": {"name": "Write", "arguments": '{"a": "b'},
+                    }])),
+                "api_key": "key-abcdef123456", "model_id": "gemini-3-flash",
+                "input_tokens": 1000, "reservation": {},
+            }
+
+        monkeypatch.setattr(ns.pool_manager, "call_nonstream", always_cut)
+        msg = self._run(proxy, capture, {
+            "model": "gemini-flash", "max_tokens": 4096,
+            "messages": [{"role": "user", "content": "hi"}]})
+
+        assert len(seen) == 2, seen
+        assert max(seen) <= ns.config.MAX_OUTPUT_TOKENS, seen
+        assert msg["stop_reason"] == "max_tokens", msg["stop_reason"]
+
+    def test_a_complete_tool_call_is_not_retried(
+        self, proxy, capture, monkeypatch):
+        import src.api.claude_proxy.handler.proxy_nonstream as ns
+
+        seen = []
+
+        async def fake_call_nonstream(**kwargs):
+            seen.append(kwargs["max_tokens"])
+            return {
+                "response": FakeResponse(FakeMessage(content="", tool_calls=[{
+                    "id": "toolu_1",
+                    "function": {"name": "Write", "arguments": '{"file_path": "/a.py"}'},
+                    }])),
+                "api_key": "key-abcdef123456", "model_id": "gemini-3-flash",
+                "input_tokens": 1000, "reservation": {},
+            }
+
+        monkeypatch.setattr(ns.pool_manager, "call_nonstream", fake_call_nonstream)
+        self._run(proxy, capture, {
+            "model": "gemini-flash", "max_tokens": 4096,
+            "messages": [{"role": "user", "content": "hi"}]})
+        assert len(seen) == 1, seen
+
+    def test_a_tool_call_with_no_parameters_is_not_retried(
+        self, proxy, capture, monkeypatch):
+        """An empty argument string is a tool that takes no parameters."""
+        import src.api.claude_proxy.handler.proxy_nonstream as ns
+
+        seen = []
+
+        async def fake_call_nonstream(**kwargs):
+            seen.append(kwargs["max_tokens"])
+            return {
+                "response": FakeResponse(FakeMessage(content="", tool_calls=[{
+                    "id": "toolu_1", "function": {"name": "GetTime", "arguments": ""},
+                    }])),
+                "api_key": "key-abcdef123456", "model_id": "gemini-3-flash",
+                "input_tokens": 1000, "reservation": {},
+            }
+
+        monkeypatch.setattr(ns.pool_manager, "call_nonstream", fake_call_nonstream)
+        msg = self._run(proxy, capture, {
+            "model": "gemini-flash", "max_tokens": 4096,
+            "messages": [{"role": "user", "content": "hi"}]})
+        assert len(seen) == 1, seen
+        uses = [b for b in msg["content"] if b["type"] == "tool_use"]
+        assert uses and uses[0]["input"] == {}, uses
+
     def test_log_usage_is_called(self, proxy, capture):
         # Regression: Claude traffic never reached usage_logs.db before.
         self._run(proxy, capture, {

@@ -51,6 +51,68 @@ from .streaming import (
 )
 
 
+def _normalise_for_compare(text: str) -> str:
+    """Whitespace-insensitive form used to check a retry reproduced the turn."""
+    return " ".join(str(text or "").split())
+
+
+async def _recover_tool_call(
+    make_stream, budget: int, expected_text: str,
+) -> Optional[Dict[int, Dict[str, Any]]]:
+    """Re-issue a turn purely to recover a tool call that max_tokens cut off.
+
+    Anthropic prescribes retrying a truncated tool use at a higher max_tokens,
+    and a stream cannot be resumed token-perfect, so the obvious retry replays
+    text the client already has. It does not have to. The client keeps receiving
+    the first attempt's text exactly as before — this call is not streamed to it
+    at all — and only the tool call is taken from the retry.
+
+    Taking it is conditional. The recovered turn's text is compared with the text
+    already delivered, and the tool call is accepted only if the two agree.
+    Without that check a retry that diverged would attach a tool call to
+    reasoning the client never saw, which is worse than losing the turn.
+
+    Returns the tool buffers, or None when the retry did not reproduce the turn
+    or produced no complete call.
+    """
+    buffers: Dict[int, Dict[str, Any]] = {}
+    text_parts: List[str] = []
+    try:
+        stream = make_stream(budget)
+        async for item in stream:
+            chunk = item.get("chunk") if isinstance(item, dict) else item
+            choices = getattr(chunk, "choices", None) or []
+            if not choices:
+                continue
+            delta = getattr(choices[0], "delta", None)
+            if delta is None:
+                continue
+            content = getattr(delta, "content", None)
+            if isinstance(content, str) and content:
+                text_parts.append(content)
+            buffer_tool_calls(delta, buffers)
+    except Exception as exc:
+        logger.warning("[Claude Stream] tool call recovery failed: %s", exc)
+        return None
+
+    if _normalise_for_compare("".join(text_parts)) != _normalise_for_compare(expected_text):
+        logger.warning(
+            "[Claude Stream] tool call recovery discarded: the retried turn did "
+            "not reproduce the text already sent to the client")
+        return None
+
+    for buf in buffers.values():
+        raw = buf.get("args") or ""
+        if raw and not raw.strip().startswith("{"):
+            continue
+        if raw and raw.strip():
+            try:
+                json.loads(raw)
+            except Exception:
+                return None
+    return buffers or None
+
+
 class ClaudeProxyStreamMixin:
     """
     `ClaudeProxyStreamMixin` cung cấp logic để xử lý các yêu cầu hoàn thành chat streaming
@@ -152,6 +214,21 @@ class ClaudeProxyStreamMixin:
 
             sampling_params = extract_sampling_params(body)
 
+            # No retry here, and that is a deliberate reading of the guidance
+            # rather than an omission. Anthropic prescribes retrying a tool use
+            # that max_tokens cut off, and the streaming guidance agrees a partial
+            # is worth nothing for anything a machine will consume. It also says
+            # a stream cannot be resumed token-perfect, so any retry re-emits
+            # what the client already holds once a block is open. The only fully
+            # safe form is "commit on completion only" - buffer the entire
+            # response until the terminal event - which is exactly the streaming
+            # latency this path exists to avoid.
+            #
+            # So the non-destructive half is done instead: a call that cannot be
+            # parsed is never handed to the client, and the turn ends as
+            # max_tokens, which is the signal a caller needs in order to ask
+            # again at a higher ceiling. The caller retries; the gateway does not
+            # double-stream on its behalf.
             async for chunk in self._stream_message_impl(
                 body=body,
                 openai_messages=openai_messages,
@@ -176,8 +253,7 @@ class ClaudeProxyStreamMixin:
 
     async def _stream_message_impl(
         self,
-        body: Dict[str, Any],
-        openai_messages: List[Dict[str, Any]],
+        body: Dict[str, Any],        openai_messages: List[Dict[str, Any]],
         openai_tools: Optional[List[Dict[str, Any]]],
         model_alias: str,
         temperature: float,
@@ -356,33 +432,14 @@ class ClaudeProxyStreamMixin:
                 used_model_id = item.get("model_id", used_model_id)
                 if not started:
                     started = True
-                    if recursion_depth == 0:
-                        # Warn before the model starts when the context is near the
-                        # TPM ceiling, so the user can /compact instead of hitting 429.
-                        from src.core.runtime.sub_agent_detect import is_sub_agent_body
-                        from src.logical_HQ_translator.streaming.cache_agent import is_claude_code_body
-                        if input_tokens > (178000 if is_claude_code_body(body) else 170000) \
-                                and not is_sub_agent_body(body):
-                            ctx_warn = (
-                                "\n⚠️  [ROUTER-API WARNING] Context is extremely large (%.1fk tokens). "
-                                "Please run '/compact' in your terminal immediately to avoid 250k TPM rate limits! ⚠️\n"
-                                "⚠️  [CẢNH BÁO] Context hiện tại cực kỳ lớn (%.1fk tokens). "
-                                "Vui lòng chạy lệnh '/compact' ngay lập tức để tránh bị lỗi giới hạn 250k TPM! ⚠️\n\n"
-                            ) % (input_tokens / 1000.0, input_tokens / 1000.0)
-                            text_index = start_block_index
-                            text_started = True
-                            yield _sse("content_block_start", {
-                                "type": "content_block_start",
-                                "index": text_index,
-                                "content_block": {"type": "text", "text": ""},
-                            })
-                            yield _sse("content_block_delta", {
-                                "type": "content_block_delta",
-                                "index": text_index,
-                                "delta": {"type": "text_delta", "text": ctx_warn},
-                            })
-                            accumulated_text.append(ctx_warn)
-                            output_chars += len(ctx_warn)
+                    if recursion_depth == 0 and input_tokens > 170000:
+                        # Chat clients cannot run Claude Code's /compact command.
+                        # Automatic compaction already happened before the provider
+                        # call, so keep this as an internal diagnostic only.
+                        logger.info(
+                            "[Claude Stream] large context accepted after automatic compaction: %.1fk tokens",
+                            input_tokens / 1000.0,
+                        )
 
                 chunk = item["chunk"]
                 # Read usage before the choices guard: Gemini's final chunk can
@@ -607,6 +664,12 @@ class ClaudeProxyStreamMixin:
             next_block_idx = start_block_index + (1 if thinking_started else 0) + (1 if text_started else 0)
 
             intercepted_tool_idx = None
+            # Assigned here rather than inside the branch that emits client tool
+            # blocks: the intercepted path recurses and then falls through to the
+            # stop-reason code that reads these, so declaring them in the branch
+            # left that path reading names it never assigned.
+            emitted_tool_blocks = 0
+            dropped_incomplete_tool = False
             if router_hosted_tools_enabled() and recursion_depth < 5:
                 for idx in sorted(tool_buffers.keys()):
                     buf = tool_buffers[idx]
@@ -712,6 +775,14 @@ class ClaudeProxyStreamMixin:
                     if not remaining_budget or is_redundant:
                         recurse_tools = None
 
+                # A hosted search result is appended after the initial request
+                # compaction. Re-apply the same chat budget before the recursive
+                # synthesis turn so multiple searches cannot grow the payload
+                # past the provider's TPM ceiling.
+                await _pre_compact_and_truncate(
+                    body, new_messages, recurse_tools or [], model_alias
+                )
+
                 # The first provider stream is wrapped with keepalive above,
                 # but this recursive synthesis turn starts after the search
                 # result and can also take a long time. Keep the client
@@ -754,6 +825,79 @@ class ClaudeProxyStreamMixin:
                         name = buf["name"]
                         logger.info("[ToolCallEmit]   idx=%d id=%s name=%s args_len=%d args_preview=%s",
                                     tc_idx, buf["id"], name, len(buf["args"]), buf["args"][:120])
+                        # A provider that stops mid-arguments — max_tokens, a
+                        # dropped connection, a proxy that closed early — still
+                        # ends the stream cleanly, so the buffer holds half an
+                        # object. Forwarding that half would tell the client a
+                        # call is ready to execute and hand it arguments that do
+                        # not parse, which is how a tool ends up running with no
+                        # arguments at all. Both sibling paths below (the hosted
+                        # search and Agent/Task arms) already parse defensively;
+                        # this one did not, and it is the arm every client tool
+                        # goes through.
+                        if buf["args"]:
+                            try:
+                                json.loads(buf["args"])
+                            except Exception as exc:
+                                logger.warning(
+                                    "[ToolCallEmit] dropping %s (idx=%d id=%s): arguments are "
+                                    "not valid JSON (%s), the provider stopped mid-call",
+                                    name, tc_idx, buf["id"], exc,
+                                )
+                                bigger = min(max_tokens * 2, config.MAX_OUTPUT_TOKENS)
+                                if bigger > max_tokens:
+                                    logger.warning(
+                                        "[Claude Stream] %s cut off at max_tokens=%s; "
+                                        "recovering the call at %s",
+                                        name, max_tokens, bigger)
+                                    recovered = await _recover_tool_call(
+                                        lambda b: pool_manager.call_stream(
+                                            model_alias=model_alias,
+                                            messages=openai_messages,
+                                            tools=openai_tools or None,
+                                            temperature=temperature,
+                                            max_tokens=b,
+                                            thinking_config=thinking_config,
+                                            account=account,
+                                            thinking_params=thinking_params,
+                                            sampling_params=sampling_params,
+                                        ),
+                                        bigger,
+                                        "".join(accumulated_text),
+                                    )
+                                    if recovered is not None:
+                                        for r_idx in sorted(recovered):
+                                            tool_buffers[r_idx] = recovered[r_idx]
+                                        buf = tool_buffers[tc_idx]
+                                        name = buf["name"]
+                                        emitted_tool_blocks += 1
+                                        next_block_idx += 1
+                                        yield _sse("content_block_start", {
+                                            "type": "content_block_start",
+                                            "index": next_block_idx - 1,
+                                            "content_block": {
+                                                "type": "tool_use", "id": buf["id"],
+                                                "name": name, "input": {},
+                                            },
+                                        })
+                                        if buf["args"]:
+                                            yield _sse("content_block_delta", {
+                                                "type": "content_block_delta",
+                                                "index": next_block_idx - 1,
+                                                "delta": {
+                                                    "type": "input_json_delta",
+                                                    "partial_json": buf["args"],
+                                                },
+                                            })
+                                        yield _sse("content_block_stop", {
+                                            "type": "content_block_stop",
+                                            "index": next_block_idx - 1,
+                                        })
+                                        continue
+                                    dropped_incomplete_tool = True
+                                else:
+                                    dropped_incomplete_tool = True
+                                continue
                         if name in ("Agent", "Task"):
                             try:
                                 parsed_args = json.loads(buf["args"]) if buf["args"] else {}
@@ -791,6 +935,7 @@ class ClaudeProxyStreamMixin:
                                     "delta": {"type": "input_json_delta", "partial_json": buf["args"]},
                                 })
                             yield _sse("content_block_stop", {"type": "content_block_stop", "index": next_block_idx})
+                        emitted_tool_blocks += 1
                         next_block_idx += 1
 
                 # Fail-safe: an Anthropic response must not finish with a
@@ -852,7 +997,12 @@ class ClaudeProxyStreamMixin:
                                     max(1, output_chars // 4) + len(tool_buffers) * 50)
                 final_stop_reason, final_stop_sequence = map_stop_reason(
                     finish_reason if finish_reason != "tool_use" else "tool_calls",
-                    has_tool_calls=bool(tool_buffers),
+                    # What the client can actually act on, not what the provider
+                    # started: a call dropped above was never announced, so
+                    # claiming tool_calls would leave the client waiting on a
+                    # tool_use block that does not exist.
+                    has_tool_calls=bool(tool_buffers) and emitted_tool_blocks > 0,
+                    incomplete_tool_call=dropped_incomplete_tool,
                     stop_sequences=stop_sequences,
                     emitted_text="".join(accumulated_text),
                 )

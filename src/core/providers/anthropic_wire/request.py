@@ -1,5 +1,6 @@
 """OpenAI-to-Anthropic request translation."""
 
+import logging
 from typing import Any, Dict, List, Optional
 
 from .common import (
@@ -12,6 +13,8 @@ from .common import (
     _tool_result_block,
     _tool_schema,
 )
+
+logger = logging.getLogger(__name__)
 
 
 def openai_to_anthropic_body(

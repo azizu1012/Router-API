@@ -151,6 +151,64 @@ class TestRetireMember:
         assert not pool._locks[member].locked()
         assert exhausted == {member}
 
+    def test_pool_nonstream_deadline_cannot_be_exceeded_by_provider_timeout(self):
+        """A provider's 600s request timeout must not bypass the pool budget."""
+        import time
+        import src.core.orchestration.pool_manager as pm
+        from unittest.mock import patch
+
+        class ShortPool(_FakePool):
+            max_retry_seconds = 0.05
+
+        async def slow_call(*args, **kwargs):
+            await asyncio.sleep(10)
+
+        async def quota_ok(*args, **kwargs):
+            return True
+
+        pool = ShortPool(["m1"])
+        async def resolve_model(*args, **kwargs):
+            return "m1", "m1", "k", "gemini", {"provider": "gemini"}
+
+        patches = [
+            patch.object(router, "resolve_pool", lambda alias: pool),
+            patch.object(router, "acquire_quota", quota_ok),
+            patch.object(router, "release_key", lambda *a, **k: None),
+            patch.object(router, "freeze_key", lambda *a, **k: None),
+            patch.object(router, "record_429", lambda *a, **k: None),
+            patch.object(pm, "_resolve_model", resolve_model),
+            patch.object(pm, "acompletion", slow_call),
+            patch.object(pm, "apply_error_penalty", lambda *a, **k: None),
+            patch.object(pm, "count_transient_error", lambda *a, **k: None),
+            patch.object(pm, "_retry_delay", lambda *a, **k: 0.0),
+        ]
+        for p in patches:
+            p.start()
+        started = time.monotonic()
+        try:
+            with pytest.raises((RuntimeError, TimeoutError)):
+                asyncio.run(pm.pool_manager.call_nonstream("gemini-flash", [{"role": "user", "content": "hi"}]))
+        finally:
+            for p in patches:
+                p.stop()
+        assert time.monotonic() - started < 1.0
+
+
+def test_provider_stream_cleanup_is_explicitly_called():
+    import asyncio
+    from src.core.orchestration.pool_manager import _close_async_stream
+
+    class Stream:
+        def __init__(self):
+            self.closed = False
+
+        async def aclose(self):
+            self.closed = True
+
+    stream = Stream()
+    asyncio.run(_close_async_stream(stream))
+    assert stream.closed is True
+
 
 def await_pool_acquire(pool):
     """Small shim so the test above reads top to bottom."""

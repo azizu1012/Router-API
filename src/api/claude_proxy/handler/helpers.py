@@ -7,7 +7,7 @@ def get_system_status_summary(model_alias: str, reason: str = "pool_exhausted", 
             "Hệ thống đang bị giới hạn tốc độ (RPM/TPM) tạm thời. Đây **không phải lỗi context** của bạn.\n\n"
             "**Hướng xử lý nhanh:**\n"
             "1. **Đợi 15-30 giây** rồi thử lại — rate limit sẽ tự reset theo phút.\n"
-            "2. Nếu vẫn lỗi, chạy `/compact` để giảm token nhằm giảm áp lực rate limit."
+            "2. Router tự động lược bớt context chat khi cần; không cần chạy lệnh terminal."
         )
     elif reason in ("unavailable", "server_error"):
         msg = (
