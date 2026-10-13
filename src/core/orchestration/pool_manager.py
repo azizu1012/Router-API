@@ -26,6 +26,11 @@ TRANSIENT_REASONS = {"rate_limit", "unavailable", "server_error", "timeout", "un
 def _chunk_has_payload(chunk: Any) -> bool:
     """Return whether a provider frame carries usable model output."""
     choices = chunk.get("choices") if isinstance(chunk, dict) else getattr(chunk, "choices", None)
+    # Custom endpoints may return an opaque provider frame instead of an
+    # OpenAI-shaped ``choices`` object.  That first frame still commits the
+    # stream; treating it as empty makes the pool retry a successful endpoint.
+    if isinstance(chunk, dict) and "choices" not in chunk:
+        return bool(chunk)
     for choice in choices or []:
         delta = choice.get("delta", {}) if isinstance(choice, dict) else getattr(choice, "delta", None)
         if not delta:
@@ -101,6 +106,19 @@ def _retire_member(pool: Any, exhausted_members: Set[str], member: str) -> None:
     exhausted_members.add(member)
 
 
+async def _close_async_stream(stream: Any) -> None:
+    """Best-effort close for a provider iterator when a client disconnects."""
+    close = getattr(stream, "aclose", None)
+    if close is None:
+        return
+    try:
+        await close()
+    except Exception:
+        # Preserve the original provider/cancellation error. The key and pool
+        # slot are released by the caller's surrounding finally blocks.
+        pass
+
+
 def _classify_error(e: Exception) -> str:
     """
     Helper function to classify raw exceptions into unified, categorized reasons.
@@ -115,6 +133,8 @@ def _classify_error(e: Exception) -> str:
     and allows for rapid adaptation without requiring a full refactor of error handling
     across all providers. This is a trade-off for speed and operational robustness in a dynamic environment.
     """
+    if isinstance(e, (asyncio.TimeoutError, TimeoutError)):
+        return "timeout"
     err_str = str(e)
     # Check Gemini error classification
     reason = classify_gemini_error(e)
@@ -203,26 +223,36 @@ class PoolManager:
             # Local tracking per request: exhausted_members, consecutive_transient, start_time.
             exhausted_members: Set[str] = set()
             consecutive_transient = 0
-            start_time = time.time()
+            start_time = time.monotonic()
             member: str
             member = await pool.acquire(timeout=pool.max_retry_seconds)
             pool_try = -1
 
             try:
-                while time.time() - start_time < pool.max_retry_seconds:
+                while time.monotonic() - start_time < pool.max_retry_seconds:
                     if member in exhausted_members:
-                        member = await pool.acquire(skip=exhausted_members, timeout=max(1.0, pool.max_retry_seconds - (time.time() - start_time)))
+                        member = await pool.acquire(skip=exhausted_members, timeout=max(0.01, pool.max_retry_seconds - (time.monotonic() - start_time)))
 
                     pool_try += 1
                     api_key_val = None
                     model_id_val = None
                     reservation = {}
                     try:
-                        resp, api_key_val, model_id_val, input_tokens, reservation = await self._resolve_and_call(
-                            model_alias, messages, tools, temperature, max_tokens, thinking_config,
-                            account, extra_body, pool_mode=True, pool=pool, is_stream=False,
-                            attempt=pool_try, thinking_params=thinking_params,
-                            member_override=member, sampling_params=sampling_params,
+                        remaining = pool.max_retry_seconds - (time.monotonic() - start_time)
+                        if remaining <= 0:
+                            break
+                        # The provider request can have a much larger general
+                        # timeout (the local config is 600s). A pool retry
+                        # budget must still be a hard deadline, otherwise one
+                        # hung member monopolizes its slot for ten minutes.
+                        resp, api_key_val, model_id_val, input_tokens, reservation = await asyncio.wait_for(
+                            self._resolve_and_call(
+                                model_alias, messages, tools, temperature, max_tokens, thinking_config,
+                                account, extra_body, pool_mode=True, pool=pool, is_stream=False,
+                                attempt=pool_try, thinking_params=thinking_params,
+                                member_override=member, sampling_params=sampling_params,
+                            ),
+                            timeout=remaining,
                         )
                         member_used = reservation.get("model_alias", member)
                         is_custom = reservation.get("provider") == "custom"
@@ -383,16 +413,16 @@ class PoolManager:
             # --- POOL STREAM MODE (concurrent worker pool) ---
             exhausted_members: Set[str] = set()
             consecutive_transient = 0
-            start_time = time.time()
+            start_time = time.monotonic()
             member: str
             member = await pool.acquire(timeout=pool.max_retry_seconds)
             committed = False
             pool_try = -1
 
             try:
-                while time.time() - start_time < pool.max_retry_seconds:
+                while time.monotonic() - start_time < pool.max_retry_seconds:
                     if member in exhausted_members:
-                        member = await pool.acquire(skip=exhausted_members, timeout=max(1.0, pool.max_retry_seconds - (time.time() - start_time)))
+                        member = await pool.acquire(skip=exhausted_members, timeout=max(0.01, pool.max_retry_seconds - (time.monotonic() - start_time)))
 
                     pool_try += 1
                     api_key_val = None
@@ -430,6 +460,7 @@ class PoolManager:
                                 router.freeze_key(api_key_val, config.KEY_429_COOLDOWN_SECONDS, model_id_val, "rate_limit")
                                 raise RuntimeError("quota_exhausted")
 
+                        gen = None
                         try:
                             kwargs = {
                                 "model": model_full_val,
@@ -451,29 +482,50 @@ class PoolManager:
                             gen = await acompletion(**kwargs)
                             saw_payload = False
                             pending_chunks = []
-                            async for chunk in gen:
-                                if saw_payload:
-                                    yield {
-                                        "chunk": chunk,
-                                        "api_key": api_key_val,
-                                        "model_id": model_id_val,
-                                        "input_tokens": estimated_tokens,
-                                        "reservation": reservation
-                                    }
-                                    continue
-                                pending_chunks.append(chunk)
-                                if _chunk_has_payload(chunk):
-                                    saw_payload = True
-                                    committed = True
-                                    for pending in pending_chunks:
+                            # Pre-commit: use pool rotation budget so a
+                            # silent provider is replaced quickly.
+                            first_chunk_deadline = max(
+                                0.01,
+                                pool.max_retry_seconds - (time.monotonic() - start_time),
+                            )
+                            # Post-commit: the client is already receiving
+                            # data — rotation is impossible.  The keepalive
+                            # layer's STREAM_STALL_TIMEOUT (30 s silence)
+                            # guards against a provider that goes quiet
+                            # mid-stream; this outer cap is a last-resort
+                            # bound so a single request can never hold a
+                            # slot forever.  Pool models are all Flash/Lite
+                            # (no reasoning), so 120 s is generous.
+                            _COMMITTED_STREAM_CAP = 120.0
+                            deadline_ctx = asyncio.timeout(first_chunk_deadline)
+                            async with deadline_ctx:
+                                async for chunk in gen:
+                                    if saw_payload:
                                         yield {
-                                            "chunk": pending,
+                                            "chunk": chunk,
                                             "api_key": api_key_val,
                                             "model_id": model_id_val,
                                             "input_tokens": estimated_tokens,
                                             "reservation": reservation
                                         }
-                                    pending_chunks.clear()
+                                        continue
+                                    pending_chunks.append(chunk)
+                                    if _chunk_has_payload(chunk):
+                                        saw_payload = True
+                                        committed = True
+                                        deadline_ctx.reschedule(
+                                            asyncio.get_event_loop().time()
+                                            + _COMMITTED_STREAM_CAP
+                                        )
+                                        for pending in pending_chunks:
+                                            yield {
+                                                "chunk": pending,
+                                                "api_key": api_key_val,
+                                                "model_id": model_id_val,
+                                                "input_tokens": estimated_tokens,
+                                                "reservation": reservation
+                                            }
+                                        pending_chunks.clear()
 
                             if not saw_payload:
                                 # An upstream that closes before its first
@@ -487,6 +539,8 @@ class PoolManager:
                                 router.update_model_health(member_used, success=True)
                             return
                         finally:
+                            if gen is not None:
+                                await _close_async_stream(gen)
                             if api_key_val:
                                 router.release_key(api_key_val)
 
@@ -580,6 +634,7 @@ class PoolManager:
                         if not has_quota:
                             raise RuntimeError("quota_exhausted")
 
+                    gen = None
                     try:
                         kwargs = {
                             "model": model_full_val,
@@ -626,6 +681,8 @@ class PoolManager:
                             endpoint_manager.mark_endpoint_success(reservation.get("name", model_alias_val))
                         return
                     finally:
+                        if gen is not None:
+                            await _close_async_stream(gen)
                         if api_key_val:
                             router.release_key(api_key_val)
                 except Exception as e:
