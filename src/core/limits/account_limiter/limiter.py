@@ -79,15 +79,15 @@ class AccountRateLimiter:
 
         async with self._dict_lock:
             account_lock = self._get_lock(pool_account_id)
-            self._ensure_account_state(pool_account_id)
+            self._ensure_account_state(pool_account_id) # For RPM/TPM
 
         async with account_lock:
             now = time.time()
             today = datetime.date.today()
             if today != self._rpd_date:
                 self._rpd_date = today
-                self._rpd_count.clear()
-            self._ensure_account_state(pool_account_id)
+                self._rpd_count.clear() # Clear all RPD counts for the new day
+            self._rpd_count.setdefault(account_id, 0) # Ensure RPD count exists for this account
 
             req_q = self._minute_req_ts[pool_account_id]
             tok_q = self._minute_tokens[pool_account_id]
@@ -96,8 +96,8 @@ class AccountRateLimiter:
             while tok_q and now - tok_q[0][0] >= 60:
                 tok_q.popleft()
 
-            if rpd > 0 and self._rpd_count[pool_account_id] >= rpd:
-                return False, f"daily request limit exceeded for pool {pool_type}"
+            if rpd > 0 and self._rpd_count[account_id] >= rpd: # Check global RPD
+                return False, f"daily request limit exceeded for account {account_id}"
             if rpm > 0 and len(req_q) >= rpm:
                 return False, f"requests per minute limit exceeded for pool {pool_type}"
             used_tokens = sum(item[1] for item in tok_q)
@@ -106,7 +106,7 @@ class AccountRateLimiter:
 
             req_q.append(now)
             tok_q.append((now, estimated_tokens))
-            self._rpd_count[pool_account_id] += 1
+            self._rpd_count[account_id] += 1 # Increment global RPD
             self._last_activity[pool_account_id] = now
 
         async with self._dict_lock:
@@ -123,12 +123,15 @@ class AccountRateLimiter:
                 account_lock = self._get_lock(pool_aid)
             async with account_lock:
                 now = time.time()
+                # Ensure pool-specific state exists for RPM/TPM
                 self._ensure_account_state(pool_aid)
                 req_q = self._minute_req_ts.get(pool_aid, deque())
                 tok_q = self._minute_tokens.get(pool_aid, deque())
                 rpm_used = sum(1 for ts in req_q if now - ts < 60)
                 tpm_used = sum(tokens for ts, tokens in tok_q if now - ts < 60)
-                rpd_used = self._rpd_count.get(pool_aid, 0) if datetime.date.today() == self._rpd_date else 0
+
+                # RPD is now global per account_id
+                rpd_used = self._rpd_count.get(account_id, 0) if datetime.date.today() == self._rpd_date else 0
                 res[pkey] = {
                     "rpm_used": rpm_used,
                     "tpm_used": tpm_used,
@@ -169,9 +172,10 @@ class AccountRateLimiter:
                             count = row["count"]
                             aid = prefix_to_id.get(pref)
                             if aid:
+                                self._rpd_count[aid] = self._rpd_count.get(aid, 0) + count # Increment global RPD
+                                # Only update last_activity for the pool-specific id
                                 pool_type = "lite" if ("lite" in model.lower() or "flash-lite" in model.lower()) else "flash"
                                 pool_aid = f"{aid}::{pool_type}"
-                                self._rpd_count[pool_aid] = self._rpd_count.get(pool_aid, 0) + count
                                 self._last_activity[pool_aid] = time.time()
             from src.core.config_n_logg.logger import logger_system as logger
             logger.info("[AccountLimiter] Restored RPD counts from DB for today: %s", self._rpd_count)
