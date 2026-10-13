@@ -215,56 +215,10 @@ def _has_sub_agent_marker(body: Dict[str, Any]) -> bool:
 
 
 def is_sub_agent_body(body: Dict[str, Any]) -> bool:
-    if not body:
-        return False
-
-    system_prompt_lower = _system_prompt_with_messages(body).lower()
-
-    if system_prompt_lower:
-        # These are identity markers from the interactive Claude Code client,
-        # not mentions of a worker role. They win over quoted worker keywords
-        # embedded in the large Claude system prompt.
-        if any(marker in system_prompt_lower for marker in (
-            "you are claude code",
-            "you are the claude code cli",
-            "cc_version=",
-            "claude-code",
-        )):
-            return False
-        # A first-person self-declaration outranks the generic main-session
-        # indicators when no client identity marker is present.
-        if _declares_sub_agent(system_prompt_lower):
-            return True
-        if _is_main_session(system_prompt_lower):
-            return False
-        if any(kw in system_prompt_lower for kw in SUB_AGENT_KEYWORDS):
-            return True
-
-    return _has_sub_agent_marker(body)
+    # Disable sub-agent detection as it's a legacy feature no longer needed
+    return False
 
 
 def is_sub_agent_request_openai(body: Dict[str, Any]) -> bool:
-    """Detect if request is from an opencode sub-agent."""
-    if not body:
-        return False
-    system_prompt_lower = _system_prompt_with_messages(body).lower()
-
-    # Main session first: an opencode main session mentions its tools all over
-    # its own prompt, so the opencode keyword list is only meaningful once the
-    # self-declared main session has been taken out of the running.
-    if _is_main_session(system_prompt_lower):
-        return False
-
-    # For OpenCode, explicitly check for a self-declaration or the SUB_AGENT_TAG
-    # to avoid false positives from general "exploration" or "task" keywords.
-    if _declares_sub_agent(system_prompt_lower):
-        return True
-    if _has_sub_agent_marker(body):  # Checks for _SUB_AGENT_TAG in user message
-        return True
-
-    # Only if "opencode" is present in the system prompt, and one of the specific
-    # OPENCODE_SUB_AGENT_KEYWORDS (which are role-based) is found.
-    if "opencode" in system_prompt_lower:
-        return any(kw in system_prompt_lower for kw in OPENCODE_SUB_AGENT_KEYWORDS)
-
+    # Disable sub-agent detection as it's a legacy feature no longer needed
     return False
