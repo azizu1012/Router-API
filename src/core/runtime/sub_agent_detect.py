@@ -247,7 +247,6 @@ def is_sub_agent_request_openai(body: Dict[str, Any]) -> bool:
     """Detect if request is from an opencode sub-agent."""
     if not body:
         return False
-
     system_prompt_lower = _system_prompt_with_messages(body).lower()
 
     # Main session first: an opencode main session mentions its tools all over
@@ -256,9 +255,16 @@ def is_sub_agent_request_openai(body: Dict[str, Any]) -> bool:
     if _is_main_session(system_prompt_lower):
         return False
 
-    if is_sub_agent_body(body):
+    # For OpenCode, explicitly check for a self-declaration or the SUB_AGENT_TAG
+    # to avoid false positives from general "exploration" or "task" keywords.
+    if _declares_sub_agent(system_prompt_lower):
+        return True
+    if _has_sub_agent_marker(body):  # Checks for _SUB_AGENT_TAG in user message
         return True
 
-    if "opencode" not in system_prompt_lower:
-        return False
-    return any(kw in system_prompt_lower for kw in OPENCODE_SUB_AGENT_KEYWORDS)
+    # Only if "opencode" is present in the system prompt, and one of the specific
+    # OPENCODE_SUB_AGENT_KEYWORDS (which are role-based) is found.
+    if "opencode" in system_prompt_lower:
+        return any(kw in system_prompt_lower for kw in OPENCODE_SUB_AGENT_KEYWORDS)
+
+    return False
