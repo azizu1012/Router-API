@@ -546,8 +546,10 @@ async def execute_stream(
 
     except asyncio.CancelledError:
         logger.warning("[OpenCode Stream Cancelled] model=%s", model_alias)
+        yield _openai_sse(model_name, finish_reason="stop", chunk_id=chunk_id)
         raise
     except Exception as e:
         logger.error("[OpenCode Stream Error] model=%s: %s", model_alias, e, exc_info=True)
+        yield _openai_sse(model_name, finish_reason="error", chunk_id=chunk_id)
         raise
 
