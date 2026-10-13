@@ -22,7 +22,8 @@ from typing import Any, Dict, Iterator, Optional
 from src.core.config_n_logg.logger import logger_proxy as logger
 from src.core.runtime.sse_format import sse_event as _sse
 
-_PROJECT_ROOT = Path(__file__).resolve().parents[2]
+# This module is nested under src/logical_HQ_translator/streaming.
+_PROJECT_ROOT = Path(__file__).resolve().parents[3]
 _log_path = _PROJECT_ROOT / "logs" / "claude_request.log"
 _SESSION_MODELS_LOCK = threading.Lock()
 _SESSION_MODELS_CACHE: Dict[str, Any] = {}

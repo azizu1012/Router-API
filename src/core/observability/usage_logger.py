@@ -7,7 +7,9 @@ import aiosqlite
 
 from src.core.config_n_logg.logger import logger_system as logger
 
-_DB = str(Path(__file__).resolve().parents[2] / "usage_logs.db")
+# Keep the usage database at the repository root. This module lives three
+# directories below it (`src/core/observability`).
+_DB = str(Path(__file__).resolve().parents[3] / "usage_logs.db")
 
 _queue: asyncio.Queue = asyncio.Queue()
 _flush_task: asyncio.Task | None = None

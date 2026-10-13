@@ -23,7 +23,8 @@ from src.backend.endpoints.manager import (
 )
 
 
-_DEFAULT_PATH = str(Path(__file__).resolve().parents[2] / "custom_endpoints.json")
+# Keep the optional JSON fallback at the repository root after provider refactors.
+_DEFAULT_PATH = str(Path(__file__).resolve().parents[3] / "custom_endpoints.json")
 _CACHE_TTL = 5.0
 
 
