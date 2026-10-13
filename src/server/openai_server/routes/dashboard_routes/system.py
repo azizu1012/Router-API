@@ -180,6 +180,11 @@ async def dashboard_my_stats(request: Request, days: int = 30):
     payload = _require_dashboard(request)
     from src.core.observability.usage_logger import get_stats_for_prefix
     account = await asyncio.to_thread(find_account_by_name, payload.get("name", ""))
+    # Raw admin-key sessions use the synthetic "Administrator" identity and
+    # therefore have no row in the accounts table. Keep their usage scoped to
+    # the admin key instead of returning an empty My Usage panel.
+    if not account and payload.get("tier") == "admin":
+        account = {"auth_key": config.AUTH_TOKEN}
     if not account:
         return {"summary": [], "daily": [], "total_requests": 0, "savings": {"standard_cost": 0.0, "cached_cost": 0.0, "gemini_cost": 0.0, "net_savings": 0.0}}
     ak = account.get("auth_key", "")
