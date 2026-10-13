@@ -2090,3 +2090,9 @@ Nếu detector nhận nhầm (A/B/C), user nhận một lượt trả lời trô
 ### Test
 `tests/test_sub_agent_detection_edge_cases.py` — 15 test, tất cả là assertion của hành vi *mong muốn* nên đỏ trên code hiện tại. Hai race (F) được tái hiện tất định bằng `threading.Barrier`, không flaky. Không cần server, key hay DB thật.
 
+## Bug #Hosted-search-loop — lượt tổng hợp cuối vẫn nhận tool
+
+Anthropic hosted search được Router thực thi nội bộ. Sau mỗi `WebSearch`/`WebFetch`, proxy gọi lại model với kết quả tool. Khi hết ngân sách search hoặc query bị lặp, lượt gọi kế tiếp **phải truyền `tools=None`** để model buộc tổng hợp câu trả lời cuối.
+
+Không được chỉ lọc riêng `WebSearch`: các tool khác vẫn có thể khiến model tiếp tục phát tool call, chạy tới recursion limit rồi trả nguyên khối `[Web Search Results]` cho client. Nhánh stream và non-stream phải giữ cùng hành vi. Nhánh stream recursive cũng phải bọc `iter_with_keepalive` để Claude không timeout trong lúc model tổng hợp.
+

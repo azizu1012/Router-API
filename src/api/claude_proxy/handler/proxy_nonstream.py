@@ -301,7 +301,8 @@ class ClaudeProxyNonstreamMixin:
                                     search_citations, search_error)
             )
 
-            # Smart Budgeting: filter out web_search if budget is exhausted or query was redundant
+            # Force a plain synthesis turn once search budget is exhausted or
+            # the model repeats a query; unrelated tools can keep it in a loop.
             if openai_tools:
                 remaining_budget = _search_budget_left(search_limits, len(server_tool_calls), cap_override=_MAX_SMART_BUDGET_CAP)
                 past_queries = [
@@ -311,10 +312,7 @@ class ClaudeProxyNonstreamMixin:
                 ]
                 is_redundant = is_redundant_query(args.get("query", ""), past_queries[:-1]) if len(past_queries) > 1 else False
                 if not remaining_budget or is_redundant:
-                    openai_tools = [
-                        t for t in openai_tools
-                        if t.get("function", {}).get("name") not in ("web_search", "WebSearch")
-                    ] or None
+                    openai_tools = None
 
             recursion_depth += 1
 

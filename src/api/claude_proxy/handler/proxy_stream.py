@@ -647,16 +647,24 @@ class ClaudeProxyStreamMixin:
                         for r in server_tool_calls
                         if r.get("name") in ("web_search", "WebSearch")
                     ]
-                    # If this last search was redundant or budget is now exhausted, strip web_search
+                    # If this last search was redundant or budget is now exhausted,
+                    # force a plain synthesis turn. Leaving unrelated tools in the
+                    # request lets the model emit another tool call instead of
+                    # producing the final answer, which triggers the raw-search
+                    # fallback at the recursion limit.
                     is_redundant = is_redundant_query(args.get("query", ""), past_queries[:-1]) if len(past_queries) > 1 else False
                     if not remaining_budget or is_redundant:
-                        filtered_tools = [
-                            t for t in recurse_tools
-                            if t.get("function", {}).get("name") not in ("web_search", "WebSearch")
-                        ]
-                        recurse_tools = filtered_tools if filtered_tools else None
+                        recurse_tools = None
 
-                async for chunk in self._stream_message_impl(
+                # The first provider stream is wrapped with keepalive above,
+                # but this recursive synthesis turn starts after the search
+                # result and can also take a long time. Keep the client
+                # connection alive while the model consumes the tool result.
+                logger.info(
+                    "[Claude Stream] Recurse after server tool name=%s depth=%d messages=%d",
+                    name, recursion_depth + 1, len(new_messages),
+                )
+                recursive_stream = self._stream_message_impl(
                     body=body,
                     openai_messages=new_messages,
                     openai_tools=recurse_tools,
@@ -674,8 +682,12 @@ class ClaudeProxyStreamMixin:
                     emit_message_start=False,
                     search_limits=search_limits,
                     server_tool_calls=server_tool_calls,
-                ):
-                    yield chunk
+                )
+                async for chunk in iter_with_keepalive(recursive_stream, KEEPALIVE_INTERVAL):
+                    if chunk is _KEEPALIVE:
+                        yield _sse("ping", {"type": "ping"})
+                    else:
+                        yield chunk
 
             else:
                 if tool_buffers:
