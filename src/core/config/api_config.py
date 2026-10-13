@@ -136,12 +136,16 @@ MODEL_POOLS: Dict[str, Dict[str, Any]] = {
                     "gemini-flash-35", "gemini-flash-30", "gemini-flash-25"],
         "swap_failures": int(os.getenv("POOL_SWAP_FAILURES", "5")),
         "max_attempts": int(os.getenv("POOL_MAX_ATTEMPTS", "15")),
+        "max_retry_seconds": int(os.getenv("POOL_MAX_RETRY_SECONDS", "30")),
+        "acquire_deadline": int(os.getenv("POOL_ACQUIRE_DEADLINE", "90")),
     },
     "gemini-flash-lite": {
         "pool_name": "gemini-flash-lite",
         "members": ["gemini-flash-35-lite", "gemini-flash-lite", "gemini-flash-25-lite"],
         "swap_failures": int(os.getenv("POOL_SWAP_FAILURES", "5")),
         "max_attempts": int(os.getenv("POOL_MAX_ATTEMPTS", "15")),
+        "max_retry_seconds": int(os.getenv("POOL_MAX_RETRY_SECONDS", "30")),
+        "acquire_deadline": int(os.getenv("POOL_ACQUIRE_DEADLINE", "90")),
     },
 }
 
