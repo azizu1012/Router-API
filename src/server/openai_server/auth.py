@@ -107,7 +107,7 @@ def handle_sub_agent_error(body: Dict[str, Any], exc: Exception, format_type: st
 
     # ponytail: inform main agent to proceed directly rather than triggering an infinite retry crash loop
     warning_text = (
-        f"[Notice: Sub-agent could not complete background query ({reason})]. "
+        f"[Notice: Sub-agent could not complete background query ({reason})].\n"
         "Proceed with the current session context directly."
     )
 
@@ -252,7 +252,7 @@ async def _sub_agent_stream_error(body: dict, model_alias: str, exc: Exception) 
         reason = "unavailable"
     # ponytail: inform main agent to proceed directly rather than triggering an infinite retry crash loop
     warning_text = (
-        f"[Notice: Sub-agent could not complete background query ({reason})]. "
+        f"[Notice: Sub-agent could not complete background query ({reason})].\n"
         "Proceed with the current session context directly."
     )
     for data in [
