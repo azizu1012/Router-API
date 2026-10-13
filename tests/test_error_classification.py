@@ -52,6 +52,9 @@ class TestClassifyByMessage:
     def test_phrase_is_recognised(self, msg, expected):
         assert _classify_error(err(msg)) == expected
 
+    def test_empty_stream_is_transient(self):
+        assert _classify_error(err("empty_stream_response")) == "unavailable"
+
 
 class TestUnrecognised:
     def test_unknown_message_is_unknown(self):

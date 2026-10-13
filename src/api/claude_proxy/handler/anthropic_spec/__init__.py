@@ -26,7 +26,10 @@ from .search import (
     filter_citations,
     is_redundant_query,
     run_server_tool,
+    router_hosted_tools_enabled,
     server_search_limits,
+    SEARCH_SYNTHESIS_FALLBACK,
+    is_raw_search_context,
 )
 from .usage import (
     MIN_CACHEABLE_TOKENS,
@@ -47,7 +50,10 @@ __all__ = [
     "filter_citations",
     "is_redundant_query",
     "run_server_tool",
+    "router_hosted_tools_enabled",
     "server_search_limits",
+    "SEARCH_SYNTHESIS_FALLBACK",
+    "is_raw_search_context",
     "MIN_CACHEABLE_TOKENS",
     "compute_usage",
     "count_cache_breakpoints",

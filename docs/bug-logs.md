@@ -2096,3 +2096,18 @@ Anthropic hosted search được Router thực thi nội bộ. Sau mỗi `WebSea
 
 Không được chỉ lọc riêng `WebSearch`: các tool khác vẫn có thể khiến model tiếp tục phát tool call, chạy tới recursion limit rồi trả nguyên khối `[Web Search Results]` cho client. Nhánh stream và non-stream phải giữ cùng hành vi. Nhánh stream recursive cũng phải bọc `iter_with_keepalive` để Claude không timeout trong lúc model tổng hợp.
 
+## Vận hành: Router hosted tools cho Claude
+
+Router mặc định thực thi `WebSearch`/`WebFetch` cho các alias Claude chạy qua Gemini. Điều này giúp cả Lite và Flash có web search hoạt động ổn định qua cùng một hosted-tool shape.
+
+- Mặc định: `ROUTER_CLAUDE_HOSTED_TOOLS=true` (hoặc không đặt biến).
+- Muốn thử native tools của provider Claude: đặt `ROUTER_CLAUDE_HOSTED_TOOLS=false` rồi khởi động lại server.
+- `tests/test_hosted_search_shape.py` bật biến này bằng fixture vì file đó kiểm tra riêng wire shape của nhánh Router hosted search.
+
+### Pool safety
+
+Sub-agent requests vẫn dùng chung provider keys với phiên chính. Vì vậy lỗi
+`rate_limit`/`unavailable` vẫn phải freeze key và ghi penalty theo model; chỉ
+global cooldown được cô lập theo sub-agent. `POOL_RETRY_SECONDS` mặc định là
+30 giây để provider lỗi không giữ pool và làm nghẽn dashboard/API.
+

@@ -487,7 +487,7 @@ class CustomEndpointStreamGen:
                 from src.core.config_n_logg.logger import logger_proxy as logger
                 logger.warning("[Custom Endpoint Stream] Chunk read timeout (30s) reached. Closing stream.")
                 await self._cleanup()
-                raise StopAsyncIteration
+                raise TimeoutError("custom_endpoint_stream_timeout")
             except StopAsyncIteration:
                 await self._cleanup()
                 raise

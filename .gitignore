@@ -4,6 +4,8 @@ usage.db
 usage.db-shm
 usage.db-wal
 usage_logs.db
+usage_logs.db-shm
+usage_logs.db-wal
 logs/
 
 # ─── Auto-generated ───
@@ -51,6 +53,8 @@ tests/*
 !tests/test_master_key.py
 !tests/test_retry_counter.py
 !tests/test_error_classification.py
+!tests/test_empty_stream_retry.py
+!tests/test_hosted_search_evidence_bound.py
 !tests/test_layering.py
 !tests/test_custom_pool_rate_limit.py
 !tests/test_error_visibility.py

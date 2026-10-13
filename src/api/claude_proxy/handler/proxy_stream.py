@@ -38,6 +38,9 @@ from .anthropic_spec import (
     _server_tool_use_block,
     _web_search_result_block,
     _search_citations,
+    router_hosted_tools_enabled,
+    SEARCH_SYNTHESIS_FALLBACK,
+    is_raw_search_context,
 )
 from .compaction import _pre_compact_and_truncate
 from .streaming import (
@@ -91,6 +94,25 @@ class ClaudeProxyStreamMixin:
         Yields:
             AsyncIterator[bytes]: Một iterator bất đồng bộ của các khối phản hồi streaming theo định dạng SSE.
         """
+        # Emit the Anthropic prelude before conversion and provider setup. A
+        # slow conversion/lookup otherwise leaves Claude showing only its
+        # generic working state with no progress event.
+        msg_id = "msg_" + uuid.uuid4().hex[:24]
+        yield _sse("message_start", {
+            "type": "message_start",
+            "message": {
+                "id": msg_id,
+                "type": "message",
+                "role": "assistant",
+                "model": body.get("model", ""),
+                "content": [],
+                "stop_reason": None,
+                "stop_sequence": None,
+                "usage": compute_usage(body, estimate_input_tokens(body), 0),
+            },
+        })
+        yield _sse("ping", {"type": "ping"})
+
         openai_messages, openai_tools = _convert_messages(body)
 
         # Same line as the non-stream path. A stream writes different log lines
@@ -105,7 +127,7 @@ class ClaudeProxyStreamMixin:
         from src.api.opencode_proxy.handler.websearch import should_enable_web_search
         from src.api.opencode_proxy.handler.proxy import _WEBSEARCH_TOOL_DEF, _resolve_thinking_config, _extract_thinking_params
         from src.core.runtime.sub_agent_detect import is_sub_agent_body
-        if not is_sub_agent_body(body) and should_enable_web_search(body, account) and not any(
+        if router_hosted_tools_enabled() and not is_sub_agent_body(body) and should_enable_web_search(body, account) and not any(
             t.get("function", {}).get("name") in ("WebSearch", "web_search") for t in openai_tools
         ):
             openai_tools.append(_WEBSEARCH_TOOL_DEF)
@@ -130,8 +152,6 @@ class ClaudeProxyStreamMixin:
 
             sampling_params = extract_sampling_params(body)
 
-            msg_id = "msg_" + uuid.uuid4().hex[:24]
-
             async for chunk in self._stream_message_impl(
                 body=body,
                 openai_messages=openai_messages,
@@ -147,6 +167,7 @@ class ClaudeProxyStreamMixin:
                 recursion_depth=0,
                 start_block_index=0,
                 sampling_params=sampling_params,
+                emit_message_start=False,
             ):
                 yield chunk
         except Exception as e:
@@ -172,6 +193,7 @@ class ClaudeProxyStreamMixin:
         emit_message_start: bool = True,
         search_limits: Optional[Dict[str, Any]] = None,
         server_tool_calls: Optional[List[Dict[str, Any]]] = None,
+        synthesis_retry: bool = False,
     ) -> AsyncIterator[bytes]:
         # Shared across the recursion so `max_uses` counts every search in the
         # turn, not one per level, and so the final usage reports the total.
@@ -198,6 +220,11 @@ class ClaudeProxyStreamMixin:
             accumulated_text = []
             accumulated_thought = []
             accumulated_thought_signature = []
+            # Once a hosted search has run, buffer the next model text until
+            # the turn ends. This prevents a provider from streaming its raw
+            # `[Web Search Results ...]` payload to the client before it can be
+            # identified and discarded.
+            deferred_search_text: List[str] = []
             extractor = XMLThinkingExtractor()
             normalizer = StreamingTextNormalizer()
             used_api_key = ""
@@ -431,6 +458,9 @@ class ClaudeProxyStreamMixin:
                                 })
                                 yield _sse("content_block_stop", {"type": "content_block_stop", "index": thinking_index})
                         elif ev_type == "text":
+                            if server_tool_calls:
+                                deferred_search_text.append(ev_val)
+                                continue
                             accumulated_text.append(ev_val)
                             if not text_started:
                                 text_started = True
@@ -490,6 +520,9 @@ class ClaudeProxyStreamMixin:
                         })
                     output_chars += len(ev_val)
                 elif ev_type == "text":
+                    if server_tool_calls:
+                        deferred_search_text.append(ev_val)
+                        continue
                     accumulated_text.append(ev_val)
                     if not text_started:
                         text_started = True
@@ -535,6 +568,30 @@ class ClaudeProxyStreamMixin:
                     "delta": {"type": "signature_delta", "signature": thinking_signature("".join(accumulated_thought))},
                 })
                 yield _sse("content_block_stop", {"type": "content_block_stop", "index": thinking_index})
+
+            if server_tool_calls and deferred_search_text:
+                candidate = "".join(deferred_search_text)
+                if is_raw_search_context(candidate):
+                    logger.warning("[Claude Stream] Provider echoed raw search context")
+                    deferred_search_text.clear()
+                else:
+                    buffered_normalizer = StreamingTextNormalizer()
+                    normalized = buffered_normalizer.feed(candidate) + buffered_normalizer.flush()
+                    if normalized:
+                        text_started = True
+                        text_index = start_block_index + 1 if thinking_started else start_block_index
+                        yield _sse("content_block_start", {
+                            "type": "content_block_start",
+                            "index": text_index,
+                            "content_block": {"type": "text", "text": ""},
+                        })
+                        yield _sse("content_block_delta", {
+                            "type": "content_block_delta",
+                            "index": text_index,
+                            "delta": {"type": "text_delta", "text": normalized},
+                        })
+                        accumulated_text.append(normalized)
+                        output_chars += len(normalized)
             if text_started:
                 # Citations ride on the text that used them, arriving as
                 # `citations_delta` inside the block. Only the deepest turn has
@@ -550,7 +607,7 @@ class ClaudeProxyStreamMixin:
             next_block_idx = start_block_index + (1 if thinking_started else 0) + (1 if text_started else 0)
 
             intercepted_tool_idx = None
-            if recursion_depth < 5:
+            if router_hosted_tools_enabled() and recursion_depth < 5:
                 for idx in sorted(tool_buffers.keys()):
                     buf = tool_buffers[idx]
                     name = buf["name"]
@@ -568,23 +625,13 @@ class ClaudeProxyStreamMixin:
                 except Exception:
                     args = {}
 
-                tool_result, search_citations, search_error = await run_server_tool(
-                    name, args, body=body, account=account,
-                    auth_key_prefix=auth_key_prefix, limits=search_limits,
-                    used=len(server_tool_calls))
-
-                record = _server_tool_record(name, tc_id, args, tool_result,
-                                             search_citations, search_error)
-                server_tool_calls.append(record)
-
-                # The search happened on this side of the wire, so the client
-                # has to be told about it in Anthropic's hosted-tool shape.
-                # Streaming these as ordinary content blocks is what the spec
-                # describes; without them the streamed message silently dropped
-                # every search and its sources.
+                # Anthropic emits the server tool-use block before doing the
+                # network work. This lets Claude show "Searching" immediately
+                # instead of staying silent until the results are ready.
+                pending_record = _server_tool_record(name, tc_id, args, "")
                 yield _sse("content_block_start", {
                     "type": "content_block_start", "index": next_block_idx,
-                    "content_block": _server_tool_use_block(record),
+                    "content_block": _server_tool_use_block(pending_record),
                 })
                 yield _sse("content_block_delta", {
                     "type": "content_block_delta", "index": next_block_idx,
@@ -594,6 +641,15 @@ class ClaudeProxyStreamMixin:
                 yield _sse("content_block_stop", {
                     "type": "content_block_stop", "index": next_block_idx})
                 next_block_idx += 1
+
+                tool_result, search_citations, search_error = await run_server_tool(
+                    name, args, body=body, account=account,
+                    auth_key_prefix=auth_key_prefix, limits=search_limits,
+                    used=len(server_tool_calls))
+
+                record = _server_tool_record(name, tc_id, args, tool_result,
+                                             search_citations, search_error)
+                server_tool_calls.append(record)
                 yield _sse("content_block_start", {
                     "type": "content_block_start", "index": next_block_idx,
                     "content_block": _web_search_result_block(record),
@@ -718,8 +774,8 @@ class ClaudeProxyStreamMixin:
                             # and emitting it as `tool_use` told the client the
                             # router had handed it a tool to answer — for a search
                             # the router had already run, or that was refused.
-                            if name in ("web_search", "WebSearch", "web_fetch",
-                                        "WebFetch"):
+                            if router_hosted_tools_enabled() and name in (
+                                    "web_search", "WebSearch", "web_fetch", "WebFetch"):
                                 logger.info(
                                     "[Claude Stream] dropping unhandled %s at "
                                     "recursion limit depth=%d", name,
@@ -737,17 +793,42 @@ class ClaudeProxyStreamMixin:
                             yield _sse("content_block_stop", {"type": "content_block_stop", "index": next_block_idx})
                         next_block_idx += 1
 
-                # Fail-safe: An Anthropic response MUST NOT finish with a web_search_tool_result block
-                # as the last content block when stop_reason is end_turn. If the model produced no text
-                # after search, synthesize a fallback text block so the client receives a valid turn.
+                # Fail-safe: an Anthropic response must not finish with a
+                # web_search_tool_result block. Give the provider one bounded
+                # plain-text synthesis retry before returning a short message.
                 if not text_started and server_tool_calls:
-                    fallback_text = ""
-                    for stc in server_tool_calls:
-                        if not stc.get("failed") and stc.get("result"):
-                            fallback_text = stc["result"]
-                            break
-                    if not fallback_text:
-                        fallback_text = "Không tìm thấy kết quả phù hợp trên mạng hoặc đã xảy ra lỗi trong quá trình tìm kiếm."
+                    if not synthesis_retry:
+                        logger.warning(
+                            "[Claude Stream] Empty synthesis after hosted search; "
+                            "retrying once without tools")
+                        retry_stream = self._stream_message_impl(
+                            body=body,
+                            openai_messages=openai_messages,
+                            openai_tools=None,
+                            model_alias=model_alias,
+                            temperature=temperature,
+                            max_tokens=max_tokens,
+                            thinking_config=thinking_config,
+                            thinking_params=thinking_params,
+                            account=account,
+                            auth_key_prefix=auth_key_prefix,
+                            msg_id=msg_id,
+                            recursion_depth=5,
+                            start_block_index=next_block_idx,
+                            sampling_params=sampling_params,
+                            emit_message_start=False,
+                            search_limits=search_limits,
+                            server_tool_calls=server_tool_calls,
+                            synthesis_retry=True,
+                        )
+                        async for chunk in iter_with_keepalive(retry_stream, KEEPALIVE_INTERVAL):
+                            if chunk is _KEEPALIVE:
+                                yield _sse("ping", {"type": "ping"})
+                            else:
+                                yield chunk
+                        return
+
+                    fallback_text = SEARCH_SYNTHESIS_FALLBACK
 
                     yield _sse("content_block_start", {
                         "type": "content_block_start",

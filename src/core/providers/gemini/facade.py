@@ -291,7 +291,9 @@ class _SDKStreamGen:
             except asyncio.TimeoutError:
                 from src.core.config_n_logg.logger import logger_keys as logger
                 logger.warning("[Gemini SDK Stream] Chunk read timeout (30s) reached. Closing stream.")
-                raise StopAsyncIteration
+                # Do not turn an upstream timeout into a clean empty stream;
+                # the pool must see a transient failure and rotate/retry.
+                raise TimeoutError("gemini_stream_chunk_timeout")
             except StopAsyncIteration:
                 raise
 

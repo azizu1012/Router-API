@@ -30,6 +30,16 @@ import pytest
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 
 
+@pytest.fixture(autouse=True)
+def _enable_router_hosted_tools(monkeypatch):
+    """Opt this legacy shape suite into the Router-owned hosted-tool path.
+
+    Production defaults to Claude's native WebSearch/WebFetch handling; these
+    tests specifically verify the optional Router interception contract.
+    """
+    monkeypatch.setenv("ROUTER_CLAUDE_HOSTED_TOOLS", "true")
+
+
 RECORD = {"id": "call_1", "name": "WebSearch", "type": "search",
           "query": "capital of France", "engine": "duckduckgo",
           "citations": []}
@@ -743,6 +753,46 @@ class TestRefusedSearchesAreNotCounted:
         assert codes == ["max_uses_exceeded"]
 
 
+class TestHostedSearchFallbackSafety:
+    def test_nonstream_empty_synthesis_never_exposes_raw_search_context(self, monkeypatch):
+        import src.api.claude_proxy.handler.proxy_nonstream as ns
+        from src.api.claude_proxy import claude_proxy
+        from src.tools.search.orchestration import manager as search_manager
+
+        raw_context = "[Web Search Results]\ninternal ranked sources and excerpts"
+
+        async def fake_search(queries, **kwargs):
+            return raw_context, ACTION_WITH_RESULTS["citations"]
+
+        async def fake_log_usage(*a):
+            return None
+
+        monkeypatch.setattr(
+            ns.pool_manager,
+            "call_nonstream",
+            _scripted_model(
+                _Message(tool_calls=[_websearch_call()]),
+                _Message(raw_context),
+                _Message(raw_context),
+            ),
+        )
+        monkeypatch.setattr(search_manager, "execute_hybrid_search", fake_search)
+        monkeypatch.setattr(ns, "log_usage", fake_log_usage, raising=False)
+
+        msg = asyncio.run(claude_proxy.create_message({
+            "model": "gemini-flash",
+            "messages": [{"role": "user", "content": "search"}],
+            "tools": [SEARCH_TOOL],
+        }))
+
+        text = "".join(
+            block.get("text", "") for block in msg["content"]
+            if block.get("type") == "text"
+        )
+        assert "[Web Search Results]" not in text
+        assert "model chưa tạo được phần tổng hợp" in text
+
+
 # ── The streaming path ──────────────────────────────────────────────────────
 #
 # The search execution used to be written out twice, once per proxy path, and the
@@ -802,7 +852,7 @@ def _parse_sse(raw_chunks):
     return out
 
 
-def _run_streamed_search(monkeypatch, turns, body=None):
+def _run_streamed_search(monkeypatch, turns, body=None, search_text="Paris is the capital."):
     """Drive the real streaming proxy over scripted turns; return parsed events."""
     import src.api.claude_proxy.handler.proxy_stream as st
     from src.api.claude_proxy import claude_proxy
@@ -818,7 +868,7 @@ def _run_streamed_search(monkeypatch, turns, body=None):
 
     async def fake_search(queries, **kwargs):
         calls["search"] += 1
-        return ("Paris is the capital.", ACTION_WITH_RESULTS["citations"])
+        return (search_text, ACTION_WITH_RESULTS["citations"])
 
     async def fake_log_usage(*a):
         return None
@@ -990,6 +1040,41 @@ class TestTheStreamedSearchHonoursMaxUses:
         # Ensure the final content block before message_delta is text
         start_events = [d["content_block"]["type"] for n, d in events if n == "content_block_start"]
         assert start_events[-1] == "text"
+
+    def test_empty_recursive_turn_never_exposes_raw_search_context(self, monkeypatch):
+        raw_context = "[Web Search Results]\ninternal ranked sources and excerpts"
+        events, _ = _run_streamed_search(
+            monkeypatch,
+            [
+                [_tool_call_chunk("WebSearch", {"query": "capital"}, "c1")],
+                [_SChunk(_SDelta(""), finish_reason="stop")],
+            ],
+            search_text=raw_context,
+        )
+
+        text = "".join(
+            d["delta"]["text"] for n, d in events
+            if n == "content_block_delta" and d["delta"].get("type") == "text_delta"
+        )
+        assert "[Web Search Results]" not in text
+        assert "model chưa tạo được phần tổng hợp" in text
+
+    def test_provider_echo_never_streams_raw_search_context(self, monkeypatch):
+        raw_context = "[Web Search Results]\ninternal ranked sources and excerpts"
+        events, _ = _run_streamed_search(
+            monkeypatch,
+            [
+                [_tool_call_chunk("WebSearch", {"query": "capital"}, "c1")],
+                [_SChunk(_SDelta(raw_context), finish_reason="stop")],
+            ],
+        )
+
+        text = "".join(
+            d["delta"]["text"] for n, d in events
+            if n == "content_block_delta" and d["delta"].get("type") == "text_delta"
+        )
+        assert "[Web Search Results]" not in text
+        assert "model chưa tạo được phần tổng hợp" in text
 
     def test_multi_hop_search_allows_distinct_queries_up_to_cap(self, monkeypatch):
         """Smart budgeting allows multi-hop search for distinct queries up to cap (3)."""

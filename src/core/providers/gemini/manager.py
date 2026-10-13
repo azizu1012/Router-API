@@ -274,7 +274,9 @@ class GeminiAPIManager:
 
                     full_parts: List[str] = []
                     chunk = None
+                    saw_chunk = False
                     async for chunk in stream_gen:
+                        saw_chunk = True
                         from .response_dump import dump_generation_response
                         chunk_dict = dump_generation_response(chunk)
                         yield {
@@ -284,6 +286,12 @@ class GeminiAPIManager:
                             "api_key": api_key,
                         }
                         accumulate_parts(chunk, full_parts)
+
+                    if not saw_chunk:
+                        # Do not record a provider success when the SDK closes
+                        # without yielding anything. The caller can then rotate
+                        # to another key/model instead of returning silence.
+                        raise RuntimeError("empty_stream_response")
 
                     input_tokens, output_tokens = extract_stream_usage(
                         chunk, full_parts,

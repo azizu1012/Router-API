@@ -28,6 +28,12 @@ import pytest
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 
 
+@pytest.fixture(autouse=True)
+def _enable_router_hosted_tools(monkeypatch):
+    """Opt this seam suite into the Router-owned hosted-tool path."""
+    monkeypatch.setenv("ROUTER_CLAUDE_HOSTED_TOOLS", "true")
+
+
 class Delta:
     def __init__(self, content=None, reasoning=None, tool_calls=None,
                  thought_signature=None):

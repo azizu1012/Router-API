@@ -198,7 +198,9 @@ class RouterApiConfig:
     # Pool (model merge)
     POOL_SWAP_FAILURES: int = _get_int("POOL_SWAP_FAILURES", 5, 1, 15)
     POOL_MAX_ATTEMPTS: int = _get_int("POOL_MAX_ATTEMPTS", 13, 1, 30)
-    POOL_RETRY_SECONDS: int = _get_int("POOL_RETRY_SECONDS", 120, 10, 600)
+    # A dead provider must not hold a pool slot for minutes while the client
+    # waits. Override for unusually slow providers when needed.
+    POOL_RETRY_SECONDS: int = _get_int("POOL_RETRY_SECONDS", 30, 10, 600)
 
     # Key tier isolation
     FREE_KEY_END: int = _get_int("FREE_KEY_END", 30, 1, 200)

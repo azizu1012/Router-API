@@ -1,5 +1,6 @@
 """Hosted web-search server-tool helpers for the Claude protocol."""
 
+import os
 from typing import Any, Dict, List, Optional, Tuple
 from urllib.parse import unquote, urlsplit
 
@@ -12,6 +13,34 @@ _SERVER_TOOL_PREFIX = "srvtoolu_"
 _DEFAULT_MAX_USES = 5
 
 _MAX_SMART_BUDGET_CAP = 3
+
+# A provider can return an empty synthesis turn after the router has already
+# executed a hosted search. The raw search context is an internal tool payload,
+# so it must never be used as the assistant's visible answer.
+SEARCH_SYNTHESIS_FALLBACK = (
+    "Mình đã thực hiện tìm kiếm nhưng model chưa tạo được phần tổng hợp. "
+    "Vui lòng thử lại."
+)
+
+
+def is_raw_search_context(text: Any) -> bool:
+    """Return whether model text is the router's internal search payload."""
+    value = str(text or "")
+    return "[Web Search Results" in value or "[End of Web Search Results]" in value
+
+_ROUTER_HOSTED_TOOLS = "ROUTER_CLAUDE_HOSTED_TOOLS"
+
+
+def router_hosted_tools_enabled() -> bool:
+    """Whether the Router should intercept Claude's built-in web tools.
+
+    Enabled by default so Gemini-backed Claude aliases (including Lite) can
+    execute WebSearch/WebFetch through the Router. Set
+    ``ROUTER_CLAUDE_HOSTED_TOOLS=false`` to leave native tools untouched.
+    """
+    return os.getenv(_ROUTER_HOSTED_TOOLS, "true").strip().lower() in {
+        "1", "true", "yes", "on"
+    }
 
 _SEARCH_NAMES = ("web_search", "WebSearch")
 

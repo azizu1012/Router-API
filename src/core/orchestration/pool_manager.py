@@ -23,6 +23,26 @@ from src.core.providers.gemini.error import classify as classify_gemini_error
 TRANSIENT_REASONS = {"rate_limit", "unavailable", "server_error", "timeout", "unknown_error"}
 
 
+def _chunk_has_payload(chunk: Any) -> bool:
+    """Return whether a provider frame carries usable model output."""
+    choices = chunk.get("choices") if isinstance(chunk, dict) else getattr(chunk, "choices", None)
+    for choice in choices or []:
+        delta = choice.get("delta", {}) if isinstance(choice, dict) else getattr(choice, "delta", None)
+        if not delta:
+            continue
+        if isinstance(delta, dict):
+            if delta.get("content") or delta.get("reasoning_content") or delta.get("tool_calls"):
+                return True
+        elif (
+            getattr(delta, "content", None)
+            or getattr(delta, "reasoning_content", None)
+            or getattr(delta, "thought", None)
+            or getattr(delta, "tool_calls", None)
+        ):
+            return True
+    return False
+
+
 class PoolCallError(Exception):
     def __init__(self, original_error: Exception, api_key: Optional[str], model_id: Optional[str], reservation: Optional[dict]):
         self.original_error = original_error
@@ -429,15 +449,37 @@ class PoolManager:
                                     kwargs["extra_body"] = extra_body
 
                             gen = await acompletion(**kwargs)
+                            saw_payload = False
+                            pending_chunks = []
                             async for chunk in gen:
-                                committed = True
-                                yield {
-                                    "chunk": chunk,
-                                    "api_key": api_key_val,
-                                    "model_id": model_id_val,
-                                    "input_tokens": estimated_tokens,
-                                    "reservation": reservation
-                                }
+                                if saw_payload:
+                                    yield {
+                                        "chunk": chunk,
+                                        "api_key": api_key_val,
+                                        "model_id": model_id_val,
+                                        "input_tokens": estimated_tokens,
+                                        "reservation": reservation
+                                    }
+                                    continue
+                                pending_chunks.append(chunk)
+                                if _chunk_has_payload(chunk):
+                                    saw_payload = True
+                                    committed = True
+                                    for pending in pending_chunks:
+                                        yield {
+                                            "chunk": pending,
+                                            "api_key": api_key_val,
+                                            "model_id": model_id_val,
+                                            "input_tokens": estimated_tokens,
+                                            "reservation": reservation
+                                        }
+                                    pending_chunks.clear()
+
+                            if not saw_payload:
+                                # An upstream that closes before its first
+                                # frame is transient. Raising here is what
+                                # makes the retry/rotation path run.
+                                raise RuntimeError("empty_stream_response")
 
                             if is_custom:
                                 endpoint_manager.mark_endpoint_success(reservation.get("name", member_used))
@@ -553,15 +595,33 @@ class PoolManager:
                             kwargs.update(sampling_params)
 
                         gen = await acompletion(**kwargs)
+                        saw_payload = False
+                        pending_chunks = []
                         async for chunk in gen:
-                            committed = True
-                            yield {
-                                "chunk": chunk,
-                                "api_key": api_key_val,
-                                "model_id": model_id_val,
-                                "input_tokens": estimated_tokens,
-                                "reservation": reservation
-                            }
+                            if saw_payload:
+                                yield {
+                                    "chunk": chunk,
+                                    "api_key": api_key_val,
+                                    "model_id": model_id_val,
+                                    "input_tokens": estimated_tokens,
+                                    "reservation": reservation
+                                }
+                                continue
+                            pending_chunks.append(chunk)
+                            if _chunk_has_payload(chunk):
+                                saw_payload = True
+                                committed = True
+                                for pending in pending_chunks:
+                                    yield {
+                                        "chunk": pending,
+                                        "api_key": api_key_val,
+                                        "model_id": model_id_val,
+                                        "input_tokens": estimated_tokens,
+                                        "reservation": reservation
+                                    }
+                                pending_chunks.clear()
+                        if not saw_payload:
+                            raise RuntimeError("empty_stream_response")
                         if is_custom:
                             endpoint_manager.mark_endpoint_success(reservation.get("name", model_alias_val))
                         return

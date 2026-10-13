@@ -94,6 +94,18 @@ async def handle_error(
 ) -> None:
     error_text = str(e)
     reason = gerror.classify(error_text)
+    if "empty_stream_response" in error_text.lower():
+        # An empty close is transient, but waiting and retrying the same key
+        # forever hides a bad member. Count it so the next attempt can rotate.
+        model_failures[model_id] = model_failures.get(model_id, 0) + 1
+        router.freeze_key(api_key, config.KEY_429_COOLDOWN_SECONDS, model_id, "unavailable")
+        apply_error_penalty(api_key, "unavailable", model_id)
+        await asyncio.sleep(config.GEMINI_UNAVAILABLE_DELAY_SEC * (attempt + 1))
+        logger.warning(
+            "Key ...%s returned an empty stream (model=%s, failures=%d)",
+            api_key[-4:], model_id, model_failures[model_id],
+        )
+        return
     if reason == "bad_request":
         router.freeze_key(api_key, config.KEY_INVALID_COOLDOWN_SECONDS, model_id, "bad_request")
         apply_error_penalty(api_key, "bad_request", model_id)

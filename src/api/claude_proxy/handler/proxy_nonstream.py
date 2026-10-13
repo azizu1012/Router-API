@@ -30,6 +30,9 @@ from .anthropic_spec import (
     is_redundant_query,
     server_search_limits,
     run_server_tool,
+    router_hosted_tools_enabled,
+    SEARCH_SYNTHESIS_FALLBACK,
+    is_raw_search_context,
 )
 from .compaction import _pre_compact_and_truncate
 
@@ -83,7 +86,7 @@ class ClaudeProxyNonstreamMixin:
         from src.api.opencode_proxy.handler.websearch import should_enable_web_search
         from src.api.opencode_proxy.handler.proxy import _WEBSEARCH_TOOL_DEF, _resolve_thinking_config, _extract_thinking_params
         from src.core.runtime.sub_agent_detect import is_sub_agent_body
-        if not is_sub_agent_body(body) and should_enable_web_search(body, account) and not any(
+        if router_hosted_tools_enabled() and not is_sub_agent_body(body) and should_enable_web_search(body, account) and not any(
             t.get("function", {}).get("name") in ("WebSearch", "web_search") for t in openai_tools
         ):
             openai_tools.append(_WEBSEARCH_TOOL_DEF)
@@ -110,6 +113,7 @@ class ClaudeProxyNonstreamMixin:
         stop_sequences = sampling_params.get("stop_sequences")
 
         recursion_depth = 0
+        synthesis_retry = False
         # The model id the client asked for, before any resolution. Every model
         # path that ends in "this model doesn't work" needs this line: the id
         # never reaches the log otherwise, because a failed call writes nothing
@@ -208,6 +212,13 @@ class ClaudeProxyNonstreamMixin:
                     tsig = getattr(msg, "thought_signature", None)
             finish_reason = getattr(choice, "finish_reason", "stop") if choice else "stop"
 
+            # A provider may echo the internal hosted-search payload instead of
+            # synthesizing an answer. Treat that as an empty synthesis so it
+            # goes through the bounded retry/fallback path below.
+            if server_tool_calls and is_raw_search_context(text):
+                logger.warning("[Claude NonStream] Provider echoed raw search context")
+                text = ""
+
             if not thought and text:
                 extractor = XMLThinkingExtractor()
                 events = extractor.feed(text) + extractor.flush()
@@ -236,11 +247,29 @@ class ClaudeProxyNonstreamMixin:
                     name = tc.get("function", {}).get("name", "")
                 else:
                     name = getattr(tc.function, "name", "")
-                if name in ("web_search", "WebSearch", "web_fetch", "WebFetch"):
+                if router_hosted_tools_enabled() and name in ("web_search", "WebSearch", "web_fetch", "WebFetch"):
                     intercepted_call = tc
                     break
 
             if not intercepted_call:
+                if (
+                    not text
+                    and server_tool_calls
+                    and not raw_tool_calls
+                    and not synthesis_retry
+                    and recursion_depth < 5
+                ):
+                    # A provider can stop after receiving the hosted result
+                    # without writing an answer. Give it one plain synthesis
+                    # turn, then fall back to a short message if it is still
+                    # empty; never expose the raw search context.
+                    logger.warning(
+                        "[Claude NonStream] Empty synthesis after hosted "
+                        "search; retrying once without tools")
+                    synthesis_retry = True
+                    openai_tools = None
+                    recursion_depth += 1
+                    continue
                 break
 
             # Execute the intercepted tool
@@ -338,14 +367,11 @@ class ClaudeProxyNonstreamMixin:
                 text_block["citations"] = cites
             content_blocks.append(text_block)
         elif server_tool_calls and not raw_tool_calls:
-            # Fail-safe: An Anthropic message must not finish with web_search_tool_result as the final block.
-            fallback_text = ""
-            for stc in server_tool_calls:
-                if not stc.get("failed") and stc.get("result"):
-                    fallback_text = stc["result"]
-                    break
-            if not fallback_text:
-                fallback_text = "Không tìm thấy kết quả phù hợp trên mạng hoặc đã xảy ra lỗi trong quá trình tìm kiếm."
+            # Never expose the raw hosted-tool payload as assistant text. A
+            # bounded plain synthesis retry belongs to the streaming path;
+            # this path returns a short protocol-safe message when no text was
+            # produced after the loop.
+            fallback_text = SEARCH_SYNTHESIS_FALLBACK
             text_block = {"type": "text", "text": fallback_text}
             cites = _search_citations(server_tool_calls)
             if cites:
@@ -376,8 +402,8 @@ class ClaudeProxyNonstreamMixin:
                             args = json.loads(args)
                         except (json.JSONDecodeError, TypeError):
                             pass
-                    if name in ("web_search", "WebSearch", "web_fetch",
-                                "WebFetch"):
+                    if router_hosted_tools_enabled() and name in (
+                            "web_search", "WebSearch", "web_fetch", "WebFetch"):
                         # Reached only when the recursion ran out. This is not a
                         # tool the client owns — the router already ran it, or
                         # refused it past `max_uses` — so emitting `tool_use`

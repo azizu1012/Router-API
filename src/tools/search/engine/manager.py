@@ -353,8 +353,18 @@ class AdvancedSearchManager(SearchEvidenceMixin, DuckDuckGoProviderMixin, Search
             if self.search_web_mode == "grounded":
                 top_records = ranked[:self.search_grounded_top_links]
                 if top_records:
+                    async def _evidence(rec):
+                        # Hosted search uses this path directly; keep its page
+                        # reads under the same executor/network bound as the
+                        # regular search pipeline.
+                        async with self.evidence_semaphore:
+                            return await asyncio.wait_for(
+                                self._fetch_page_data(rec.get("url", "")),
+                                timeout=self.search_timeout_seconds,
+                            )
+
                     evidence_results = await asyncio.gather(
-                        *(self._fetch_page_data(rec.get("url", "")) for rec in top_records),
+                        *(_evidence(rec) for rec in top_records),
                         return_exceptions=True,
                     )
                     for rec, res in zip(top_records, evidence_results):

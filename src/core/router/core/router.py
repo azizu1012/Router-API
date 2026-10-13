@@ -398,17 +398,13 @@ class APIRouter(KeyResolverMixin, ModelResolutionMixin):
             model_id: Optional concrete model ID if the freeze is specific to a model.
             reason: The reason for freezing the key (e.g., "rate_limit", "invalid_key").
 
-        Design Decision (Sub-Agent Bypass & Permanent Freeze):
-        This method includes specific logic for "sub-agent context" (`is_sub_agent_context.get()`) to bypass
-        transient freezes for sub-agents, allowing them to continue probing if the error is not critical.
-        For severe reasons like `invalid_key`, `permission_denied`, or `billing_error`, the key is permanently
-        disabled (`enabled = 0`) and removed from environment variables, reflecting a hard failure.
+        Sub-agent requests still share these keys with the main session, so
+        transient failures must freeze and penalize the failing key for everyone.
+        Only global cooldown decisions remain isolated in sub-agent context.
+        For severe reasons like `invalid_key`, `permission_denied`, or
+        `billing_error`, the key is permanently disabled (`enabled = 0`).
         The adaptive cooldown logic (`_adaptive_cooldown`) and jitter are applied to prevent synchronized retries.
         """
-        if is_sub_agent_context.get():
-            if reason not in ("invalid_key", "permission_denied", "billing_error"):
-                logger.info("[Sub-Agent] Bypassing freeze_key for key ...%s (Reason: %s)", key[-8:], reason)
-                return
         try:
             with self._key_lock:
                 if key not in self._key_status:

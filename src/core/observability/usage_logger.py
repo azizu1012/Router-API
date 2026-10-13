@@ -13,10 +13,21 @@ _DB = str(Path(__file__).resolve().parents[3] / "usage_logs.db")
 
 _queue: asyncio.Queue = asyncio.Queue()
 _flush_task: asyncio.Task | None = None
+_DB_BUSY_TIMEOUT_MS = 1000
+
+
+async def _configure_db(db: aiosqlite.Connection, *, writer: bool = False) -> None:
+    """Keep dashboard reads from contending with the periodic usage batch."""
+    await db.execute(f"PRAGMA busy_timeout = {_DB_BUSY_TIMEOUT_MS}")
+    await db.execute("PRAGMA synchronous = NORMAL")
+    if writer:
+        # WAL lets stats queries continue while the five-second flush commits.
+        await db.execute("PRAGMA journal_mode = WAL")
 
 
 async def init_db() -> None:
     async with aiosqlite.connect(_DB) as db:
+        await _configure_db(db, writer=True)
         await db.execute("""
             CREATE TABLE IF NOT EXISTS usage_logs (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -74,6 +85,9 @@ async def _flush_loop(interval: float = 5.0) -> None:
             continue
         try:
             async with aiosqlite.connect(_DB) as db:
+                # `init_db()` enables WAL once at startup; do not renegotiate
+                # the journal mode on every five-second batch.
+                await _configure_db(db)
                 await db.executemany(
                     "INSERT INTO usage_logs (timestamp, model_alias, key_prefix, prompt_tokens, completion_tokens, total_tokens, auth_key_prefix, cache_creation_tokens, cache_read_tokens) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
                     batch,
@@ -107,6 +121,7 @@ async def get_stats(days: int = 30) -> Dict[str, Any]:
     cutoff = (datetime.now() - timedelta(days=days)).isoformat()
     try:
         async with aiosqlite.connect(_DB) as db:
+            await _configure_db(db)
             db.row_factory = aiosqlite.Row
 
             c = await db.execute(
@@ -188,6 +203,7 @@ async def get_top_keys(days: int = 30, limit: int = 5) -> List[Dict[str, Any]]:
     cutoff = (datetime.now() - timedelta(days=days)).isoformat()
     try:
         async with aiosqlite.connect(_DB) as db:
+            await _configure_db(db)
             db.row_factory = aiosqlite.Row
             c = await db.execute(
                 "SELECT auth_key_prefix as key_prefix, SUM(total_tokens) as t, COUNT(*) as req "
@@ -204,6 +220,7 @@ async def get_top_keys(days: int = 30, limit: int = 5) -> List[Dict[str, Any]]:
 async def get_recent_requests(limit: int = 20) -> List[Dict[str, Any]]:
     try:
         async with aiosqlite.connect(_DB) as db:
+            await _configure_db(db)
             db.row_factory = aiosqlite.Row
             c = await db.execute(
                 "SELECT timestamp, model_alias, prompt_tokens, completion_tokens, auth_key_prefix "
@@ -226,6 +243,7 @@ async def get_stats_for_prefix(auth_key_prefix: str | List[str], days: int = 30)
     placeholders = ",".join("?" for _ in prefixes)
     try:
         async with aiosqlite.connect(_DB) as db:
+            await _configure_db(db)
             db.row_factory = aiosqlite.Row
             c = await db.execute(
                 "SELECT model_alias, SUM(prompt_tokens) as p, SUM(completion_tokens) as c, "

@@ -83,6 +83,12 @@ def classify(exc: Any) -> str:
 
     lowered = message.lower()
 
+    # A provider can close a stream without yielding a response chunk. Treat
+    # that as an upstream availability failure so pool callers rotate instead
+    # of committing an empty response as success.
+    if "empty_stream_response" in lowered or "empty stream response" in lowered:
+        return "unavailable"
+
     # 1. Check HTTP Status Code first (extremely precise)
     if code == 400:
         if "failed_precondition" not in lowered and status != "FAILED_PRECONDITION":
