@@ -4,7 +4,6 @@
 
 [English](README.md) · **[Tiếng Việt](README_VN.md)**
 
-[![Trustabl Agent Scanner](https://github.com/azizu1012/Router-API/actions/workflows/trustabl.yml/badge.svg)](https://github.com/azizu1012/Router-API/actions/workflows/trustabl.yml)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 [![Python 3.10+](https://img.shields.io/badge/python-3.10+-blue.svg)](https://www.python.org/downloads/)
 
@@ -242,7 +241,7 @@ pytest                                    # full suite
 pytest tests/test_anthropic_protocol.py   # protocol conformance
 ```
 
-CI runs two advisory workflows: the [secret scanner](https://github.com/azizu1012/Router-API/actions/workflows/secret_scan.yml) and the [Trustabl agent scanner](https://github.com/azizu1012/Router-API/actions/workflows/trustabl.yml). Neither blocks a build, and the test suite runs locally — see `docs/ci_workflow.md`.
+CI runs an advisory [secret scanner](https://github.com/azizu1012/Router-API/actions/workflows/secret_scan.yml). It does not block a build, and the test suite runs locally — see `docs/ci_workflow.md`.
 
 Further reading in `docs/`:
 
@@ -255,7 +254,7 @@ Further reading in `docs/`:
 
 ## Contributing
 
-Issues and PRs welcome. The Trustabl scanner PR that added the CI workflow is a good model for what a useful contribution looks like: findings backed by a concrete failure mode, not a generic pattern match.
+Issues and PRs welcome. Useful contributions include findings backed by a concrete failure mode, not a generic pattern match.
 
 If you change request parsing or response formatting, add a test. `tests/test_anthropic_protocol.py` and `tests/test_anthropic_integration.py` exist precisely because protocol regressions are silent — the response still parses, it is just wrong.
 

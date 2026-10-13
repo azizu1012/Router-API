@@ -1,13 +1,12 @@
 # CI Workflows
 
-Hai workflow, cả hai chạy trên mỗi push lên `main`, mỗi pull request, và theo yêu cầu tay:
+Workflow chạy trên mỗi push lên `main`, mỗi pull request, và theo yêu cầu tay:
 
 | Workflow | Job | Tính chất |
 |---|---|---|
 | `secret_scan.yml` | `scan` | advisory — phát hiện credential trong file đã track |
-| `trustabl.yml` | `scan` | advisory — độ tin cậy agent runtime |
 
-Cả hai `continue-on-error: true`: có finding thì vẫn report nhưng **không làm CI đỏ**.
+Workflow dùng `continue-on-error: true`: có finding thì vẫn report nhưng **không làm CI đỏ**.
 
 > Test suite **không** chạy trong CI — xem mục dưới.
 
@@ -113,17 +112,3 @@ Hai quy tắc đáng chú ý trong workflow:
 
 Scanner **không** tự sửa file. Một rewrite tự động là commit bạn chưa review — nên nó chỉ báo cáo, việc sửa là thủ công.
 
-## 4. Trustabl Agent Scanner
-
-```yaml
-permissions:
-  contents: read          # mặc định
-jobs:
-  scan:
-    permissions:
-      security-events: write
-      pull-requests: write
-    continue-on-error: true
-```
-
-Cùng nguyên tắc với Secret Scan: advisory, action pin theo SHA, không block build.

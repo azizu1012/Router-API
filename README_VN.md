@@ -4,7 +4,6 @@
 
 **[English](README.md)** · [Tiếng Việt](README_VN.md)
 
-[![Trustabl Agent Scanner](https://github.com/azizu1012/Router-API/actions/workflows/trustabl.yml/badge.svg)](https://github.com/azizu1012/Router-API/actions/workflows/trustabl.yml)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 [![Python 3.10+](https://img.shields.io/badge/python-3.10+-blue.svg)](https://www.python.org/downloads/)
 
@@ -238,7 +237,7 @@ pytest                                    # toàn bộ suite
 pytest tests/test_anthropic_protocol.py   # tuân thủ giao thức
 ```
 
-CI chạy hai workflow advisory: [secret scanner](https://github.com/azizu1012/Router-API/actions/workflows/secret_scan.yml) và [Trustabl agent scanner](https://github.com/azizu1012/Router-API/actions/workflows/trustabl.yml). Cả hai không chặn build; test suite chạy local — xem `docs/ci_workflow.md`.
+CI chạy một workflow advisory là [secret scanner](https://github.com/azizu1012/Router-API/actions/workflows/secret_scan.yml). Workflow không chặn build; test suite chạy local — xem `docs/ci_workflow.md`.
 
 Tài liệu chi tiết trong `docs/`:
 
@@ -251,7 +250,7 @@ Tài liệu chi tiết trong `docs/`:
 
 ## Đóng góp
 
-Issue và PR đều welcome. PR thêm CI của Trustabl là ví dụ tốt về một đóng góp hữu ích: phát hiện đi kèm cơ chế lỗi cụ thể, không phải khớp pattern chung chung.
+Issue và PR đều welcome. Đóng góp hữu ích nên đi kèm cơ chế lỗi cụ thể, không phải khớp pattern chung chung.
 
 Nếu bạn sửa request parsing hoặc response formatting, hãy thêm test. `tests/test_anthropic_protocol.py` và `tests/test_anthropic_integration.py` tồn tại chính vì các bug giao thức rất âm thầm — response vẫn parse được, chỉ là sai.
 
