@@ -216,17 +216,22 @@ async def get_recent_requests(limit: int = 20) -> List[Dict[str, Any]]:
         return []
 
 
-async def get_stats_for_prefix(auth_key_prefix: str, days: int = 30) -> Dict[str, Any]:
-    """Usage stats filtered by a single auth_key_prefix (for per-user dashboard)."""
+async def get_stats_for_prefix(auth_key_prefix: str | List[str], days: int = 30) -> Dict[str, Any]:
+    """Usage stats filtered by one or more credential prefixes."""
     cutoff = (datetime.now() - timedelta(days=days)).isoformat()
+    prefixes = [auth_key_prefix] if isinstance(auth_key_prefix, str) else list(auth_key_prefix)
+    prefixes = [str(p) for p in prefixes if p]
+    if not prefixes:
+        return {"summary": [], "daily": [], "total_requests": 0}
+    placeholders = ",".join("?" for _ in prefixes)
     try:
         async with aiosqlite.connect(_DB) as db:
             db.row_factory = aiosqlite.Row
             c = await db.execute(
                 "SELECT model_alias, SUM(prompt_tokens) as p, SUM(completion_tokens) as c, "
                 "SUM(total_tokens) as t, SUM(cache_creation_tokens) as cc, SUM(cache_read_tokens) as cr, COUNT(*) as req FROM usage_logs "
-                "WHERE timestamp >= ? AND auth_key_prefix = ? GROUP BY model_alias ORDER BY t DESC",
-                (cutoff, auth_key_prefix),
+                f"WHERE timestamp >= ? AND auth_key_prefix IN ({placeholders}) GROUP BY model_alias ORDER BY t DESC",
+                (cutoff, *prefixes),
             )
             rows = await c.fetchall()
             summary_dict = {}
@@ -256,9 +261,9 @@ async def get_stats_for_prefix(auth_key_prefix: str, days: int = 30) -> Dict[str
 
             c2 = await db.execute(
                 "SELECT DATE(timestamp) as d, model_alias, SUM(total_tokens) as t, COUNT(*) as req "
-                "FROM usage_logs WHERE timestamp >= ? AND auth_key_prefix = ? "
+                f"FROM usage_logs WHERE timestamp >= ? AND auth_key_prefix IN ({placeholders}) "
                 "GROUP BY d, model_alias ORDER BY d",
-                (cutoff, auth_key_prefix),
+                (cutoff, *prefixes),
             )
             rows2 = await c2.fetchall()
             daily_dict = {}
@@ -282,8 +287,8 @@ async def get_stats_for_prefix(auth_key_prefix: str, days: int = 30) -> Dict[str
             daily = sorted(daily_dict.values(), key=lambda x: (x["d"], x["model_alias"]))
 
             c3 = await db.execute(
-                "SELECT COUNT(*) as total FROM usage_logs WHERE timestamp >= ? AND auth_key_prefix = ?",
-                (cutoff, auth_key_prefix),
+                f"SELECT COUNT(*) as total FROM usage_logs WHERE timestamp >= ? AND auth_key_prefix IN ({placeholders})",
+                (cutoff, *prefixes),
             )
             row = await c3.fetchone()
             return {

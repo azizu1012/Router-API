@@ -179,6 +179,7 @@ async def dashboard_logs_history(
 async def dashboard_my_stats(request: Request, days: int = 30):
     payload = _require_dashboard(request)
     from src.core.observability.usage_logger import get_stats_for_prefix
+    from src.backend.keys.accounts import compose_token, list_keys_db
     account = await asyncio.to_thread(find_account_by_name, payload.get("name", ""))
     # Raw admin-key sessions use the synthetic "Administrator" identity and
     # therefore have no row in the accounts table. Keep their usage scoped to
@@ -187,9 +188,16 @@ async def dashboard_my_stats(request: Request, days: int = 30):
         account = {"auth_key": config.AUTH_TOKEN}
     if not account:
         return {"summary": [], "daily": [], "total_requests": 0, "savings": {"standard_cost": 0.0, "cached_cost": 0.0, "gemini_cost": 0.0, "net_savings": 0.0}}
-    ak = account.get("auth_key", "")
-    prefix = ak[-8:] if len(ak) >= 8 else ak
-    res = await get_stats_for_prefix(prefix, days)
+    # Usage belongs to credentials, while the dashboard session identifies an
+    # account. Include every credential owned by the account (including revoked
+    # ones so historical usage remains visible).
+    keys = await asyncio.to_thread(list_keys_db, account.get("account_id", ""), True)
+    prefixes = [compose_token(account.get("name", ""), k.get("token_code", ""))[-8:]
+                for k in keys if k.get("token_code")]
+    legacy_key = str(account.get("auth_key") or "")
+    if legacy_key:
+        prefixes.append(legacy_key[-8:])
+    res = await get_stats_for_prefix(prefixes, days)
     savings_data = _calculate_financial_savings(res.get("summary", []))
     return {**res, "savings": savings_data}
 
