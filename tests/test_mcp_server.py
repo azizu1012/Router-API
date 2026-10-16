@@ -165,3 +165,105 @@ class TestTheSearchToolIsBounded:
         assert mcp_routes._MAX_QUERIES_PER_CALL <= 5, (
             "auto falls back google -> duckduckgo, so a handful is a bound on "
             "one tool call; an unbounded loop spends the account's day")
+
+
+class TestTheHostAllowlist:
+    """DNS-rebinding protection answers 421 for any Host it does not list.
+
+    That failure names neither the header nor the setting, and it costs an
+    afternoon: TLS valid, reverse proxy up, token correct, every client still
+    refused. So the allowlist is pinned by test instead of left to a comment in
+    .env.example nobody reads before deploying.
+
+    The comparison used here is the SDK's own, not a restatement of it — a test
+    that reimplements the matching proves the copy, not the fix.
+    """
+
+    @staticmethod
+    def _accepts(hosts, host):
+        from mcp.server.transport_security import (
+            TransportSecurityMiddleware, TransportSecuritySettings,
+        )
+        return TransportSecurityMiddleware(
+            TransportSecuritySettings(allowed_hosts=hosts))._validate_host(host)
+
+    @staticmethod
+    def _hosts():
+        # The same URL the server passes itself at startup — start_mcp_session()
+        # is called with no argument, so this default is the production path.
+        from src.server.openai_server import mcp_routes
+        return mcp_routes._allowed_hosts("http://127.0.0.1:58100")
+
+    def test_localhost_answers_without_any_configuration(self, monkeypatch):
+        monkeypatch.delenv("MCP_ALLOWED_HOSTS", raising=False)
+
+        hosts = self._hosts()
+
+        assert self._accepts(hosts, "127.0.0.1:58100")
+        assert self._accepts(hosts, "localhost:58100")
+
+    def test_a_public_domain_is_refused_until_it_is_declared(self, monkeypatch):
+        """The bug this section exists for."""
+        monkeypatch.delenv("MCP_ALLOWED_HOSTS", raising=False)
+
+        assert not self._accepts(self._hosts(), "example.com")
+
+    def test_declaring_the_domain_admits_it(self, monkeypatch):
+        monkeypatch.setenv("MCP_ALLOWED_HOSTS", "example.com")
+
+        assert self._accepts(self._hosts(), "example.com")
+
+    def test_the_override_replaces_the_defaults_rather_than_adding_to_them(self, monkeypatch):
+        monkeypatch.setenv("MCP_ALLOWED_HOSTS", "example.com")
+
+        hosts = self._hosts()
+
+        assert not self._accepts(hosts, "localhost:58100"), (
+            "the variable replaces the list wholesale. An operator who sets "
+            "only their domain loses localhost and finds out from a 421 that "
+            "never mentions the variable")
+
+    def test_an_empty_value_behaves_as_unset(self, monkeypatch):
+        """.env.example ships this line blank, so blank has to mean "default"."""
+        monkeypatch.setenv("MCP_ALLOWED_HOSTS", "")
+
+        assert self._accepts(self._hosts(), "127.0.0.1:58100")
+
+    def test_a_bare_hostname_does_not_cover_an_explicit_port(self, monkeypatch):
+        monkeypatch.setenv("MCP_ALLOWED_HOSTS", "example.com")
+        assert not self._accepts(self._hosts(), "example.com:58100")
+
+        monkeypatch.setenv("MCP_ALLOWED_HOSTS", "example.com:*")
+        assert self._accepts(self._hosts(), "example.com:58100")
+
+    def test_the_line_the_docs_recommend_serves_domain_and_local(self, monkeypatch):
+        monkeypatch.setenv(
+            "MCP_ALLOWED_HOSTS", "example.com,127.0.0.1:*,localhost:*")
+
+        hosts = self._hosts()
+
+        assert self._accepts(hosts, "example.com")        # HTTPS: no port sent
+        assert self._accepts(hosts, "127.0.0.1:58100")
+        assert self._accepts(hosts, "localhost:58100")
+
+    def test_over_real_http_a_foreign_host_gets_421(self, client, monkeypatch):
+        """The whole chain, not the helper: real request, real SDK middleware.
+
+        The sub-app is rebuilt rather than reused from the running server,
+        because ``start_mcp_session`` freezes the allowlist into the transport
+        settings once, at startup — a mid-test env change could not reach it.
+        """
+        from fastapi.testclient import TestClient
+        from src.server.openai_server import mcp_routes
+
+        key = _account("host_guard")["auth_key"]
+        monkeypatch.setenv("MCP_ALLOWED_HOSTS", "example.com")
+        with TestClient(mcp_routes.build_mcp_app()) as sub:
+            refused = sub.post("/", headers={**_auth(key), "host": "evil.test"},
+                               json=JSONRPC_INIT)
+            admitted = sub.post("/", headers={**_auth(key), "host": "example.com"},
+                                json=JSONRPC_INIT)
+
+        assert refused.status_code == 421
+        assert refused.text.strip() == "Invalid Host header"
+        assert admitted.status_code == 200, f"{admitted.status_code}: {admitted.text[:160]}"

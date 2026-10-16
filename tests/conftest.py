@@ -134,6 +134,40 @@ def _password_recovery_is_testable():
 
 
 @pytest.fixture(scope='session', autouse=True)
+def _mcp_accepts_the_test_client_host():
+    """Keep an operator's MCP_ALLOWED_HOSTS from breaking the MCP tests.
+
+    TestClient sends ``Host: testserver``. The variable *replaces* the default
+    list instead of extending it, so anyone who added their own domain to
+    ``.env`` — the documented fix for a 421 in production — silently dropped
+    ``testserver`` and every MCP test answered 421 here. Green on a clean
+    checkout, red in a working copy: the same shape as
+    ``_password_recovery_is_testable`` above, and for the same reason.
+
+    The import has to come first. ``config.py`` calls
+    ``load_dotenv(override=True)`` at module import, which runs lazily when the
+    first test imports the app — after this fixture — and would put the ``.env``
+    value straight back over whatever is set here. Importing it explicitly
+    makes the ordering deterministic instead of a race between two fixtures.
+    """
+    import importlib
+
+    importlib.import_module("src.core.config_n_logg.config")
+
+    existing = os.environ.get('MCP_ALLOWED_HOSTS', '')
+    hosts = [h.strip() for h in existing.split(',') if h.strip()]
+    for required in ('testserver', 'testclient'):
+        if required not in hosts:
+            hosts.append(required)
+    os.environ['MCP_ALLOWED_HOSTS'] = ','.join(hosts)
+    yield
+    if existing:
+        os.environ['MCP_ALLOWED_HOSTS'] = existing
+    else:
+        os.environ.pop('MCP_ALLOWED_HOSTS', None)
+
+
+@pytest.fixture(scope='session', autouse=True)
 def _real_database_is_not_a_scratchpad(_schema_exists_before_any_test,
                                         _password_recovery_is_testable):
     """Fail if the suite changed usage.db.

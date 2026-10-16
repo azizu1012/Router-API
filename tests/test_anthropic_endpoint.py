@@ -301,6 +301,66 @@ class TestImagesSurvive:
         assert _count_openai_images(openai_msgs) == 1
         assert _count_openai_images(anthropic_msgs) == 1
 
+    def test_anthropic_image_block_survives_message_converter(self):
+        from src.logical_HQ_translator.messages.converter import _convert_messages
+        body = {
+            "model": "claude-3-5-sonnet",
+            "messages": [
+                {
+                    "role": "user",
+                    "content": [
+                        {"type": "text", "text": "What is in this picture?"},
+                        {"type": "image", "source": {"type": "base64", "media_type": "image/png", "data": "QUJD"}},
+                    ],
+                }
+            ],
+        }
+        msgs, _ = _convert_messages(body)
+        assert len(msgs) == 1
+        assert msgs[0]["role"] == "user"
+        content = msgs[0]["content"]
+        assert isinstance(content, list)
+        assert content[0] == {"type": "text", "text": "What is in this picture?"}
+        assert content[1] == {"type": "image", "source": {"type": "base64", "media_type": "image/png", "data": "QUJD"}}
+
+    def test_anthropic_image_only_message_survives_message_converter(self):
+        from src.logical_HQ_translator.messages.converter import _convert_messages
+        body = {
+            "model": "claude-3-5-sonnet",
+            "messages": [
+                {
+                    "role": "user",
+                    "content": [
+                        {"type": "image", "source": {"type": "base64", "media_type": "image/jpeg", "data": "QUJD"}},
+                    ],
+                }
+            ],
+        }
+        msgs, _ = _convert_messages(body)
+        assert len(msgs) == 1
+        assert msgs[0]["role"] == "user"
+        assert msgs[0]["content"] == [{"type": "image", "source": {"type": "base64", "media_type": "image/jpeg", "data": "QUJD"}}]
+
+    def test_estimate_input_tokens_counts_image_blocks(self):
+        from src.api.claude_proxy.handler.anthropic_spec.usage import estimate_input_tokens
+        body_text_only = {
+            "messages": [{"role": "user", "content": [{"type": "text", "text": "hi"}]}]
+        }
+        body_with_image = {
+            "messages": [
+                {
+                    "role": "user",
+                    "content": [
+                        {"type": "text", "text": "hi"},
+                        {"type": "image", "source": {"type": "base64", "data": "QUJD"}},
+                    ],
+                }
+            ]
+        }
+        tokens_text = estimate_input_tokens(body_text_only)
+        tokens_img = estimate_input_tokens(body_with_image)
+        assert tokens_img >= tokens_text + 1500
+
 
 class TestToolChoiceIsSpelledTheWayAnthropicSpellsIt:
     """OpenAI's `required` has no Anthropic equivalent as a string, and its

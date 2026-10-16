@@ -365,10 +365,13 @@ def _convert_messages(body: Dict[str, Any]) -> Tuple[List[Dict[str, Any]], List[
         if isinstance(content, list):
             text_parts: List[str] = []
             tool_calls: List[Dict[str, Any]] = []
+            image_blocks: List[Dict[str, Any]] = []
             for block in content:
                 b_type = block.get("type")
                 if b_type == "text":
                     text_parts.append(str(block.get("text", "")))
+                elif b_type in ("image", "image_url"):
+                    image_blocks.append(block)
                 elif b_type == "document":
                     # Claude Code sends PDFs as document blocks. We have no PDF
                     # pipeline, but silently dropping the block loses the user's
@@ -409,6 +412,8 @@ def _convert_messages(body: Dict[str, Any]) -> Tuple[List[Dict[str, Any]], List[
                             if isinstance(c, dict):
                                 if c.get("type") == "text":
                                     extracted.append(c.get("text", ""))
+                                elif c.get("type") in ("image", "image_url"):
+                                    extracted.append("[Attached Image from Tool]")
                                 elif c.get("encrypted_content"):
                                     extracted.append(f"[{c.get('title', 'Source')}]({c.get('url', '')}): {c.get('encrypted_content')}")
                         t_content = "\n".join(extracted) if extracted else str(t_content)
@@ -445,9 +450,17 @@ def _convert_messages(body: Dict[str, Any]) -> Tuple[List[Dict[str, Any]], List[
                         ast_msg["tool_calls"] = tool_calls
                     openai_messages.append(ast_msg)
             elif role == "user":
-                combined = "\n".join(text_parts).strip()
-                if combined:
-                    openai_messages.append({"role": "user", "content": combined})
+                if image_blocks:
+                    user_content: List[Dict[str, Any]] = []
+                    combined = "\n".join(text_parts).strip()
+                    if combined:
+                        user_content.append({"type": "text", "text": combined})
+                    user_content.extend(image_blocks)
+                    openai_messages.append({"role": "user", "content": user_content})
+                else:
+                    combined = "\n".join(text_parts).strip()
+                    if combined:
+                        openai_messages.append({"role": "user", "content": combined})
 
     if not openai_messages:
         openai_messages.append({"role": "user", "content": "Continue."})

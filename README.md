@@ -247,6 +247,7 @@ Further reading in `docs/`:
 
 - **[architecture_overview.md](docs/architecture_overview.md)** — components, data flow, design trade-offs
 - **[routing_and_resilience.md](docs/routing_and_resilience.md)** — error taxonomy, Double Random, extreme mode
+- **[mcp_server.md](docs/mcp_server.md)** — cấu hình `/mcp` cho Claude Code / OpenCode / Cursor, và lỗi 421
 - **[frontend_dashboard.md](docs/frontend_dashboard.md)** — dashboard architecture and state
 - **[bug-logs.md](docs/bug-logs.md)** — diagnosed bugs and why they were fixed
 

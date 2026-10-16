@@ -2111,3 +2111,102 @@ Sub-agent requests vẫn dùng chung provider keys với phiên chính. Vì vậ
 global cooldown được cô lập theo sub-agent. `POOL_RETRY_SECONDS` mặc định là
 30 giây để provider lỗi không giữ pool và làm nghẽn dashboard/API.
 
+
+## Bug #41: `MCP_ALLOWED_HOSTS` Trong `.env` Làm Đỏ MCP Test Trên Máy Có `.env` (2026-10-16)
+
+### Muc do
+Không phai bug production. Nhung lai **la mo thu cong** doc trong file .env cua nguoi viet — cung kieu Bug #36, va no gay ra ngay luc sua 421 cho production.
+
+### Mo ta
+`/mcp` tra `421 Misdirected Request` body `Invalid Host header` cho **moi domain**, ke ca domain da dat reverse proxy. Khong con gi sai: TLS hop le, proxy dung, token dung.
+
+### Root cause
+`mcp_routes.py:_allowed_hosts` mac dinh chi co:
+
+```
+["127.0.0.1:*", "localhost:*", "testserver", "testclient"] + hostname tu resource_server_url
+```
+
+`MCP_ALLOWED_HOSTS` la duong dua hostname that vao danh sach do. Va no **ghi de toan bo**, khong noi them:
+
+```python
+override = os.getenv("MCP_ALLOWED_HOSTS")
+if override:
+    return [h.strip() for h in override.split(",") if h.strip()]
+```
+
+Ba tang mot luc, ca ba deu sai:
+
+**1. Khong ai biet bien nay ton tai.** `.env.example` khong co dong nao. Nguoi deploy domain chi thay 421, khong ro bien nao de sua.
+
+**2. Code khong tu suy ra hostname public.** `app_init.py:430` goi `await mcp_routes.start_mcp_session()` **khong truyen tham so**, nen `resource_server_url` luon la default `http://127.0.0.1:58100` va nhanh `hosts += [parsed.hostname, ...]` luon them `127.0.0.1`. Comment o dong 69 viet *"the production hostname is the operator's"* — dung y nghia, nhung khong co duong nao cho operator truyen hostname do vao.
+
+**3. `.env` cua developer lam do suite.** `TestClient` gui `Host: testserver`, va `testserver` nam trong danh sach mac dinh. `config.py:13` goi `load_dotenv(override=True)` nen file `.env` cua may bi nap vao `os.environ` luc test chay. Them khai bao domain trong `.env` — **dung cach chua 421 production** — la xoa `testserver`:
+
+```
+AssertionError: 421 == 200   test_a_valid_token_gets_an_mcp_session
+AssertionError: 421 == 200   test_the_session_endpoint_is_mcp_not_mcp_mcp
+AssertionError: 421 == 200   test_but_its_own_door_stays_open
+```
+
+Xanh tren checkout sach, do tren may co `.env`. Dung kieu Bug #36 — *may t co gi can thiet bieu dien cung luc deu co do*.
+
+### Visao 421 khong bao gi ca
+SDK tra `Response("Invalid Host header", 421)`. Khong ten header, khong ten bien, khong vi sao. Mot nguoi deploy domain giua chung phai doan, va khi doan sai thi them mot vong nua. `logger.warning(f"Invalid Host header: {host}")` co san nhung logger cua SDK khong di qua `logs/` cua du an — `setup_logger` dat `propagate = False` cho logger rieng — nen warning chi xuat hien tren stdout cua process.
+
+### Fix
+1. `.env.example`: them section `===== MCP SERVER (/mcp) =====` kem ghi chu day du ve co che ghi de, wildcard `host:*`, va vi du gia tri. Gia tri mac dinh de **trong** — va `os.getenv` tra `""` thi falsi, nen trong nghia la "dung mac dinh", dung cai gi khai khoi dong.
+2. `docs/mcp_server.md`: endpoint, auth, cau hinh client (Claude Code / OpenCode / `mcp.json`), lenh curl cho ca Linux va Windows CMD, muc 421, bang troubleshooting.
+3. `tests/conftest.py` — fixture `_mcp_accepts_the_test_client_host`: giu `testserver` va `testclient` trong danh sach cho moi lan chay, bat ke `.env` khai gi.
+
+Fixture do phai **import `config` truoc** khi set env:
+
+```python
+importlib.import_module("src.core.config_n_logg.config")   # load_dotenv chay o day
+os.environ['MCP_ALLOWED_HOSTS'] = ...
+```
+
+Vì `load_dotenv(override=True)` chay lazily luc test dau tien import app — **sau** fixture — nen neu set truoc no, `.env` se ghi de nguoc lai. Import tuong minh bien thu tu thanh deterministic thay vi race giua hai fixture.
+
+### Test
+`tests/test_mcp_server.py::TestTheHostAllowlist` — 8 test.
+
+Phan lon so bang bang **chinh `_validate_host` cua SDK** chu khong viet lai phep so. Mot test viet lai thi chung minh ban sao, khong chung minh cai sua — va day la ly do Bug #28 no ra.
+
+Test cuoi di qua HTTP that tren sub-app moi dung: `Host: evil.test` phai ra `421` + body `Invalid Host header`, `Host: example.com` phai ra `200` tren cung request do.
+
+Guard chong fix qua tay:
+- `MCP_ALLOWED_HOSTS=` (rong) phai van cho `127.0.0.1` vao — vi `.env.example` ship dong rong.
+- Ghi de phai **that** default chu khong noi them — `example.com` mot minh phai khong cho `localhost`.
+
+### Con lai gi
+`start_mcp_session()` van duoc goi khong truyen tham so. Env var la duong duy nhat dua hostname that vao, va mot nguoi deploy domain **bat buoc** phai biet dieu do. Fix code de doc `ROUTER_API_PUBLIC_URL` thi de, nhung chua lam o lan nay.
+
+---
+
+## Bug #42: Anthropic Proxy Nuốt Mất Khối Ảnh Khi Client Gửi Input (2026-10-16)
+
+### Mức độ
+Nghiêm trọng đối với tính năng Vision. Request vẫn trả 200 OK, nhưng model hoàn toàn không nhận được ảnh và trả lời như thể người dùng chưa gửi ảnh.
+
+### Triệu chứng
+Người dùng gửi ảnh qua Anthropic SDK (OpenCat, Claude Code, curl...) lên `/v1/messages`. Model trả lời: *"Bạn chưa cung cấp ảnh"* hoặc nếu request chỉ có ảnh không có text thì model nhận được chuỗi rỗng và bị fallback về `"Continue."`.
+
+### Root cause
+Trong `src/logical_HQ_translator/messages/converter.py` hàm `_convert_messages`:
+Vòng lặp `for block in content:` chỉ kiểm tra các loại block `text`, `document`, `tool_use`, `tool_result`, `thinking`... Hoàn toàn không có nhánh cho `image` hay `image_url`. Khối ảnh bị bỏ qua trong im lặng (silently dropped), `openai_messages` chỉ nhận text còn lại.
+
+Đồng thời, hàm `estimate_input_tokens` trong `usage.py` cũng không tính token cho ảnh, khiến token đếm bị lệch về 0.
+
+### Fix
+1. Thêm nhánh `elif b_type in ("image", "image_url"):` trong `_convert_messages` để gom `image_blocks`.
+2. Khi `role == "user"`, nếu có ảnh thì đóng gói `content` thành mảng các block `[{"type": "text", ...}, ...image_blocks]` để `gemini/format.py` tự động chuyển thành `inlineData` cho Gemini Vision hoặc chuyển tiếp sang custom endpoint.
+3. Hỗ trợ ảnh trong `tool_result` (`[Attached Image from Tool]`).
+4. Cập nhật `estimate_input_tokens` để tính ~1600 tokens cho mỗi khối ảnh.
+
+### Test
+`tests/test_anthropic_endpoint.py`:
+- `test_anthropic_image_block_survives_message_converter`
+- `test_anthropic_image_only_message_survives_message_converter`
+- `test_estimate_input_tokens_counts_image_blocks`
+Toàn bộ test suite Anthropic (163 tests) pass 100%.

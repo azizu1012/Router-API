@@ -243,6 +243,7 @@ Tài liệu chi tiết trong `docs/`:
 
 - **[architecture_overview.md](docs/architecture_overview.md)** — thành phần, luồng dữ liệu, trade-off thiết kế
 - **[routing_and_resilience.md](docs/routing_and_resilience.md)** — phân loại lỗi, Double Random, extreme mode
+- **[mcp_server.md](docs/mcp_server.md)** — cấu hình `/mcp` cho Claude Code / OpenCode / Cursor, và lỗi 421
 - **[frontend_dashboard.md](docs/frontend_dashboard.md)** — kiến trúc dashboard và quản lý state
 - **[bug-logs.md](docs/bug-logs.md)** — các bug đã chẩn đoán và lý do sửa
 

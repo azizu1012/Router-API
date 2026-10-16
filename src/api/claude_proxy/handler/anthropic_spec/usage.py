@@ -110,6 +110,8 @@ def estimate_input_tokens(body: Dict[str, Any]) -> int:
                 btype = block.get("type")
                 if btype == "text":
                     parts.append(str(block.get("text", "")))
+                elif btype in ("image", "image_url"):
+                    parts.append(" " * 6400)
                 elif btype == "tool_use":
                     parts.append(str(block.get("input", "")))
                 elif btype == "tool_result":
