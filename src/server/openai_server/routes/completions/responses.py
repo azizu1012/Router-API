@@ -13,11 +13,38 @@ from src.server.openai_server.auth import (
     _resolve_auth, _check_auth, _apply_account_limit, _auth_key_prefix,
 )
 from src.server.openai_server.routes.responses.format import (
-    _error_type, _extract_response_text, _extract_response_tool_calls,
-    _responses_usage, _responses_envelope, _output_message, _web_search_call_item,
+    _error_type,
+    _extract_response_text,
+    _extract_response_tool_calls,
+    _extract_finish_reason,
+    _responses_usage,
+    _responses_envelope,
+    _output_text_part,
+    _output_message,
+    _web_search_action,
+    _web_search_call_item,
+    _url_citations,
+    _responses_event,
 )
 from src.server.openai_server.routes.responses.stream import _responses_sse_stream
 from ..app_init import app
+
+__all__ = [
+    "responses",
+    "_error_type",
+    "_extract_response_text",
+    "_extract_response_tool_calls",
+    "_extract_finish_reason",
+    "_responses_usage",
+    "_responses_envelope",
+    "_output_text_part",
+    "_output_message",
+    "_web_search_action",
+    "_web_search_call_item",
+    "_url_citations",
+    "_responses_event",
+    "_responses_sse_stream",
+]
 @app.post("/v1/responses")
 async def responses(
     request: Request,

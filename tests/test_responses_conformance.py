@@ -553,61 +553,6 @@ class TestUsageIsNeverNullOnCompleted:
     nothing — so the adapter falls back to an estimate rather than null.
     """
 
-    def _events(self, chunks, hint=0):
-        import asyncio
-
-        from src.server.openai_server.routes.completions.responses import (
-            _responses_sse_stream,
-        )
-
-        async def gen():
-            async def src():
-                for c in chunks:
-                    yield f"data: {json.dumps(c)}\n\n".encode()
-                yield b"data: [DONE]\n\n"
-            async for ev in _responses_sse_stream(src(),
-                                                 input_tokens_hint=hint):
-                yield ev
-
-        return asyncio.run(_collect(gen()))
-
-    def test_a_truncated_stream_still_reports_usage(self):
-        frames = self._events([_chat_chunk("hi")], hint=500)
-        done = _of_type(frames, "response.completed")[0]
-
-        assert done["response"]["usage"] is not None
-
-    def test_the_fallback_uses_the_hint_it_was_given(self):
-        frames = self._events([_chat_chunk("hi")], hint=4321)
-        done = _of_type(frames, "response.completed")[0]
-
-        assert done["response"]["usage"]["input_tokens"] == 4321
-
-    def test_a_real_usage_chunk_is_preferred_over_the_estimate(self):
-        frames = self._events([
-            _chat_chunk("hi"),
-            {"id": "c", "choices": [], "usage": {
-                "prompt_tokens": 7, "completion_tokens": 3,
-                "total_tokens": 10}},
-        ], hint=9999)
-        done = _of_type(frames, "response.completed")[0]
-
-        assert done["response"]["usage"]["input_tokens"] == 7
-
-    def test_output_is_never_zero_for_a_non_empty_answer(self):
-        frames = self._events([_chat_chunk("a real sentence here")], hint=10)
-        done = _of_type(frames, "response.completed")[0]
-
-        assert done["response"]["usage"]["output_tokens"] >= 1
-class TestUsageIsNeverNullOnCompleted:
-    """A completed Responses event reports usage even when the chat stream is cut.
-
-    The chat layer sends its trailing usage chunk only on request, and sends
-    nothing at all when the upstream stream ends early. `response.completed`
-    still owes the client a number — otherwise a client billing from usage sees
-    nothing — so the adapter falls back to an estimate rather than null.
-    """
-
     def _completed(self, *pieces, usage=None, hint=0):
         from src.server.openai_server.routes.completions.responses import (
             _responses_sse_stream,

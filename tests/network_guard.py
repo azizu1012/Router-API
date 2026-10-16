@@ -96,6 +96,9 @@ class BlockedHostError(RuntimeError):
     """A test reached a paid host; raised by the teardown check."""
 
 
+BlockedHostInTest = BlockedHostError
+
+
 @dataclass(frozen=True)
 class Attempt:
     host: str
