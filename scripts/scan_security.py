@@ -58,6 +58,7 @@ PUBLIC_ROUTES: dict[str, str] = {
     "/stats/{path:path}": "SPA route, same as /stats",
     "/dashboard/login": "you cannot present a token before you have one",
     "/dashboard/register": "gated by a single-use invite code instead",
+    "/api/me/alias-templates": "static list of recommended model alias templates",
 }
 
 # Paths whose payloads are account-wide rather than caller-scoped. A caller may

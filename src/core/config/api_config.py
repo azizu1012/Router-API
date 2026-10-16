@@ -187,17 +187,11 @@ def active_pool_members(pool_name: str) -> List[str]:
 
 def _recompute_pool_aggregates() -> None:
     for pool_name, pool_cfg in MODEL_POOLS.items():
-        members_list = list(pool_cfg.get("members", []))
         total_rpm = 0
         total_tpm = 0
         total_rpd = 0
-        for m in members_list:
+        for m in active_pool_members(pool_name):
             m_str = str(m)
-            if not is_model_enabled(m_str):
-                # A switched-off member keeps its RPM/TPM in the DB so turning it
-                # back on is instant — but it must not inflate the pool ceiling,
-                # or the pool advertises capacity it can no longer reach.
-                continue
             if m_str == pool_name and m_str in MODEL_POOLS:
                 # Member name collides with pool name — AVAILABLE_MODELS[m]
                 # may have been overwritten with pool aggregate or stale DB value.

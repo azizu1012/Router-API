@@ -34,11 +34,13 @@ class ModelResolutionMixin:
                 m["context_length"] = cl
             models.append(m)
 
-        # Include custom endpoint models
+        # Include custom endpoint models (operator endpoints only; member-owned endpoints are attached per-account)
         try:
             from src.core.providers import _custom_endpoint_manager
             for ep in _custom_endpoint_manager.list_endpoints():
                 if not ep.get("enabled", True):
+                    continue
+                if ep.get("account_id"):
                     continue
                 for mid in (ep.get("enabled_models") or ep.get("models") or []):
                     if not any(m["id"] == mid for m in models):

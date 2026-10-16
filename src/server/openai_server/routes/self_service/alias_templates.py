@@ -1,14 +1,12 @@
 """Suggested model alias templates for the self-service dashboard."""
 
 from typing import Any, Dict, List
-from fastapi import Depends
 
 from .router import router
-from .auth import get_account
 from .alias_models import AliasTemplateResponse
 
 @router.get("/alias-templates", response_model=List[AliasTemplateResponse])
-async def get_alias_templates(account: Dict[str, Any] = Depends(get_account)):
+async def get_alias_templates():
     """Get suggested alias templates with latest Claude and GPT models.
 
     Includes latest official models (Claude 3.7 Sonnet, GPT-4.5 Preview, o3-mini, o1)
