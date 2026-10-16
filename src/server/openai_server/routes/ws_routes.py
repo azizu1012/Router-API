@@ -9,13 +9,40 @@ from src.core.config_n_logg.logger import logger_system as logger
 
 @app.websocket("/dashboard/ws")
 async def dashboard_websocket(websocket: WebSocket):
+    origin = websocket.headers.get("origin")
+    if origin:
+        import urllib.parse
+        host = websocket.headers.get("host", "").split(":")[0]
+        parsed_origin = urllib.parse.urlparse(origin).hostname or ""
+        if parsed_origin != host and parsed_origin not in ("localhost", "127.0.0.1"):
+            logger.warning("[WS] Rejected untrusted origin: %s (host: %s)", origin, host)
+            await websocket.close(code=4003)
+            return
+
     token = websocket.query_params.get("token", "")
     account = _verify_session_token(token)
     if not account:
         await websocket.close(code=4001)
         return
 
-    account_id = account.get("account_id", "unknown")
+    from src.backend.accounts.manager import find_account_by_name
+    from src.backend.keys.accounts import get_credential_db
+
+    name = account.get("name")
+    acc = find_account_by_name(name) if name else None
+    if not acc or not acc.get("enabled", 1):
+        await websocket.close(code=4001)
+        return
+
+    account["tier"] = acc.get("tier", "free")
+    account_id = acc.get("account_id") or account.get("account_id", "unknown")
+
+    if account_id and "iat" in account:
+        cred = get_credential_db(account_id)
+        if cred and cred.get("updated_at") and cred["updated_at"] > account["iat"]:
+            await websocket.close(code=4001)
+            return
+
     await ws_manager.connect(websocket, account_id, {
         "name": account.get("name", ""),
         "tier": account.get("tier", "free"),

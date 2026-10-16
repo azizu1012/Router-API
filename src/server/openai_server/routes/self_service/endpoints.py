@@ -47,6 +47,12 @@ async def create_my_endpoint(
     if not account_id:
         raise HTTPException(status_code=401, detail="Account ID required")
 
+    is_admin = account.get("tier") == "admin"
+    from src.core.runtime.url_safety import is_safe_url
+    safe, reason = is_safe_url(req.base_url, allow_private=is_admin)
+    if not safe:
+        raise HTTPException(status_code=400, detail=f"Invalid base_url: {reason}")
+
     try:
         ep = endpoints_db.add_member_endpoint_db(
             name=req.name,
@@ -101,11 +107,16 @@ async def update_my_endpoint(
     if not ep:
         raise HTTPException(status_code=404, detail=f"Endpoint '{name}' not found")
 
-    if ep.get("account_id") and ep["account_id"] != account_id and account.get("tier") != "admin":
+    if ep.get("account_id") != account_id and account.get("tier") != "admin":
         raise HTTPException(status_code=403, detail="You can only update your own endpoints")
 
     updates = {}
     if req.base_url is not None:
+        is_admin = account.get("tier") == "admin"
+        from src.core.runtime.url_safety import is_safe_url
+        safe, reason = is_safe_url(req.base_url, allow_private=is_admin)
+        if not safe:
+            raise HTTPException(status_code=400, detail=f"Invalid base_url: {reason}")
         updates["base_url"] = req.base_url
     if req.auth_key is not None:
         updates["auth_key"] = req.auth_key
@@ -149,7 +160,7 @@ async def delete_my_endpoint(
     if not ep:
         raise HTTPException(status_code=404, detail=f"Endpoint '{name}' not found")
 
-    if ep.get("account_id") and ep["account_id"] != account_id and account.get("tier") != "admin":
+    if ep.get("account_id") != account_id and account.get("tier") != "admin":
         raise HTTPException(status_code=403, detail="You can only delete your own endpoints")
 
     endpoints_db.remove_endpoint_db(name)
@@ -170,7 +181,7 @@ async def refresh_my_endpoint(
     ep = endpoints_db.get_endpoint_db(name)
     if not ep:
         raise HTTPException(status_code=404, detail=f"Endpoint '{name}' not found")
-    if ep.get("account_id") and ep["account_id"] != account_id and account.get("tier") != "admin":
+    if ep.get("account_id") != account_id and account.get("tier") != "admin":
         raise HTTPException(status_code=403, detail="Forbidden")
 
     from src.core.providers import _custom_endpoint_manager
@@ -178,7 +189,18 @@ async def refresh_my_endpoint(
     try:
         models = await _custom_endpoint_manager.fetch_models(name)
         ep = endpoints_db.get_endpoint_db(name) or ep
-        return {"status": "success", "models": models, "count": len(models), "endpoint": ep}
+        clean_ep = {
+            "name": ep["name"],
+            "base_url": ep["base_url"],
+            "enabled": ep["enabled"],
+            "api_format": ep.get("api_format", "openai"),
+            "account_id": ep.get("account_id", ""),
+            "models": ep.get("models", []),
+            "enabled_models": ep.get("enabled_models", []),
+            "created_at": ep.get("created_at"),
+            "updated_at": ep.get("updated_at"),
+        }
+        return {"status": "success", "models": models, "count": len(models), "endpoint": clean_ep}
     except Exception as e:
         raise HTTPException(status_code=400, detail=str(e))
 
@@ -194,7 +216,7 @@ async def toggle_my_endpoint_model(
     ep = endpoints_db.get_endpoint_db(name)
     if not ep:
         raise HTTPException(status_code=404, detail=f"Endpoint '{name}' not found")
-    if ep.get("account_id") and ep["account_id"] != account_id and account.get("tier") != "admin":
+    if ep.get("account_id") != account_id and account.get("tier") != "admin":
         raise HTTPException(status_code=403, detail="Forbidden")
 
     # If model not in all models list, add it
@@ -206,6 +228,7 @@ async def toggle_my_endpoint_model(
     from src.core.providers import _custom_endpoint_manager
 
     r = _custom_endpoint_manager.toggle_model(name, req.model_id, req.enabled)
-    return {"status": "success", "endpoint": r}
+    clean_r = {k: v for k, v in r.items() if k != "auth_key"} if isinstance(r, dict) else r
+    return {"status": "success", "endpoint": clean_r}
 
 

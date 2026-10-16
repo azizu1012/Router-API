@@ -13,16 +13,35 @@ class SearchEvidenceMixin:
             return cached, {}
 
         def _fetch_once(timeout_sec: float) -> Tuple[str, Dict[str, Any]]:
-            response = requests.get(
-                url,
-                headers={
-                    "User-Agent": "Mozilla/5.0 (ChadGibitiBot/1.0)",
-                    "Accept": "text/html,application/xhtml+xml",
-                    "Accept-Language": "en-US,en;q=0.8,vi;q=0.7",
-                },
-                timeout=timeout_sec,
-            )
-            if response.status_code != 200 or not response.text:
+            from src.core.runtime.url_safety import is_safe_url
+            safe, _ = is_safe_url(url, allow_private=False)
+            if not safe:
+                return "", {}
+
+            target_url = url
+            response = None
+            for _ in range(3):
+                response = requests.get(
+                    target_url,
+                    headers={
+                        "User-Agent": "Mozilla/5.0 (ChadGibitiBot/1.0)",
+                        "Accept": "text/html,application/xhtml+xml",
+                        "Accept-Language": "en-US,en;q=0.8,vi;q=0.7",
+                    },
+                    timeout=timeout_sec,
+                    allow_redirects=False,
+                )
+                if response.is_redirect or response.status_code in (301, 302, 303, 307, 308):
+                    loc = response.headers.get("Location", "")
+                    import urllib.parse
+                    target_url = urllib.parse.urljoin(target_url, loc)
+                    safe, _ = is_safe_url(target_url, allow_private=False)
+                    if not safe:
+                        return "", {}
+                    continue
+                break
+
+            if not response or response.status_code != 200 or not response.text:
                 return "", {}
             if not response.encoding:
                 response.encoding = response.apparent_encoding or "utf-8"

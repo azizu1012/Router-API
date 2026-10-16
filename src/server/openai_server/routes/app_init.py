@@ -1,5 +1,6 @@
 import asyncio
 import json
+import urllib.parse
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import JSONResponse
 from src.core.config_n_logg import config
@@ -140,19 +141,36 @@ def _estimate_request_tokens(request: Request) -> int:
 
 @app.middleware("http")
 async def cors_middleware(request: Request, call_next):
+    origin = request.headers.get("origin")
+    path = request.url.path
+    is_sensitive = path.startswith("/dashboard/") or path.startswith("/api/me/")
+
+    # Determine allowed origin
+    if is_sensitive and origin:
+        host = request.headers.get("host", "").split(":")[0]
+        parsed_origin = urllib.parse.urlparse(origin).hostname or ""
+        # Allow same host, localhost, 127.0.0.1
+        if parsed_origin == host or parsed_origin in ("localhost", "127.0.0.1"):
+            allowed_origin = origin
+        else:
+            allowed_origin = ""
+    else:
+        allowed_origin = origin or "*" if not is_sensitive else ""
+
     if request.method == "OPTIONS":
-        return JSONResponse(
-            content="OK",
-            headers={
-                "access-control-allow-origin": "*",
-                "access-control-allow-methods": "GET, POST, PUT, DELETE, PATCH, OPTIONS",
-                "access-control-allow-headers": "*",
-                "access-control-max-age": "86400",
-            },
-        )
+        headers = {
+            "access-control-allow-methods": "GET, POST, PUT, DELETE, PATCH, OPTIONS",
+            "access-control-allow-headers": "*",
+            "access-control-max-age": "86400",
+        }
+        if allowed_origin:
+            headers["access-control-allow-origin"] = allowed_origin
+        return JSONResponse(content="OK", headers=headers)
+
     response = await call_next(request)
-    response.headers["access-control-allow-origin"] = "*"
-    response.headers["access-control-allow-headers"] = "*"
+    if allowed_origin:
+        response.headers["access-control-allow-origin"] = allowed_origin
+        response.headers["access-control-allow-headers"] = "*"
     return response
 
 @app.middleware("http")
@@ -319,8 +337,12 @@ async def sub_agent_context_middleware(request: Request, call_next):
 async def security_middleware(request: Request, call_next):
     # Body size limit
     cl = request.headers.get("content-length")
-    if cl and int(cl) > MAX_BODY_BYTES:
-        return JSONResponse(status_code=413, content={"detail": "Request too large"})
+    if cl:
+        try:
+            if int(cl) > MAX_BODY_BYTES:
+                return JSONResponse(status_code=413, content={"detail": "Request too large"})
+        except ValueError:
+            return JSONResponse(status_code=400, content={"detail": "Invalid Content-Length header"})
 
     # Frontend rate limit (login/dashboard) — API có limiter riêng
     block = await check_frontend_rate_limit(request)

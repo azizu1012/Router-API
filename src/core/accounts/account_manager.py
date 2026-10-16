@@ -30,6 +30,8 @@ class AccountManager:
     _cache: Dict[str, Dict[str, Any]] = {}
     _cache_ts: float = 0.0
     _cache_ttl: float = 10.0
+    _negative_cache: Dict[str, float] = {}
+    _negative_cache_ttl: float = 30.0
     _cache_lock = threading.RLock()
 
     def __init__(self, accounts_file: str):
@@ -75,6 +77,7 @@ class AccountManager:
     def invalidate_cache(self) -> None:
         with self._cache_lock:
             self._cache_ts = 0.0
+            self._negative_cache.clear()
 
     def find_by_key(self, auth_key: str) -> Optional[Dict[str, Any]]:
         self._refresh_cache()
@@ -84,7 +87,22 @@ class AccountManager:
         acc = self._cache.get(raw)
         if acc:
             return acc
-        return _find_by_key(auth_key)
+
+        now = time.time()
+        with self._cache_lock:
+            exp = self._negative_cache.get(raw)
+            if exp and now < exp:
+                return None
+
+        acc = _find_by_key(auth_key)
+        if acc:
+            return acc
+
+        with self._cache_lock:
+            if len(self._negative_cache) > 1000:
+                self._negative_cache.clear()
+            self._negative_cache[raw] = now + self._negative_cache_ttl
+        return None
 
     def create_account(
         self,

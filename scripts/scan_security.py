@@ -41,6 +41,7 @@ ROOT = Path(__file__).resolve().parent.parent
 AUTH_GUARDS = frozenset({
     "_check_auth", "_require_dashboard", "_require_admin",
     "_resolve_auth", "_verify_session_token", "resolve_gemini_auth",
+    "get_account",
 })
 
 # Guards that also enforce a privilege tier.
@@ -74,7 +75,7 @@ ACCOUNT_WIDE_PREFIXES = ("/dashboard/admin/", "/dashboard/accounts",
 # Dict keys that carry a credential into a response body.
 CREDENTIAL_KEYS = frozenset({
     "auth_key", "full_key", "password_hash", "password_salt",
-    "password_enc", "api_key", "authKey",
+    "password_enc", "password", "api_key", "authKey",
 })
 
 
@@ -107,10 +108,16 @@ class ModuleIndex:
                     self.src_by_def.setdefault(node.name, path)
 
     def callers_in(self, node: ast.AST) -> set[str]:
-        return {
+        names = {
             n.func.id for n in ast.walk(node)
             if isinstance(n, ast.Call) and isinstance(n.func, ast.Name)
         }
+        for n in ast.walk(node):
+            if isinstance(n, ast.Call) and isinstance(n.func, ast.Name) and n.func.id == "Depends":
+                for arg in n.args:
+                    if isinstance(arg, ast.Name):
+                        names.add(arg.id)
+        return names
 
 
 def collect_routes(paths: Iterable[Path]) -> list[tuple[Path, ast.FunctionDef, str, str]]:
@@ -129,13 +136,16 @@ def collect_routes(paths: Iterable[Path]) -> list[tuple[Path, ast.FunctionDef, s
                     continue
                 f = dec.func
                 if (isinstance(f, ast.Attribute) and isinstance(f.value, ast.Name)
-                        and f.value.id == "app" and f.attr in {
+                        and f.value.id in {"app", "router"} and f.attr in {
                             "get", "post", "put", "patch", "delete", "websocket"}):
                     try:
                         rpath = ast.literal_eval(dec.args[0])
                     except (ValueError, SyntaxError):
                         rpath = "<dynamic>"
-                    out.append((path, node, f.attr.upper(), str(rpath)))
+                    prefix = ""
+                    if f.value.id == "router" and "self_service" in str(path):
+                        prefix = "/api/me"
+                    out.append((path, node, f.attr.upper(), f"{prefix}{rpath}"))
     return out
 
 

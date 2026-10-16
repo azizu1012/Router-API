@@ -23,18 +23,15 @@ async def dashboard_accounts(request: Request):
     payload = _require_dashboard(request)
     is_admin = payload.get("tier") == "admin"
     accs = await asyncio.to_thread(list_accounts_db, True)
-    
+
     def mask_key(k: str) -> str:
         if not k: return ""
         return f"{k[:3]}...{k[-4:]}" if len(k) > 10 else "***"
-        
+
     if is_admin:
-        # Admin only. Whether somebody still owes a password change is not
-        # something one account should learn about another's, so the flag is
-        # merged in here rather than exposed on list_accounts_db for everyone.
         from src.backend.keys.accounts import list_password_flags_db
         flags = await asyncio.to_thread(list_password_flags_db)
-        
+
         safe_admin = []
         for a in accs:
             d = dict(a)
@@ -42,17 +39,16 @@ async def dashboard_accounts(request: Request):
                 d["auth_key_masked"] = mask_key(d.pop("auth_key"))
             d["must_change_password"] = bool(flags.get(a["account_id"], 0))
             safe_admin.append(d)
-            
+
         return {"accounts": safe_admin}
     else:
-        safe = [{k: v for k, v in a.items() if k != "auth_key"} for a in accs]
+        safe = [{k: v for k, v in a.items() if k not in ("auth_key", "must_change_password")} for a in accs]
         return {"accounts": safe}
 
 
 @app.get("/dashboard/keys")
 async def dashboard_keys(request: Request):
-    payload = _require_dashboard(request)
-    is_admin = payload.get("tier") == "admin"
+    payload = _require_admin(request)
     raw = await asyncio.to_thread(get_key_status_db)
     from src.core.limits.gemini.limiter import _key_usage, _usage_lock
     now = time.time()
@@ -65,7 +61,7 @@ async def dashboard_keys(request: Request):
             if usage_entry:
                 today_calls = usage_entry.get("today", 0)
         keys.append({
-            "key": k if is_admin else display_name,
+            "key": k,
             "display": display_name,
             "is_oauth": False,
             "tier": v.get("tier", "free"),
@@ -87,7 +83,7 @@ async def dashboard_keys(request: Request):
 
 @app.get("/dashboard/penalties")
 async def dashboard_penalties(request: Request):
-    _require_dashboard(request)
+    _require_admin(request)
     raw = await asyncio.to_thread(db_load_active_penalties)
     ps = []
     for pkey, p in raw.items():
@@ -124,7 +120,7 @@ async def api_model_pools(request: Request):
 
 @app.get("/dashboard/endpoints")
 async def dashboard_endpoints(request: Request):
-    _require_dashboard(request)
+    _require_admin(request)
     eps = await asyncio.to_thread(list_endpoints_db)
     safe = []
     for e in eps:

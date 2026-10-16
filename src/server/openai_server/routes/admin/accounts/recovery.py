@@ -9,6 +9,7 @@ from src.backend.keys.accounts import get_credential_db, set_password_flag
 
 
 @app.get("/dashboard/admin/accounts/recovery")
+@reveals_credential
 async def admin_account_recovery(request: Request, name: str):
     """Read a user's password back, for the operator.
 

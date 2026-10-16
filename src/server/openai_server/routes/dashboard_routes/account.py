@@ -151,9 +151,9 @@ async def dashboard_change_password(request: Request):
     new = str(body.get("new_password", ""))
     if not new:
         return JSONResponse(status_code=400, content={"error": "new_password required"})
-    if len(new) < 4:
+    if len(new) < 6:
         return JSONResponse(
-            status_code=400, content={"error": "Password must be at least 4 characters"}
+            status_code=400, content={"error": "Password must be at least 6 characters"}
         )
 
     account = await asyncio.to_thread(find_account_by_name, payload.get("name", ""))

@@ -28,6 +28,18 @@ def _trim(dq: deque, window: int, now: float):
         dq.popleft()
 
 
+def _clean_stale_dicts(now: float):
+    if len(_login_hits) > 500:
+        for k in [k for k, dq in _login_hits.items() if not dq or dq[-1] < now - 60]:
+            _login_hits.pop(k, None)
+    if len(_dash_hits) > 500:
+        for k in [k for k, dq in _dash_hits.items() if not dq or dq[-1] < now - 60]:
+            _dash_hits.pop(k, None)
+    if len(_bf_fails) > 500:
+        for k in [k for k, fails in _bf_fails.items() if not fails or max(fails) < now - BF_WINDOW]:
+            _bf_fails.pop(k, None)
+
+
 def _hit(dq: deque, window: int, rate: int, now: float) -> bool:
     _trim(dq, window, now)
     if len(dq) >= rate:
@@ -43,6 +55,7 @@ async def check_frontend_rate_limit(request: Request) -> JSONResponse | None:
     now = time.time()
 
     async with _lock:
+        _clean_stale_dicts(now)
         if ip in _bf_blocked:
             if now < _bf_blocked[ip]:
                 return JSONResponse(status_code=429, content={"detail": "Too many failed logins. Try later."})
@@ -97,4 +110,13 @@ def add_security_headers(response):
     response.headers["x-xss-protection"] = "1; mode=block"
     response.headers["permissions-policy"] = "camera=(), microphone=(), geolocation=()"
     response.headers["strict-transport-security"] = "max-age=31536000; includeSubDomains"
+    response.headers["content-security-policy"] = (
+        "default-src 'self'; "
+        "script-src 'self'; "
+        "style-src 'self' 'unsafe-inline'; "
+        "connect-src 'self' ws: wss:; "
+        "frame-ancestors 'none'; "
+        "object-src 'none'; "
+        "base-uri 'self';"
+    )
 

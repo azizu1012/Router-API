@@ -11,6 +11,7 @@ _SESSION_SECRET: str = secrets.token_hex(32)  # rotates on restart
 _SESSION_TTL: int = 8 * 3600  # 8 hours
 
 def _make_session_token(account: Dict[str, Any]) -> str:
+    now = int(time.time())
     payload = json.dumps({
         "account_id": account.get("account_id"),
         "name": account.get("name"),
@@ -18,7 +19,8 @@ def _make_session_token(account: Dict[str, Any]) -> str:
         "rpm": account.get("rpm", 0),
         "tpm": account.get("tpm", 0),
         "rpd": account.get("rpd", 0),
-        "exp": int(time.time()) + _SESSION_TTL,
+        "iat": now,
+        "exp": now + _SESSION_TTL,
     })
     b64 = base64.urlsafe_b64encode(payload.encode()).decode()
     sig = _hmac.new(_SESSION_SECRET.encode(), b64.encode(), hashlib.sha256).hexdigest()
@@ -46,6 +48,25 @@ def _require_dashboard(request: Request) -> Dict[str, Any]:
     payload = _verify_session_token(token)
     if not payload:
         raise HTTPException(status_code=401, detail={"error": "Invalid or expired session"})
+
+    account_id = payload.get("account_id")
+    name = payload.get("name")
+    if not account_id and not name:
+        raise HTTPException(status_code=401, detail={"error": "Invalid session payload"})
+
+    from src.backend.accounts.manager import find_account_by_name
+    from src.backend.keys.accounts import get_credential_db
+
+    acc = find_account_by_name(name) if name else None
+    if not acc or not acc.get("enabled", 1):
+        raise HTTPException(status_code=401, detail={"error": "Account is disabled or does not exist"})
+
+    # Synchronize tier and limits with live DB state
+    payload["tier"] = acc.get("tier", "free")
+    payload["rpm"] = acc.get("rpm", payload.get("rpm", 0))
+    payload["tpm"] = acc.get("tpm", payload.get("tpm", 0))
+    payload["rpd"] = acc.get("rpd", payload.get("rpd", 0))
+
     return payload
 
 def _require_admin(request: Request) -> Dict[str, Any]:

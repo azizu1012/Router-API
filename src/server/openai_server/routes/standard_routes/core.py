@@ -32,7 +32,6 @@ async def health() -> Dict[str, Any]:
     return {
         "ok": True,
         "models": [m["id"] for m in router.list_models()],
-        "keys": len(config.GEMINI_API_KEYS),
     }
 
 

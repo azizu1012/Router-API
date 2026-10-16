@@ -100,6 +100,7 @@ tests/*
 !tests/test_fake_provider.py
 !tests/test_network_guard.py
 !tests/test_provider_wire_forms.py
+!tests/test_security_patches.py
 
 # The provider kit and its socket guard are imported by conftest.py, which is
 # tracked. `tests/*` below re-excludes the directory, so without these lines

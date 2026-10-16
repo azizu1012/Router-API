@@ -295,7 +295,7 @@ class CustomEndpointManager:
         async with aiohttp.ClientSession(headers=headers) as session:
             for url in candidates:
                 try:
-                    async with session.get(url, timeout=aiohttp.ClientTimeout(total=5)) as resp:
+                    async with session.get(url, timeout=aiohttp.ClientTimeout(total=5), allow_redirects=False) as resp:
                         if resp.status == 200:
                             data = await resp.json()
                             base = url[:url.rfind("/models")]
