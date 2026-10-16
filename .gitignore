@@ -7,6 +7,8 @@ usage_logs.db
 usage_logs.db-shm
 usage_logs.db-wal
 logs/
+main_run.log
+main_err.log
 
 # ─── Auto-generated ───
 __pycache__/
@@ -101,6 +103,7 @@ tests/*
 !tests/test_network_guard.py
 !tests/test_provider_wire_forms.py
 !tests/test_security_patches.py
+!tests/test_server_runtime_bugfixes.py
 
 # The provider kit and its socket guard are imported by conftest.py, which is
 # tracked. `tests/*` below re-excludes the directory, so without these lines

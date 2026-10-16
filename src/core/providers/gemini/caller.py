@@ -4,6 +4,7 @@ from typing import Any, AsyncIterator, List, Optional
 from src.core.providers.genai_types import types
 
 from src.core.config_n_logg import config
+from src.core.config_n_logg.logger import logger_system as logger
 from .pool import ClientPool
 
 

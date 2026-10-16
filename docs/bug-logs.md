@@ -2210,3 +2210,50 @@ Vòng lặp `for block in content:` chỉ kiểm tra các loại block `text`, `
 - `test_anthropic_image_only_message_survives_message_converter`
 - `test_estimate_input_tokens_counts_image_blocks`
 Toàn bộ test suite Anthropic (163 tests) pass 100%.
+
+---
+
+## Bug #43: Lỗi Biến Chưa Định Nghĩa & Lệch Thụt Đầu Dòng Tại 4 File Core (2026-10-17)
+
+### Mức độ
+Nghiêm trọng trên production runtime. Test suite local (`pytest`) vẫn xanh 100% vì các test không gọi trực tiếp các nhánh này hoặc chỉ test hàm helper cô lập, trong khi server chạy thật thì dính `UnboundLocalError`, `NameError`, và `TypeError`.
+
+### Triệu chứng & Nguyên nhân chi tiết ở 4 file:
+
+1. **`src/server/realtime/stats.py`**:
+   - *Triệu chứng:* Log server liên tục cảnh báo mỗi 2s:
+     `[WARNING] [StatsPusher] Failed to include custom pool stats: cannot access local variable 'rpm_used' where it is not associated with a value`
+     `[WARNING] [StatsPusher] Snapshot error: cannot access local variable 'reqs' where it is not associated with a value`
+     Đồng thời bảng `model_stats` trên WebSocket Dashboard chỉ lưu duy nhất 1 model cuối cùng.
+   - *Root cause:* Cả 3 vòng lặp `for` (`_rate_limiters`, `_custom_pool_usage`, `_key_model_requests`) đều bị thụt lề sai: thân vòng lặp nằm ngoài câu lệnh `for`. Khi danh sách trống hoặc duyệt qua, các biến `rpm_used`, `reqs` không được gán dẫn đến `UnboundLocalError`.
+
+2. **`src/server/openai_server/routes/completions/responses.py`**:
+   - *Triệu chứng:* Route non-streaming `POST /v1/responses` bị crash 500 khi xử lý xong câu trả lời.
+   - *Root cause:* Dòng 97 gọi `_auth_key_prefix(account)` và dòng 105 gọi `await log_usage(...)` nhưng cả hai hàm này **hoàn toàn không được import** ở đầu file.
+   - *Vì sao test cũ xanh:* `test_responses_conformance.py` chỉ kiểm tra trực tiếp helper `_responses_sse_stream` với mock generator, không bao giờ test gọi toàn diện endpoint non-stream `POST /v1/responses`.
+
+3. **`src/api/opencode_proxy/handler/stream_executor.py`**:
+   - *Triệu chứng:* Tại khối `finally:` dọn dẹp luồng, server văng lỗi:
+     `NameError: name 'stream' is not defined`.
+   - *Root cause:* Biến luồng được gán là `gen`, nhưng khối `finally:` lại kiểm tra `hasattr(stream, "aclose")`. Do bọc trong `except Exception`, lỗi bị nuốt và chỉ xuất hiện log warning, nhưng stream gốc không bao giờ được đóng đúng cách.
+   - *Vì sao test cũ xanh:* Khối `except Exception as e:` nuốt lỗi `NameError` nên request không bị ngắt ngang.
+
+4. **`src/core/providers/gemini/caller.py`**:
+   - *Triệu chứng:* Khi đóng luồng stream bị lỗi kết nối, chương trình crash vì `NameError: name 'logger' is not defined`.
+   - *Root cause:* Dòng 130 gọi `logger.warning("[GeminiCaller] Error closing stream: %s", e)` nhưng file `caller.py` không hề import `logger`.
+   - *Vì sao test cũ xanh:* Trong môi trường test mock hoặc khi stream đóng bình thường không có ngoại lệ, khối `except Exception:` tại dòng 129 không bao giờ được kích hoạt.
+
+### Fix
+1. `src/server/realtime/stats.py`: Sửa lại toàn bộ thụt lề khối code bên trong 3 vòng lặp `for`, tính toán đầy đủ `model_stats`, `custom_pool_usage` và `active_keys`.
+2. `src/server/openai_server/routes/completions/responses.py`: Import `_auth_key_prefix` từ `auth.py` và `log_usage` từ `usage_logger.py`, đồng thời dọn dẹp các import thừa.
+3. `src/api/opencode_proxy/handler/stream_executor.py`: Khai báo `gen = None` trước khi tạo task, thay `stream` bằng `gen` trong khối `finally:` để gọi `await gen.aclose()`.
+4. `src/core/providers/gemini/caller.py`: Import `from src.core.config_n_logg.logger import logger_system as logger`.
+5. `src/core/limits/account_limiter/limiter.py`: Xóa bỏ đoạn code chết không sử dụng gọi biến không tồn tại `base_account_rpd`.
+
+### Test
+Tạo mới file test `tests/test_server_runtime_bugfixes.py` phủ đầy đủ 4 trường hợp lỗi runtime trên:
+- `test_stats_pusher_snapshot_empty_and_populated`: Pass
+- `test_responses_route_nonstream_resolves_imports`: Pass
+- `test_stream_executor_closes_gen`: Pass
+- `test_gemini_caller_stream_close_logger`: Pass
+Toàn bộ test suite liên quan (116 tests) pass 100%, `pyflakes src/` sạch 100% không còn bất kỳ biến undefined nào.

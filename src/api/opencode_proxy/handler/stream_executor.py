@@ -280,7 +280,7 @@ async def execute_stream(
             yield _openai_sse(model_name, reasoning_content=text, chunk_id=chunk_id)
 
     async def _yield_reasoning(val: str):
-        nonlocal out_len, _reasoning_buf
+        nonlocal out_len
         if not val or not include_thoughts:
             return
         _reasoning_buf.append(val)
@@ -322,8 +322,9 @@ async def execute_stream(
                         yield c
 
     # Start pool-managed stream using a task for TTFB keepalive
+    gen = None
     async def _fetch_first():
-        gen = pool_manager.call_stream(
+        g = pool_manager.call_stream(
             model_alias=model_alias,
             messages=messages,
             tools=tools or None,
@@ -334,10 +335,10 @@ async def execute_stream(
             thinking_params=thinking_params,
         )
         try:
-            first_item = await gen.__anext__()
+            first_item = await g.__anext__()
         except StopAsyncIteration:
             return None, None
-        return gen, first_item
+        return g, first_item
 
     fetch_task = asyncio.create_task(_fetch_first())
     t0_wait = asyncio.get_event_loop().time()
@@ -555,8 +556,8 @@ async def execute_stream(
     finally:
         # Ensure the underlying stream is closed
         try:
-            if hasattr(stream, "aclose"):
-                await stream.aclose()
+            if gen is not None and hasattr(gen, "aclose"):
+                await gen.aclose()
         except Exception as e:
             logger.warning("[OpenCode Stream] Error closing underlying stream: %s", e)
 

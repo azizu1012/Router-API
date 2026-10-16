@@ -97,15 +97,6 @@ class AccountRateLimiter:
         # to get the count of active virtual models (flash/lite) for the given account_id.
         # For now, return a dummy value.
         return 1
-        # adjust current_key_rpd_limit.
-
-        # Example of how throttling might work (conceptual):
-        # total_account_rpd_used = await self.db.get_total_rpd_for_account(account_id) # Placeholder
-        # if total_account_rpd_used > base_account_rpd * 0.8: # If 80% of total quota is used
-        #     throttled_limit = max(1, int(current_key_rpd_limit * (1 - (total_account_rpd_used / base_account_rpd))))
-        #     return min(current_key_rpd_limit, throttled_limit)
-
-        return base_account_rpd
 
     def reset(self) -> None:
         """Clear in-process quota state between deterministic test scenarios."""

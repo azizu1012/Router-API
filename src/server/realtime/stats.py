@@ -31,19 +31,19 @@ class StatsPusher:
         async with _stats_lock:
             for alias, limiter in dict(_rate_limiters).items():
                 rpm_remaining = max(0, limiter.rpm_limit - len(limiter._minute_req_ts))
-            tpm_used = sum(t for ts, t in limiter._minute_tokens if now - ts < 60)
-            tpm_remaining = max(0, limiter.tpm_limit - tpm_used)
+                tpm_used = sum(t for ts, t in limiter._minute_tokens if now - ts < 60)
+                tpm_remaining = max(0, limiter.tpm_limit - tpm_used)
 
-            stats_entry = {
-                "rpm_remaining": rpm_remaining,
-                "rpm_limit": limiter.rpm_limit,
-                "tpm_remaining": tpm_remaining,
-                "tpm_limit": limiter.tpm_limit,
-                "rpd_used": limiter._rpd_count,
-                "rpd_limit": limiter.rpd_limit,
-                "active_requests": len(limiter._minute_req_ts),
-            }
-            model_stats[alias] = stats_entry
+                stats_entry = {
+                    "rpm_remaining": rpm_remaining,
+                    "rpm_limit": limiter.rpm_limit,
+                    "tpm_remaining": tpm_remaining,
+                    "tpm_limit": limiter.tpm_limit,
+                    "rpd_used": limiter._rpd_count,
+                    "rpd_limit": limiter.rpd_limit,
+                    "active_requests": len(limiter._minute_req_ts),
+                }
+                model_stats[alias] = stats_entry
 
         # Include custom pool models stats dynamically
         try:
@@ -51,25 +51,25 @@ class StatsPusher:
             async with _stats_lock:
                 for model_id, ts_list in dict(_custom_pool_usage).items():
                     rpm_used = sum(1 for ts in ts_list if now - ts < 60)
-                stats_entry = {
-                    "rpm_remaining": max(0, _CUSTOM_POOL_RPM - rpm_used),
-                    "rpm_limit": _CUSTOM_POOL_RPM,
-                    "tpm_remaining": 999999999,
-                    "tpm_limit": 999999999,
-                    "rpd_used": 0,
-                    "rpd_limit": 999999,
-                    "active_requests": rpm_used,
-                }
-                model_stats[model_id] = stats_entry
+                    stats_entry = {
+                        "rpm_remaining": max(0, _CUSTOM_POOL_RPM - rpm_used),
+                        "rpm_limit": _CUSTOM_POOL_RPM,
+                        "tpm_remaining": 999999999,
+                        "tpm_limit": 999999999,
+                        "rpd_used": 0,
+                        "rpd_limit": 999999,
+                        "active_requests": rpm_used,
+                    }
+                    model_stats[model_id] = stats_entry
         except Exception as e:
             logger.warning("[StatsPusher] Failed to include custom pool stats: %s", e)
 
         active_keys = 0
+        cutoff = now - 60
         async with _stats_lock:
             for km, reqs in dict(_key_model_requests).items():
-                cutoff = now - 60
-            active = sum(1 for t in reqs if t > cutoff - 5)
-            active_keys += active
+                active = sum(1 for t in reqs if t > cutoff - 5)
+                active_keys += active
 
         penalty_count = 0
         async with _stats_lock:
@@ -77,7 +77,6 @@ class StatsPusher:
                 if pdata.get("expires", 0) > now:
                     penalty_count += 1
 
-        global _transient_429_count, _transient_503_count
         from src.core.observability.usage_logger import get_recent_requests
         recent_reqs = await get_recent_requests(20)
 

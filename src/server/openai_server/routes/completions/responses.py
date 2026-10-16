@@ -8,13 +8,13 @@ from fastapi.responses import JSONResponse, StreamingResponse
 
 from src.api.claude_proxy.handler.anthropic_spec import estimate_input_tokens
 from src.core.config_n_logg.logger import logger_api
-from src.server.openai_server.auth import _resolve_auth, _check_auth, _apply_account_limit
+from src.core.observability.usage_logger import log_usage
+from src.server.openai_server.auth import (
+    _resolve_auth, _check_auth, _apply_account_limit, _auth_key_prefix,
+)
 from src.server.openai_server.routes.responses.format import (
     _error_type, _extract_response_text, _extract_response_tool_calls,
-    _extract_finish_reason,
-    _responses_usage, _responses_envelope,
-    _output_text_part, _output_message, _web_search_action,
-    _web_search_call_item, _url_citations, _responses_event,
+    _responses_usage, _responses_envelope, _output_message, _web_search_call_item,
 )
 from src.server.openai_server.routes.responses.stream import _responses_sse_stream
 from ..app_init import app
