@@ -23,6 +23,7 @@ import SettingsTab from './tabs/SettingsTab';
 import ApiHelpTab from './tabs/ApiHelpTab';
 import ModelsTab from './tabs/ModelsTab';
 import ModelAliasesTab from './tabs/ModelAliasesTab';
+import ComboModelsTab from './tabs/ComboModelsTab';
 
 export default function App() {
   const { 
@@ -467,8 +468,16 @@ export default function App() {
             <span>Model Aliases</span>
           </button>
 
-          <button 
-            onClick={() => setActiveTab('myacc')} 
+          <button
+            onClick={() => setActiveTab('cm')}
+            className={`btn btn-xs lg:btn-sm btn-ghost justify-start gap-2 lg:gap-3 normal-case font-medium w-auto lg:w-full text-left rounded-xl shrink-0 whitespace-nowrap ${activeTab === 'cm' ? 'bg-primary/15 text-primary font-bold border border-primary/20' : 'text-base-content/75'}`}
+          >
+            <Layers className="w-4 h-4 text-accent" />
+            <span>Combo Model Mix</span>
+          </button>
+
+          <button
+            onClick={() => setActiveTab('myacc')}
             className={`btn btn-xs lg:btn-sm btn-ghost justify-start gap-2 lg:gap-3 normal-case font-medium w-auto lg:w-full text-left rounded-xl shrink-0 whitespace-nowrap ${activeTab === 'myacc' ? 'bg-primary/15 text-primary font-bold border border-primary/20' : 'text-base-content/75'}`}
           >
             <User className="w-4 h-4" />
@@ -525,6 +534,7 @@ export default function App() {
             {activeTab === 'mu' && <PoolStructureTab />}
             {activeTab === 'md' && <ModelsTab />}
             {activeTab === 'ma' && <ModelAliasesTab />}
+            {activeTab === 'cm' && <ComboModelsTab />}
             {activeTab === 'myacc' && <MyAccountTab />}
             {activeTab === 'myuse' && <MyUsageTab />}
             {activeTab === 'st' && <SettingsTab />}

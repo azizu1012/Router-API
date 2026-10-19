@@ -18,6 +18,7 @@ const getTabFromPath = (path) => {
   if (normalized === '/stats/my-usage') return 'myuse';
   if (normalized === '/stats/model-config') return 'md';
   if (normalized === '/stats/model-aliases') return 'ma';
+  if (normalized === '/stats/combo-models') return 'cm';
   if (normalized === '/stats/settings') return 'st';
   if (normalized === '/stats/help') return 'help';
   return null;
@@ -36,6 +37,7 @@ const getPathFromTab = (tab) => {
     case 'myuse': return '/stats/my-usage';
     case 'md': return '/stats/model-config';
     case 'ma': return '/stats/model-aliases';
+    case 'cm': return '/stats/combo-models';
     case 'st': return '/stats/settings';
     case 'help': return '/stats/help';
     default: return '/stats';
