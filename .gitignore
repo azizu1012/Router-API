@@ -21,6 +21,7 @@ graphify-out/
 
 # ─── CodeGraph index ───
 .codegraph/
+.gitattributes
 
 # ─── Virtual env ───
 .venv/
