@@ -29,7 +29,8 @@ def _today_pacific() -> _dt.date:
     Calculates the current date in Pacific Time (UTC-7).
     This is used to determine daily quota resets, aligning with Google Cloud's RPD reset schedule.
     """
-    return (_dt.datetime.utcnow() + _PACIFIC_OFFSET).date()
+    now_utc = _dt.datetime.now(_dt.timezone.utc).replace(tzinfo=None)
+    return (now_utc + _PACIFIC_OFFSET).date()
 
 
 # ── Per-model rate limiter (RPM / TPM / RPD) ──────────────────
@@ -264,7 +265,7 @@ def count_transient_error(reason: str) -> None:
 
 
 def get_seconds_until_pacific_midnight() -> int:
-    now_utc = _dt.datetime.utcnow()
+    now_utc = _dt.datetime.now(_dt.timezone.utc).replace(tzinfo=None)
     now_pacific = now_utc + _PACIFIC_OFFSET
     tomorrow_pacific = now_pacific.date() + _dt.timedelta(days=1)
     midnight_pacific = _dt.datetime.combine(tomorrow_pacific, _dt.time.min)

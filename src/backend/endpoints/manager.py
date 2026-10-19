@@ -1,5 +1,5 @@
 import json
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional
 
 from src.backend._db import _LOCK, conn as _conn
@@ -71,7 +71,7 @@ def add_endpoint_db(name: str, base_url: str, auth_key: str) -> Dict[str, Any]:
         "api_format": "openai",
         "fallback": False,
         "pool_assignments": {},
-        "updated_at": datetime.utcnow().isoformat(),
+        "updated_at": datetime.now(timezone.utc).isoformat(),
     }
     with _LOCK:
         c = _conn()
@@ -112,7 +112,7 @@ def enable_endpoint_db(name: str) -> Optional[Dict[str, Any]]:
         try:
             c.execute(
                 "UPDATE custom_endpoints SET enabled = 1, updated_at = ? WHERE name = ?",
-                (datetime.utcnow().isoformat(), name),
+                (datetime.now(timezone.utc).isoformat(), name),
             )
             c.commit()
         finally:
@@ -130,7 +130,7 @@ def disable_endpoint_db(name: str) -> Optional[Dict[str, Any]]:
         try:
             c.execute(
                 "UPDATE custom_endpoints SET enabled = 0, updated_at = ? WHERE name = ?",
-                (datetime.utcnow().isoformat(), name),
+                (datetime.now(timezone.utc).isoformat(), name),
             )
             c.commit()
         finally:
@@ -162,7 +162,7 @@ def update_endpoint_db(name: str, **updates: Any) -> Optional[Dict[str, Any]]:
                  1 if ep.get("fallback", False) else 0,
                  json.dumps(ep.get("pool_assignments") or {}),
                  ep.get("api_format") or "openai",
-                 datetime.utcnow().isoformat(), name),
+                 datetime.now(timezone.utc).isoformat(), name),
             )
             c.commit()
         finally:
@@ -179,7 +179,7 @@ def set_fallback_db(name: str, enabled: bool) -> Optional[Dict[str, Any]]:
         try:
             c.execute(
                 "UPDATE custom_endpoints SET fallback = ?, updated_at = ? WHERE name = ?",
-                (1 if enabled else 0, datetime.utcnow().isoformat(), name),
+                (1 if enabled else 0, datetime.now(timezone.utc).isoformat(), name),
             )
             c.commit()
         finally:
@@ -263,7 +263,7 @@ def add_member_endpoint_db(
         "api_format": api_format,
         "fallback": False,
         "pool_assignments": {},
-        "updated_at": datetime.utcnow().isoformat(),
+        "updated_at": datetime.now(timezone.utc).isoformat(),
     }
     with _LOCK:
         c = _conn()

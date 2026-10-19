@@ -1,0 +1,3 @@
+# Graphify ignore file
+# Exclude compiled minified frontend bundle assets (prevents 400+ garbage nodes in graphify)
+src/frontend/assets/

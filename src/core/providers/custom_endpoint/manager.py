@@ -1,6 +1,6 @@
 import asyncio
 import time
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Optional, TYPE_CHECKING
 
@@ -435,7 +435,7 @@ class CustomEndpointManager:
 
         update_endpoint_db(name, base_url=result["base"],
                            models=sorted(set(free_models)),
-                           updated_at=datetime.utcnow().isoformat())
+                           updated_at=datetime.now(timezone.utc).isoformat())
         self._invalidate_cache()
         return sorted(set(free_models))
 

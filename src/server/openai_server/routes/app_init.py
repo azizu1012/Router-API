@@ -1,4 +1,5 @@
 import asyncio
+from contextlib import asynccontextmanager
 import json
 import urllib.parse
 from fastapi import FastAPI, HTTPException, Request
@@ -420,8 +421,8 @@ async def _watch_env_file():
 
 _background_tasks = set()
 
-@app.on_event("startup")
-async def _init_usage_db():
+@asynccontextmanager
+async def lifespan(app: FastAPI):
     init_config_tables()
     migrate_from_json()
     await init_db()
@@ -442,7 +443,7 @@ async def _init_usage_db():
 
     await account_limiter.restore_rpd_counts()
     start_flush_loop()
-    
+
     task = asyncio.create_task(_watch_env_file())
     _background_tasks.add(task)
     task.add_done_callback(_background_tasks.discard)
@@ -450,9 +451,8 @@ async def _init_usage_db():
     log_watcher.start_all()
     stats_pusher.start()
 
+    yield
 
-@app.on_event("shutdown")
-async def _shutdown_background_services():
     """Stop app-owned tasks before test or process database cleanup."""
     log_watcher.stop_all()
     await stats_pusher.stop()
@@ -469,6 +469,9 @@ async def _shutdown_background_services():
         await asyncio.to_thread(flush_pending_writes)
     except Exception as shutdown_err:
         logger.warning("[Shutdown] Failed to flush key-status writes: %s", shutdown_err)
+
+
+app.router.lifespan_context = lifespan
 
 
 
