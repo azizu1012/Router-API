@@ -41,8 +41,9 @@ async def test_transient_rate_limit_adds_penalty_and_counts_stats(temp_db):
         pass
 
     with patch("src.logical_HQ_translator.model.resolver.router.reserve_key", return_value=reservation), \
-         patch("src.core.orchestration.pool_manager.acompletion", new_callable=AsyncMock) as mock_acompletion:
-         
+         patch("src.core.orchestration.pool_manager.acompletion", new_callable=AsyncMock) as mock_acompletion, \
+         patch("asyncio.sleep", new_callable=AsyncMock):
+
         mock_acompletion.side_effect = MockAPIError("Resource has been exhausted (e.g. check quota). [429]")
 
         pm = PoolManager()

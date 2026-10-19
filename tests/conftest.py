@@ -284,6 +284,11 @@ def temp_db():
         core_router.refresh_keys()
         yield path
     finally:
+        try:
+            from src.backend.keys.status import flush_pending_writes
+            flush_pending_writes()
+        except Exception:
+            pass
         db_mod._DB = original_db
         db_mod._bootstrapped = original_boot
         try:

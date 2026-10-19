@@ -366,7 +366,8 @@ class PoolManager:
                         cooldown = config.KEY_INVALID_COOLDOWN_SECONDS if reason in ("invalid_key", "permission_denied") else config.KEY_429_COOLDOWN_SECONDS
                         router.freeze_key(api_key_val, cooldown, model_id_val, reason)
                         apply_error_penalty(api_key_val, reason, model_id_val)
-                    await asyncio.sleep(_retry_delay(attempt))
+                    if attempt < config.MAX_RETRIES - 1:
+                        await asyncio.sleep(_retry_delay(attempt))
 
             raise RuntimeError("Standalone calls failed after retries")
 
@@ -715,7 +716,8 @@ class PoolManager:
                         cooldown = config.KEY_INVALID_COOLDOWN_SECONDS if reason in ("invalid_key", "permission_denied") else config.KEY_429_COOLDOWN_SECONDS
                         router.freeze_key(api_key_val, cooldown, model_id_val, reason)
                         apply_error_penalty(api_key_val, reason, model_id_val)
-                    await asyncio.sleep(_retry_delay(attempt))
+                    if attempt < config.MAX_RETRIES - 1:
+                        await asyncio.sleep(_retry_delay(attempt))
             raise RuntimeError("Standalone stream failed after retries")
 
     # ── Internal Helpers ──────────────────────────────────────────
