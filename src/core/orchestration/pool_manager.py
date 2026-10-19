@@ -444,8 +444,12 @@ class PoolManager:
                         member_tc = _compute_thinking_for_model(thinking_params, model_full_val) if not is_custom else None
                         if member_tc is None:
                             member_tc = thinking_config
-                        if member_tc and "lite" in model_full_val.lower():
-                            member_tc = {}
+                        if member_tc:
+                            if "lite" in model_full_val.lower():
+                                member_tc = {}
+                            elif "gemma" in model_full_val.lower():
+                                from src.core.providers.gemini.thinking import sanitize_thinking_for_gemma
+                                member_tc = sanitize_thinking_for_gemma(member_tc)
 
                         # Custom pool models are rate-limited per model_id, not by the
                         # Gemini quota path. This check used to live only in
@@ -622,8 +626,12 @@ class PoolManager:
                     is_custom = reservation.get("provider") == "custom"
 
                     member_tc = _compute_thinking_for_model(thinking_params, model_full_val) if not thinking_config else thinking_config
-                    if member_tc and "lite" in model_full_val.lower():
-                        member_tc = {}
+                    if member_tc:
+                        if "lite" in model_full_val.lower():
+                            member_tc = {}
+                        elif "gemma" in model_full_val.lower():
+                            from src.core.providers.gemini.thinking import sanitize_thinking_for_gemma
+                            member_tc = sanitize_thinking_for_gemma(member_tc)
 
                     # Same gap as the pool streaming path above: standalone streaming
                     # never went through _resolve_and_call, so custom pool models
@@ -783,8 +791,12 @@ class PoolManager:
         member_tc = _compute_thinking_for_model(thinking_params, model_full_val) if not is_custom else None
         if member_tc is None:
             member_tc = thinking_config
-        if member_tc and "lite" in model_full_val.lower():
-            member_tc = {}
+        if member_tc:
+            if "lite" in model_full_val.lower():
+                member_tc = {}
+            elif "gemma" in model_full_val.lower():
+                from src.core.providers.gemini.thinking import sanitize_thinking_for_gemma
+                member_tc = sanitize_thinking_for_gemma(member_tc)
 
         # Central pool quota / rate checks
         try:

@@ -221,6 +221,14 @@ Ngưỡng `budget_tokens` khi chuyển sang Gemini 3:
 
 Test: `tests/test_effort_mapping.py` — pin cả hai chiều, kể cả việc effort cao hơn không bao giờ cho ra thinking ít hơn.
 
+### Đặc Thù Gemma 4 (Google AI Studio)
+- **Cơ chế suy nghĩ**: Gemma 4 (`gemma-4-26b-a4b-it`, `gemma-4-31b-it`) tích hợp sẵn quy trình suy luận (thinking process). Tuy nhiên, Google AI Studio **nghiêm ngặt chỉ cho phép bật hoặc tắt** thông qua `thinkingLevel`: `"high"` (bật) hoặc `"minimal"` (tắt).
+- **Cấm kỵ `thinkingBudget`**: Gemma 4 **hoàn toàn không hỗ trợ** tham số `thinkingBudget` (Google AI Studio sẽ văng lỗi HTTP 400 `Thinking budget is not supported for this model.`), đồng thời từ chối các mức `low` hay `medium` (văng lỗi HTTP 400 `Thinking level is not supported for this model.`).
+- **Chuẩn hóa tự động (`sanitize_thinking_for_gemma`)**:
+  - Bất kỳ `thinking_budget > 0` hoặc mức thinking hợp lệ nào từ client gửi lên đều được router chuẩn hóa thành `thinking_level="high"`.
+  - Tắt thinking (`none`, `off`, `false`, `minimal` hoặc `thinking_budget=0` hoặc sub-agent) được chuẩn hóa thành `thinking_level="minimal"`.
+  - Router tuyệt đối loại bỏ trường `thinking_budget` khỏi payload gửi tới Google API khi gọi Gemma.
+
 ---
 
 ## 10. Lịch sử thay đổi

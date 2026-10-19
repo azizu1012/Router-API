@@ -20,8 +20,16 @@ def build_gemini_inputs(
     resolved_thinking = thinking_config
     if resolved_thinking is None and reasoning_effort:
         is_v3 = "gemini-3" in model_id and "gemini-2" not in model_id
+        is_gemma = "gemma" in model_id.lower()
         resolved_thinking = build_thinking_config(
-            thinking_level=reasoning_effort, is_v3=is_v3)
+            thinking_level=reasoning_effort, is_v3=is_v3, is_gemma=is_gemma)
+
+    if resolved_thinking:
+        if "lite" in model_id.lower():
+            resolved_thinking = {}
+        elif "gemma" in model_id.lower():
+            from .thinking import sanitize_thinking_for_gemma
+            resolved_thinking = sanitize_thinking_for_gemma(resolved_thinking)
 
     converted = convert_messages_to_contents(messages)
     contents = converted["contents"]

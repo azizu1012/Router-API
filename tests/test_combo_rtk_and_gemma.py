@@ -276,3 +276,69 @@ def test_keepalive_configuration():
     # Stall timeout must be 120s to endure deep thinking and multi-key rotations
     assert STREAM_STALL_TIMEOUT == 120.0
     assert KEEPALIVE_INTERVAL == 3.0
+
+
+# ---------------------------------------------------------------------------
+# 6. Gemma 4 Thinking Support & Budget Sanitization Tests
+# ---------------------------------------------------------------------------
+
+def test_gemma_thinking_support_and_budget_sanitization():
+    from src.core.providers.gemini.thinking import (
+        get_default_thinking_for_model,
+        resolve_thinking_config,
+        sanitize_thinking_for_gemma,
+        build_thinking_config,
+    )
+    from src.core.providers.gemini.input_builder import build_gemini_inputs
+
+    # 1. Default thinking for Gemma 4 is high, NEVER thinking_budget (which causes HTTP 400)
+    for model in ["gemma-4-26b", "gemma-4-26b-a4b-it", "gemma-4-31b", "gemma-4-31b-it"]:
+        cfg = get_default_thinking_for_model(model)
+        assert cfg == {"thinking_level": "high", "include_thoughts": True}
+        assert "thinking_budget" not in cfg
+
+    # 2. Client passing thinking_budget > 0 is safely converted to thinking_level="high"
+    res_budget = resolve_thinking_config("gemma-4-26b-a4b-it", thinking_budget=2048)
+    assert res_budget == {"thinking_level": "high", "include_thoughts": True}
+    assert "thinking_budget" not in res_budget
+
+    # 3. Client passing thinking_budget = 0 disables thinking via thinking_level="minimal"
+    res_zero = resolve_thinking_config("gemma-4-26b-a4b-it", thinking_budget=0)
+    assert res_zero == {"thinking_level": "minimal", "include_thoughts": False}
+
+    # 4. Client passing "low" or "medium" is mapped to "high" (Google API rejects low/medium on Gemma with 400)
+    res_low = resolve_thinking_config("gemma-4-26b-a4b-it", thinking_level="low")
+    assert res_low == {"thinking_level": "high", "include_thoughts": True}
+
+    res_med = resolve_thinking_config("gemma-4-31b-it", thinking_level="medium")
+    assert res_med == {"thinking_level": "high", "include_thoughts": True}
+
+    # 5. Client turning thinking off maps to "minimal"
+    for off_val in ["none", "off", "false", "minimal"]:
+        res_off = resolve_thinking_config("gemma-4-26b-a4b-it", thinking_level=off_val)
+        assert res_off == {"thinking_level": "minimal", "include_thoughts": False}
+
+    # 6. Sub-agents on Gemma get thinking disabled to save latency/tokens
+    res_sub = resolve_thinking_config("gemma-4-26b-a4b-it", is_sub_agent=True)
+    assert res_sub == {"thinking_level": "minimal", "include_thoughts": False}
+
+    # 7. Direct sanitization of dirty thinking_config containing thinking_budget
+    dirty_cfg = {"thinking_budget": 8192, "include_thoughts": True}
+    clean_cfg = sanitize_thinking_for_gemma(dirty_cfg)
+    assert clean_cfg == {"thinking_level": "high", "include_thoughts": True}
+    assert "thinking_budget" not in clean_cfg
+
+    # 8. build_gemini_inputs sanitizes thinking_config for Gemma models
+    messages = [{"role": "user", "content": "Hello"}]
+    contents, system, tools, resolved_thinking = build_gemini_inputs(
+        model_id="gemma-4-26b-a4b-it",
+        messages=messages,
+        tools=None,
+        temperature=0.7,
+        max_output_tokens=100,
+        reasoning_effort=None,
+        thinking_config={"thinking_budget": 4096, "include_thoughts": True},
+    )
+    assert resolved_thinking == {"thinking_level": "high", "include_thoughts": True}
+    assert "thinking_budget" not in resolved_thinking
+

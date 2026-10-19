@@ -26,7 +26,7 @@ def _model_supports_thinking(model_id: str) -> bool:
     m = model_id.lower()
     if "lite" in m:
         return False
-    return any(x in m for x in ["gemini-2", "gemini-2.5", "gemini-3", "gemini-3.5"])
+    return any(x in m for x in ["gemini-2", "gemini-2.5", "gemini-3", "gemini-3.5", "gemma-4", "gemma"])
 
 
 class ClaudeProxy(ClaudeProxyNonstreamMixin, ClaudeProxyStreamMixin):

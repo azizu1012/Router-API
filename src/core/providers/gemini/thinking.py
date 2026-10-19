@@ -4,9 +4,42 @@
   Map reasoning_effort → thinkingConfig.thinkingLevel (not thinkingBudget).
   V3 uses thinkingLevel enum: minimal/low/medium/high.
   V2.5 uses thinkingBudget: token count.
+  Gemma 4 strictly supports toggling thinking ON ("high") or OFF ("minimal").
+  Gemma 4 does NOT support thinkingBudget (throws 400) or low/medium (throws 400).
 """
 
 from typing import Any, Dict, Optional
+
+
+def sanitize_thinking_for_gemma(config: Optional[Dict[str, Any]]) -> Dict[str, Any]:
+    """Sanitize thinkingConfig for Gemma 4.
+
+    Gemma 4 on Google AI Studio strictly supports ONLY thinkingLevel 'high' (enabled)
+    or 'minimal' (disabled). It rejects thinkingBudget and low/medium levels with HTTP 400.
+    """
+    if not config:
+        return {}
+
+    level = config.get("thinking_level")
+    budget = config.get("thinking_budget")
+    inc = config.get("include_thoughts")
+
+    if level is not None:
+        lvl = str(level).lower().strip()
+        if lvl in ("none", "off", "false", "minimal"):
+            return {"thinking_level": "minimal", "include_thoughts": False}
+
+    if budget is not None and int(budget) == 0:
+        return {"thinking_level": "minimal", "include_thoughts": False}
+
+    if inc is False and level is None and budget is None:
+        return {"thinking_level": "minimal", "include_thoughts": False}
+
+    # Enabled thinking on Gemma 4: must use thinking_level="high"
+    return {
+        "thinking_level": "high",
+        "include_thoughts": inc if inc is not None else True,
+    }
 
 
 def build_thinking_config(
@@ -14,14 +47,30 @@ def build_thinking_config(
     thinking_budget: Optional[int] = None,
     include_thoughts: bool = True,
     is_v3: bool = True,
+    is_gemma: bool = False,
 ) -> Dict[str, Any]:
-    """Build thinkingConfig dict for Gemini HTTP request body.
+    """Build thinkingConfig dict for Gemini / Gemma HTTP request body.
 
     V3: {"thinking_level": "low", "include_thoughts": true}
     V2.5: {"thinking_budget": 4096, "include_thoughts": true}
+    Gemma 4: {"thinking_level": "high", "include_thoughts": true} or minimal
 
     Returns {} if no thinking (use API default).
     """
+    if is_gemma:
+        if thinking_level is not None:
+            lvl = str(thinking_level).lower().strip()
+            if lvl in ("none", "off", "false", "minimal"):
+                return {"thinking_level": "minimal", "include_thoughts": False}
+            return {"thinking_level": "high", "include_thoughts": lvl != "minimal" and include_thoughts}
+        if thinking_budget is not None:
+            if int(thinking_budget) == 0:
+                return {"thinking_level": "minimal", "include_thoughts": False}
+            return {"thinking_level": "high", "include_thoughts": include_thoughts}
+        if not include_thoughts:
+            return {"thinking_level": "minimal", "include_thoughts": False}
+        return {"thinking_level": "high", "include_thoughts": True}
+
     if thinking_level is not None:
         level = str(thinking_level).lower().strip()
         if level in ("none", "off", "false"):
@@ -49,12 +98,16 @@ def get_default_thinking_for_model(model_id: str) -> Dict[str, Any]:
 
     - V3 flash: low (fast tool calls, enough reasoning)
     - V3 pro: medium
+    - Gemma 4: high (strictly "high" or "minimal")
     - V2.5: budget 8192
     - Lite: {} (no thinking support)
     """
     m = model_id.lower()
     if "lite" in m:
         return {}
+
+    if "gemma" in m:
+        return {"thinking_level": "high", "include_thoughts": True}
 
     is_v3 = "gemini-3" in m and "gemini-2" not in m
 
@@ -75,9 +128,15 @@ def resolve_thinking_config(
 ) -> Dict[str, Any]:
     """Unified helper to build thinking config dictionary for a model, handling defaults and lite/sub-agent logic."""
     m = model_id.lower()
-    if "lite" in m or is_sub_agent:
+    if is_sub_agent:
+        if "gemma" in m:
+            return {"thinking_level": "minimal", "include_thoughts": False}
         return {}
 
+    if "lite" in m:
+        return {}
+
+    is_gemma = "gemma" in m
     is_v3 = "gemini-3" in m and "gemini-2" not in m
 
     # If any specific thinking parameter is provided, use build_thinking_config
@@ -88,6 +147,7 @@ def resolve_thinking_config(
             thinking_budget=thinking_budget,
             include_thoughts=inc,
             is_v3=is_v3,
+            is_gemma=is_gemma,
         )
 
     # Otherwise, return default thinking for the model
