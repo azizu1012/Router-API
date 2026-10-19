@@ -105,30 +105,39 @@ async def generate_content_stream(
 ) -> AsyncIterator[Any]:
     """Make a streaming Gemini API call — yields chunks."""
     client = await pool.get_client(api_key)
-    async with ClientPool.get_semaphore(tier):
-        gen_config = _build_config(system_instruction, temperature, top_p, max_tokens, tools, thinking_config)
-        stream = None
-        try:
-            stream = await asyncio.wait_for(
-                client.aio.models.generate_content_stream(
-                    model=model_id,
-                    contents=contents,
-                    config=gen_config,
-                ),
-                timeout=min(
-                    config.STREAM_OPEN_TIMEOUT_SECONDS,
-                    config.REQUEST_TIMEOUT_SECONDS,
-                ),
-            )
-            async for chunk in stream:
-                yield chunk
-        finally:
-            close = getattr(stream, "aclose", None)
-            if close is not None:
-                try:
-                    await close()
-                except Exception as e:
-                    logger.warning("[GeminiCaller] Error closing stream: %s", e)
+    semaphore = ClientPool.get_semaphore(tier)
+    gen_config = _build_config(system_instruction, temperature, top_p, max_tokens, tools, thinking_config)
+    stream = None
+    await semaphore.acquire()
+    try:
+        # Limit concurrent upstream stream creation, but never hold the shared
+        # tier slot for the entire lifetime of an async stream. Holding it
+        # across ``async for`` makes one slow Gemma thinking stream block every
+        # other free-tier model and can make the whole server appear frozen.
+        stream = await asyncio.wait_for(
+            client.aio.models.generate_content_stream(
+                model=model_id,
+                contents=contents,
+                config=gen_config,
+            ),
+            timeout=min(
+                config.STREAM_OPEN_TIMEOUT_SECONDS,
+                config.REQUEST_TIMEOUT_SECONDS,
+            ),
+        )
+    finally:
+        semaphore.release()
+
+    try:
+        async for chunk in stream:
+            yield chunk
+    finally:
+        close = getattr(stream, "aclose", None)
+        if close is not None:
+            try:
+                await close()
+            except Exception as e:
+                logger.warning("[GeminiCaller] Error closing stream: %s", e)
 
 
 def has_media_or_files(contents: List[types.Content]) -> bool:
