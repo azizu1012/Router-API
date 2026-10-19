@@ -19,7 +19,17 @@ def _has_account_endpoint(account: Optional[Dict[str, Any]]) -> bool:
     return any(ep.get("enabled", True) for ep in eps)
 
 def _retry_delay(attempt: int) -> float:
-    return random.uniform(0.5, 3.0)
+    """Calculate retry delay with exponential backoff and +-20% jitter.
+
+    Prevents Thundering Herd when multiple requests or pool members fail concurrently.
+    """
+    if attempt >= getattr(config, "POOL_SWAP_FAILURES", 5) * 2:
+        return random.uniform(0.3, 0.7)
+    interval = getattr(config, "GEMINI_API_KEY_INTERVAL", 2.5)
+    max_cooldown = getattr(config, "KEY_429_COOLDOWN_SECONDS", 15) * 2
+    base = min(interval * (2 ** max(0, attempt)), max_cooldown)
+    jitter = random.uniform(-base * 0.2, base * 0.2)
+    return max(0.5, base + jitter)
 
 async def _resolve_model(body: Dict[str, Any], pool_alias_override: Optional[str] = None, account: Optional[Dict[str, Any]] = None, estimated_tokens: int = 0, retry_attempt: int = 0, pool_mode: bool = False, member_override: Optional[str] = None) -> Tuple[str, str, str, str, Dict[str, Any]]:
     """Resolve model alias and acquire an available Gemini API key.
@@ -48,8 +58,8 @@ async def _resolve_model(body: Dict[str, Any], pool_alias_override: Optional[str
     if not model_alias:
         model_alias = config.DEFAULT_MODEL_ALIAS
 
-    from src.core.config.api_config import is_model_enabled, is_sunset_25
-    if is_sunset_25() and model_alias in ("gemini-flash-25", "gemini-flash-25-lite"):
+    from src.core.config.api_config import is_model_enabled, is_model_sunset, is_sunset_25
+    if is_model_sunset(model_alias):
         raise HTTPException(
             status_code=400,
             detail={"type": "error", "error": {"type": "invalid_request_error", "message": f"Model '{model_alias}' has been discontinued."}}

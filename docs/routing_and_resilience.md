@@ -84,39 +84,48 @@ Hệ thống sử dụng một cách tiếp cận hai tầng để phân loại 
 
 ---
 
-## 4. Thuật Toán Double Random (Tránh Thundering Herd & Key Collision)
+## 4. Thuật Toán Double Random & Jitter (Tránh Thundering Herd & Key Collision)
 
 Khi hệ thống xử lý đồng thời hàng chục request (high concurrency), nếu tất cả các luồng đều chọn key "tốt nhất" (Greedy Selection) hoặc thử lại cùng một lúc (Synchronized Retry), hệ thống sẽ ngay lập tức kích hoạt lỗi 429 hàng loạt trên key đó (Rate Limit Cascade). 
 
-Để giải quyết triệt để vấn đề này, Router API v2 triển khai thuật toán **Double Random** gồm 2 lớp bảo vệ ngẫu nhiên độc lập:
+Để giải quyết triệt để vấn đề này, Router API v2 triển khai thuật toán **Double Random kết hợp Jitter đa tầng** gồm các lớp bảo vệ độc lập:
 
 ### Lớp 1: Ngẫu nhiên hóa thời gian chờ (Timing Jitter)
 Trong hàm `_retry_delay`, thay vì chờ một khoảng thời gian cố định dạng lũy thừa ($1s, 2s, 4s...$), hệ thống tính toán một độ lệch ngẫu nhiên (Jitter) khoảng $\pm 20\%$ dựa trên khoảng cách cơ sở:
 
 ```python
 def _retry_delay(attempt: int) -> float:
-    import random
-    if attempt >= config.POOL_SWAP_FAILURES * 2:
+    if attempt >= getattr(config, "POOL_SWAP_FAILURES", 5) * 2:
         return random.uniform(0.3, 0.7)
-    base = min(config.GEMINI_API_KEY_INTERVAL * (2 ** attempt), config.KEY_429_COOLDOWN_SECONDS * 2)
+    interval = getattr(config, "GEMINI_API_KEY_INTERVAL", 2.5)
+    max_cooldown = getattr(config, "KEY_429_COOLDOWN_SECONDS", 15) * 2
+    base = min(interval * (2 ** max(0, attempt)), max_cooldown)
     jitter = random.uniform(-base * 0.2, base * 0.2)
-    return max(config.GEMINI_API_KEY_INTERVAL, base + jitter)
+    return max(0.5, base + jitter)
 ```
 *Tác dụng:* Phân tán thời điểm gửi lại request của các luồng đang chờ, tránh hiện tượng "Thundering Herd" (nhiều client cùng ùa vào gửi yêu cầu tại cùng một mili-giây).
 
-### Lớp 2: Ngẫu nhiên hóa lựa chọn Key (Priority Selection Randomization)
-Trong hàm `reserve_key`, thay vì luôn chọn key có điểm Priority Score cao nhất hoặc ít tải nhất, hệ thống thực hiện:
-1. Lọc và sắp xếp toàn bộ danh sách key khả dụng theo thứ tự ưu tiên: ít `active_requests` nhất trước, sau đó là điểm Priority cao nhất, cuối cùng là ít lỗi liên tục nhất.
-2. Cắt lấy **Top 50%** key tốt nhất trong danh sách ứng viên khỏe mạnh.
-3. Chọn ngẫu nhiên một key từ nhóm 50% này (`random.choice`).
+### Lớp 2: Nhiễu Điểm Ưu Tiên (Priority Score Jitter) & Nhóm Ứng Viên Khỏe
+Trong hàm `_select_key_double_random` (`src/core/router/core/key_resolver.py`):
+1. **Priority Score Jitter**: Thêm độ lệch ngẫu nhiên $\pm 5\%$ vào điểm Priority của từng key. Điều này ngăn chặn hiện tượng hai key có điểm sát nhau (ví dụ: 100 và 99.9) bị khóa cứng vào một thứ tự cố định ở mọi luồng song song.
+2. **Candidate Pool Sizing linh hoạt**: Sắp xếp danh sách key theo thứ tự: ít `active_requests` nhất -> điểm ưu tiên đã có jitter cao nhất -> ít lỗi liên tục nhất.
+   - Khi có 1 hoặc 2 key: `pool_size = total_cand` (đảm bảo khi chỉ có 2 key, cả 2 key đều có cơ hội được bốc ngẫu nhiên, khắc phục lỗi `int(2 * 0.5) = 1` từng khiến hệ thống chỉ chọn duy nhất key đầu tiên).
+   - Khi có từ 3 key trở lên: lấy nhóm 50% khỏe nhất làm tròn lên `max(2, (total_cand + 1) // 2)`.
+3. **Random Selection**: Chọn ngẫu nhiên một key từ nhóm ứng viên này (`random.choice`).
 
 ```python
-# Lọc lấy top 50% key khỏe nhất để phân tán tải
-top_50_percent = int(len(candidates_with_priority) * 0.5)
-chosen_cand = random.choice(candidates_with_priority[:max(1, top_50_percent)])
-selected_key = chosen_cand[1]
+# Sizing nhóm ứng viên khỏe nhất và chọn ngẫu nhiên
+total_cand = len(candidates_with_priority)
+if total_cand <= 2:
+    pool_size = total_cand
+else:
+    pool_size = max(2, (total_cand + 1) // 2)
+
+chosen_cand = random.choice(candidates_with_priority[:pool_size])
 ```
-*Tác dụng:* Dưới áp lực tải cao, các request sẽ được phân phối đều trên nhiều key thuộc nhóm "tốt", giảm thiểu tối đa xác suất hai luồng xử lý song song chọn trúng cùng một API Key và gây ra xung đột hạn ngạch (quota collision).
+
+### Lớp 3: Độ Trễ Vi Mô Khi Gọi API (Dispatch Micro-Jitter)
+Khi có nhiều request đồng thời cùng đổ dồn vào 1 key (`active_requests > 1`) hoặc trong các lần thử lại (`attempt > 0`), hệ thống chèn một độ trễ vi mô từ 5–25ms trước khi phát tín hiệu gọi API ra bên ngoài (`PoolManager._resolve_and_call`). Khoảng trễ cực ngắn này hoàn toàn không làm chậm trải nghiệm của người dùng nhưng đủ để tách rời các xung đột gói tin (packet bursts) ở tầng mạng và gateway nhà cung cấp.
 
 ---
 

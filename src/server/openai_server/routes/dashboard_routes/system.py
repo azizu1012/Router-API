@@ -201,7 +201,7 @@ async def dashboard_my_stats(request: Request, days: int = 30):
 @app.get("/api/model-pools-detail")
 async def get_model_pools_api(request: Request):
     _require_dashboard(request)
-    from src.core.config.api_config import AVAILABLE_MODELS, MODEL_POOLS, is_sunset_25
+    from src.core.config.api_config import AVAILABLE_MODELS, MODEL_POOLS, is_model_sunset, is_sunset_25
     from src.core.router.core.router import router as core_router
 
     from src.core.limits.gemini.limiter import get_rate_limiter
@@ -210,7 +210,7 @@ async def get_model_pools_api(request: Request):
     for pool_name, pool_cfg in MODEL_POOLS.items():
         members = []
         for member in pool_cfg["members"]:
-            if is_sunset_25() and member in ("gemini-flash-25", "gemini-flash-25-lite"):
+            if is_model_sunset(member):
                 continue
             cfg = AVAILABLE_MODELS.get(member, {})
             if not cfg.get("enabled", True):

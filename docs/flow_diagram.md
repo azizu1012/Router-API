@@ -660,9 +660,9 @@ src.server.openai_server.routes.app_init
 2. **Legacy Master Key Login in Web UI:**
    - *Status:* Supported in `POST /dashboard/login`.
    - *Behavior:* If a user inputs an `auth_key` instead of a username/password pair, the endpoint resolves the account by key. New deployments should transition exclusively to username/password credentials.
-3. **Sunset Gemini 2.5 Models (`is_sunset_25()` in `src/core/config/api_config.py`):**
-   - *Status:* Dynamic deprecation switch.
-   - *Behavior:* Filters out `gemini-2.5-flash` and `gemini-2.5-flash-lite` from pool rotation once the configured sunset date elapses.
+3. **Sunsetted Gemini Models (`is_model_sunset()` in `src/core/config/api_config.py`):**
+   - *Status:* Dynamic deprecation & sunset enforcement.
+   - *Behavior:* Filters out deprecated/sunsetted models (`gemini-2.5-flash`, `gemini-2.5-flash-lite`, `gemini-3.5-flash` standard, `gemini-3.7-flash`) from pool rotation, key reservation, model resolution (HTTP 400), and `/v1/models` catalog while preserving `gemini-3.5-flash-lite` in the lite pool.
 
 ---
 

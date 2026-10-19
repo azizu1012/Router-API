@@ -3,7 +3,7 @@
 from typing import Any, Dict, List, Optional, Set
 
 from src.core.config.api_config import (
-    AVAILABLE_MODELS, MODEL_POOLS, active_pool_members, is_sunset_25,
+    AVAILABLE_MODELS, MODEL_POOLS, active_pool_members, is_model_sunset, is_sunset_25,
 )
 from src.core.config_n_logg import config
 from src.core.router.pool import ModelPool
@@ -19,7 +19,7 @@ class ModelResolutionMixin:
                 # Admin switched it off — offering it here would invite a client
                 # to pick a model the router will refuse to route.
                 continue
-            if is_sunset_25() and alias in ("gemini-flash-25", "gemini-flash-25-lite"):
+            if is_model_sunset(alias):
                 continue
             m = {
                 "id": alias,

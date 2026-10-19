@@ -6,6 +6,107 @@ from src.core.config_n_logg.logger import logger_system as logger
 from src.backend._db import _LOCK, conn as _conn
 
 
+# ── Automatic Migration Registry ──────────────────────────────────────
+# All table columns that must exist across schema evolutions.
+# auto_migrate_schema() queries PRAGMA table_info and automatically executes
+# ALTER TABLE ADD COLUMN for any column missing from an existing database.
+_SCHEMA_COLUMN_REGISTRY = {
+    "accounts": {
+        "tier": "TEXT DEFAULT 'free'",
+        "web_search_enabled": "INTEGER DEFAULT 0",
+        "mcp_only": "INTEGER DEFAULT 0",
+        "search_engine": "TEXT DEFAULT 'duckduckgo'",
+        "rpm": "INTEGER DEFAULT 300",
+        "tpm": "INTEGER DEFAULT 6000000",
+        "rpd": "INTEGER DEFAULT 20000",
+    },
+    "custom_endpoints": {
+        "models": "TEXT DEFAULT '[]'",
+        "disabled_models": "TEXT DEFAULT '[]'",
+        "enabled_models": "TEXT DEFAULT '[]'",
+        "account_id": "TEXT DEFAULT ''",
+        "account_key_id": "TEXT DEFAULT ''",
+        "fallback": "INTEGER DEFAULT 0",
+        "api_format": "TEXT DEFAULT 'openai'",
+        "pool_assignments": "TEXT DEFAULT '{}'",
+        "updated_at": "TEXT",
+    },
+    "key_status": {
+        "enabled": "INTEGER DEFAULT 1",
+        "usage": "INTEGER DEFAULT 0",
+        "active_requests": "INTEGER DEFAULT 0",
+        "frozen_until": "REAL DEFAULT 0",
+        "consecutive_failures": "INTEGER DEFAULT 0",
+        "last_success": "REAL DEFAULT 0",
+        "date": "TEXT DEFAULT ''",
+        "today": "INTEGER DEFAULT 0",
+        "per_model": "TEXT DEFAULT '{}'",
+        "data": "TEXT",
+        "tier": "TEXT DEFAULT 'free'",
+    },
+    "account_credentials": {
+        "password_enc": "TEXT",
+        "must_change": "INTEGER DEFAULT 0",
+        "updated_at": "INTEGER",
+    },
+    "account_keys": {
+        "enabled": "INTEGER DEFAULT 1",
+        "tier": "TEXT DEFAULT 'free'",
+        "rpm": "INTEGER DEFAULT 30",
+        "tpm": "INTEGER DEFAULT 200000",
+        "rpd": "INTEGER DEFAULT 1000",
+        "max_concurrency": "INTEGER DEFAULT 6",
+        "min_interval_seconds": "REAL DEFAULT 3.0",
+        "label": "TEXT DEFAULT ''",
+        "created_at": "INTEGER",
+        "updated_at": "INTEGER",
+    },
+    "model_aliases": {
+        "account_key_id": "TEXT DEFAULT NULL",
+        "target_endpoint": "TEXT DEFAULT NULL",
+        "enabled": "INTEGER DEFAULT 1",
+        "label": "TEXT DEFAULT ''",
+        "created_at": "INTEGER NOT NULL DEFAULT 0",
+        "updated_at": "INTEGER NOT NULL DEFAULT 0",
+    },
+    "model_config": {
+        "account_id": "TEXT DEFAULT ''",
+        "display": "TEXT DEFAULT ''",
+        "rpm": "INTEGER DEFAULT 0",
+        "tpm": "INTEGER DEFAULT 0",
+        "rpd": "INTEGER DEFAULT 0",
+        "context_length": "INTEGER DEFAULT 220000",
+        "pool_name": "TEXT DEFAULT ''",
+        "priority": "INTEGER DEFAULT 100",
+        "hidden": "INTEGER DEFAULT 0",
+        "enabled": "INTEGER DEFAULT 1",
+        "updated_at": "INTEGER DEFAULT 0",
+    },
+}
+
+
+def auto_migrate_schema(c) -> None:
+    """Inspect existing SQLite tables and automatically add any missing columns.
+
+    Eliminates the need for external migration scripts or manual ALTER TABLEs.
+    Runs idempotently on server startup whenever schema definitions evolve.
+    """
+    for table_name, columns in _SCHEMA_COLUMN_REGISTRY.items():
+        cur = c.execute("SELECT name FROM sqlite_master WHERE type='table' AND name=?", (table_name,))
+        if not cur.fetchone():
+            continue
+
+        existing_cols = {row[1] for row in c.execute(f"PRAGMA table_info({table_name})")}
+        for col_name, col_def in columns.items():
+            if col_name not in existing_cols:
+                try:
+                    c.execute(f"ALTER TABLE {table_name} ADD COLUMN {col_name} {col_def}")
+                    logger.info("[AutoMigrate] Added missing column '%s' to '%s'", col_name, table_name)
+                except Exception as e:
+                    logger.warning("[AutoMigrate] Failed to add column '%s' to '%s': %s", col_name, table_name, e)
+    c.commit()
+
+
 def init_config_tables() -> None:
     with _LOCK:
         c = _conn()
@@ -148,93 +249,13 @@ def init_config_tables() -> None:
             """)
             c.commit()
 
-            # Migration: operator-recoverable password copy on account_credentials.
-            # Nullable on purpose — rows written before this, and rows written
-            # with no ROUTER_API_PASSWORD_KEY configured, simply have no copy.
-            # The CREATE above already carries the column for fresh databases;
-            # this is for the ones that predate it.
-            try:
-                c.execute("ALTER TABLE account_credentials ADD COLUMN password_enc TEXT")
-            except Exception:
-                pass
-
-            # Migration: add tier to accounts
+            # Initialize model config table
             init_model_config_table(c)
 
-            # Migration: add tier to accounts
-            try:
-                c.execute("ALTER TABLE accounts ADD COLUMN tier TEXT DEFAULT 'free'")
-            except Exception:
-                pass
-
-            # Migration: add enabled to key_status
-            try:
-                c.execute("ALTER TABLE key_status ADD COLUMN enabled INTEGER DEFAULT 1")
-            except Exception:
-                pass
-
-            # Migration: add web_search_enabled to accounts
-            try:
-                c.execute("ALTER TABLE accounts ADD COLUMN web_search_enabled INTEGER DEFAULT 0")
-            except Exception:
-                pass
-
-            # Migration: add mcp_only to accounts.
-            # An mcp_only account may use the MCP search tool and nothing else:
-            # every model route is refused for it. Enforced in
-            # token_limit_middleware, which is the one place every request passes
-            # through — including requests arriving via the /mcp mount.
-            try:
-                c.execute("ALTER TABLE accounts ADD COLUMN mcp_only INTEGER DEFAULT 0")
-            except Exception:
-                pass
-
-            # Migration: add search_engine to accounts
-            try:
-                c.execute("ALTER TABLE accounts ADD COLUMN search_engine TEXT DEFAULT 'duckduckgo'")
-            except Exception:
-                pass
-
-            # Migration: add account_id to custom_endpoints
-            try:
-                c.execute("ALTER TABLE custom_endpoints ADD COLUMN account_id TEXT DEFAULT ''")
-            except Exception:
-                pass
-
-            # Migration: add disabled_models to custom_endpoints
-            try:
-                c.execute("ALTER TABLE custom_endpoints ADD COLUMN disabled_models TEXT DEFAULT '[]'")
-            except Exception:
-                pass
-
-            # Migration: add api_format to custom_endpoints.
-            # An endpoint is owned by whoever paid for it, so this records which
-            # wire format that owner speaks rather than assuming OpenAI.
-            try:
-                c.execute("ALTER TABLE custom_endpoints ADD COLUMN api_format TEXT DEFAULT 'openai'")
-            except Exception:
-                pass
-
-            # Migration: add enabled_models to custom_endpoints
-            try:
-                c.execute("ALTER TABLE custom_endpoints ADD COLUMN enabled_models TEXT DEFAULT '[]'")
-            except Exception:
-                pass
-
-            # Migration: add pool_assignments to custom_endpoints
-            try:
-                c.execute("ALTER TABLE custom_endpoints ADD COLUMN pool_assignments TEXT DEFAULT '{}'")
-            except Exception:
-                pass
-
-            # Migration: add account_key_id to custom_endpoints.
-            # This allows admin to assign endpoint to a specific key auth instead of whole account.
-            # If account_key_id is set, it takes precedence over account_id.
-            # If both empty, endpoint is global (not recommended but allowed).
-            try:
-                c.execute("ALTER TABLE custom_endpoints ADD COLUMN account_key_id TEXT DEFAULT ''")
-            except Exception:
-                pass
+            # Automatic Schema Migration: inspects PRAGMA table_info across all tables
+            # and automatically issues ALTER TABLE ADD COLUMN for any missing column.
+            # Eliminates external migration scripts and ensures seamless database upgrades.
+            auto_migrate_schema(c)
 
             # Migration: upgrade default account limits for old accounts
             try:
@@ -243,25 +264,6 @@ def init_config_tables() -> None:
                 c.execute("UPDATE accounts SET rpd = 20000 WHERE rpd = 1000")
             except Exception as e:
                 logger.warning("[Schema] Failed to upgrade default account limits: %s", e)
-            c.commit()
- 
-            for col_sql in [
-                "enabled INTEGER DEFAULT 1",
-                "usage INTEGER DEFAULT 0",
-                "active_requests INTEGER DEFAULT 0",
-                "frozen_until REAL DEFAULT 0",
-                "consecutive_failures INTEGER DEFAULT 0",
-                "last_success REAL DEFAULT 0",
-                "date TEXT DEFAULT ''",
-                "today INTEGER DEFAULT 0",
-                "per_model TEXT DEFAULT '{}'",
-                "data TEXT",
-                "tier TEXT DEFAULT 'free'",
-            ]:
-                try:
-                    c.execute(f"ALTER TABLE key_status ADD COLUMN {col_sql}")
-                except Exception:
-                    pass
             c.commit()
 
             # Seed or update model_prices to real pricing

@@ -150,7 +150,39 @@ MODEL_POOLS: Dict[str, Dict[str, Any]] = {
 }
 
 
-_SUNSET_MEMBERS = ("gemini-flash-25", "gemini-flash-25-lite")
+_SUNSET_MEMBERS = (
+    "gemini-flash-25",
+    "gemini-flash-25-lite",
+    "gemini-flash-35",
+    "gemini-flash-37",
+)
+
+_SUNSET_MODEL_IDS = (
+    "gemini-2.5-flash",
+    "gemini-2.5-flash-lite",
+    "gemini-3.5-flash",
+    "gemini-3.7-flash",
+)
+
+
+def is_model_sunset(alias_or_model_id: str) -> bool:
+    """Check if a model alias or model_id has been sunsetted / discontinued.
+
+    Covers:
+    - Gemini 2.5: gemini-flash-25, gemini-flash-25-lite (sunset since 2026-10-16)
+    - Gemini 3.5 Flash (standard): gemini-flash-35 (discontinued)
+    - Gemini 3.7 Flash: gemini-flash-37 (discontinued / retired from active pool)
+
+    Note: gemini-flash-35-lite (Gemini 3.5 Flash Lite) remains active in gemini-flash-lite pool.
+    """
+    alias = str(alias_or_model_id).strip().lower()
+    resolved_alias = BACKING_TO_ALIAS.get(alias, alias)
+    if resolved_alias in ("gemini-flash-25", "gemini-flash-25-lite") or alias in ("gemini-2.5-flash", "gemini-2.5-flash-lite"):
+        return is_sunset_25()
+    return (
+        resolved_alias in ("gemini-flash-35", "gemini-flash-37")
+        or alias in _SUNSET_MODEL_IDS
+    )
 
 
 def is_model_enabled(alias: str) -> bool:
@@ -177,7 +209,7 @@ def active_pool_members(pool_name: str) -> List[str]:
     members = []
     for m in cfg.get("members", []):
         m_str = str(m)
-        if is_sunset_25() and m_str in _SUNSET_MEMBERS:
+        if is_model_sunset(m_str):
             continue
         if not is_model_enabled(m_str):
             continue

@@ -6,6 +6,7 @@ Proxies (OpenCodeProxy, ClaudeProxy) delegate pool/retry logic to this class.
 """
 
 import asyncio
+import random
 import time
 from typing import Any, AsyncIterator, Dict, List, Optional, Set, Tuple
 
@@ -816,6 +817,11 @@ class PoolManager:
                     kwargs["api_format"] = reservation.get("api_format") or "openai"
                     if extra_body:
                         kwargs["extra_body"] = extra_body
+
+                # Micro-jitter before provider dispatch: desynchronize concurrent calls on the same key or retry attempts
+                active_reqs = router._key_status.get(api_key_val, {}).get("active_requests", 0) if (api_key_val and hasattr(router, "_key_status")) else 0
+                if active_reqs > 1 or attempt > 0:
+                    await asyncio.sleep(random.uniform(0.005, 0.025))
 
                 resp = await acompletion(**kwargs)
                 return resp, api_key_val, model_id_val, estimated_tokens, reservation

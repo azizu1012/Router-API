@@ -310,8 +310,7 @@ print(response.model)  # "claude-3-5-sonnet-20241022"
 
 ### 3. Audit Trail
 
-- `created_at` and `updated_at` timestamps for all aliases
-- Future: Add `created_by` and `updated_by` fields for audit
+- `created_at` and `updated_at` timestamps for all aliases (automatically managed)
 
 ## Performance Considerations
 
@@ -327,14 +326,7 @@ SELECT * FROM model_aliases
 WHERE account_id = ? AND account_key_id IS ? AND alias_name = ? AND enabled = 1
 ```
 
-### 2. Caching Strategy (Future)
-
-Currently no caching. Future optimization:
-- Cache aliases in memory with TTL=60s
-- Invalidate on create/update/delete
-- Use Redis for distributed cache
-
-### 3. Query Performance
+### 2. Query Performance
 
 - Lookup is O(1) with index
 - Average query time: <1ms
@@ -446,66 +438,16 @@ python test_model_aliases_api.py
 
 **Fix**: Ensure `model_resolver.py` restores original alias_name in response
 
-## Future Enhancements
+## Archived & Deferred Proposals
 
-### 1. Regex Aliases (Wildcards)
-
-Allow pattern matching:
-```json
-{
-  "alias_name": "gpt-4*",
-  "target_model": "gemini-pro"
-}
-```
-
-Matches: `gpt-4`, `gpt-4-turbo`, `gpt-4-32k`
-
-### 2. Conditional Routing
-
-Route based on request properties:
-```json
-{
-  "alias_name": "gpt-4",
-  "conditions": {
-    "max_tokens_gt": 8000
-  },
-  "target_model": "gemini-pro"  // Long context
-}
-```
-
-### 3. Alias Chains
-
-One alias points to another:
-```json
-{
-  "alias_name": "my-model",
-  "target_alias": "gpt-4"  // Which itself points to gemini-flash
-}
-```
-
-### 4. Usage Tracking
-
-Track which aliases are used most:
-```sql
-ALTER TABLE model_aliases ADD COLUMN usage_count INTEGER DEFAULT 0;
-ALTER TABLE model_aliases ADD COLUMN last_used_at TEXT;
-```
-
-### 5. Expiration
-
-Auto-disable aliases after certain date:
-```sql
-ALTER TABLE model_aliases ADD COLUMN expires_at TEXT;
-```
+Các ý tưởng mở rộng trước đây (Regex wildcard matching `gpt-4*`, conditional routing theo token, alias chains, các cột usage_count và expiration date) không thuộc phạm vi triển khai hiện tại và đã được lưu trữ trong [deprecated.md](deprecated.md) để tránh gây nhầm lẫn với các tính năng thực tế.
 
 ## Conclusion
 
 Model Aliases feature is now fully implemented with:
-- ✅ Database schema
-- ✅ Backend CRUD APIs (admin + member)
-- ✅ Frontend UI with templates
-- ✅ Integration with routing system
-- ✅ Test script
+- ✅ Database schema (`model_aliases` table)
+- ✅ Backend CRUD APIs (admin + member self-service)
+- ✅ Frontend UI with templates and direct testing
+- ✅ Integration with core model resolution and proxy response renaming
+- ✅ Automatic schema creation and migration on server startup
 - ✅ Documentation
-
-Feature is production-ready and can be used immediately after applying migration.

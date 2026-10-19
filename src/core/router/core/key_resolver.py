@@ -10,6 +10,7 @@ from src.core.config.api_config import (
     MODEL_POOLS,
     active_pool_members,
     is_model_enabled,
+    is_model_sunset,
     is_sunset_25,
 )
 from src.core.config_n_logg import config
@@ -254,8 +255,10 @@ class KeyResolverMixin:
 
         The selection process involves:
         1. Calculating a priority score for each candidate key.
-        2. Sorting candidates based on active requests, priority score, and consecutive failures.
-        3. Randomly selecting a key from the top 50% of the sorted, healthiest candidates.
+        2. Adding priority jitter to break rigid tie-breaking among similarly healthy keys.
+        3. Sorting candidates based on active requests, priority score (with jitter), and consecutive failures.
+        4. Randomly selecting a key from the top pool of sorted, healthiest candidates (ensuring >=2 keys
+           when multiple candidates are available to avoid deterministic lock).
 
         Args:
             candidates: A list of (key, status, model_id) tuples that are eligible.
@@ -268,18 +271,29 @@ class KeyResolverMixin:
             pri = get_key_priority(k, key_mid)
             if pri < 0:
                 continue
-            candidates_with_priority.append((pri, k, s, key_mid))
-        
+            # Priority score jitter (+-5% of score or minimum +-0.5) to break strict lock-step ordering
+            pri_jitter = random.uniform(-0.05, 0.05) * max(1.0, abs(pri))
+            effective_pri = pri + pri_jitter
+            candidates_with_priority.append((effective_pri, pri, k, s, key_mid))
+
         if not candidates_with_priority:
             return None
 
-        # Sorts by priority: fewest active_requests -> highest priority score -> fewest failures
-        candidates_with_priority.sort(key=lambda x: (x[2].get("active_requests", 0), -x[0], x[2].get("consecutive_failures", 0)))
-        
-        # Randomly selects from the top 50% healthiest keys (Double Random)
-        top_50_percent = int(len(candidates_with_priority) * 0.5)
-        chosen_cand = random.choice(candidates_with_priority[:max(1, top_50_percent)])
-        return chosen_cand[1], chosen_cand[3]
+        # Sorts by priority: fewest active_requests -> highest jittered priority -> fewest failures
+        candidates_with_priority.sort(key=lambda x: (x[3].get("active_requests", 0), -x[0], x[3].get("consecutive_failures", 0)))
+
+        # Sizing the candidate selection pool:
+        # - If 1 key: pool = 1
+        # - If 2 keys: pool = 2 (allows both keys to be randomly selected, fixing the int(2 * 0.5)=1 bug)
+        # - If >=3 keys: top 50% rounded up (e.g. 3 -> 2, 4 -> 2, 5 -> 3, etc.)
+        total_cand = len(candidates_with_priority)
+        if total_cand <= 2:
+            pool_size = total_cand
+        else:
+            pool_size = max(2, (total_cand + 1) // 2)
+
+        chosen_cand = random.choice(candidates_with_priority[:pool_size])
+        return chosen_cand[2], chosen_cand[4]
 
     def reserve_key(
         self,
@@ -324,8 +338,8 @@ class KeyResolverMixin:
             logger.warning("[Circuit] Global IP cooldown active. Blocking key reservation.")
             return None
 
-        # Bảo vệ chống các model đã bị Google khai tử (Sunsetted)
-        if is_sunset_25() and model_alias in ("gemini-flash-25", "gemini-flash-25-lite"):
+        # Bảo vệ chống các model đã bị Google khai tử (Sunsetted: 2.5, 3.5, 3.7)
+        if is_model_sunset(model_alias):
             logger.warning("Model %s has been sunsetted. Blocking reservation.", model_alias)
             return None
 

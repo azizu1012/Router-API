@@ -92,11 +92,18 @@ Hệ thống thiết lập nguyên tắc: **`.env` là Source of Truth chính ch
 - **Chiều DB → `.env`:** Khi Admin chỉnh sửa cấu hình model trên Dashboard UI (`/dashboard/admin/models/save`), backend lưu vào DB, gọi `update_env_var()` để ghi ngược lại các biến `GEMINI_*_RPM/TPM/RPD/MODEL` vào file `.env`, đồng thời tự động cập nhật lại aggregate limits của các virtual pool (`GEMINI_FLASH_*`).
 
 
-#### Vì sao `_db.py` cũng phải tạo bảng
+#### Vì sao `_db.py` cũng phải tạo bảng & Cơ chế Tự động Nâng cấp DB (Auto-Migration)
 
 `APIRouter` query `keys/status` **ngay lúc nó được khởi tạo**, và `custom_endpoint_manager` dựng cache ở module level — cả hai đều xảy ra trong lúc import, trước mọi startup hook. Một máy chưa có `usage.db` sẽ fail `no such table: key_status` trước khi app kịp tồn tại.
 
 Vì vậy `_db.conn()` tạo sẵn hai bảng đó ngay lần mở connection đầu tiên. Ranh giới này **có thật** và dễ vỡ: `CREATE TABLE IF NOT EXISTS` không sửa được bảng đã có sai shape, nên nếu định nghĩa ở `_db.py` lệch với `schema.py` thì bản bootstrap thắng, `CREATE` của `schema.py` thành no-op, và bất kỳ cột nào không có `ALTER` migration sẽ không bao giờ được tạo. `tests/test_schema_bootstrap.py` so DDL của hai bên để chặn điều đó.
+
+**Cơ chế Tự động Migrate & Nâng cấp DB (`auto_migrate_schema`):**
+Thay vì yêu cầu người dùng hoặc quản trị viên phải chạy các tệp script migration riêng lẻ bên ngoài mỗi khi codebase cập nhật, hàm `init_config_tables()` trong `src/backend/schema.py` được tích hợp bộ tự động phát hiện và đồng bộ schema:
+1. Duyệt qua bảng đăng ký cột chuẩn (`_SCHEMA_COLUMN_REGISTRY`).
+2. Quét cấu trúc bảng thực tế trong SQLite bằng `PRAGMA table_info(table_name)`.
+3. Tự động sinh và thực thi câu lệnh `ALTER TABLE {table_name} ADD COLUMN ...` cho bất kỳ cột nào còn thiếu trên database hiện có.
+4. Quá trình diễn ra hoàn toàn tự động, nguyên tử và idempotent ngay khi server khởi động.
 
 `main.py` gọi `init_config_tables()` trước khi bind port, nên lỗi schema nổi ra lúc khởi động chứ không phải trên request đầu tiên.
 
@@ -216,9 +223,11 @@ graph TD
 Các cơ chế này được thiết kế để đảm bảo hệ thống hoạt động ổn định và hiệu quả, đặc biệt trong môi trường tải cao và khi đối mặt với các lỗi từ nhà cung cấp LLM. Chi tiết cụ thể có thể xem trong `docs/routing_and_resilience.md`.
 
 *   **Xử lý lỗi 429 và 503 (Soft Handling vs Hard Freeze)**: Phân loại lỗi thành tạm thời và vĩnh viễn để áp dụng các chiến lược đóng băng key và hình phạt khác nhau, từ cooldown ngắn đến đóng băng dài hạn.
-*   **Thuật toán Double Random**:
-    *   **Timing Jitter**: Ngẫu nhiên hóa thời gian chờ giữa các lần thử lại để tránh "Thundering Herd".
-    *   **Priority Selection Randomization**: Chọn ngẫu nhiên key từ nhóm tốt nhất để phân tán tải, giảm thiểu xung đột hạn ngạch.
+*   **Thuật toán Double Random & Jitter**:
+    *   **Priority Score Jitter**: Nhiễu ngẫu nhiên ±5% vào điểm ưu tiên để phá vỡ thế khóa cứng (lock-step) khi các key có điểm xấp xỉ nhau.
+    *   **Candidate Pool Sizing**: Lọc lấy nhóm ứng viên khỏe nhất với kích thước linh hoạt (`pool_size = max(2, (total+1)//2)` khi có từ 2 key trở lên), đảm bảo không bao giờ bị rơi vào tình trạng chỉ chọn duy nhất key đầu tiên khi pool nhỏ (2-3 keys).
+    *   **Dispatch Micro-Jitter**: Thêm độ trễ vi mô (5-25ms) khi có nhiều yêu cầu đồng thời hoặc khi retry nhằm phân tán đỉnh xung đột (burst collision) ở tầng mạng trước khi gửi request tới nhà cung cấp.
+    *   **Retry Timing Jitter**: Ngẫu nhiên hóa thời gian chờ giữa các lần thử lại với công thức Exponential Backoff kèm độ lệch ngẫu nhiên $\pm 20\%$ trong `_retry_delay` để chống "Thundering Herd".
 *   **Chế độ Phòng Chống Nghẽn Tải Cực Cao (Extreme Checking Logic)**: Khi gặp lỗi liên tục, hệ thống sẽ siết chặt hạn ngạch và ưu tiên các yêu cầu nhỏ để hạ nhiệt.
 *   **Cơ chế Lan Truyền Lỗi HTTP Chuẩn (Proper HTTP Error Propagation)**: Tách biệt luồng xử lý lỗi cho Main Agent (trả về lỗi HTTP thật) và Sub-Agent (trả về phản hồi mô phỏng 200 OK) để tối ưu hóa hành vi client và tránh làm bẩn context.
 *   **Cơ chế Pool Concurrency (ModelPool slot-based workers)**: Mỗi pool member có lock riêng (`asyncio.Lock`), đảm bảo chỉ một request xử lý tại một thời điểm. Custom endpoint là first-class member qua `pool_assignments`. Model ngoài `MODEL_POOLS` chạy standalone (không qua acquire/release).
@@ -321,16 +330,18 @@ Dành cho các completions client truyền thống. Router đóng vai trò làm 
   4. Router trả kết quả tìm kiếm lại cho LLM dưới dạng tin nhắn của tool (`role: tool`), giúp LLM có đầy đủ ngữ cảnh để trả lời câu hỏi gốc.
 
 ### 10.3. Cơ chế cấu hình & Độ ưu tiên (Precedence)
-Các thiết lập tìm kiếm có độ ưu tiên rõ ràng giữa Client (Request Body) và Web (Account Configuration):
-1. **Ưu tiên cao nhất (Client Override)**: Nếu trong request payload gửi lên có chứa cấu hình explicit (như `"search_engine": "duckduckgo"` hoặc cờ tắt tìm kiếm `"web_search": false`), hệ thống sẽ chạy ngay theo cấu hình này của Client và bỏ qua cấu hình trên Dashboard.
-2. **Ưu tiên thứ hai (Web/Database Account settings)**: Nếu Client không chỉ định gì, hệ thống sẽ lấy cấu hình tìm kiếm mặc định của tài khoản người dùng được lưu trên database (`account.get("search_engine")`).
-3. **Mặc định**: Nếu cả hai đều không thiết lập, công cụ tìm kiếm mặc định sẽ là `"auto"`.
+Các thiết lập tìm kiếm có độ ưu tiên 3 tầng chặt chẽ (được ghim chặt bởi test suite `tests/test_search_engine_precedence.py`):
+1. **Ưu tiên cao nhất (Client Payload Override)**: Nếu trong request body gửi lên có chứa cấu hình tường minh (`"search_engine": "duckduckgo"` hoặc cờ tắt `"web_search": false`), hệ thống sẽ lập tức tuân thủ yêu cầu này của Client.
+2. **Ưu tiên thứ hai (Hosted Search Dialect)**: Các request dạng hosted search (như `/v1/responses` với `tools: [{"type": "web_search"}]`) sẽ sử dụng dialect tìm kiếm Router nội bộ trước.
+3. **Mặc định toàn hệ thống**: Mọi request khác đều tự động chuyển hướng về công cụ tìm kiếm nội bộ DuckDuckGo (`duckduckgo`).
 
-### 10.4. Tiết kiệm Quota thông qua DuckDuckGo
-Hệ thống hỗ trợ công cụ tìm kiếm `"duckduckgo"`. Khi cấu hình giá trị này (hoặc qua Web/Database hoặc qua Client payload):
-* Router chỉ gọi trực tiếp scraper DuckDuckGo ở local (`src/tools/search/providers/duckduckgo_provider.py`).
-* Không chạy qua sub-agent Gemini Flash Lite hay bất kỳ model search trung gian nào.
-* Giúp **tiết kiệm 100% hạn ngạch (quota) API Key của Gemini** và tối ưu hóa chi phí vận hành.
+*(Lưu ý: Cơ chế ghi đè ở cấp độ database account `account.get("search_engine")` trước đây đã bị loại bỏ hoàn toàn do gây xung đột đè nhầm request client; xem chi tiết tại [deprecated.md](deprecated.md)).*
+
+### 10.4. Tiết kiệm 100% Quota Key Gemini qua DuckDuckGo & Nâng cấp MCP Server
+Hệ thống sử dụng **DuckDuckGo nội bộ (DDGS)** thay thế hoàn toàn cho Google Search Grounding:
+* **Lý do loại bỏ Google Grounding**: Google Grounding API phản hồi quá chậm (mất 5–15 giây cho một truy vấn), ngốn cạn kiệt quota API key của Gemini và gây lỗi 429 dây chuyền.
+* **Tối ưu DuckDuckGo**: Router chỉ gọi trực tiếp scraper DuckDuckGo in-process ở local (`src/tools/search/providers/duckduckgo_provider.py`), không qua sub-agent hay model trung gian. Tiết kiệm 100% hạn ngạch (quota) của key Gemini và phản hồi nhanh gấp hàng chục lần.
+* **Nâng cấp MCP Server (`/mcp`)**: Để các Agent (Claude Code, OpenCode, Cursor...) có thể tự do điều chỉnh nhiều tham số tìm kiếm sâu mà không phụ thuộc vào completions proxy, hệ thống cung cấp endpoint MCP Server độc lập tại `/mcp` (xem chi tiết tại [mcp_server.md](mcp_server.md)).
 
 ---
 

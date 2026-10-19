@@ -19,7 +19,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 import uvicorn
 from src.core.config_n_logg import config, logger
 from src.core.config_n_logg.logger import CONSOLE_LOG_SYSTEM, CONSOLE_LOG_WEB, _ensure_log_dir
-from src.core.config.api_config import AVAILABLE_MODELS, is_sunset_25
+from src.core.config.api_config import AVAILABLE_MODELS, is_model_sunset, is_sunset_25
 
 # Migrate before binding the port, so a schema problem fails at launch rather
 # than on the first request. src/backend/_db.py already creates the two tables
@@ -106,7 +106,7 @@ def main():
         _mid = str(_cfg.get("model_id", ""))
         if "pool" in _mid:
             continue
-        if is_sunset_25() and _alias in ("gemini-flash-25", "gemini-flash-25-lite"):
+        if is_model_sunset(_alias):
             continue
 
     logger.info(
