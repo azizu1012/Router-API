@@ -210,8 +210,45 @@ export default function ModelAliasesTab() {
     target_endpoint: null,
     label: '',
     key_id: null,
-    enabled: true
+    enabled: true,
+    alias_type: 'single',
+    strategy: 'waterfall',
+    targets: [{ model: '', endpoint: '', priority: 1, weight: 1 }]
   });
+
+  const isCombo = formData.alias_type === 'combo';
+  const parseTargets = (alias) => {
+    try {
+      const parsed = typeof alias.targets === 'string' ? JSON.parse(alias.targets || '[]') : alias.targets;
+      return Array.isArray(parsed) && parsed.length
+        ? parsed.map((target, index) => ({
+            model: target.model || '',
+            endpoint: target.endpoint || target.target_endpoint || '',
+            priority: target.priority || index + 1,
+            weight: target.weight || 1
+          }))
+        : [{ model: alias.target_model || '', endpoint: alias.target_endpoint || '', priority: 1, weight: 1 }];
+    } catch (_) {
+      return [{ model: alias.target_model || '', endpoint: alias.target_endpoint || '', priority: 1, weight: 1 }];
+    }
+  };
+
+  const updateTarget = (index, field, value) => {
+    setFormData(prev => ({
+      ...prev,
+      targets: prev.targets.map((target, i) => i === index ? { ...target, [field]: value } : target)
+    }));
+  };
+
+  const addTarget = () => setFormData(prev => ({
+    ...prev,
+    targets: [...prev.targets, { model: '', endpoint: '', priority: prev.targets.length + 1, weight: 1 }]
+  }));
+
+  const removeTarget = (index) => setFormData(prev => ({
+    ...prev,
+    targets: prev.targets.length <= 1 ? prev.targets : prev.targets.filter((_, i) => i !== index)
+  }));
 
   useEffect(() => {
     loadAliases();
@@ -252,18 +289,30 @@ export default function ModelAliasesTab() {
 
   const handleAddAlias = async (e) => {
     e.preventDefault();
-    if (!formData.alias_name.trim() || !formData.target_model.trim()) return;
+    const comboTargets = formData.targets.filter(t => t.model.trim()).map(t => ({
+      model: t.model.trim(),
+      endpoint: t.endpoint || null,
+      priority: Number(t.priority) || 1,
+      weight: Number(t.weight) || 1
+    }));
+    if (!formData.alias_name.trim() || (isCombo ? comboTargets.length === 0 : !formData.target_model.trim())) {
+      setMsg(isCombo ? '❌ Combo cần ít nhất một target model.' : '❌ Vui lòng nhập target model.', 'error');
+      return;
+    }
+    const primaryTarget = comboTargets[0];
     try {
       const url = isAdmin ? '/dashboard/admin/aliases' : '/api/me/aliases';
       await api(url, {
         method: 'POST',
         body: JSON.stringify({
           alias_name: formData.alias_name.trim(),
-          target_model: formData.target_model.trim(),
-          target_endpoint: formData.target_endpoint || null,
+          target_model: isCombo ? primaryTarget.model : formData.target_model.trim(),
+          target_endpoint: isCombo ? (primaryTarget.endpoint || null) : (formData.target_endpoint || null),
           label: formData.label.trim(),
           account_key_id: formData.key_id || null,
-          enabled: true
+          enabled: true,
+          targets: isCombo ? comboTargets : '',
+          strategy: isCombo ? formData.strategy : 'waterfall'
         })
       }, token);
       setMsg('✅ Đã tạo alias thành công!', 'success');
@@ -277,6 +326,17 @@ export default function ModelAliasesTab() {
 
   const handleUpdateAlias = async (e) => {
     e.preventDefault();
+    const comboTargets = formData.targets.filter(t => t.model.trim()).map(t => ({
+      model: t.model.trim(),
+      endpoint: t.endpoint || null,
+      priority: Number(t.priority) || 1,
+      weight: Number(t.weight) || 1
+    }));
+    if (isCombo && comboTargets.length === 0) {
+      setMsg('❌ Combo cần ít nhất một target model.', 'error');
+      return;
+    }
+    const primaryTarget = comboTargets[0];
     try {
       const url = isAdmin
         ? `/dashboard/admin/aliases/${editingAlias.alias_id}`
@@ -284,10 +344,12 @@ export default function ModelAliasesTab() {
       await api(url, {
         method: 'PATCH',
         body: JSON.stringify({
-          target_model: formData.target_model.trim(),
-          target_endpoint: formData.target_endpoint || null,
+          target_model: isCombo ? primaryTarget.model : formData.target_model.trim(),
+          target_endpoint: isCombo ? (primaryTarget.endpoint || null) : (formData.target_endpoint || null),
           label: formData.label.trim(),
-          enabled: formData.enabled
+          enabled: formData.enabled,
+          targets: isCombo ? comboTargets : '',
+          strategy: isCombo ? formData.strategy : 'waterfall'
         })
       }, token);
       setMsg('✅ Đã cập nhật alias!', 'success');
@@ -423,20 +485,27 @@ export default function ModelAliasesTab() {
       target_endpoint: null,
       label: '',
       key_id: null,
-      enabled: true
+      enabled: true,
+      alias_type: 'single',
+      strategy: 'waterfall',
+      targets: [{ model: '', endpoint: '', priority: 1, weight: 1 }]
     });
     setEditingAlias(null);
   };
 
   const startEdit = (alias) => {
     setEditingAlias(alias);
+    const parsedTargets = parseTargets(alias);
     setFormData({
       alias_name: alias.alias_name,
-      target_model: alias.target_model,
+      target_model: alias.target_model || parsedTargets[0]?.model || '',
       target_endpoint: alias.target_endpoint,
       label: alias.label || '',
       key_id: alias.account_key_id,
-      enabled: alias.enabled
+      enabled: alias.enabled,
+      alias_type: parsedTargets.length > 1 || Boolean(alias.targets && alias.targets !== '[]') ? 'combo' : 'single',
+      strategy: alias.strategy || 'waterfall',
+      targets: parsedTargets
     });
     setShowAddForm(true);
     setShowTemplates(false);
@@ -593,6 +662,11 @@ export default function ModelAliasesTab() {
                   <span className="text-[10px] text-base-content/50 mt-1">Client SDK / IDE (Cursor, Claude Code) sẽ gửi tên này</span>
                 </div>
 
+                <div className="sm:col-span-2 join w-full">
+                  <button type="button" className={`join-item btn btn-sm flex-1 ${!isCombo ? 'btn-primary' : 'btn-ghost'}`} onClick={() => setFormData(prev => ({ ...prev, alias_type: 'single' }))}>Alias 1-1 / Spoof</button>
+                  <button type="button" className={`join-item btn btn-sm flex-1 ${isCombo ? 'btn-primary' : 'btn-ghost'}`} onClick={() => setFormData(prev => ({ ...prev, alias_type: 'combo' }))}>Combo Model Mix</button>
+                </div>
+
                 <div className="form-control">
                   <label className="label py-1">
                     <span className="label-text text-[11px] font-bold text-base-content/60 uppercase">Target Endpoint (Tùy chọn)</span>
@@ -616,7 +690,7 @@ export default function ModelAliasesTab() {
                   </label>
                   <input
                     type="text"
-                    required
+                    required={!isCombo}
                     list="target-models-list"
                     value={formData.target_model}
                     onChange={(e) => setFormData({...formData, target_model: e.target.value})}
@@ -630,6 +704,33 @@ export default function ModelAliasesTab() {
                   </datalist>
                   <span className="text-[10px] text-base-content/50 mt-1">Gợi ý: gemini-flash, gemini-flash-lite, gemini-pro</span>
                 </div>
+
+                {isCombo && (
+                  <div className="sm:col-span-2 rounded-xl border border-primary/20 bg-base-200/40 p-3 space-y-3">
+                    <div className="flex items-center justify-between">
+                      <div>
+                        <strong className="text-xs">Các target trong combo</strong>
+                        <p className="text-[10px] text-base-content/60">Waterfall sẽ fallback theo thứ tự; Load balance dùng weight.</p>
+                      </div>
+                      <select className="select select-bordered select-xs" value={formData.strategy} onChange={e => setFormData(prev => ({ ...prev, strategy: e.target.value }))}>
+                        <option value="waterfall">Waterfall</option>
+                        <option value="load_balance">Load balance</option>
+                      </select>
+                    </div>
+                    {formData.targets.map((target, index) => (
+                      <div key={index} className="grid grid-cols-1 sm:grid-cols-12 gap-2 items-end">
+                        <input className="input input-bordered input-xs sm:col-span-4 font-mono" placeholder="Model" value={target.model} required onChange={e => updateTarget(index, 'model', e.target.value)} />
+                        <select className="select select-bordered select-xs sm:col-span-4" value={target.endpoint || ''} onChange={e => updateTarget(index, 'endpoint', e.target.value)}>
+                          <option value="">Gemini Pool</option>
+                          {endpoints.map(ep => <option key={ep.name} value={ep.name}>{ep.name}</option>)}
+                        </select>
+                        <input type="number" min="1" className="input input-bordered input-xs sm:col-span-2" placeholder="Weight" value={target.weight} onChange={e => updateTarget(index, 'weight', e.target.value)} />
+                        <button type="button" className="btn btn-ghost btn-xs text-error" onClick={() => removeTarget(index)} disabled={formData.targets.length <= 1}><Trash2 className="w-3 h-3" /></button>
+                      </div>
+                    ))}
+                    <button type="button" className="btn btn-outline btn-xs" onClick={addTarget}><Plus className="w-3 h-3" /> Thêm target</button>
+                  </div>
+                )}
 
                 <div className="form-control">
                   <label className="label py-1">
@@ -722,9 +823,14 @@ export default function ModelAliasesTab() {
                           </div>
                         </td>
                         <td>
-                          <code className="px-2 py-0.5 bg-secondary/10 text-secondary rounded font-mono text-[11px]">
-                            {alias.target_model}
-                          </code>
+                          {alias.targets && alias.targets !== '[]' ? (
+                            <div className="flex flex-wrap gap-1 max-w-xs">
+                              <span className="badge badge-xs badge-primary">Combo</span>
+                              {parseTargets(alias).map((target, index) => <code key={index} className="px-1.5 py-0.5 bg-secondary/10 text-secondary rounded font-mono text-[10px]">{target.model}</code>)}
+                            </div>
+                          ) : (
+                            <code className="px-2 py-0.5 bg-secondary/10 text-secondary rounded font-mono text-[11px]">{alias.target_model}</code>
+                          )}
                         </td>
                         <td>
                           {alias.target_endpoint ? (
