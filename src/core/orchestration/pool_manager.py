@@ -94,6 +94,21 @@ def _compute_thinking_for_model(
     return res if res else None
 
 
+async def _acquire_pool_member(
+    pool: Any,
+    timeout: float,
+    skip: Optional[Set[str]] = None,
+) -> str:
+    """Acquire a pool member without serializing Gemini members globally."""
+    try:
+        return await pool.acquire(skip=skip, timeout=timeout, lock_gemini=False)
+    except TypeError as exc:
+        if "lock_gemini" not in str(exc):
+            raise
+        # Test doubles and legacy pool implementations retain the old API.
+        return await pool.acquire(skip=skip, timeout=timeout)
+
+
 def _retire_member(pool: Any, exhausted_members: Set[str], member: str) -> None:
     """Give up on a member for the remainder of this request.
 
@@ -226,13 +241,17 @@ class PoolManager:
             consecutive_transient = 0
             start_time = time.monotonic()
             member: str
-            member = await pool.acquire(timeout=pool.max_retry_seconds)
+            member = await _acquire_pool_member(pool, pool.max_retry_seconds)
             pool_try = -1
 
             try:
                 while time.monotonic() - start_time < pool.max_retry_seconds:
                     if member in exhausted_members:
-                        member = await pool.acquire(skip=exhausted_members, timeout=max(0.01, pool.max_retry_seconds - (time.monotonic() - start_time)))
+                        member = await _acquire_pool_member(
+                            pool,
+                            max(0.01, pool.max_retry_seconds - (time.monotonic() - start_time)),
+                            skip=exhausted_members,
+                        )
 
                     pool_try += 1
                     api_key_val = None
@@ -417,14 +436,18 @@ class PoolManager:
             consecutive_transient = 0
             start_time = time.monotonic()
             member: str
-            member = await pool.acquire(timeout=pool.max_retry_seconds)
+            member = await _acquire_pool_member(pool, pool.max_retry_seconds)
             committed = False
             pool_try = -1
 
             try:
                 while time.monotonic() - start_time < pool.max_retry_seconds:
                     if member in exhausted_members:
-                        member = await pool.acquire(skip=exhausted_members, timeout=max(0.01, pool.max_retry_seconds - (time.monotonic() - start_time)))
+                        member = await _acquire_pool_member(
+                            pool,
+                            max(0.01, pool.max_retry_seconds - (time.monotonic() - start_time)),
+                            skip=exhausted_members,
+                        )
 
                     pool_try += 1
                     api_key_val = None

@@ -47,9 +47,21 @@ class ModelPool:
                 if ep_name not in self._locks:
                     self._locks[ep_name] = asyncio.Lock()
 
-    async def acquire(self, skip: Optional[Set[str]] = None, timeout: Optional[float] = None) -> str:
+    async def acquire(
+        self,
+        skip: Optional[Set[str]] = None,
+        timeout: Optional[float] = None,
+        lock_gemini: bool = True,
+    ) -> str:
+        """Select a pool member and optionally reserve its member slot.
+
+        Gemini pool streams use per-key active-request accounting, so they must
+        not reserve one shared member slot before key selection. Custom endpoint
+        members retain the original one-request-per-member behavior.
+        """
         skip = skip or set()
         timeout = self.acquire_deadline if timeout is None else max(0.01, timeout)
+
         # A wall-clock adjustment must not extend a request's pool deadline.
         start = time.monotonic()
         while time.monotonic() - start < timeout:
@@ -61,13 +73,17 @@ class ModelPool:
                     continue
                 await self._locks[member].acquire()
                 return member
-            # Priority 2: Gemini members (fallback when custom endpoints busy)
+            # Priority 2: Gemini members (fallback when custom endpoints busy).
+            # Gemini concurrency is enforced by the selected API key's
+            # active_requests limit. Do not serialize every key on one member
+            # lock: a slow stream on key A must not block key B for this model.
             for member in self._gemini_members:
                 if member in skip:
                     continue
-                if self._locks[member].locked():
-                    continue
-                await self._locks[member].acquire()
+                if lock_gemini:
+                    if self._locks[member].locked():
+                        continue
+                    await self._locks[member].acquire()
                 return member
             await asyncio.sleep(self.acquire_poll_interval)
         raise TimeoutError(f"Pool {self.members}: no free member after {timeout}s")
