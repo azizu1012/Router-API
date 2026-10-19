@@ -1102,6 +1102,49 @@ class TestTheStreamedSearchHonoursMaxUses:
         # 2nd call was redundant, loop terminated and answered
         assert calls["search"] == 2
 
+    def test_natural_language_mentioning_search_results_is_not_discarded(self, monkeypatch):
+        """Natural language mentioning [Web Search Results] must not be treated as a raw echo."""
+        from src.api.claude_proxy.handler.anthropic_spec import is_raw_search_context
+        # Natural language synthesis mentioning the search results header
+        assert is_raw_search_context("Dựa trên [Web Search Results], Paris là thủ đô của Pháp.") is False
+        assert is_raw_search_context("According to [Web Search Results], the event happened in 2024.") is False
+        # Raw verbatim dump without synthesis
+        assert is_raw_search_context("[Web Search Results]\nQuery: test\n[End of Web Search Results]") is True
+        assert is_raw_search_context("[Web Search Results]\nQuery: test\n...") is True
+
+        # And verify via real streamed search
+        turns = [
+            [_tool_call_chunk("WebSearch", {"query": "capital of France"}, "c1")],
+            [_SChunk(_SDelta("Dựa trên [Web Search Results], thủ đô nước Pháp là Paris."), finish_reason="stop")],
+        ]
+        events, _ = _run_streamed_search(monkeypatch, turns)
+        text_deltas = [
+            d["delta"]["text"] for n, d in events
+            if n == "content_block_delta" and d["delta"].get("type") == "text_delta"
+        ]
+        full_text = "".join(text_deltas)
+        assert "thủ đô nước Pháp là Paris" in full_text
+        assert "model chưa tạo được phần tổng hợp" not in full_text
+
+    def test_tool_call_after_search_does_not_trigger_fallback_synthesis(self, monkeypatch):
+        """If the model calls a client tool after web search, it must emit tool_use and not the fallback error."""
+        turns = [
+            [_tool_call_chunk("WebSearch", {"query": "find files"}, "c1")],
+            [_tool_call_chunk("Read", {"file_path": "test.txt"}, "client_call_1")],
+        ]
+        events, _ = _run_streamed_search(monkeypatch, turns)
+        text_deltas = [
+            d["delta"]["text"] for n, d in events
+            if n == "content_block_delta" and d["delta"].get("type") == "text_delta"
+        ]
+        full_text = "".join(text_deltas)
+        assert "model chưa tạo được phần tổng hợp" not in full_text
+        tool_starts = [
+            d["content_block"] for n, d in events
+            if n == "content_block_start" and d["content_block"].get("type") == "tool_use"
+        ]
+        assert any(t.get("name") == "Read" for t in tool_starts)
+
 
 class TestHostedSearchHistoryConversion:
     def test_message_converter_handles_server_tool_use_and_web_search_tool_result(self):

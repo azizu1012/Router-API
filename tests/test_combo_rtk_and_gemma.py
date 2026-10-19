@@ -273,8 +273,8 @@ def test_alias_db_combo_persistence():
 # ---------------------------------------------------------------------------
 
 def test_keepalive_configuration():
-    # Stall timeout must be 120s to endure deep thinking and multi-key rotations
-    assert STREAM_STALL_TIMEOUT == 120.0
+    # Stall timeout must be generous (at least 600s, default 900s) to endure deep thinking and multi-key rotations
+    assert STREAM_STALL_TIMEOUT >= 600.0
     assert KEEPALIVE_INTERVAL == 3.0
 
 

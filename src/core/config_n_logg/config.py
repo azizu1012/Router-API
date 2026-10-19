@@ -163,11 +163,11 @@ class RouterApiConfig:
 
     # Model defaults
     DEFAULT_MODEL_ALIAS: str = field(default_factory=lambda: (os.getenv("ROUTER_API_DEFAULT_MODEL_ALIAS") or "gemini-flash").strip())
-    REQUEST_TIMEOUT_SECONDS: int = _get_int("ROUTER_API_REQUEST_TIMEOUT_SEC", 300, 5, 600)
+    REQUEST_TIMEOUT_SECONDS: int = _get_int("ROUTER_API_REQUEST_TIMEOUT_SEC", 600, 5, 3600)
     # Opening a provider stream has its own bound.  The general request timeout
     # may be large for non-streaming generations, but a hung stream-open must
     # yield back to PoolManager so it can rotate the member.
-    STREAM_OPEN_TIMEOUT_SECONDS: int = _get_int("ROUTER_API_STREAM_OPEN_TIMEOUT_SEC", 30, 5, 120)
+    STREAM_OPEN_TIMEOUT_SECONDS: int = _get_int("ROUTER_API_STREAM_OPEN_TIMEOUT_SEC", 180, 5, 1800)
     MAX_OUTPUT_TOKENS: int = _get_int("ROUTER_API_MAX_OUTPUT_TOKENS", 65536, 128, 1000000)
     MAX_RETRIES: int = _get_int("ROUTER_API_MAX_RETRIES", 5, 1, 20)
 
@@ -189,7 +189,7 @@ class RouterApiConfig:
     PROXY_RELAY_URL: str = field(default_factory=lambda: (os.getenv("GEMINI_RELAY_URL") or "").strip())
     PROXY_RELAY_SECRET: str = field(default_factory=lambda: (os.getenv("GEMINI_RELAY_SECRET") or "").strip())
     PROXY_FALLBACK_DIRECT: bool = _get_bool("GEMINI_PROXY_FALLBACK_DIRECT", True)
-    PROXY_TIMEOUT_SECONDS: int = _get_int("GEMINI_RELAY_TIMEOUT", 60, 5, 600)
+    PROXY_TIMEOUT_SECONDS: int = _get_int("GEMINI_RELAY_TIMEOUT", 180, 5, 1800)
 
     # Circuit breaker
     CIRCUIT_ENABLED: bool = _get_bool("ROUTER_API_CIRCUIT_ENABLED", True)
@@ -214,7 +214,7 @@ class RouterApiConfig:
     POOL_MAX_ATTEMPTS: int = _get_int("POOL_MAX_ATTEMPTS", 13, 1, 30)
     # A dead provider must not hold a pool slot for minutes while the client
     # waits. Override for unusually slow providers when needed.
-    POOL_RETRY_SECONDS: int = _get_int("POOL_RETRY_SECONDS", 30, 10, 600)
+    POOL_RETRY_SECONDS: int = _get_int("POOL_RETRY_SECONDS", 120, 10, 1800)
 
     # Key tier isolation
     FREE_KEY_END: int = _get_int("FREE_KEY_END", 30, 1, 200)

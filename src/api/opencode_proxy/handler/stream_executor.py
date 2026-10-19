@@ -366,9 +366,12 @@ async def execute_stream(
 
     if gen is None or first_item is None:
         # The pool stream ended before producing anything — the client hung up,
-        # or the model returned nothing. Not a crash: the peer has already
-        # stopped listening, so the right move is to close the SSE quietly.
+        # or the model returned nothing. Emit a terminal chunk with finish_reason
+        # so spec-compliant clients don't crash with
+        # "Response stream ended without a finish reason."
         logger.info("[OpenCode Stream] %s closed before the first chunk", model_alias)
+        yield _openai_sse(model_name, finish_reason="stop", chunk_id=chunk_id)
+        yield b"data: [DONE]\n\n"
         return
 
     ttfb = asyncio.get_event_loop().time() - t0_wait

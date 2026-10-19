@@ -301,6 +301,7 @@ class ClaudeProxyStreamMixin:
             # `[Web Search Results ...]` payload to the client before it can be
             # identified and discarded.
             deferred_search_text: List[str] = []
+            buffering_search_echo = bool(server_tool_calls)
             extractor = XMLThinkingExtractor()
             normalizer = StreamingTextNormalizer()
             used_api_key = ""
@@ -515,8 +516,39 @@ class ClaudeProxyStreamMixin:
                                 })
                                 yield _sse("content_block_stop", {"type": "content_block_stop", "index": thinking_index})
                         elif ev_type == "text":
-                            if server_tool_calls:
+                            if buffering_search_echo:
                                 deferred_search_text.append(ev_val)
+                                joined_prefix = "".join(deferred_search_text).lstrip()
+                                raw_prefix = "[Web Search Results"
+                                if len(joined_prefix) > 0 and not raw_prefix.startswith(joined_prefix[:len(raw_prefix)]):
+                                    buffering_search_echo = False
+                                    for buffered_chunk in deferred_search_text:
+                                        accumulated_text.append(buffered_chunk)
+                                        if not text_started:
+                                            text_started = True
+                                            text_index = start_block_index + 1 if thinking_started else start_block_index
+                                            if thinking_started and not thinking_stopped:
+                                                thinking_stopped = True
+                                                yield _sse("content_block_delta", {
+                                                    "type": "content_block_delta",
+                                                    "index": thinking_index,
+                                                    "delta": {"type": "signature_delta", "signature": thinking_signature("".join(accumulated_thought))},
+                                                })
+                                                yield _sse("content_block_stop", {"type": "content_block_stop", "index": thinking_index})
+                                            yield _sse("content_block_start", {
+                                                "type": "content_block_start",
+                                                "index": text_index,
+                                                "content_block": {"type": "text", "text": ""},
+                                            })
+                                        norm_val = normalizer.feed(buffered_chunk)
+                                        if norm_val:
+                                            yield _sse("content_block_delta", {
+                                                "type": "content_block_delta",
+                                                "index": text_index,
+                                                "delta": {"type": "text_delta", "text": norm_val},
+                                            })
+                                            output_chars += len(norm_val)
+                                    deferred_search_text.clear()
                                 continue
                             accumulated_text.append(ev_val)
                             if not text_started:
@@ -577,7 +609,7 @@ class ClaudeProxyStreamMixin:
                         })
                     output_chars += len(ev_val)
                 elif ev_type == "text":
-                    if server_tool_calls:
+                    if buffering_search_echo:
                         deferred_search_text.append(ev_val)
                         continue
                     accumulated_text.append(ev_val)
@@ -635,13 +667,14 @@ class ClaudeProxyStreamMixin:
                     buffered_normalizer = StreamingTextNormalizer()
                     normalized = buffered_normalizer.feed(candidate) + buffered_normalizer.flush()
                     if normalized:
-                        text_started = True
-                        text_index = start_block_index + 1 if thinking_started else start_block_index
-                        yield _sse("content_block_start", {
-                            "type": "content_block_start",
-                            "index": text_index,
-                            "content_block": {"type": "text", "text": ""},
-                        })
+                        if not text_started:
+                            text_started = True
+                            text_index = start_block_index + 1 if thinking_started else start_block_index
+                            yield _sse("content_block_start", {
+                                "type": "content_block_start",
+                                "index": text_index,
+                                "content_block": {"type": "text", "text": ""},
+                            })
                         yield _sse("content_block_delta", {
                             "type": "content_block_delta",
                             "index": text_index,
@@ -815,6 +848,7 @@ class ClaudeProxyStreamMixin:
                         yield _sse("ping", {"type": "ping"})
                     else:
                         yield chunk
+                return
 
             else:
                 if tool_buffers:
@@ -941,7 +975,7 @@ class ClaudeProxyStreamMixin:
                 # Fail-safe: an Anthropic response must not finish with a
                 # web_search_tool_result block. Give the provider one bounded
                 # plain-text synthesis retry before returning a short message.
-                if not text_started and server_tool_calls:
+                if not text_started and server_tool_calls and not tool_buffers and emitted_tool_blocks == 0:
                     if not synthesis_retry:
                         logger.warning(
                             "[Claude Stream] Empty synthesis after hosted search; "

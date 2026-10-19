@@ -166,6 +166,7 @@ def convert_messages_to_contents(messages: List[Dict[str, Any]]) -> Dict[str, An
             tool_call_id = msg.get("tool_call_id", "")
             name = (
                 tc_id_to_name.get(tool_call_id)
+                or msg.get("name")
                 or _lookup_global_tool_name(tool_call_id)
                 or (tool_call_id.split("-")[0] if "-" in tool_call_id else tool_call_id)
             )

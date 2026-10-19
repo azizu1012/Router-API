@@ -106,6 +106,16 @@ async def opencode_chat_completions(
                         async for chunk in _sub_agent_stream_error(body, model_alias, e):
                             yield chunk
                     else:
+                        # Emit a terminal chunk with finish_reason so spec-compliant
+                        # clients don't crash with "Response stream ended without a finish reason."
+                        error_chunk = {
+                            "id": f"chatcmpl-error",
+                            "object": "chat.completion.chunk",
+                            "created": int(time.time()),
+                            "model": body.get("model", "unknown"),
+                            "choices": [{"index": 0, "delta": {}, "finish_reason": "stop"}],
+                        }
+                        yield f"data: {json.dumps(error_chunk, ensure_ascii=False)}\n\n".encode("utf-8")
                         yield "data: [DONE]\n\n".encode("utf-8")
 
             return StreamingResponse(

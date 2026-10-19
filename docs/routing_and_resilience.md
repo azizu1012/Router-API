@@ -275,8 +275,13 @@ Test: `tests/test_effort_mapping.py` — pin cả hai chiều, kể cả việc 
 | `GEMINI_FLASH_LITE_RPD` | `540` | Tổng RPD cho `gemini-flash-lite` pool (20+500+20) |
 | `POOL_SWAP_FAILURES` | `5` | Số lần thất bại liên tiếp trước khi đổi sang pool member tiếp theo |
 | `POOL_MAX_ATTEMPTS` | `15` | Số lần thử lại tối đa qua toàn bộ các pool members |
-| `POOL_RETRY_SECONDS` | `30` | Ngân sách thời gian retry của một pool request |
-| `ROUTER_API_STREAM_OPEN_TIMEOUT_SEC` | `30` | Giới hạn mở stream trước khi xoay member; tách khỏi timeout request tổng |
+| `POOL_RETRY_SECONDS` | `120` | Ngân sách thời gian retry của một pool request (cho phép xoay qua nhiều key/member) |
+| `ROUTER_API_STREAM_OPEN_TIMEOUT_SEC` | `180` | Giới hạn mở stream trước khi xoay member; tách khỏi timeout request tổng |
+| `ROUTER_API_REQUEST_TIMEOUT_SEC` | `600` | Giới hạn thời gian tổng thể của upstream HTTP request (10 phút) |
+| `STREAM_STALL_TIMEOUT` | `900.0` | Thời gian im lặng tối đa giữa 2 chunk liên tiếp (15 phút, chống stall cho deep thinking) |
+| `COMMITTED_STREAM_CAP` | `1800.0` | Tổng thời lượng tối đa cho một stream sau khi đã nhận chunk đầu tiên (30 phút) |
+| `CUSTOM_ENDPOINT_TIMEOUT` | `900` | Timeout tổng cho custom endpoint upstream (15 phút) |
+| `CUSTOM_ENDPOINT_CHUNK_TIMEOUT` | `600.0` | Timeout đọc từng chunk cho custom endpoint stream (10 phút) |
 | `KEY_429_COOLDOWN_SECONDS` | `15` | Thời gian cooldown khi key dính rate limit tạm thời |
 | `KEY_INVALID_COOLDOWN_SECONDS` | `3600` | Thời gian đóng băng khi key invalid |
 | `MODEL_CONTEXT_LENGTH` | `185000` | Ngữ cảnh an toàn client (Spoofing: bảo vệ hạn mức 250k TPM Google AI Studio) |
@@ -306,8 +311,25 @@ Khi người dùng kết hợp các model trong Combo (ví dụ Gemini Flash 185
 $$\text{context\_length} = \min_{i}(\text{Target}_i.\text{context\_length})$$
 Quy tắc này đảm bảo khi xảy ra fallback từ Target A sang Target B, prompt không bao giờ bị tràn context window của target nhỏ nhất.
 
-### 12.3. Multi-Dialect Stream Keep-Alive Resilience
-Để ngăn chặn các client bị ngắt kết nối sau 60 giây im lặng (do model suy nghĩ sâu deep thinking hoặc quá trình xoay key qua nhiều member):
-- Nâng `STREAM_STALL_TIMEOUT` từ 60.0s lên **120.0s**.
-- Gửi ngay lập tức comment `: keepalive-init\n\n` khi thiết lập kết nối SSE.
-- Định kỳ phát comment chuẩn W3C SSE `: keepalive\n\n` mỗi 2.5–3.0s nếu chưa có token mới, duy trì socket TCP luôn ấm mà không làm gãy parser JSON của client.
+### 12.3. Multi-Dialect Stream Keep-Alive & Chống Timeout Tác Vụ Suy Luận Sâu (Cherry Studio & Claude Code)
+Để đối phó với các tác vụ khó đòi hỏi suy luận kéo dài (deep thinking) hoặc các model lý luận phức tạp thường tạm dừng phát chunk từ 60–180 giây:
+
+1. **Chuẩn Hóa Timeout Hào Phóng Cho Router:**
+   - Nâng `STREAM_STALL_TIMEOUT` lên **900.0s** (15 phút).
+   - Nâng `_COMMITTED_STREAM_CAP` lên **1800.0s** (30 phút).
+   - Nâng timeout Custom Endpoint lên **900.0s** (chunk timeout: 600.0s).
+   - Nâng `REQUEST_TIMEOUT_SECONDS` lên **600.0s**, `STREAM_OPEN_TIMEOUT_SECONDS` lên **180.0s**.
+
+2. **Cơ Chế Multi-Dialect Keep-Alive:**
+   - Gửi ngay comment `: keepalive-init\n\n` khi thiết lập kết nối SSE HTTP 200.
+   - Định kỳ phát comment `: keepalive\n\n` mỗi 2.5s–3.0s nếu upstream chưa có token mới.
+   - Trong `_custom_safe_stream()` (OpenAI Chat API), phát kèm chunk rỗng `data: {"choices": [{"delta": {}}]}` mỗi 2.5s để reset timeout của client fetch/EventSource.
+
+3. **Lưu Ý Cấu Hình Cherry Studio:**
+   - Cherry Studio mặc định cấu hình timeout nhà cung cấp là **120 giây** ("Thời gian chờ của nhà cung cấp" / "Provider timeout").
+   - Khi chạy các tác vụ suy luận phức tạp hoặc prompt dài, người dùng cần vào **Cài đặt (Settings) -> Nhà cung cấp (Providers) -> Router API -> Nâng Timeout lên 600s - 1800s** (hoặc đặt 0 / tắt timeout) để tránh Cherry Studio tự ý ngắt kết nối khi server vẫn đang tính toán hợp lệ.
+
+4. **Khắc Phục Lỗi Fallback Giả Sau WebSearch Trong Claude Code Proxy:**
+   - **Stream sớm (Early Streaming):** Không đệm toàn bộ phản hồi tổng hợp sau tìm kiếm nếu văn bản bắt đầu bằng câu tự nhiên (khác tiền tố `[Web Search Results`).
+   - **Nhận diện Echo chính xác:** `is_raw_search_context()` chỉ lọc những phản hồi lặp lại nguyên khối `[Web Search Results` mà không có câu trả lời tổng hợp phía sau (`len(after_footer) < 50`).
+   - **Bảo toàn Tool Call:** Nếu sau khi tìm kiếm, model sinh ra tool call mới (như `Read`, `Bash`, `Agent`), hệ thống giữ nguyên và phát `tool_use`, không kích hoạt nhầm fallback `"Mình đã thực hiện tìm kiếm nhưng model chưa tạo được phần tổng hợp. Vui lòng thử lại."`.

@@ -495,14 +495,13 @@ class PoolManager:
                                 pool.max_retry_seconds - (time.monotonic() - start_time),
                             )
                             # Post-commit: the client is already receiving
-                            # data — rotation is impossible.  The keepalive
-                            # layer's STREAM_STALL_TIMEOUT (30 s silence)
-                            # guards against a provider that goes quiet
-                            # mid-stream; this outer cap is a last-resort
-                            # bound so a single request can never hold a
-                            # slot forever.  Pool models are all Flash/Lite
-                            # (no reasoning), so 120 s is generous.
-                            _COMMITTED_STREAM_CAP = 120.0
+                            # data — rotation is impossible. The keepalive
+                            # layer's STREAM_STALL_TIMEOUT guards against
+                            # a provider that goes quiet mid-stream.
+                            # For complex tasks, heavy reasoning (Gemma 4,
+                            # custom endpoints), and large outputs (up to 64k tokens),
+                            # 1800s (30 minutes) gives ample runway.
+                            _COMMITTED_STREAM_CAP = float(os.getenv("COMMITTED_STREAM_CAP", "1800.0"))
                             deadline_ctx = asyncio.timeout(first_chunk_deadline)
                             async with deadline_ctx:
                                 async for chunk in gen:

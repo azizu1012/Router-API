@@ -32,9 +32,18 @@ SEARCH_SYNTHESIS_FALLBACK = (
 
 
 def is_raw_search_context(text: Any) -> bool:
-    """Return whether model text is the router's internal search payload."""
-    value = str(text or "")
-    return "[Web Search Results" in value or "[End of Web Search Results]" in value
+    """Return whether model text is merely an un-synthesized echo of the router's internal search payload."""
+    value = str(text or "").strip()
+    if not value:
+        return False
+    # If the text does not start with the search results header, it is a synthesized answer
+    if not value.startswith("[Web Search Results"):
+        return False
+    # If it contains the end delimiter, check if there is substantial synthesized text after it
+    if "[End of Web Search Results]" in value:
+        after_footer = value.split("[End of Web Search Results]", 1)[1].strip()
+        return len(after_footer) < 50
+    return True
 
 
 def _bounded_excerpt(text: Any, max_chars: int = _HOSTED_SEARCH_MAX_CITATION_CHARS) -> str:

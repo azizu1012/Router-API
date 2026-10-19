@@ -1,7 +1,11 @@
 """OpenAI chat-completions route."""
 
+import asyncio
 import json
+import os
+import time
 from typing import Any, Dict
+import uuid
 
 from fastapi import Header, HTTPException, Request
 from fastapi.responses import JSONResponse, StreamingResponse
@@ -78,12 +82,52 @@ async def chat_completions(
                         response_format=body.get("response_format"),
                     )
                     async def _custom_safe_stream():
+                        yield b": keepalive-init\n\n"
                         if stream_gen is not None:
-                            async for chunk in stream_gen:
-                                c_dict = getattr(chunk, "raw", chunk if isinstance(chunk, dict) else {})
-                                if original_model_name and isinstance(c_dict, dict):
-                                    c_dict["model"] = original_model_name
-                                yield f"data: {json.dumps(c_dict, ensure_ascii=False)}\n\n".encode("utf-8")
+                            it = stream_gen.__aiter__()
+                            pending = asyncio.ensure_future(it.__anext__())
+                            chunk_id = f"chatcmpl-{uuid.uuid4().hex}"
+                            model_for_chunk = original_model_name or resolved_model
+                            last_item = time.monotonic()
+                            stall_timeout = float(os.getenv("STREAM_STALL_TIMEOUT", "900.0"))
+                            try:
+                                while True:
+                                    try:
+                                        chunk = await asyncio.wait_for(asyncio.shield(pending), timeout=2.5)
+                                    except asyncio.TimeoutError:
+                                        now = time.monotonic()
+                                        if now - last_item >= stall_timeout:
+                                            logger_api.warning("[Custom Safe Stream] Stall timeout reached (%.0fs)", stall_timeout)
+                                            break
+                                        yield b": keepalive\n\n"
+                                        empty_chunk = {
+                                            "id": chunk_id,
+                                            "object": "chat.completion.chunk",
+                                            "created": int(time.time()),
+                                            "model": model_for_chunk,
+                                            "choices": [{"index": 0, "delta": {}, "finish_reason": None}],
+                                        }
+                                        yield f"data: {json.dumps(empty_chunk, ensure_ascii=False)}\n\n".encode("utf-8")
+                                        continue
+                                    except StopAsyncIteration:
+                                        break
+
+                                    last_item = time.monotonic()
+                                    pending = asyncio.ensure_future(it.__anext__())
+                                    c_dict = getattr(chunk, "raw", chunk if isinstance(chunk, dict) else {})
+                                    if original_model_name and isinstance(c_dict, dict):
+                                        c_dict["model"] = original_model_name
+                                    yield f"data: {json.dumps(c_dict, ensure_ascii=False)}\n\n".encode("utf-8")
+                            finally:
+                                if not pending.done():
+                                    pending.cancel()
+                                    await asyncio.gather(pending, return_exceptions=True)
+                                close = getattr(it, "aclose", None)
+                                if close is not None:
+                                    try:
+                                        await close()
+                                    except Exception:
+                                        pass
                         yield b"data: [DONE]\n\n"
                     return StreamingResponse(_custom_safe_stream(), media_type="text/event-stream")
                 else:
@@ -175,6 +219,17 @@ async def chat_completions(
                         async for chunk in _sub_agent_stream_error(body, model_alias, e):
                             yield chunk
                     else:
+                        # Emit a terminal chunk with finish_reason so spec-compliant
+                        # clients (Vercel AI SDK, Cherry Studio, OpenCode) do not
+                        # crash with "Response stream ended without a finish reason."
+                        error_chunk = {
+                            "id": f"chatcmpl-error",
+                            "object": "chat.completion.chunk",
+                            "created": int(time.time()),
+                            "model": body.get("model", "unknown"),
+                            "choices": [{"index": 0, "delta": {}, "finish_reason": "stop"}],
+                        }
+                        yield f"data: {json.dumps(error_chunk, ensure_ascii=False)}\n\n".encode("utf-8")
                         yield "data: [DONE]\n\n".encode("utf-8")
             return StreamingResponse(
                 _safe_stream(),

@@ -8,6 +8,7 @@ Exposes:
 """
 
 import asyncio
+import os
 import time
 from collections import defaultdict
 import json
@@ -20,7 +21,7 @@ from src.core.config_n_logg.logger import logger_proxy as logger
 
 from ..anthropic_wire import is_anthropic_format
 
-TIMEOUT = 120
+TIMEOUT = int(os.getenv("CUSTOM_ENDPOINT_TIMEOUT", "900"))
 
 # ── Custom pool rate limiting ────────────────────────────────────────────
 
@@ -587,15 +588,16 @@ class CustomEndpointStreamGen:
         if not self._started:
             await self._start()
 
+        chunk_timeout = float(os.getenv("CUSTOM_ENDPOINT_CHUNK_TIMEOUT", "600.0"))
         while True:
             gen = self._sse_gen
             if gen is None:
                 raise RuntimeError("Custom endpoint stream not initialized")
             try:
-                raw_chunk = await asyncio.wait_for(gen.__anext__(), timeout=30.0)
+                raw_chunk = await asyncio.wait_for(gen.__anext__(), timeout=chunk_timeout)
             except asyncio.TimeoutError:
                 from src.core.config_n_logg.logger import logger_proxy as logger
-                logger.warning("[Custom Endpoint Stream] Chunk read timeout (30s) reached. Closing stream.")
+                logger.warning("[Custom Endpoint Stream] Chunk read timeout (%.0fs) reached. Closing stream.", chunk_timeout)
                 await self._cleanup()
                 raise TimeoutError("custom_endpoint_stream_timeout")
             except StopAsyncIteration:
