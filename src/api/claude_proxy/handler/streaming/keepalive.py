@@ -7,7 +7,7 @@ from typing import Any, AsyncIterator, Optional
 from src.core.config_n_logg.logger import logger_api as logger
 
 
-KEEPALIVE_INTERVAL = 4.0
+KEEPALIVE_INTERVAL = 3.0
 _KEEPALIVE = object()
 _POLL_TIMEOUT = 1.0
 
@@ -18,12 +18,10 @@ _POLL_TIMEOUT = 1.0
 # one bad request.
 #
 # This counts *silence*, not duration. Every chunk resets the clock; only a
-# window in which not one item arrives counts against it. The pool is small
-# (2 active Flash members), so a dead stream holding a slot for minutes
-# starves every other request. 30 s is well past any real inter-token gap
-# on Flash/Lite while releasing the slot before the pool is exhausted.
-# Callers that need a longer window (reasoning models) pass stall_timeout.
-STREAM_STALL_TIMEOUT = 60.0
+# window in which not one item arrives counts against it. The pool allows thinking
+# models and multi-key retry rotations, so 120s avoids premature stream disconnects
+# while keeping sockets alive via periodic pings.
+STREAM_STALL_TIMEOUT = 120.0
 
 
 class StreamStalled(asyncio.TimeoutError):

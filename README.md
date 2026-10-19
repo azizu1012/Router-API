@@ -206,7 +206,8 @@ Everything is env-driven; `.env.example` is the reference. The keys that matter 
 | `KEY_429_COOLDOWN_SECONDS` | `15` | Cooldown after a rate limit |
 | `KEY_INVALID_COOLDOWN_SECONDS` | `3600` | Freeze after an invalid key |
 | `*_RPM` / `*_TPM` / `*_RPD` | per model | Per-model budgets |
-| `MODEL_CONTEXT_LENGTH` | `220000` | Context ceiling used for pool math |
+| `MODEL_CONTEXT_LENGTH` | `185000` | Safe context ceiling reported to clients (Flash/Lite 250k TPM protection) |
+| `GEMMA_CONTEXT_LENGTH` | `14000` | Safe context ceiling for Gemma 4 (16k TPM protection) |
 
 > Keys share a project quota in practice — adding more keys to one project does not multiply throughput. The per-model RPM values reflect that.
 

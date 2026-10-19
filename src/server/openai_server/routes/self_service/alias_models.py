@@ -1,6 +1,6 @@
 """Request and response schemas for self-service alias routes."""
 
-from typing import Optional
+from typing import Optional, Union, List, Dict, Any
 
 from pydantic import BaseModel, Field
 
@@ -12,6 +12,9 @@ class CreateAliasRequest(BaseModel):
     account_key_id: Optional[str] = Field(None, description="Key-specific alias")
     label: str = Field(default="", description="User description")
     enabled: bool = Field(default=True, description="Initial enabled state")
+    targets: Optional[Union[str, List[Any], Dict[str, Any]]] = Field(default="", description="Combo Model Mix targets")
+    strategy: Optional[str] = Field(default="waterfall", description="Combo dispatch strategy (waterfall | load_balance)")
+    context_length: Optional[int] = Field(default=0, description="Context length override (0 = auto-compute min)")
 
 
 class UpdateAliasRequest(BaseModel):
@@ -19,6 +22,9 @@ class UpdateAliasRequest(BaseModel):
     label: Optional[str] = Field(None, description="New label")
     target_model: Optional[str] = Field(None, description="New target model")
     target_endpoint: Optional[str] = Field(None, description="New target endpoint")
+    targets: Optional[Union[str, List[Any], Dict[str, Any]]] = Field(None, description="Combo Model Mix targets")
+    strategy: Optional[str] = Field(None, description="Combo dispatch strategy")
+    context_length: Optional[int] = Field(None, description="Context length override")
 
 
 class AliasResponse(BaseModel):
@@ -32,6 +38,9 @@ class AliasResponse(BaseModel):
     label: str
     created_at: int
     updated_at: int
+    targets: Optional[str] = ""
+    strategy: Optional[str] = "waterfall"
+    context_length: Optional[int] = 0
 
 
 class AliasTemplateResponse(BaseModel):

@@ -171,7 +171,7 @@ def sync_default_models_to_db(force: bool = False) -> int:
         try:
             for alias, cfg in AVAILABLE_MODELS.items():
                 cur = c.execute(
-                    "SELECT display, rpm, tpm, rpd FROM model_config WHERE alias = ? AND account_id = ''",
+                    "SELECT display, rpm, tpm, rpd, context_length FROM model_config WHERE alias = ? AND account_id = ''",
                     (alias,),
                 )
                 existing = cur.fetchone()
@@ -183,10 +183,14 @@ def sync_default_models_to_db(force: bool = False) -> int:
                 rpd = int(cfg.get("rpd", 1000))
                 hidden = 1 if cfg.get("hidden", False) else 0
                 priority = int(cfg.get("priority", 1))
-                context_length = int(cfg.get("context_length", 220000))
+                context_length = int(cfg.get("context_length", 185000))
 
-                # Cập nhật nếu chưa có, hoặc nếu force=True, hoặc nếu display trong DB không khớp với env
-                needs_update = force or (existing and existing["display"] != display)
+                # Cập nhật nếu chưa có, hoặc nếu force=True, hoặc display không khớp, hoặc context_length cũ (200k/220k)
+                needs_update = (
+                    force
+                    or (existing and existing["display"] != display)
+                    or (existing and existing["context_length"] in (200000, 220000) and context_length != existing["context_length"])
+                )
 
                 if not existing:
                     c.execute(

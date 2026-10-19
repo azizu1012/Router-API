@@ -271,4 +271,35 @@ Test: `tests/test_effort_mapping.py` — pin cả hai chiều, kể cả việc 
 | `ROUTER_API_STREAM_OPEN_TIMEOUT_SEC` | `30` | Giới hạn mở stream trước khi xoay member; tách khỏi timeout request tổng |
 | `KEY_429_COOLDOWN_SECONDS` | `15` | Thời gian cooldown khi key dính rate limit tạm thời |
 | `KEY_INVALID_COOLDOWN_SECONDS` | `3600` | Thời gian đóng băng khi key invalid |
-| `MODEL_CONTEXT_LENGTH` | `220000` | Độ dài ngữ cảnh tối đa của mô hình |
+| `MODEL_CONTEXT_LENGTH` | `185000` | Ngữ cảnh an toàn client (Spoofing: bảo vệ hạn mức 250k TPM Google AI Studio) |
+| `GEMMA_CONTEXT_LENGTH` | `14000` | Ngữ cảnh an toàn cho Gemma 4 (bảo vệ hạn mức 16k TPM Google AI Studio) |
+
+---
+
+## 12. Safe Context Spoofing, Combo Model Mix & RTK Truncation
+
+### 12.1. Vấn Đề TPM Google AI Studio vs Physical Context Window
+Mặc dù các mô hình Gemini Flash có dung lượng Attention Context vật lý là 1,048,576 tokens, Google AI Studio trên Free Tier áp đặt hạn mức thông lượng nghiêm ngặt **250,000 Tokens Per Minute (TPM)** tính theo cửa sổ lăn 60 giây. Nếu một request đơn lẻ (hoặc tổng các request trong 1 phút) vượt quá 250k tokens, Google lập tức trả về mã lỗi `HTTP 429 ResourceExhausted`.
+
+Để giải quyết triệt để vấn đề này mà không cần cắt cụt mù quáng:
+1. **Pre-emptive Context Spoofing (185k & 14k):** Gateway báo cho client (Claude Code, OpenCode) thông qua `/v1/models` và Anthropic completion headers rằng context length của Flash/Lite là **185,000 tokens** (và Gemma 4 là **14,000 tokens**). Khi prompt client đạt ~140k–150k, client tự động kích hoạt tính năng compact/summarize tự thân, tạo ra khoảng đệm an toàn 35k–45k tokens bảo vệ tuyệt đối hạn mức 250k TPM.
+2. **RTK (Real-Time Kernel) Smart Truncation:** Nâng cấp bộ lọc `rtk.py` xử lý thông minh cả 2 điều kiện:
+   - Cắt tỉa theo dòng: các khối dữ liệu $\ge 250$ dòng được giữ lại 50 dòng đầu và 50 dòng cuối.
+   - Cắt tỉa theo byte: các khối dữ liệu đơn dòng hoặc ít dòng nhưng kích thước $> 8192$ bytes được giữ lại 4000 ký tự đầu và 2000 ký tự cuối kèm thông báo cắt tỉa.
+   - Hỗ trợ đầy đủ `role: "tool"` (OpenAI format) và block `tool_result` (Anthropic format).
+
+### 12.2. Combo Model Mix & Quy Tắc MIN Context
+Tính năng Combo Model Mix cho phép người dùng tự mix nhiều System Models và Custom Endpoints thành một Model Alias duy nhất với 2 chiến lược:
+- **Waterfall:** Thử lần lượt từng target theo thứ tự cấu hình, tự động chuyển sang target tiếp theo khi target trước gặp lỗi hoặc hết quota.
+- **Load Balance:** Phân phối request ngẫu nhiên có trọng số (weighted random) giữa các targets.
+
+**Quy tắc MIN Context Length:**
+Khi người dùng kết hợp các model trong Combo (ví dụ Gemini Flash 185k và Custom Endpoint 64k), context length trả về cho client được tự động tính theo công thức:
+$$\text{context\_length} = \min_{i}(\text{Target}_i.\text{context\_length})$$
+Quy tắc này đảm bảo khi xảy ra fallback từ Target A sang Target B, prompt không bao giờ bị tràn context window của target nhỏ nhất.
+
+### 12.3. Multi-Dialect Stream Keep-Alive Resilience
+Để ngăn chặn các client bị ngắt kết nối sau 60 giây im lặng (do model suy nghĩ sâu deep thinking hoặc quá trình xoay key qua nhiều member):
+- Nâng `STREAM_STALL_TIMEOUT` từ 60.0s lên **120.0s**.
+- Gửi ngay lập tức comment `: keepalive-init\n\n` khi thiết lập kết nối SSE.
+- Định kỳ phát comment chuẩn W3C SSE `: keepalive\n\n` mỗi 2.5–3.0s nếu chưa có token mới, duy trì socket TCP luôn ấm mà không làm gãy parser JSON của client.

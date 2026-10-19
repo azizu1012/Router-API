@@ -292,13 +292,20 @@ def filter_find(input_str: str) -> str:
 
 def filter_smart_truncate(input_str: str) -> str:
     lines = input_str.split("\n")
-    if len(lines) < SMART_TRUNCATE_MIN_LINES:
-        return input_str
+    if len(lines) >= SMART_TRUNCATE_MIN_LINES:
+        head = lines[:SMART_TRUNCATE_HEAD]
+        tail = lines[-SMART_TRUNCATE_TAIL:]
+        cut = len(lines) - len(head) - len(tail)
+        return "\n".join(head + [f"... +{cut} lines truncated"] + tail)
 
-    head = lines[:SMART_TRUNCATE_HEAD]
-    tail = lines[-SMART_TRUNCATE_TAIL:]
-    cut = len(lines) - len(head) - len(tail)
-    return "\n".join(head + [f"... +{cut} lines truncated"] + tail)
+    # Large character-length threshold (e.g. minified output or huge single lines)
+    if len(input_str) > 8192:
+        head_text = input_str[:4000]
+        tail_text = input_str[-2000:]
+        cut_chars = len(input_str) - len(head_text) - len(tail_text)
+        return f"{head_text}\n\n[... +{cut_chars} characters truncated by RTK to preserve 250K TPM budget ...]\n\n{tail_text}"
+
+    return input_str
 
 
 def filter_read_numbered(input_str: str) -> str:
@@ -499,7 +506,7 @@ def auto_detect_filter(text: str) -> Optional[Tuple[Callable[[str], str], str]]:
     if len(non_empty) >= 5:
         return filter_smart_truncate, "dedup-log"
 
-    if len(text.split("\n")) >= SMART_TRUNCATE_MIN_LINES:
+    if len(text.split("\n")) >= SMART_TRUNCATE_MIN_LINES or len(text) > 8192:
         return filter_smart_truncate, "smart-truncate"
 
     return None
@@ -537,11 +544,11 @@ def compress_text(text: str, stats: Dict[str, Any]) -> str:
     return out
 
 
-def compress_messages(body: Dict[str, Any], enabled: bool = True) -> Optional[Dict[str, Any]]:
+def compress_messages(body: Any, enabled: bool = True) -> Optional[Dict[str, Any]]:
     if not enabled or not body:
         return None
 
-    messages = body.get("messages")
+    messages = body if isinstance(body, list) else (body.get("messages") if isinstance(body, dict) else None)
     if not messages or not isinstance(messages, list):
         return None
 
@@ -566,6 +573,15 @@ def compress_messages(body: Dict[str, Any], enabled: bool = True) -> Optional[Di
                         for part in text_content:
                             if isinstance(part, dict) and part.get("type") == "text" and isinstance(part.get("text"), str):
                                 part["text"] = compress_text(part["text"], stats)
+        elif role == "tool":
+            if isinstance(content, str):
+                msg["content"] = compress_text(content, stats)
+            elif isinstance(content, list):
+                for part in content:
+                    if isinstance(part, dict) and part.get("type") == "text" and isinstance(part.get("text"), str):
+                        part["text"] = compress_text(part["text"], stats)
+        elif role == "user" and isinstance(content, str) and (len(content) >= 8192 or content.startswith("[Tool Result:")):
+            msg["content"] = compress_text(content, stats)
 
     if stats["hits"]:
         saved = stats["bytes_before"] - stats["bytes_after"]

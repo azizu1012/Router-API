@@ -68,6 +68,9 @@ _SCHEMA_COLUMN_REGISTRY = {
         "label": "TEXT DEFAULT ''",
         "created_at": "INTEGER NOT NULL DEFAULT 0",
         "updated_at": "INTEGER NOT NULL DEFAULT 0",
+        "targets": "TEXT DEFAULT ''",
+        "strategy": "TEXT DEFAULT 'waterfall'",
+        "context_length": "INTEGER DEFAULT 0",
     },
     "model_config": {
         "account_id": "TEXT DEFAULT ''",
@@ -240,6 +243,9 @@ def init_config_tables() -> None:
                     label TEXT DEFAULT '',
                     created_at INTEGER NOT NULL,
                     updated_at INTEGER NOT NULL,
+                    targets TEXT DEFAULT '',
+                    strategy TEXT DEFAULT 'waterfall',
+                    context_length INTEGER DEFAULT 0,
                     UNIQUE(account_id, account_key_id, alias_name)
                 );
                 CREATE INDEX IF NOT EXISTS idx_model_aliases_lookup
@@ -262,6 +268,9 @@ def init_config_tables() -> None:
                 c.execute("UPDATE accounts SET tpm = 6000000 WHERE tpm = 200000")
                 c.execute("UPDATE accounts SET rpm = 300 WHERE rpm = 30")
                 c.execute("UPDATE accounts SET rpd = 20000 WHERE rpd = 1000")
+                # Auto-migrate legacy 200k/220k context lengths to safe 185k/14k
+                c.execute("UPDATE model_config SET context_length = 185000 WHERE context_length IN (200000, 220000) AND alias NOT LIKE '%gemma%'")
+                c.execute("UPDATE model_config SET context_length = 14000 WHERE alias LIKE '%gemma%'")
             except Exception as e:
                 logger.warning("[Schema] Failed to upgrade default account limits: %s", e)
             c.commit()

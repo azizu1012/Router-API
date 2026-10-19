@@ -1,6 +1,6 @@
 """Admin API routes for managing model aliases and custom endpoints."""
 
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Union
 
 from fastapi import HTTPException, Request
 from pydantic import BaseModel, Field
@@ -25,6 +25,9 @@ class AdminCreateAliasRequest(BaseModel):
     account_key_id: Optional[str] = Field(None, description="Key-specific alias (null = account-wide)")
     label: str = Field(default="", description="User description")
     enabled: bool = Field(default=True, description="Initial enabled state")
+    targets: Optional[Union[str, List[Any], Dict[str, Any]]] = Field(default="", description="Combo Model Mix targets")
+    strategy: Optional[str] = Field(default="waterfall", description="Combo strategy (waterfall | load_balance)")
+    context_length: Optional[int] = Field(default=0, description="Context length override (0 = auto-compute min)")
 
 
 class AdminUpdateAliasRequest(BaseModel):
@@ -32,6 +35,9 @@ class AdminUpdateAliasRequest(BaseModel):
     label: Optional[str] = Field(None, description="New label")
     target_model: Optional[str] = Field(None, description="New target model")
     target_endpoint: Optional[str] = Field(None, description="New target endpoint")
+    targets: Optional[Union[str, List[Any], Dict[str, Any]]] = Field(None, description="Combo Model Mix targets")
+    strategy: Optional[str] = Field(None, description="Combo strategy")
+    context_length: Optional[int] = Field(None, description="Context length override")
 
 
 # ============================================================
@@ -74,6 +80,9 @@ async def admin_create_alias(
             target_endpoint=req.target_endpoint,
             enabled=req.enabled,
             label=req.label,
+            targets=req.targets or "",
+            strategy=req.strategy or "waterfall",
+            context_length=req.context_length or 0,
         )
         logger.info(
             "[Admin] Created alias %s (%s → %s, target_ep=%s)",
@@ -116,6 +125,9 @@ async def admin_update_alias(alias_id: str, req: AdminUpdateAliasRequest, reques
         label=req.label,
         target_model=req.target_model,
         target_endpoint=req.target_endpoint,
+        targets=req.targets,
+        strategy=req.strategy,
+        context_length=req.context_length,
     )
     if not success:
         raise HTTPException(status_code=500, detail="Failed to update alias")

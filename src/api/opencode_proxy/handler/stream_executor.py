@@ -343,9 +343,10 @@ async def execute_stream(
     fetch_task = asyncio.create_task(_fetch_first())
     t0_wait = asyncio.get_event_loop().time()
     ping_count = 0
+    yield b": keepalive-init\n\n"
     while not fetch_task.done():
         try:
-            await asyncio.wait_for(asyncio.shield(fetch_task), timeout=3.0)
+            await asyncio.wait_for(asyncio.shield(fetch_task), timeout=2.5)
             break
         except asyncio.TimeoutError:
             ping_count += 1
@@ -354,6 +355,7 @@ async def execute_stream(
                     "[OpenCode Stream Keepalive] Waiting for %s (elapsed=%.1fs)",
                     model_alias, asyncio.get_event_loop().time() - t0_wait
                 )
+            yield b": keepalive\n\n"
             yield _openai_sse(model_name, chunk_id=chunk_id)
 
     try:
@@ -392,7 +394,7 @@ async def execute_stream(
         try:
             while True:
                 try:
-                    item = await asyncio.wait_for(asyncio.shield(pending), timeout=4.0)
+                    item = await asyncio.wait_for(asyncio.shield(pending), timeout=3.0)
                 except asyncio.TimeoutError:
                     now = time.monotonic()
                     if now - last_item >= STREAM_STALL_TIMEOUT:
@@ -420,6 +422,7 @@ async def execute_stream(
     try:
         async for item in _iter_with_keepalive():
             if item is None:
+                yield b": keepalive\n\n"
                 yield _openai_sse(model_name, chunk_id=chunk_id)
                 continue
 

@@ -301,7 +301,10 @@ class OpenCodeProxy:
         """
         model_alias = await self._resolve_alias(body, account=account, is_opencode=is_opencode)
         messages, tools = body.get("messages", []), list(body.get("tools", []))
-        
+
+        from src.logical_HQ_translator.compression.rtk import compress_messages
+        compress_messages(messages, enabled=True)
+
         from src.core.runtime.compaction_detect import strip_tools_for_compaction
         strip_tools_for_compaction(body, messages, tools, is_claude_or_opencode=is_opencode)
         
@@ -375,7 +378,10 @@ class OpenCodeProxy:
         """
         model_alias = await self._resolve_alias(body, account=account, is_opencode=is_opencode)
         messages, tools = body.get("messages", []), list(body.get("tools", []))
-        
+
+        from src.logical_HQ_translator.compression.rtk import compress_messages
+        compress_messages(messages, enabled=True)
+
         from src.core.runtime.compaction_detect import strip_tools_for_compaction
         strip_tools_for_compaction(body, messages, tools, is_claude_or_opencode=is_opencode)
         

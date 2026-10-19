@@ -49,7 +49,9 @@ def _models_payload(account: Dict[str, Any] | None = None) -> Dict[str, Any]:
             for alias in aliases if alias.get("target_endpoint")
         }
 
+        from src.logical_HQ_translator.model.alias import get_alias_context_length
         for alias in aliases:
+            safe_ctx = get_alias_context_length(alias)
             alias_entry = {
                 "id": alias["alias_name"],
                 "object": "model",
@@ -61,6 +63,8 @@ def _models_payload(account: Dict[str, Any] | None = None) -> Dict[str, Any]:
                 "display": alias["alias_name"],
                 "lifecycle": "active",
                 "max_tokens": config.MAX_OUTPUT_TOKENS,
+                "context_length": safe_ctx,
+                "max_input_tokens": safe_ctx,
                 "_alias_target": alias["target_model"],
                 "_alias_endpoint": alias.get("target_endpoint"),
             }

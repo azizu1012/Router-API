@@ -63,6 +63,9 @@ async def create_my_alias(
             target_endpoint=req.target_endpoint,
             enabled=req.enabled,
             label=req.label,
+            targets=req.targets or "",
+            strategy=req.strategy or "waterfall",
+            context_length=req.context_length or 0,
         )
         logger.info(
             "[SelfService] Member %s created alias %s → %s (endpoint=%s)",
@@ -122,6 +125,9 @@ async def update_my_alias(
         label=req.label,
         target_model=req.target_model,
         target_endpoint=req.target_endpoint,
+        targets=req.targets,
+        strategy=req.strategy,
+        context_length=req.context_length,
     )
     if not success:
         raise HTTPException(status_code=500, detail="Failed to update alias")

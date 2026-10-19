@@ -77,8 +77,11 @@ async def anthropic_messages(
         system_val = body.get("system", "")
         text_content = str(system_val) + str(messages_val)
         input_tokens_est = len(text_content) // 4
-        from src.core.config.api_config import MODEL_CONTEXT_LENGTH
-        limit_tokens = MODEL_CONTEXT_LENGTH
+        from src.core.config.api_config import AVAILABLE_MODELS, MODEL_CONTEXT_LENGTH
+        from src.core.router import router
+        model_alias = router.resolve_model_alias(body.get("model", ""))
+        model_cfg = AVAILABLE_MODELS.get(model_alias)
+        limit_tokens = model_cfg.get("context_length", MODEL_CONTEXT_LENGTH) if model_cfg else MODEL_CONTEXT_LENGTH
         remaining_tokens = max(1000, limit_tokens - input_tokens_est)
         utilization_val = min(0.99, round(input_tokens_est / limit_tokens, 4))
         

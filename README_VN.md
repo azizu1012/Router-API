@@ -202,7 +202,8 @@ Tất cả đều qua env; `.env.example` là file tham chiếu. Các biến qua
 | `KEY_429_COOLDOWN_SECONDS` | `15` | Thời gian nghỉ sau rate limit |
 | `KEY_INVALID_COOLDOWN_SECONDS` | `3600` | Đóng băng sau khi key invalid |
 | `*_RPM` / `*_TPM` / `*_RPD` | theo model | Hạn mức từng model |
-| `MODEL_CONTEXT_LENGTH` | `220000` | Trần context dùng để tính pool |
+| `MODEL_CONTEXT_LENGTH` | `185000` | Trần context an toàn báo cho client (Flash/Lite bảo vệ 250k TPM) |
+| `GEMMA_CONTEXT_LENGTH` | `14000` | Trần context an toàn cho Gemma 4 (bảo vệ 16k TPM) |
 
 > Thực tế các key dùng chung quota của một project — thêm nhiều key vào cùng project không nhân gấp throughput. Giá trị RPM trong config đã phản ánh điều đó.
 

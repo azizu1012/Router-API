@@ -32,6 +32,9 @@ async def chat_completions(
         )
 
     try:
+        from src.logical_HQ_translator.compression.rtk import compress_messages
+        compress_messages(body, enabled=True)
+
         requested_model = body.get("model", "")
         original_model_name = requested_model  # Save for response spoofing
 
