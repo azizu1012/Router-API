@@ -6,6 +6,7 @@ Proxies (OpenCodeProxy, ClaudeProxy) delegate pool/retry logic to this class.
 """
 
 import asyncio
+import os
 import random
 import time
 from typing import Any, AsyncIterator, Dict, List, Optional, Set, Tuple
@@ -21,7 +22,7 @@ from src.logical_HQ_translator import _resolve_model, _retry_delay
 from src.core.providers.gemini.error import classify as classify_gemini_error
 
 # Key error classification reasons
-TRANSIENT_REASONS = {"rate_limit", "unavailable", "server_error", "timeout", "unknown_error"}
+TRANSIENT_REASONS = {"rate_limit", "unavailable", "server_error", "timeout", "unknown"}
 
 
 def _chunk_has_payload(chunk: Any) -> bool:
