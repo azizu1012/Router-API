@@ -227,6 +227,63 @@ The endpoint's model becomes a real pool member with its own slot and concurrenc
 
 ---
 
+## MCP Server (Model Context Protocol)
+
+Router API embeds a built-in standard Streamable HTTP **MCP Server** at `/mcp`, allowing AI coding agents (Claude Code, OpenCode, Cursor, Windsurf, Trae, Cline, LibreChat, etc.) to invoke real-time web search natively:
+
+- **Tool:** `search_web(query: string)` — Search the web for current facts, news, documentation, and source citations.
+- **100% Free Quota:** Executes in-process via Router's internal DuckDuckGo hybrid search (`execute_hybrid_search`), consuming **zero Gemini API key tokens**.
+- **Authentication:** Standard account bearer token (`sk-...`) or master key.
+- **`mcp_only` Account Option:** An account can be restricted solely to MCP search, completely blocking chat completion routes.
+
+### Client Integration:
+
+#### 1. Claude Code CLI
+```bash
+claude mcp add --transport http router-search http://127.0.0.1:58100/mcp \
+  --header "Authorization: Bearer <TOKEN>"
+```
+
+#### 2. OpenCode (`opencode.json`)
+```json
+{
+  "mcp": {
+    "router-search": {
+      "type": "remote",
+      "url": "http://127.0.0.1:58100/mcp",
+      "enabled": true,
+      "headers": {
+        "Authorization": "Bearer <TOKEN>"
+      }
+    }
+  }
+}
+```
+
+#### 3. Cursor / Windsurf / Cline / Roo / Trae / LibreChat (`mcp.json`)
+```json
+{
+  "mcpServers": {
+    "router-search": {
+      "type": "http",
+      "url": "http://127.0.0.1:58100/mcp",
+      "headers": {
+        "Authorization": "Bearer <TOKEN>"
+      }
+    }
+  }
+}
+```
+
+> **Reverse Proxy / Custom Domain Notice:**  
+> The MCP SDK enforces DNS-rebinding protection by default (`421 Misdirected Request`). When serving behind a domain (e.g. `https://my-domain.com/mcp`), configure this in `.env`:
+> ```env
+> MCP_ALLOWED_HOSTS=my-domain.com,127.0.0.1:*,localhost:*
+> ```
+> For full troubleshooting and details, see **[docs/mcp_server.md](docs/mcp_server.md)**.
+
+---
+
 ## Deploying
 
 See **[DEPLOY_DOMAIN.md](DEPLOY_DOMAIN.md)** for putting this behind a domain with Caddy or Nginx — HTTPS, reverse proxy, systemd unit.

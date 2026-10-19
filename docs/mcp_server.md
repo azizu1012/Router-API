@@ -11,6 +11,11 @@ Tool gọi `execute_hybrid_search` **in-process**, không HTTP về lại chính
 này — nếu gọi vòng qua HTTP thì latency nhân đôi, quota bị trừ hai lần, và cần
 thêm một connection vào worker đơn.
 
+### Vì sao chuyển từ Google Search Grounding sang MCP DuckDuckGo:
+- **Độ trễ và Quota:** Google Grounding API phản hồi rất chậm (mất 5–15 giây cho một truy vấn), ngốn cạn kiệt quota API key của Gemini và gây lỗi 429 dây chuyền trên toàn bộ pool.
+- **Tiết kiệm 100% Token Gemini:** Scraper DuckDuckGo nội bộ chạy local độc lập, phản hồi trong vài trăm mili-giây, không tiêu tốn một token quota nào của các key Gemini.
+- **Agent chủ động:** Cho phép Claude Code, OpenCode, Cursor, Windsurf tự do điều chỉnh nhiều tham số tìm kiếm, gọi lặp hoặc truy vấn sâu theo ý muốn mà không phụ thuộc vào completions proxy.
+
 ---
 
 ## 1. Endpoint & auth

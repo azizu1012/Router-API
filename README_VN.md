@@ -223,6 +223,63 @@ Model của endpoint trở thành member thật của pool, có slot và concurr
 
 ---
 
+## MCP Server (Model Context Protocol)
+
+Router API tích hợp sẵn một **MCP Server** chuẩn Streamable HTTP tại `/mcp`, cho phép các Agent (Claude Code, OpenCode, Cursor, Windsurf, Trae, Cline, LibreChat...) trực tiếp gọi công cụ tìm kiếm web thời gian thực:
+
+- **Công cụ:** `search_web(query: string)` — Tìm kiếm web, tin tức, dữ liệu thực tế và trích dẫn nguồn.
+- **Tiết kiệm 100% Quota:** Chạy trực tiếp qua DuckDuckGo scraper nội bộ (`execute_hybrid_search` in-process), hoàn toàn **không tiêu tốn bất kỳ token nào của key Gemini**.
+- **Xác thực an toàn:** Sử dụng Bearer token của Account (`sk-...`) hoặc Master Key.
+- **Tùy chọn `mcp_only`:** Có thể cấu hình account chuyên dụng chỉ được phép gọi MCP Server và khóa hoàn toàn các cổng chat model.
+
+### Cấu hình nhanh cho các Client:
+
+#### 1. Claude Code CLI
+```bash
+claude mcp add --transport http router-search http://127.0.0.1:58100/mcp \
+  --header "Authorization: Bearer <TOKEN>"
+```
+
+#### 2. OpenCode (`opencode.json`)
+```json
+{
+  "mcp": {
+    "router-search": {
+      "type": "remote",
+      "url": "http://127.0.0.1:58100/mcp",
+      "enabled": true,
+      "headers": {
+        "Authorization": "Bearer <TOKEN>"
+      }
+    }
+  }
+}
+```
+
+#### 3. Cursor / Windsurf / Cline / Roo / Trae / LibreChat (`mcp.json`)
+```json
+{
+  "mcpServers": {
+    "router-search": {
+      "type": "http",
+      "url": "http://127.0.0.1:58100/mcp",
+      "headers": {
+        "Authorization": "Bearer <TOKEN>"
+      }
+    }
+  }
+}
+```
+
+> **Lưu ý triển khai Reverse Proxy / Custom Domain:**  
+> MCP SDK mặc định bật cơ chế bảo vệ DNS-rebinding (`421 Misdirected Request`). Khi đưa server ra ngoài Internet qua domain (ví dụ `https://my-domain.com/mcp`), bạn cần thêm biến sau vào `.env`:
+> ```env
+> MCP_ALLOWED_HOSTS=my-domain.com,127.0.0.1:*,localhost:*
+> ```
+> Xem chi tiết hướng dẫn và chẩn đoán tại **[docs/mcp_server.md](docs/mcp_server.md)**.
+
+---
+
 ## Triển khai
 
 Xem **[DEPLOY_DOMAIN.md](DEPLOY_DOMAIN.md)** để đặt sau domain với Caddy hoặc Nginx — HTTPS, reverse proxy, systemd unit.
