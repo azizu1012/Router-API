@@ -31,8 +31,21 @@ _SCHEMA_COLUMN_REGISTRY = {
         "pool_assignments": "TEXT DEFAULT '{}'",
         "updated_at": "TEXT",
     },
+    "endpoint_transitions": {
+        "transition_id": "TEXT DEFAULT ''",
+        "request_id": "TEXT DEFAULT ''",
+        "endpoint": "TEXT DEFAULT ''",
+        "state": "TEXT DEFAULT ''",
+        "failures": "INTEGER DEFAULT 0",
+        "frozen_until": "REAL DEFAULT 0",
+        "metadata": "TEXT DEFAULT '{}'",
+        "created_at": "REAL DEFAULT 0",
+    },
     "key_status": {
         "enabled": "INTEGER DEFAULT 1",
+        "last_transition_id": "TEXT DEFAULT ''",
+        "last_transition_at": "REAL DEFAULT 0",
+        "last_transition_json": "TEXT DEFAULT '{}'",
         "usage": "INTEGER DEFAULT 0",
         "active_requests": "INTEGER DEFAULT 0",
         "frozen_until": "REAL DEFAULT 0",
@@ -166,8 +179,33 @@ def init_config_tables() -> None:
                     today INTEGER DEFAULT 0,
                     per_model TEXT DEFAULT '{}',
                     data TEXT,
-                    tier TEXT DEFAULT 'free'
+                    tier TEXT DEFAULT 'free',
+                    last_transition_id TEXT DEFAULT '',
+                    last_transition_at REAL DEFAULT 0,
+                    last_transition_json TEXT DEFAULT '{}'
                 );
+                CREATE TABLE IF NOT EXISTS endpoint_transitions (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    request_id TEXT DEFAULT '', endpoint TEXT DEFAULT '',
+                    state TEXT DEFAULT '', failures INTEGER DEFAULT 0,
+                    frozen_until REAL DEFAULT 0, metadata TEXT DEFAULT '{}',
+                    created_at REAL DEFAULT 0, transition_id TEXT UNIQUE DEFAULT ''
+                );
+                CREATE INDEX IF NOT EXISTS idx_endpoint_transitions_lookup
+                    ON endpoint_transitions(endpoint, created_at);
+                CREATE TABLE IF NOT EXISTS key_transitions (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    request_id TEXT DEFAULT '',
+                    transition_id TEXT DEFAULT '',
+                    key_suffix TEXT DEFAULT '',
+                    model_id TEXT DEFAULT '',
+                    reason TEXT DEFAULT '',
+                    metadata TEXT DEFAULT '{}',
+                    created_at REAL DEFAULT 0,
+                    UNIQUE(transition_id)
+                );
+                CREATE INDEX IF NOT EXISTS idx_key_transitions_lookup
+                    ON key_transitions(request_id, key_suffix, created_at);
                 CREATE TABLE IF NOT EXISTS key_penalties (
                     pkey TEXT PRIMARY KEY,
                     api_key TEXT,

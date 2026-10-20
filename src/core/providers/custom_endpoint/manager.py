@@ -7,6 +7,9 @@ from typing import Any, Dict, List, Optional, TYPE_CHECKING
 import aiohttp
 
 from src.core.config_n_logg.logger import logger_api as logger
+from src.backend._db import _LOCK, conn as _conn
+import json
+import uuid
 from ..anthropic_wire import is_anthropic_format
 # from src.server.realtime.websocket import ws_manager # Layering violation
 from src.backend.endpoints.manager import (
@@ -34,7 +37,7 @@ class CustomEndpointManager:
     _cache_ts: float = 0.0
     _ping_cache: Dict[str, tuple[float, bool]] = {}  # name -> (timestamp, alive)
     _ping_ttl: float = 30.0  # Ping cache TTL in seconds
-    _circuit_breaker: Dict[str, tuple[float, int]] = {}  # name -> (frozen_until, consecutive_failures)
+    _circuit_breaker: Dict[str, Dict[str, Any]] = {}  # endpoint -> transition metadata
 
     def __init__(self, path: str = _DEFAULT_PATH) -> None:
         self.path = path
@@ -63,27 +66,52 @@ class CustomEndpointManager:
 
     def is_endpoint_frozen(self, name: str) -> bool:
         entry = self._circuit_breaker.get(name)
-        if entry:
-            frozen_until, _ = entry
-            if time.time() < frozen_until:
-                return True
-        return False
+        return bool(entry and time.time() < entry.get("frozen_until", 0.0))
 
-    def mark_endpoint_success(self, name: str) -> None:
+    def _record_transition(self, name: str, state: str, metadata: Optional[Dict[str, Any]] = None) -> None:
+        transition_id = uuid.uuid4().hex
+        payload = dict(metadata or {})
+        payload.update({"endpoint": name, "state": state, "transition_id": transition_id})
+        try:
+            with _LOCK:
+                c = _conn()
+                c.execute("""INSERT OR IGNORE INTO endpoint_transitions
+                    (request_id, endpoint, state, failures, frozen_until, metadata, created_at, transition_id)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
+                    (payload.get("request_id", ""), name, state,
+                     int(payload.get("failures", 0)), float(payload.get("frozen_until", 0)),
+                     json.dumps(payload, default=str), time.time(), transition_id))
+                c.commit()
+                c.close()
+        except Exception as exc:
+            logger.warning("[EndpointTransition] persistence failed endpoint=%s: %s", name, exc)
+
+    def mark_endpoint_success(self, name: str, metadata: Optional[Dict[str, Any]] = None) -> None:
         self._circuit_breaker.pop(name, None)
+        self._record_transition(name, "healthy", metadata)
+        logger.info("[EndpointTransition] endpoint=%s state=healthy metadata=%s", name, metadata or {})
 
-    def mark_endpoint_failure(self, name: str) -> None:
+    def mark_endpoint_failure(self, name: str, metadata: Optional[Dict[str, Any]] = None) -> None:
         now = time.time()
-        _, failures = self._circuit_breaker.get(name, (0.0, 0))
-        failures += 1
-        # ponytail: trip circuit breaker only after 3 consecutive failures to avoid blocking concurrent sessions on transient glitches
-        if failures >= 3:
-            cooldown = min(15.0 * (failures - 2), 120.0)
-            self._circuit_breaker[name] = (now + cooldown, failures)
-            logger.warning("[CustomEndpoint CB] %s failed (%d consecutive), frozen for %.1fs", name, failures, cooldown)
-        else:
-            self._circuit_breaker[name] = (0.0, failures)
-            logger.info("[CustomEndpoint CB] %s recorded transient failure (%d/3)", name, failures)
+        previous = self._circuit_breaker.get(name, {})
+        failures = int(previous.get("failures", 0)) + 1
+        cooldown = min(15.0 * max(0, failures - 2), 120.0) if failures >= 3 else 0.0
+        event = {
+            "failed_at": now,
+            "failures": failures,
+            "frozen_until": now + cooldown if cooldown else 0.0,
+            **(metadata or {}),
+        }
+        self._circuit_breaker[name] = event
+        self._record_transition(name, "frozen" if cooldown else "degraded", event)
+        logger.warning(
+            "[EndpointTransition] endpoint=%s state=%s failures=%d cooldown=%.1fs metadata=%s",
+            name, "frozen" if cooldown else "degraded", failures, cooldown, metadata or {},
+        )
+
+    def get_endpoint_state(self, name: str) -> Dict[str, Any]:
+        return dict(self._circuit_breaker.get(name, {"failures": 0, "frozen_until": 0.0}))
+
 
     _ping_ttl_alive: float = 30.0
     _ping_ttl_dead: float = 5.0

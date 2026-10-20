@@ -2,6 +2,7 @@ import asyncio
 from contextlib import asynccontextmanager
 import json
 import urllib.parse
+import uuid
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import JSONResponse
 from src.core.config_n_logg import config
@@ -15,8 +16,20 @@ from src.core.observability.usage_logger import init_db, start_flush_loop
 from src.core.limits import account_limiter
 from ...realtime.log_watcher import log_watcher
 from ...realtime.stats import stats_pusher
+from src.core.runtime.request_context import set_request_id
 
 app = FastAPI(title="Router API v2", version="2.0.0")
+
+
+@app.middleware("http")
+async def request_context_middleware(request: Request, call_next):
+    """Attach one bounded request ID to every request and response."""
+    request_id = request.headers.get("x-request-id", "").strip()[:128] or uuid.uuid4().hex
+    request.state.request_id = request_id
+    set_request_id(request_id)
+    response = await call_next(request)
+    response.headers["X-Request-ID"] = request_id
+    return response
 
 
 # Paths that mean "this account asked for the MCP tool and nothing else".

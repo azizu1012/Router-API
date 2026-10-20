@@ -105,8 +105,13 @@ class GeminiAPIHelpersMixin:
 
     def _mark_key_as_failed(self, api_key: str, model_alias: str, duration: int, reason: str, **kwargs):
         model_id = router.get_model_id(model_alias) if model_alias else None
-        router.freeze_key(api_key, duration, model_id, reason)
-        router.record_failure(reason)
+        router.record_attempt_failure(
+            key=api_key,
+            model_id=model_id,
+            reason=reason,
+            duration=duration,
+            metadata={"path": "gemini_helper", "model_alias": model_alias},
+        )
 
     def _is_key_frozen_by_project(self, api_key: str, model_id: str) -> bool:
         proj = self._project_id_of_key.get(api_key)

@@ -20,6 +20,7 @@ from src.core.providers.custom_endpoint.client import check_custom_pool_rate
 from src.core.providers.gemini.facade import acompletion
 from src.logical_HQ_translator import _resolve_model, _retry_delay
 from src.core.providers.gemini.error import classify as classify_gemini_error
+from src.core.runtime.request_context import get_request_id
 
 # Key error classification reasons
 TRANSIENT_REASONS = {"rate_limit", "unavailable", "server_error", "timeout", "unknown"}
@@ -208,6 +209,7 @@ class PoolManager:
         extra_body: Optional[Dict[str, Any]] = None,
         thinking_params: Optional[Dict[str, Any]] = None,
         sampling_params: Optional[Dict[str, Any]] = None,
+        request_id: Optional[str] = None,
     ) -> Dict[str, Any]:
         """
         Handles unified pool calls for non-streaming completions.
@@ -233,6 +235,7 @@ class PoolManager:
         Raises:
             RuntimeError: If the pool is exhausted or all retry attempts fail.
         """
+        request_id = request_id or get_request_id()
         pool = router.resolve_pool(model_alias)
         if pool:
             # --- POOL MODE (concurrent worker pool) ---
@@ -298,7 +301,10 @@ class PoolManager:
                         is_custom = reservation.get("provider") == "custom"
                         if is_custom:
                             logger.warning("[PoolManager] Custom endpoint failed: %s, swapping...", e)
-                            endpoint_manager.mark_endpoint_failure(reservation.get("name", member_used))
+                            endpoint_manager.mark_endpoint_failure(
+                                reservation.get("name", member_used),
+                                {"model_id": model_id_val, "reason": str(e), "attempt": pool_try, "path": "stream"},
+                            )
                             _retire_member(pool, exhausted_members, member)
                             continue
 
@@ -309,7 +315,7 @@ class PoolManager:
                                 router.record_429()
 
                             if api_key_val and model_id_val:
-                                router.freeze_key(api_key_val, config.KEY_429_COOLDOWN_SECONDS, model_id_val, reason)
+                                router.record_attempt_failure(key=api_key_val, model_id=model_id_val, reason=reason, duration=config.KEY_429_COOLDOWN_SECONDS, metadata={"path": "pool_nonstream", "attempt": pool_try, "member": member, "request_id": request_id or ""})
                                 apply_error_penalty(api_key_val, reason, model_id_val)
 
                             consecutive_transient += 1
@@ -327,7 +333,7 @@ class PoolManager:
                             logger.error("[PoolManager] Hard error %s on member %s: %s", reason, member_used, e)
                             if api_key_val and model_id_val:
                                 cooldown = config.KEY_INVALID_COOLDOWN_SECONDS if reason in ("invalid_key", "permission_denied") else config.KEY_429_COOLDOWN_SECONDS
-                                router.freeze_key(api_key_val, cooldown, model_id_val, reason)
+                                router.record_attempt_failure(key=api_key_val, model_id=model_id_val, reason=reason, duration=cooldown, metadata={"path": "pool_nonstream", "attempt": pool_try, "member": member, "request_id": request_id or ""})
                                 apply_error_penalty(api_key_val, reason, model_id_val)
                             # ponytail: if key is invalid, rotate to next available key without retiring member
                             if reason in ("invalid_key", "permission_denied"):
@@ -370,7 +376,10 @@ class PoolManager:
                     is_custom = reservation.get("provider") == "custom"
                     if is_custom:
                         logger.warning("[PoolManager] Standalone custom endpoint error (attempt %d): %s", attempt, e)
-                        endpoint_manager.mark_endpoint_failure(reservation.get("name", model_alias))
+                        endpoint_manager.mark_endpoint_failure(
+                            reservation.get("name", model_alias),
+                            {"model_id": model_id_val, "reason": str(e), "attempt": attempt, "path": "nonstream"},
+                        )
                         raise e
                     reason = _classify_error(e)
                     logger.warning("[PoolManager] Standalone error (attempt %d): %s", attempt, e)
@@ -384,7 +393,7 @@ class PoolManager:
                     if api_key_val and model_id_val:
                         # Đóng băng key tương tự và áp dụng Timing Jitter khi ngủ
                         cooldown = config.KEY_INVALID_COOLDOWN_SECONDS if reason in ("invalid_key", "permission_denied") else config.KEY_429_COOLDOWN_SECONDS
-                        router.freeze_key(api_key_val, cooldown, model_id_val, reason)
+                        router.record_attempt_failure(key=api_key_val, model_id=model_id_val, reason=reason, duration=cooldown, metadata={"path": "standalone_nonstream", "attempt": attempt, "member": model_alias, "request_id": request_id or ""})
                         apply_error_penalty(api_key_val, reason, model_id_val)
                     if attempt < config.MAX_RETRIES - 1:
                         await asyncio.sleep(_retry_delay(attempt))
@@ -403,6 +412,7 @@ class PoolManager:
         extra_body: Optional[Dict[str, Any]] = None,
         thinking_params: Optional[Dict[str, Any]] = None,
         sampling_params: Optional[Dict[str, Any]] = None,
+        request_id: Optional[str] = None,
     ) -> AsyncIterator[Dict[str, Any]]:
         """
         Handles unified pool calls for streaming completions.
@@ -430,6 +440,7 @@ class PoolManager:
             Exception: If the stream is interrupted after committing (sending headers/chunks to client),
                        retry with a different key/model is not possible.
         """
+        request_id = request_id or get_request_id()
         pool = router.resolve_pool(model_alias)
         if pool:
             # --- POOL STREAM MODE (concurrent worker pool) ---
@@ -487,7 +498,7 @@ class PoolManager:
                             has_quota = await router.acquire_quota(estimated_tokens, model_alias)
                             if not has_quota:
                                 apply_error_penalty(api_key_val, "rate_limit_rpm_tpm", model_id_val)
-                                router.freeze_key(api_key_val, config.KEY_429_COOLDOWN_SECONDS, model_id_val, "rate_limit")
+                                router.record_attempt_failure(key=api_key_val, model_id=model_id_val, reason="rate_limit", duration=config.KEY_429_COOLDOWN_SECONDS, metadata={"path": "pool_stream", "attempt": pool_try, "member": member, "request_id": request_id or ""})
                                 raise RuntimeError("quota_exhausted")
 
                         gen = None
@@ -571,7 +582,7 @@ class PoolManager:
                             if gen is not None:
                                 await _close_async_stream(gen)
                             if api_key_val:
-                                router.release_key(api_key_val)
+                                router.release_key(api_key_val, reservation.get("reservation_id"), {"path": "stream", "attempt": pool_try})
 
                     except Exception as e:
                         if committed:
@@ -582,7 +593,10 @@ class PoolManager:
                         is_custom = reservation.get("provider") == "custom"
                         if is_custom:
                             logger.warning("[PoolManager] Custom endpoint stream failed: %s, swapping...", e)
-                            endpoint_manager.mark_endpoint_failure(reservation.get("name", member_used))
+                            endpoint_manager.mark_endpoint_failure(
+                                reservation.get("name", member_used),
+                                {"model_id": model_id_val, "reason": str(e), "attempt": pool_try, "path": "stream"},
+                            )
                             _retire_member(pool, exhausted_members, member)
                             continue
 
@@ -593,7 +607,7 @@ class PoolManager:
                                 router.record_429()
 
                             if api_key_val and model_id_val:
-                                router.freeze_key(api_key_val, config.KEY_429_COOLDOWN_SECONDS, model_id_val, reason)
+                                router.record_attempt_failure(key=api_key_val, model_id=model_id_val, reason=reason, duration=config.KEY_429_COOLDOWN_SECONDS, metadata={"path": "pool_stream", "attempt": pool_try, "member": member, "request_id": request_id or ""})
                                 apply_error_penalty(api_key_val, reason, model_id_val)
 
                             if not reservation:
@@ -616,7 +630,7 @@ class PoolManager:
                             logger.error("[PoolManager] Hard stream error %s: %s", reason, e)
                             if api_key_val and model_id_val:
                                 cooldown = config.KEY_INVALID_COOLDOWN_SECONDS if reason in ("invalid_key", "permission_denied") else config.KEY_429_COOLDOWN_SECONDS
-                                router.freeze_key(api_key_val, cooldown, model_id_val, reason)
+                                router.record_attempt_failure(key=api_key_val, model_id=model_id_val, reason=reason, duration=cooldown, metadata={"path": "pool_stream", "attempt": pool_try, "member": member, "request_id": request_id or ""})
                                 apply_error_penalty(api_key_val, reason, model_id_val)
                             # ponytail: if key is invalid, rotate to next available key without retiring member
                             if reason in ("invalid_key", "permission_denied"):
@@ -717,7 +731,7 @@ class PoolManager:
                         if gen is not None:
                             await _close_async_stream(gen)
                         if api_key_val:
-                            router.release_key(api_key_val)
+                            router.release_key(api_key_val, reservation.get("reservation_id"), {"path": "stream", "attempt": attempt})
                 except Exception as e:
                     if committed:
                         logger.error("[PoolManager] Standalone stream interrupted after committing: %s", e)
@@ -751,7 +765,7 @@ class PoolManager:
                             router.record_429()
                     if api_key_val and model_id_val:
                         cooldown = config.KEY_INVALID_COOLDOWN_SECONDS if reason in ("invalid_key", "permission_denied") else config.KEY_429_COOLDOWN_SECONDS
-                        router.freeze_key(api_key_val, cooldown, model_id_val, reason)
+                        router.record_attempt_failure(key=api_key_val, model_id=model_id_val, reason=reason, duration=cooldown, metadata={"path": "standalone_nonstream", "attempt": attempt, "member": model_alias, "request_id": request_id or ""})
                         apply_error_penalty(api_key_val, reason, model_id_val)
                     if attempt < config.MAX_RETRIES - 1:
                         await asyncio.sleep(_retry_delay(attempt))
@@ -837,7 +851,7 @@ class PoolManager:
                     has_quota = await router.acquire_quota(estimated_tokens, model_alias)
                     if not has_quota:
                         apply_error_penalty(api_key_val, "rate_limit_rpm_tpm", model_id_val)
-                        router.freeze_key(api_key_val, config.KEY_429_COOLDOWN_SECONDS, model_id_val, "rate_limit")
+                        router.record_attempt_failure(key=api_key_val, model_id=model_id_val, reason="rate_limit", duration=config.KEY_429_COOLDOWN_SECONDS, metadata={"path": "standalone_stream", "attempt": attempt, "member": model_alias, "request_id": request_id or ""})
                         raise RuntimeError("quota_exhausted")
 
                 # Build arguments for single acompletion call
@@ -873,7 +887,7 @@ class PoolManager:
         finally:
             # Key resolution release handles concurrency
             if api_key_val:
-                router.release_key(api_key_val)
+                router.release_key(api_key_val, reservation.get("reservation_id"), {"path": "resolve", "attempt": attempt})
 
 
 pool_manager = PoolManager()

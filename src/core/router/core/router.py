@@ -1,5 +1,6 @@
 import random
 import threading
+import uuid
 import time
 from typing import Any, Dict, List, Optional, Set
 
@@ -18,6 +19,7 @@ from src.core.limits.gemini.limiter import (
 )
 from src.backend.keys.status import (
     get_key_status_db,
+    record_key_transition,
     atomic_release_key,
     atomic_freeze_key,
     atomic_record_success,
@@ -128,6 +130,7 @@ class APIRouter(KeyResolverMixin, ModelResolutionMixin):
         self.global_cooldown_until: float = 0.0
         self._consecutive_429_count: int = 0
         self._circuit_open_until = 0.0
+        self._reservations: Dict[str, Dict[str, Any]] = {}
 
         # Model health scoring — shared across all pool instances
         # Each pool member alias has: score (0-100), last_updated timestamp
@@ -223,22 +226,23 @@ class APIRouter(KeyResolverMixin, ModelResolutionMixin):
             logger.info("APIRouter keys refreshed in-memory. Total keys: %d (API: %d)", len(self._key_status), len(config.GEMINI_API_KEYS))
 
     def is_global_cooldown_active(self) -> bool:
-        if is_sub_agent_context.get():
-            return False
-        return time.time() < self.global_cooldown_until
+        """Compatibility hook; key availability is never global.
 
-    def record_429(self) -> bool:
-        if is_sub_agent_context.get():
-            return False
+        Gemini failures are scoped to the concrete model alias/API key pair.
+        Account credentials, custom endpoints, and unrelated aliases must not
+        be blocked by another key's 429s.
+        """
+        return False
+
+    def record_429(self, model_alias: Optional[str] = None, key: Optional[str] = None) -> bool:
+        """Record a 429 without opening a process-wide circuit.
+
+        The return value is retained for callers, but global cooldown is no
+        longer a routing decision. ``freeze_key`` owns the model/key state.
+        """
         with self._key_lock:
-            if self.is_global_cooldown_active():
-                return False
             self._consecutive_429_count += 1
-            if self._consecutive_429_count >= config.GEMINI_GLOBAL_COOLDOWN_SEC * 30:
-                self.global_cooldown_until = time.time() + random.uniform(1, config.GEMINI_GLOBAL_COOLDOWN_SEC)
-                self._consecutive_429_count = 0
-                return True
-            return False
+        return False
 
     def reset_429_counter(self) -> None:
         """
@@ -370,6 +374,60 @@ class APIRouter(KeyResolverMixin, ModelResolutionMixin):
         except Exception as exc:
             logger.error("record_failure error: %s", exc)
 
+    def record_attempt_failure(
+        self,
+        *,
+        key: Optional[str],
+        model_id: Optional[str],
+        reason: str,
+        duration: int,
+        metadata: Optional[Dict[str, Any]] = None,
+    ) -> None:
+        """Apply one key/model failure transition and retain trace metadata.
+
+        APIRouter owns the provider-key state machine. Callers provide only
+        attempt context; they must not independently mutate key counters,
+        cooldowns, or global circuits.
+        """
+        transition_id = uuid.uuid4().hex
+        metadata = dict(metadata or {})
+        metadata.setdefault("request_id", uuid.uuid4().hex)
+        event = {
+            "ts": time.time(),
+            "transition_id": transition_id,
+            "request_id": (metadata or {}).get("request_id", ""),
+            "key": (key or "")[-8:] if key else None,
+            "model_id": model_id,
+            "reason": reason,
+            "duration": duration,
+            **(metadata or {}),
+        }
+        try:
+            with self._key_lock:
+                transitions = getattr(self, "_key_transitions", None)
+                if transitions is None:
+                    from collections import deque
+                    transitions = self._key_transitions = deque(maxlen=512)
+                transitions.append(event)
+            if key:
+                self.freeze_key(key, duration, model_id, reason)
+                record_key_transition(
+                    transition_id=transition_id,
+                    request_id=event["request_id"],
+                    key=key,
+                    model_id=model_id,
+                    reason=reason,
+                    metadata=event,
+                    created_at=event["ts"],
+                )
+            self.record_failure(reason)
+            logger.warning(
+                "[KeyTransition] key=...%s model=%s reason=%s metadata=%s",
+                event["key"] or "", model_id or "*", reason, metadata or {},
+            )
+        except Exception as exc:
+            logger.error("record_attempt_failure error: %s", exc)
+
     async def acquire_quota(self, reserved_tokens: int, model_alias: str, **kwargs) -> bool:
         """
         Acquires quota for a given request, checking against model-specific rate limits.
@@ -437,8 +495,9 @@ class APIRouter(KeyResolverMixin, ModelResolutionMixin):
                     ks["frozen_until"] = until_ts
             atomic_freeze_key(key, until_ts, model_id, cf)
 
-            # Update model health on failure
-            if model_id:
+            # Update model health on failure only for model/provider-level failures, not key-local errors
+            KEY_LOCAL_REASONS = {"invalid_key", "permission_denied", "unregistered_key"}
+            if model_id and reason not in KEY_LOCAL_REASONS:
                 for _alias, _cfg in AVAILABLE_MODELS.items():
                     if str(_cfg.get("model_id", "")) == model_id:
                         self.update_model_health(_alias, success=False, reason=reason)
@@ -447,34 +506,63 @@ class APIRouter(KeyResolverMixin, ModelResolutionMixin):
             logger.error("freeze_key error: %s", exc)
 
 
-    def release_key(self, key: str) -> None:
-        """
-        Releases a previously acquired API key.
-        This decrements the `active_requests` count for the key in both in-memory state and the database,
-        making it available for other requests.
+    def _cleanup_reservations_locked(self, now: float) -> None:
+        """Prune old released or timed-out reservations to bound memory usage."""
+        if len(self._reservations) > 1000:
+            cutoff = now - 300.0
+            stale = [
+                rid for rid, r in self._reservations.items()
+                if r.get("released") or r.get("reserved_at", 0) < cutoff
+            ]
+            for rid in stale[:500]:
+                self._reservations.pop(rid, None)
 
-        Args:
-            key: The API key to release.
-        """
+    def release_key(self, key: str, reservation_id: Optional[str] = None,
+                    metadata: Optional[Dict[str, Any]] = None) -> bool:
+        """Release a reservation exactly once and emit lifecycle metadata."""
         try:
             with self._key_lock:
-                if key in self._key_status:
-                    self._key_status[key]["active_requests"] = max(0, self._key_status[key].get("active_requests", 1) - 1)
+                now = time.time()
+                self._cleanup_reservations_locked(now)
+                if reservation_id:
+                    reservation = self._reservations.get(reservation_id)
+                    if reservation is None or reservation.get("released"):
+                        logger.warning("[KeyTransition] duplicate/unknown release reservation=%s key=...%s metadata=%s",
+                                       reservation_id, (key or "")[-8:], metadata or {})
+                        return False
+                    reservation["released"] = True
+                if key not in self._key_status:
+                    return False
+                active = self._key_status[key].get("active_requests", 0)
+                if active <= 0:
+                    logger.warning("[KeyTransition] release without active reservation key=...%s metadata=%s",
+                                   (key or "")[-8:], metadata or {})
+                    return False
+                self._key_status[key]["active_requests"] = active - 1
             atomic_release_key(key)
+            return True
         except Exception as exc:
             logger.error("release_key error: %s", exc)
+            return False
 
-    def freeze_all_keys(self, duration: int) -> None:
-        """
-        Freezes all active API keys globally for a specified duration.
-        This is typically used as a circuit breaker mechanism in extreme overload scenarios
-        to temporarily halt all outgoing API traffic and allow the system to recover.
-        Jitter is applied to the freeze duration to prevent a "thundering herd" of keys
-        all unfreezing at the exact same moment.
+    def register_reservation(self, reservation: Dict[str, Any], metadata: Optional[Dict[str, Any]] = None) -> None:
+        reservation_id = reservation.get("reservation_id")
+        key = reservation.get("key")
+        if not reservation_id or not key:
+            return
+        with self._key_lock:
+            now = time.time()
+            self._cleanup_reservations_locked(now)
+            self._reservations[reservation_id] = {
+                "key": key, "reserved_at": reservation.get("reserved_at", now),
+                "released": False, **(metadata or {}),
+            }
 
-        Args:
-            duration: The base duration in seconds for which to freeze all keys.
-        """
+    def freeze_all_keys(self, duration: int, *, actor: str = "", reason: str = "", request_id: str = "") -> None:
+        """Emergency-only administrative freeze; never use for normal routing."""
+        if not actor or not reason:
+            logger.error("freeze_all_keys refused: actor and reason are required")
+            return
         try:
             now = time.time()
             with self._key_lock:
@@ -483,6 +571,10 @@ class APIRouter(KeyResolverMixin, ModelResolutionMixin):
                     effective = now + int(duration + jitter)
                     self._key_status[key]["frozen_until"] = effective
                     atomic_freeze_key(key, effective)
+            logger.warning(
+                "[EmergencyFreeze] all keys frozen duration=%ds actor=%s reason=%s request_id=%s",
+                duration, actor, reason, request_id,
+            )
         except Exception as exc:
             logger.error("freeze_all_keys error: %s", exc)
 

@@ -2,6 +2,7 @@
 
 import time
 import random
+import uuid
 from datetime import datetime, timedelta
 from typing import Any, Dict, Optional
 
@@ -333,10 +334,8 @@ class KeyResolverMixin:
         Dự trữ và phân bổ API Key tối ưu dựa trên Model Pool, độ ưu tiên (Priority),
         hạn mức RPM/TPM, trạng thái Circuit Breaker, và thuật toán Double Random.
         """
-        # --- BƯỚC 1: KIỂM TRA COOLDOWN TOÀN CỤC ---
-        if self.is_global_cooldown_active():
-            logger.warning("[Circuit] Global IP cooldown active. Blocking key reservation.")
-            return None
+        # Key cooldown is scoped below to the concrete model/key pair.
+        # Do not block unrelated aliases or account credentials globally.
 
         # Bảo vệ chống các model đã bị Google khai tử (Sunsetted: 2.5, 3.5, 3.7)
         if is_model_sunset(model_alias):
@@ -411,12 +410,16 @@ class KeyResolverMixin:
                         continue
 
                     record_key_model_usage(selected_key, selected_mid, estimated_tokens)
-                    return {
+                    reservation = {
                         "key": selected_key,
                         "model_alias": member,
                         "model_id": selected_mid,
                         "provider": "gemini",
+                        "reservation_id": uuid.uuid4().hex,
+                        "reserved_at": time.time(),
                     }
+                    self.register_reservation(reservation)
+                    return reservation
 
             if pool_cfg:
                 logger.warning("All keys frozen or rate limited for pool %s members=%s", model_alias, pool_cfg["members"])

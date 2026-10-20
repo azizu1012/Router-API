@@ -462,6 +462,130 @@ def atomic_disable_key(key: str) -> None:
     _db_executor.submit(_write)
 
 
+def record_key_transition(
+    *,
+    transition_id: str,
+    request_id: str = "",
+    key: str = "",
+    model_id: Optional[str] = None,
+    reason: str = "",
+    metadata: Optional[Dict[str, Any]] = None,
+    created_at: Optional[float] = None,
+) -> None:
+    """Persist an auditable provider-key state transition.
+
+    The key itself is never stored in the event table; only its suffix is kept
+    for correlation without leaking credentials.
+    """
+    payload = json.dumps(metadata or {}, ensure_ascii=False, default=str)
+    ts = created_at or time.time()
+
+    def _write():
+        with _LOCK:
+            c = _conn()
+            try:
+                c.execute(
+                    """INSERT OR IGNORE INTO key_transitions
+                       (request_id, transition_id, key_suffix, model_id, reason, metadata, created_at)
+                       VALUES (?,?,?,?,?,?,?)""",
+                    (request_id, transition_id, (key or "")[-8:], model_id or "", reason, payload, ts),
+                )
+                c.execute(
+                    """UPDATE key_status
+                       SET last_transition_id=?, last_transition_at=?, last_transition_json=?
+                       WHERE key=?""",
+                    (transition_id, ts, payload, key),
+                )
+                c.commit()
+            finally:
+                c.close()
+    _db_executor.submit(_write)
+
+
+def query_key_transitions_db(
+    *,
+    request_id: Optional[str] = None,
+    key_suffix: Optional[str] = None,
+    model_id: Optional[str] = None,
+    reason: Optional[str] = None,
+    limit: int = 50,
+) -> List[Dict[str, Any]]:
+    """Query recent key transitions with optional filtering."""
+    with _LOCK:
+        c = _conn()
+        try:
+            clauses = []
+            params: list = []
+            if request_id:
+                clauses.append("request_id = ?")
+                params.append(request_id)
+            if key_suffix:
+                clauses.append("key_suffix = ?")
+                params.append(key_suffix)
+            if model_id:
+                clauses.append("model_id = ?")
+                params.append(model_id)
+            if reason:
+                clauses.append("reason = ?")
+                params.append(reason)
+            where = f"WHERE {' AND '.join(clauses)}" if clauses else ""
+            query = f"SELECT * FROM key_transitions {where} ORDER BY id DESC LIMIT ?"
+            params.append(min(max(1, limit), 500))
+            rows = c.execute(query, params).fetchall()
+            results = []
+            for r in rows:
+                row_dict = dict(r)
+                if row_dict.get("metadata"):
+                    try:
+                        row_dict["metadata"] = json.loads(row_dict["metadata"])
+                    except Exception:
+                        pass
+                results.append(row_dict)
+            return results
+        finally:
+            c.close()
+
+
+def query_endpoint_transitions_db(
+    *,
+    request_id: Optional[str] = None,
+    endpoint: Optional[str] = None,
+    state: Optional[str] = None,
+    limit: int = 50,
+) -> List[Dict[str, Any]]:
+    """Query recent endpoint transitions with optional filtering."""
+    with _LOCK:
+        c = _conn()
+        try:
+            clauses = []
+            params: list = []
+            if request_id:
+                clauses.append("request_id = ?")
+                params.append(request_id)
+            if endpoint:
+                clauses.append("endpoint = ?")
+                params.append(endpoint)
+            if state:
+                clauses.append("state = ?")
+                params.append(state)
+            where = f"WHERE {' AND '.join(clauses)}" if clauses else ""
+            query = f"SELECT * FROM endpoint_transitions {where} ORDER BY id DESC LIMIT ?"
+            params.append(min(max(1, limit), 500))
+            rows = c.execute(query, params).fetchall()
+            results = []
+            for r in rows:
+                row_dict = dict(r)
+                if row_dict.get("metadata"):
+                    try:
+                        row_dict["metadata"] = json.loads(row_dict["metadata"])
+                    except Exception:
+                        pass
+                results.append(row_dict)
+            return results
+        finally:
+            c.close()
+
+
 def reset_active_requests_db() -> None:
     """
     Resets the `active_requests` count to 0 for all API keys in the database.

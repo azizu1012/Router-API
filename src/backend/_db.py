@@ -29,7 +29,10 @@ CREATE TABLE IF NOT EXISTS key_status (
     today INTEGER DEFAULT 0,
     per_model TEXT DEFAULT '{}',
     data TEXT,
-    tier TEXT DEFAULT 'free'
+    tier TEXT DEFAULT 'free',
+    last_transition_id TEXT DEFAULT '',
+    last_transition_at REAL DEFAULT 0,
+    last_transition_json TEXT DEFAULT '{}'
 );
 CREATE TABLE IF NOT EXISTS custom_endpoints (
     name TEXT PRIMARY KEY,
