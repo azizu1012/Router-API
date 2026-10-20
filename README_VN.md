@@ -1,13 +1,36 @@
 # Router API
 
-**Anthropic · OpenAI · Gemini → một cổng duy nhất.** Xoay vòng key, giới hạn tốc độ, circuit breaker và dashboard trực tiếp. Cắm vào Claude Code, OpenCode, hay bất kỳ thứ nào nói được Anthropic Messages API.
+<div align="center">
+
+**Anthropic · OpenAI · Gemini → một gateway bền bỉ.**
+
+Xoay vòng key, rate limiting, circuit breaker, custom endpoint, MCP search và dashboard trực tiếp — dành cho các coding-agent session chạy dài.
+
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
+[![Python 3.10+](https://img.shields.io/badge/python-3.10%2B-3776AB.svg?logo=python&logoColor=white)](https://www.python.org/downloads/)
+[![Giao thức](https://img.shields.io/badge/giao%20thức-Anthropic%20%7C%20OpenAI%20%7C%20Gemini-0f766e.svg)](#cấu-hình-client)
+[![Dashboard](https://img.shields.io/badge/dashboard-live-7c3aed.svg)](#dashboard)
+
+<img src="docs/assets/router-api-architecture.svg" alt="Kiến trúc Router API" width="920" />
 
 **[English](README.md)** · [Tiếng Việt](README_VN.md)
 
-[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
-[![Python 3.10+](https://img.shields.io/badge/python-3.10+-blue.svg)](https://www.python.org/downloads/)
+</div>
 
 ---
+
+## Tóm tắt nhanh
+
+| Khả năng | Bạn nhận được gì |
+|---|---|
+| **Ba giao thức** | Claude Code, OpenCode, Cline, Gemini và MCP cùng dùng một gateway |
+| **Định tuyến bền bỉ** | Retry, cooldown thích ứng, xoay key, swap model và circuit breaker |
+| **Cô lập account** | RPM, TPM, RPD, concurrency và auth token riêng cho từng account |
+| **Nhiều provider** | Gemini pool và custom endpoint OpenAI-compatible là member hạng nhất |
+| **Quan sát vận hành** | Dashboard trực tiếp, trace request, usage, health probe và log |
+| **Search không tốn quota** | DuckDuckGo nội bộ, không tiêu token quota model Gemini |
+
+> **Phù hợp nhất:** gateway local hoặc single-worker cho developer muốn agent tiếp tục chạy khi key, model hoặc endpoint tạm thời gặp lỗi.
 
 ## Vấn đề
 
@@ -30,7 +53,7 @@ git clone https://github.com/azizu1012/Router-API.git
 cd Router-API
 
 python -m venv .venv
-source .venv/bin/activate        # Windows: .venv\Scripts\activate
+source .venv/bin/activate        # Windows PowerShell: .venv\Scripts\Activate.ps1
 
 pip install -r requirements.txt
 cp .env.example .env             # rồi điền GEMINI_API_KEY_1..N
@@ -38,6 +61,8 @@ python main.py
 ```
 
 Dashboard: **http://127.0.0.1:58100/stats**
+
+API reference: **http://127.0.0.1:58100/api/help**.
 
 `main.py` tự kill process cũ đang chiếm port trước khi start, nên chạy lại nhiều lần cũng an toàn.
 
@@ -53,6 +78,15 @@ Account là lớp auth đặt trước key pool — mỗi account có hạn mứ
 ---
 
 ## Cấu hình client
+
+### Endpoint khuyến nghị
+
+| Loại client | Base URL | Credential |
+|---|---|---|
+| Claude Code / Anthropic | `http://127.0.0.1:58100` | `ANTHROPIC_AUTH_TOKEN` |
+| OpenCode / OpenAI-compatible | `http://127.0.0.1:58100/opencode/v1` | `OPENAI_API_KEY` |
+| Gemini native | `http://127.0.0.1:58100` | bearer token của account |
+| MCP client | `http://127.0.0.1:58100/mcp` | `Authorization: Bearer ...` |
 
 ### Claude Code (Anthropic Messages API)
 
@@ -186,6 +220,19 @@ tại cho client không tự điều phối được.
 | `WS` | `/dashboard/ws` | Live dashboard stream |
 | `GET` | `/health`, `/preflight` | Ops |
 | `GET` | `/api/help` | API reference — endpoint + curl thật, cũng là 1 tab trên dashboard |
+
+---
+
+## Dashboard
+
+Mở **http://127.0.0.1:58100/stats** sau khi start để xem:
+
+- request trực tiếp và usage theo model;
+- health của key, cooldown, lỗi tạm thời và capacity pool;
+- budget account, custom endpoint, alias và model assignment;
+- ví dụ API được sinh từ các route đang bật.
+
+Dashboard là tuỳ chọn; gateway và toàn bộ giao thức client vẫn chạy bình thường nếu không mở nó.
 
 ---
 

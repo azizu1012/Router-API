@@ -1,13 +1,36 @@
 # Router API
 
-**Anthropic · OpenAI · Gemini → one gateway.** Key rotation, rate limiting, circuit breaking and a live dashboard. Drop-in for Claude Code, OpenCode, or anything speaking the Anthropic Messages API.
+<div align="center">
+
+**Anthropic · OpenAI · Gemini → one resilient gateway.**
+
+Key rotation, rate limiting, circuit breaking, custom endpoints, MCP search, and a live dashboard — built for long-running coding-agent sessions.
+
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
+[![Python 3.10+](https://img.shields.io/badge/python-3.10%2B-3776AB.svg?logo=python&logoColor=white)](https://www.python.org/downloads/)
+[![Protocols](https://img.shields.io/badge/protocols-Anthropic%20%7C%20OpenAI%20%7C%20Gemini-0f766e.svg)](#client-setup)
+[![Dashboard](https://img.shields.io/badge/dashboard-live-7c3aed.svg)](#dashboard)
+
+<img src="docs/assets/router-api-architecture.svg" alt="Router API architecture" width="920" />
 
 [English](README.md) · **[Tiếng Việt](README_VN.md)**
 
-[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
-[![Python 3.10+](https://img.shields.io/badge/python-3.10+-blue.svg)](https://www.python.org/downloads/)
+</div>
 
 ---
+
+## At a glance
+
+| Capability | What it gives you |
+|---|---|
+| **Three protocols** | Claude Code, OpenCode, Cline, Gemini clients, and MCP tools behind one base URL |
+| **Resilient routing** | Retries, adaptive cooldowns, key rotation, model swapping, and circuit breakers |
+| **Account isolation** | Per-account RPM, TPM, RPD, concurrency, and scoped auth tokens |
+| **Provider flexibility** | Gemini pools plus OpenAI-compatible custom endpoints as first-class members |
+| **Operational visibility** | Live dashboard, request tracing, usage statistics, health probes, and logs |
+| **Zero-quota search** | Router-owned DuckDuckGo search without spending Gemini model quota |
+
+> **Best fit:** a local or single-worker gateway for developers who want a coding agent to keep working when a provider key, model, or endpoint temporarily fails.
 
 ## Why
 
@@ -30,7 +53,7 @@ git clone https://github.com/azizu1012/Router-API.git
 cd Router-API
 
 python -m venv .venv
-source .venv/bin/activate        # Windows: .venvScriptsactivate
+source .venv/bin/activate        # Windows PowerShell: .venv\\Scripts\\Activate.ps1
 
 pip install -r requirements.txt
 cp .env.example .env             # then fill in GEMINI_API_KEY_1..N
@@ -38,6 +61,8 @@ python main.py
 ```
 
 Dashboard: **http://127.0.0.1:58100/stats**
+
+The API also exposes a built-in reference at **http://127.0.0.1:58100/api/help**.
 
 `main.py` kills any stale process on the port before starting, so re-running is safe.
 
@@ -53,6 +78,15 @@ Accounts are the auth layer in front of the key pool — each gets its own RPM/T
 ---
 
 ## Client setup
+
+### Recommended endpoints
+
+| Client type | Base URL | Credential |
+|---|---|---|
+| Claude Code / Anthropic | `http://127.0.0.1:58100` | `ANTHROPIC_AUTH_TOKEN` |
+| OpenCode / OpenAI-compatible | `http://127.0.0.1:58100/opencode/v1` | `OPENAI_API_KEY` |
+| Gemini native | `http://127.0.0.1:58100` | account bearer token |
+| MCP clients | `http://127.0.0.1:58100/mcp` | `Authorization: Bearer ...` |
 
 ### Claude Code (Anthropic Messages API)
 
@@ -190,6 +224,19 @@ grounded evidence without consuming Gemini model quota.
 | `WS` | `/dashboard/ws` | Live dashboard stream |
 | `GET` | `/health`, `/preflight` | Ops |
 | `GET` | `/api/help` | API reference — endpoint + curl thật, cũng là 1 tab trên dashboard |
+
+---
+
+## Dashboard
+
+Open **http://127.0.0.1:58100/stats** after startup to inspect:
+
+- live request activity and model usage;
+- key health, cooldowns, transient failures, and pool capacity;
+- account budgets, custom endpoints, aliases, and model assignments;
+- API examples generated from the routes currently enabled.
+
+The dashboard is optional. The gateway and all client protocols work without opening it.
 
 ---
 
