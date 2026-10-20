@@ -457,7 +457,10 @@ export default function ModelAliasesTab() {
       target_endpoint: endpointName,
       label: `Spoof for ${endpointName} / ${modelId}`,
       key_id: null,
-      enabled: true
+      enabled: true,
+      alias_type: 'single',
+      strategy: 'waterfall',
+      targets: [{ model: modelId, endpoint: endpointName, priority: 1, weight: 1 }]
     });
     setEditingAlias(null);
     setActiveSubTab('aliases');
@@ -472,7 +475,10 @@ export default function ModelAliasesTab() {
       target_endpoint: template.target_endpoint,
       label: template.label,
       key_id: null,
-      enabled: true
+      enabled: true,
+      alias_type: 'single',
+      strategy: 'waterfall',
+      targets: [{ model: template.target_model, endpoint: template.target_endpoint || '', priority: 1, weight: 1 }]
     });
     setShowTemplates(false);
     setShowAddForm(true);
