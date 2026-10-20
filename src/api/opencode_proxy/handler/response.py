@@ -42,10 +42,11 @@ def estimate_cost(input_tokens: int, output_tokens: int, model_alias: str) -> fl
     return round(input_tokens * input_rate / 1000 + output_tokens * output_rate / 1000, 6)
 
 
-def build_response(
+async def build_response(
     body: Dict[str, Any], resp: Any, model_alias: str, api_key: str, input_tokens: int,
+    auth_key_prefix: str = "",
 ) -> Dict[str, Any]:
-    """Construct the final chat completion response dict."""
+    """Construct the final chat completion response dict and record usage."""
     if isinstance(resp, dict):
         return resp
 
@@ -94,13 +95,11 @@ def build_response(
             out_tokens = getattr(usage, "completion_tokens", 0) or 0
             input_tokens = getattr(usage, "prompt_tokens", 0) or input_tokens
 
-    cost = estimate_cost(input_tokens, out_tokens, model_alias)
     kp = api_key[-8:] if api_key else ""
     cache_usage = _get_simulated_cache_usage(body, input_tokens)
     cc = cache_usage.get("cache_creation_input_tokens", 0) or 0
     cr = cache_usage.get("cache_read_input_tokens", 0) or 0
-    import asyncio
-    asyncio.ensure_future(log_usage(model_alias, kp, input_tokens, out_tokens, "", cc, cr))
+    await log_usage(model_alias, kp, input_tokens, out_tokens, auth_key_prefix, cc, cr)
 
     requested_model = body.get("model") or model_alias
     model_name = get_client_model_name(requested_model)

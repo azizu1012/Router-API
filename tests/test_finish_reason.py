@@ -229,15 +229,12 @@ class TestReachesTheWire:
 
         from src.api.opencode_proxy.handler import response as response_mod
 
-        # build_response ends with asyncio.ensure_future(log_usage(...)), which
-        # needs a current loop in this thread. Not the subject of this test, and
-        # whether one exists depends on what ran before it in the suite.
-        async def _no_log(*_a, **_kw):
-            return None
+        logged = {}
+
+        async def _no_log(*args, **_kw):
+            logged["args"] = args
 
         monkeypatch.setattr(response_mod, "log_usage", _no_log)
-        loop = asyncio.new_event_loop()
-        asyncio.set_event_loop(loop)
 
         from src.api.opencode_proxy.handler.response import build_response
 
@@ -266,16 +263,13 @@ class TestReachesTheWire:
             choices = [_Choice()]
             usage = None
 
-        # build_response logs usage, which needs a running loop; an earlier test
-        # in the suite may have left the thread without one.
-        try:
-            out = build_response({"model": "gemini-flash"}, _Resp(),
-                                 "gemini-flash", "sk-x", 10)
-        finally:
-            asyncio.set_event_loop(None)
-            loop.close()
+        out = asyncio.run(build_response(
+            {"model": "gemini-flash"}, _Resp(), "gemini-flash", "sk-x", 10,
+            auth_key_prefix="acct1234",
+        ))
 
         assert out["choices"][0]["finish_reason"] == "tool_calls"
+        assert logged["args"][4] == "acct1234"
 
     def test_the_responses_route_normalizes(self):
         from src.server.openai_server.routes.completions.responses import (

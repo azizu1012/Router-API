@@ -356,8 +356,10 @@ class OpenCodeProxy:
 
         resp = result["response"]
 
-        out = build_response(body, resp, model_alias, result["api_key"],
-                             result["input_tokens"])
+        out = await build_response(
+            body, resp, model_alias, result["api_key"], result["input_tokens"],
+            auth_key_prefix=get_auth_key_prefix(account),
+        )
         # A hosted search the router ran is not a function call the client owes
         # an answer to; it is reported in the dialect's own hosted-tool shape.
         if search_trace:
