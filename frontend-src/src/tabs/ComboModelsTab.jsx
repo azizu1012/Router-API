@@ -65,12 +65,28 @@ export default function ComboModelsTab() {
     targets: prev.targets.map((target, i) => i === index ? { ...target, [field]: value } : target)
   }));
 
+  const getModelsForEndpoint = endpointName => {
+    const endpoint = endpoints.find(item => item.name === endpointName);
+    if (endpoint) {
+      const models = endpoint.enabled_models?.length ? endpoint.enabled_models : endpoint.models;
+      if (models?.length) return models;
+    }
+    return ['gemini-flash', 'gemini-flash-lite', 'gemini-pro'];
+  };
+
   const normalizedTargets = form.targets.filter(target => target.model.trim()).map((target, index) => ({
     model: target.model.trim(),
     endpoint: target.endpoint || null,
     priority: Number(target.priority) || index + 1,
     weight: Number(target.weight) || 1
   }));
+
+  const selectTargetModel = (index, value) => updateTarget(index, 'model', value);
+
+  const renderModelOptions = endpointName => getModelsForEndpoint(endpointName).map(model => (
+    <option key={model} value={model}>{model}</option>
+  ));
+
 
   const reset = () => { setForm(blankForm()); setEditing(null); setShowForm(false); };
 
@@ -127,7 +143,7 @@ export default function ComboModelsTab() {
       {message.text && <div className={`alert ${message.type === 'error' ? 'alert-error' : 'alert-info'}`}>{message.text}</div>}
       {showForm && <form onSubmit={submit} className="card glass-card p-5 space-y-4 border border-primary/20">
         <div className="grid grid-cols-1 md:grid-cols-2 gap-3"><input className="input input-bordered" placeholder="Tên combo alias" value={form.alias_name} onChange={e => setForm({ ...form, alias_name: e.target.value })} required /><input className="input input-bordered" placeholder="Mô tả (tùy chọn)" value={form.label} onChange={e => setForm({ ...form, label: e.target.value })} /><select className="select select-bordered" value={form.strategy} onChange={e => setForm({ ...form, strategy: e.target.value })}><option value="waterfall">Waterfall fallback</option><option value="load_balance">Load balance theo weight</option></select></div>
-        <div className="space-y-2">{form.targets.map((target, index) => <div key={index} className="grid grid-cols-1 md:grid-cols-12 gap-2"><input className="input input-bordered input-sm md:col-span-4" placeholder="Target model" value={target.model} onChange={e => updateTarget(index, 'model', e.target.value)} required={index === 0} /><select className="select select-bordered select-sm md:col-span-4" value={target.endpoint} onChange={e => updateTarget(index, 'endpoint', e.target.value)}><option value="">Gemini Pool</option>{endpoints.map(endpoint => <option key={endpoint.name} value={endpoint.name}>{endpoint.name}</option>)}</select><input className="input input-bordered input-sm md:col-span-2" type="number" min="1" placeholder="Weight" value={target.weight} onChange={e => updateTarget(index, 'weight', e.target.value)} /><button type="button" className="btn btn-ghost btn-sm text-error" disabled={form.targets.length === 1} onClick={() => setForm(prev => ({ ...prev, targets: prev.targets.filter((_, i) => i !== index) }))}><Trash2 className="w-4 h-4" /></button></div>)}</div>
+        <div className="space-y-2">{form.targets.map((target, index) => <div key={index} className="grid grid-cols-1 md:grid-cols-12 gap-2"><select className="select select-bordered select-sm md:col-span-4 font-mono" value={target.model} onChange={e => selectTargetModel(index, e.target.value)} required={index === 0}><option value="">Chọn target model</option>{renderModelOptions(target.endpoint)}</select><select className="select select-bordered select-sm md:col-span-4" value={target.endpoint} onChange={e => updateTarget(index, 'endpoint', e.target.value)}><option value="">Gemini Pool</option>{endpoints.map(endpoint => <option key={endpoint.name} value={endpoint.name}>{endpoint.name}</option>)}</select><input className="input input-bordered input-sm md:col-span-2" type="number" min="1" placeholder="Weight" value={target.weight} onChange={e => updateTarget(index, 'weight', e.target.value)} /><button type="button" className="btn btn-ghost btn-sm text-error" disabled={form.targets.length === 1} onClick={() => setForm(prev => ({ ...prev, targets: prev.targets.filter((_, i) => i !== index) }))}><Trash2 className="w-4 h-4" /></button></div>)}</div>
         <div className="flex flex-wrap gap-2"><button type="button" className="btn btn-outline btn-sm" onClick={() => setForm(prev => ({ ...prev, targets: [...prev.targets, blankTarget()] }))}><Plus className="w-4 h-4" /> Thêm target</button><button type="submit" className="btn btn-primary btn-sm">{editing ? 'Lưu thay đổi' : 'Tạo combo'}</button><button type="button" className="btn btn-ghost btn-sm" onClick={reset}>Hủy</button></div>
       </form>}
       {!aliases.length ? <div className="card glass-card p-8 text-center text-base-content/60">Chưa có combo nào. Hãy bấm “Tạo combo”.</div> : <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">{aliases.map(alias => <div key={alias.alias_id} className="card glass-card p-4 border border-base-content/10"><div className="flex justify-between gap-2"><div><h2 className="font-bold">{alias.alias_name}</h2><p className="text-xs text-base-content/60">{alias.label || 'Combo Model Mix'} · {alias.strategy || 'waterfall'}</p></div><span className={`badge ${alias.enabled ? 'badge-success' : 'badge-ghost'}`}>{alias.enabled ? 'Bật' : 'Tắt'}</span></div><div className="flex flex-wrap gap-1 my-3">{decodeTargets(alias).map((target, index) => <span className="badge badge-outline font-mono text-xs" key={`${alias.alias_id}-${index}`}>{target.model}{target.weight > 1 ? ` ×${target.weight}` : ''}</span>)}</div><div className="flex gap-2"><button className="btn btn-ghost btn-xs" onClick={() => edit(alias)}><Edit3 className="w-3 h-3" /> Sửa</button><button className="btn btn-ghost btn-xs text-error" onClick={() => remove(alias)}><Trash2 className="w-3 h-3" /> Xóa</button><button className="btn btn-ghost btn-xs" onClick={async () => { try { await api(`/api/me/aliases/${alias.alias_id}`, { method: 'PATCH', body: JSON.stringify({ enabled: !alias.enabled }) }, token); load(); } catch (err) { notify(err.message, 'error'); } }}><Power className="w-3 h-3" /> {alias.enabled ? 'Tắt' : 'Bật'}</button></div></div>)}</div>}
