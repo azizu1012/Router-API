@@ -54,15 +54,24 @@ def _require_dashboard(request: Request) -> Dict[str, Any]:
     if not account_id and not name:
         raise HTTPException(status_code=401, detail={"error": "Invalid session payload"})
 
-    from src.backend.accounts.manager import find_account_by_name
+    from src.backend.accounts.manager import find_account_by_id, find_account_by_name
     from src.backend.keys.accounts import get_credential_db
 
-    acc = find_account_by_name(name) if name else None
+    acc = find_account_by_id(account_id) if account_id else None
+    if not acc and name:
+        candidate = find_account_by_name(name)
+        if candidate and (not account_id or candidate.get("account_id") == account_id):
+            acc = candidate
+
     if not acc or not acc.get("enabled", 1):
         raise HTTPException(status_code=401, detail={"error": "Account is disabled or does not exist"})
 
-    # Synchronize tier and limits with live DB state
+    if account_id and acc.get("account_id") and acc["account_id"] != account_id:
+        raise HTTPException(status_code=401, detail={"error": "Account ID mismatch"})
+
+    # Synchronize tier, name, and limits with live DB state
     payload["tier"] = acc.get("tier", "free")
+    payload["name"] = acc.get("name", payload.get("name", ""))
     payload["rpm"] = acc.get("rpm", payload.get("rpm", 0))
     payload["tpm"] = acc.get("tpm", payload.get("tpm", 0))
     payload["rpd"] = acc.get("rpd", payload.get("rpd", 0))

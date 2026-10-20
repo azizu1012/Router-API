@@ -31,6 +31,20 @@ def find_account_by_name(name: str) -> Optional[Dict[str, Any]]:
             c.close()
 
 
+def find_account_by_id(account_id: str) -> Optional[Dict[str, Any]]:
+    clean = str(account_id or "").strip()
+    if not clean:
+        return None
+    with _LOCK:
+        c = _conn()
+        try:
+            cur = c.execute("SELECT * FROM accounts WHERE account_id = ?", (clean,))
+            r = cur.fetchone()
+            return dict(r) if r else None
+        finally:
+            c.close()
+
+
 def find_account_by_key(auth_key: str) -> Optional[Dict[str, Any]]:
     raw = str(auth_key or "").strip()
     if not raw:

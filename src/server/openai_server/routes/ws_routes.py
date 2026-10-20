@@ -25,17 +25,28 @@ async def dashboard_websocket(websocket: WebSocket):
         await websocket.close(code=4001)
         return
 
-    from src.backend.accounts.manager import find_account_by_name
+    from src.backend.accounts.manager import find_account_by_id, find_account_by_name
     from src.backend.keys.accounts import get_credential_db
 
+    account_id = account.get("account_id")
     name = account.get("name")
-    acc = find_account_by_name(name) if name else None
+    acc = find_account_by_id(account_id) if account_id else None
+    if not acc and name:
+        candidate = find_account_by_name(name)
+        if candidate and (not account_id or candidate.get("account_id") == account_id):
+            acc = candidate
+
     if not acc or not acc.get("enabled", 1):
         await websocket.close(code=4001)
         return
 
+    if account_id and acc.get("account_id") and acc["account_id"] != account_id:
+        await websocket.close(code=4001)
+        return
+
     account["tier"] = acc.get("tier", "free")
-    account_id = acc.get("account_id") or account.get("account_id", "unknown")
+    account["name"] = acc.get("name", account.get("name", ""))
+    account_id = acc.get("account_id") or account_id or "unknown"
 
     if account_id and "iat" in account:
         cred = get_credential_db(account_id)
