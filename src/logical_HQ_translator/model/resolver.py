@@ -102,8 +102,19 @@ async def _resolve_model(body: Dict[str, Any], pool_alias_override: Optional[str
                     logger.warning("[MemberOverride] %s error: %s, falling back to Gemini", ep_name, e)
                     break
     else:
-        # Step 1: Account endpoint (100% override mode — no pool_assignments)
-        if retry_attempt == 0:
+        # Step 1: Account endpoint for custom models (matching endpoint models, not native Gemini/Gemma)
+        from src.core.config.api_config import AVAILABLE_MODELS, MODEL_POOLS
+        from src.core.providers.custom_endpoint.passthrough import _match_endpoint_model
+
+        is_native_model = (
+            model_alias in AVAILABLE_MODELS
+            or model_alias in MODEL_POOLS
+            or "gemini" in model_alias.lower()
+            or "gemma" in model_alias.lower()
+            or "flash" in model_alias.lower()
+        )
+
+        if not is_native_model and retry_attempt == 0:
             for ep in endpoint_manager.get_endpoints_for_account(account):
                 if not ep.get("enabled", True):
                     continue
@@ -118,10 +129,15 @@ async def _resolve_model(body: Dict[str, Any], pool_alias_override: Optional[str
 
                 enabled_models = ep.get("enabled_models", [])
                 all_models = ep.get("models", [])
-                if not enabled_models and not all_models:
+                candidates = enabled_models or all_models
+                if not candidates:
                     continue
 
-                target_model = (enabled_models or all_models)[0]
+                matched = _match_endpoint_model(model_alias, candidates)
+                if not matched:
+                    continue
+
+                target_model = matched
                 try:
                     alive = await endpoint_manager.ping_endpoint(ep)
                     if not alive:

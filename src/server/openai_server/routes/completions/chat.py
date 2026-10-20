@@ -221,15 +221,14 @@ async def chat_completions(
                         async for chunk in _sub_agent_stream_error(body, model_alias, e):
                             yield chunk
                     else:
-                        # Emit a terminal chunk with finish_reason so spec-compliant
-                        # clients (Vercel AI SDK, Cherry Studio, OpenCode) do not
-                        # crash with "Response stream ended without a finish reason."
+                        # Emit a terminal chunk with finish_reason and explicit error info
+                        # so clients receive actionable feedback instead of an empty silent response.
                         error_chunk = {
                             "id": f"chatcmpl-error",
                             "object": "chat.completion.chunk",
                             "created": int(time.time()),
                             "model": body.get("model", "unknown"),
-                            "choices": [{"index": 0, "delta": {}, "finish_reason": "stop"}],
+                            "choices": [{"index": 0, "delta": {"content": f"\n\n[Error: {e}]"}, "finish_reason": "stop"}],
                         }
                         yield f"data: {json.dumps(error_chunk, ensure_ascii=False)}\n\n".encode("utf-8")
                         yield "data: [DONE]\n\n".encode("utf-8")

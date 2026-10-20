@@ -86,7 +86,20 @@ async def resolve_custom_endpoint_for_request(
 
     # If requested_model is a known Gemini pool or built-in model, don't hijack it!
     req_norm = (requested_model or "").strip().lower()
-    if req_norm in MODEL_POOLS or req_norm in AVAILABLE_MODELS or "flash" in req_norm or "gemini" in req_norm:
+    from src.core.router import router
+    resolved_norm = (router.resolve_model_alias(req_norm, account=account) or "").lower()
+    if (
+        req_norm in MODEL_POOLS
+        or req_norm in AVAILABLE_MODELS
+        or resolved_norm in MODEL_POOLS
+        or resolved_norm in AVAILABLE_MODELS
+        or "flash" in req_norm
+        or "gemini" in req_norm
+        or "gemma" in req_norm
+        or "flash" in resolved_norm
+        or "gemini" in resolved_norm
+        or "gemma" in resolved_norm
+    ):
         return None
 
     # Priority 2: Endpoint containing requested_model for this account

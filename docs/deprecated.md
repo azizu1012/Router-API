@@ -98,6 +98,47 @@ Tài liệu gốc `docs/model_aliases_feature.md` từng liệt kê một số �
 
 ---
 
+## 7. Cơ Chế Mượn/Trả Key Không Định Danh (Untracked Key Release) & Global Freeze Bừa Bãi
+
+### Trạng thái: Đã gỡ bỏ & Chuẩn hóa (Deprecated & Replaced)
+### Thay thế bằng: Reservation Lifecycle (`reservation_id`) & Authoritative Transition Metadata
+
+* **Vấn đề & Lý do gỡ bỏ**:
+  1. **Nút thắt cổ chai về độ trễ (Latency Lag 1s–3s)**: Trước đây, router cấp key và thu hồi key chỉ dựa trên raw string của key mà không có token/phiếu mượn định danh (`reservation_id`). Khi request bị hủy, retry hoặc gặp ngoại lệ bất đồng bộ, các hàm `release_key()` bị gọi trùng lặp (double release) hoặc bị nuốt mất (leaked reservation), khiến bộ đếm `active_requests` của key bị kẹt khác 0. Các request sau vào tưởng key đang bận nên rơi vào vòng lặp chờ (`acquire loop` với backoff/sleep) mất vài giây một cách vô lý.
+  2. **Đóng băng toàn bộ key vô tội vạ (`freeze_all_keys`)**: Hàm `freeze_all_keys()` trước đây có thể bị gọi mà không cần lý do hay người chịu trách nhiệm, khiến toàn bộ pool key trong RAM bị đóng băng, làm sập toàn bộ dịch vụ cho mọi người dùng.
+* **Cơ chế hiện tại**:
+  - `reserve_key()` bắt buộc sinh `reservation_id` (UUID) và ghi nhận vào bảng theo dõi nội bộ `_reservations`.
+  - `release_key()` là **idempotent**: chỉ giải phóng đúng 1 lần cho mỗi `reservation_id`, triệt tiêu hoàn toàn nguy cơ underflow hoặc kẹt `active_requests`. Request mới lấy key tức thì trong < 1ms.
+  - `freeze_all_keys()` chuyển thành hành động cứu hộ khẩn cấp (Emergency Only), bắt buộc phải có `actor` và `reason` rõ ràng mới được phép chạy.
+
+---
+
+## 8. Phạt Tụt Điểm Model Health Do Lỗi Key Cục Bộ (Key-Local Cascading Penalty)
+
+### Trạng thái: Đã gỡ bỏ (Deprecated & Replaced)
+### Thay thế bằng: Phân lập phạm vi lỗi (Scoped Key Failure vs Model Health)
+
+* **Vấn đề & Lý do gỡ bỏ**:
+  - Trước đây, khi một key gặp lỗi xác thực hoặc phân quyền (`invalid_key`, `permission_denied`, `unregistered_key`), hàm xử lý lỗi đã gọi nhầm `update_model_health(_alias, success=False)` làm tụt điểm tín nhiệm của toàn bộ Model Alias.
+  - Hậu quả: Chỉ vì 1 API key cá nhân bị hết hạn hoặc sai cấu hình, toàn bộ model alias (dù còn hàng chục key khỏe mạnh khác) bị hệ thống đánh tụt điểm sức khỏe, kích hoạt cơ chế né model, swap pool và chèn delay penalty lên mọi request của người dùng khác.
+* **Cơ chế hiện tại**:
+  - Tách bạch tuyệt đối: Các lỗi mang tính cục bộ của key (`invalid_key`, `permission_denied`, `unregistered_key`) chỉ đóng băng duy nhất key vi phạm. Điểm sức khỏe `_model_health` của Model Alias vẫn giữ nguyên 100% để các key khác tiếp tục phục vụ ở tốc độ cao nhất.
+  - Chỉ các lỗi cấp hạ tầng/nhà cung cấp (`unavailable`, `server_error`, `503`,...) mới được phép tác động đến điểm sức khỏe của Model Alias.
+
+---
+
+## 9. Nén RTK Cào Bằng Cho Mọi Nhà Cung Cấp (Universal Blind RTK)
+
+### Trạng thái: Đã thay thế (Superseded)
+### Thay thế bằng: Provider-Aware RTK (`internal` vs `custom`)
+
+* **Vấn đề & Lý do thay thế**:
+  - Thuật toán RTK ban đầu được thiết kế để nén lịch sử context cho các model Gemini/Claude nội bộ khi context phình to chạm trần 250k TPM. Tuy nhiên, khi áp dụng cào bằng lên Custom Endpoints (như `9router`, các endpoint OpenAI-compatible bên ngoài), RTK đã vô tình nuốt mất các block reasoning/tool output hợp lệ mà phía custom endpoint cần để suy luận tiếp, gây ra phản hồi rỗng hoặc lỗi cụt output ở 64k token.
+* **Cơ chế hiện tại**:
+  - RTK được phân nhánh rõ ràng qua tham số `provider_kind="internal"|"custom"`.
+  - Nhánh `internal`: Nén cả user messages và tool results dài khi cần hạ tải context nội bộ.
+  - Nhánh `custom`: Chỉ nén các khối `tool_result`/`tool_output` kỹ thuật thuần túy, tuyệt đối bảo toàn nguyên vẹn ngữ cảnh hội thoại và block suy luận của người dùng và model bên ngoài.
+
 ## 7. Giả Lập Lỗi HTTP 200 SSE Cho Main Agent (Defensive 200 OK Anti-pattern)
 
 ### Trạng thái: Đã gỡ bỏ cho luồng Main Agent

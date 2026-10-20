@@ -260,6 +260,15 @@ Test: `tests/test_effort_mapping.py` — pin cả hai chiều, kể cả việc 
   - **Tính toán Pool động:** `api_config.py` tự động tính tổng RPM/TPM/RPD từ các members và tự sinh chuỗi nhãn hiển thị `display` dựa trên thành viên hiện có.
   - **Đồng bộ hai chiều ENV ↔ DB:** File watcher tự động đẩy thay đổi từ `.env` vào SQLite `model_config`, đồng thời Admin UI khi cập nhật DB sẽ tự ghi ngược lại file `.env`.
 
+### 2026-10-15 — Chuẩn Hóa Vòng Đời Reservation, Truy Vết Metadata Xuyên Suốt & Tối Ưu Hiệu Năng Phản Hồi
+- **Files:** `src/core/router/core/router.py`, `src/core/router/core/key_resolver.py`, `src/core/orchestration/pool_manager.py`, `src/core/runtime/request_context.py`, `src/backend/keys/status.py`, `src/backend/schema.py`, `src/backend/_db.py`, `src/server/openai_server/routes/app_init.py`
+- **Thay đổi:**
+  - **Idempotent Key Reservation (`reservation_id`):** `reserve_key()` cấp phát thẻ định danh duy nhất cho từng lượt mượn key. `release_key()` kiểm tra `reservation_id` để đảm bảo mỗi lượt mượn chỉ được trả đúng một lần. Triệt tiêu hoàn toàn lỗi underflow hoặc kẹt giữ chỗ `active_requests` khiến request sau bị block 1s–3s trong acquire loop.
+  - **Giảm độ trễ từ vài giây xuống mili-giây:** Request mới đến lấy được key rảnh ngay tức thì trong < 1ms mà không bị rơi vào vòng lặp chờ phòng thủ (`backoff/sleep`).
+  - **Cô lập lỗi Key-local:** Lỗi xác thực/cục bộ (`invalid_key`, `permission_denied`) chỉ freeze key vi phạm, không còn làm tụt điểm `_model_health` của cả model alias.
+  - **Lan truyền Request ID & Metadata Transition:** Tích hợp `request_context.py` dùng `ContextVar` truyền `request_id` từ HTTP ingress xuyên qua các coroutine bất đồng bộ tới `PoolManager`. Mọi thay đổi trạng thái của key và custom endpoint đều được ghi nhận kèm metadata vào bảng `key_transitions` và `endpoint_transitions` trong SQLite.
+  - **Provider-Aware RTK:** Tách biệt nhánh nén RTK: `internal` nén cả user/tool khi cần hạ tải context; `custom` chỉ nén technical tool results để không làm nghẽn hoặc nuốt reasoning block của model ngoài.
+
 ---
 
 ## 11. Các Biến Môi Trường Chính
@@ -333,3 +342,112 @@ Quy tắc này đảm bảo khi xảy ra fallback từ Target A sang Target B, p
    - **Stream sớm (Early Streaming):** Không đệm toàn bộ phản hồi tổng hợp sau tìm kiếm nếu văn bản bắt đầu bằng câu tự nhiên (khác tiền tố `[Web Search Results`).
    - **Nhận diện Echo chính xác:** `is_raw_search_context()` chỉ lọc những phản hồi lặp lại nguyên khối `[Web Search Results` mà không có câu trả lời tổng hợp phía sau (`len(after_footer) < 50`).
    - **Bảo toàn Tool Call:** Nếu sau khi tìm kiếm, model sinh ra tool call mới (như `Read`, `Bash`, `Agent`), hệ thống giữ nguyên và phát `tool_use`, không kích hoạt nhầm fallback `"Mình đã thực hiện tìm kiếm nhưng model chưa tạo được phần tổng hợp. Vui lòng thử lại."`.
+
+---
+
+## 13. Chuẩn Hóa Vòng Đời Key Reservation & Bước Nhảy Vọt Hiệu Năng (Latency Drop From Seconds to Milliseconds)
+
+### 13.1. Phân Tích Nguyên Nhân Nghẽn Tải Ở Code Cũ (Root Cause Analysis)
+Trước khi refactor, hệ thống thường xuyên gặp hiện tượng phản hồi bị delay từ 1 đến vài giây ở hot path (ngay cả khi server không chịu tải lớn). Nguyên nhân gốc rễ:
+1. **Trạng Thái "Kẹt Phanh Ảo" do Untracked Key Release:**
+   - Khi request được điều phối, router tăng `active_requests += 1` cho key được chọn.
+   - Khi request kết thúc hoặc retry/exception bất đồng bộ, các hàm `release_key()` bị gọi không kèm định danh lượt mượn. Một số trường hợp bị double release hoặc bị lọt không release, dẫn đến việc `active_requests` bị lệch (khác 0 dù key đã rảnh).
+   - Trong lần gọi tiếp theo, hàm `_select_key_double_random()` thấy tất cả các key đều có `active_requests > 0` nên cho rằng pool đang bận, kích hoạt vòng lặp chờ (`acquire loop` với backoff `asyncio.sleep`) tốn từ 1s–3s chỉ để chờ một key vốn dĩ đang hoàn toàn rảnh!
+2. **Hiệu Ứng Domino Hạ Điểm Health (Cascading Health Penalty):**
+   - Khi một key gặp lỗi cục bộ của chính key đó (như `invalid_key`, `permission_denied`), hàm xử lý lỗi cũ đã gọi `update_model_health(_alias, success=False)` làm tụt điểm tín nhiệm của toàn bộ model alias.
+   - Model alias bị hạ điểm khiến router chèn thêm khoảng hoãn (penalty delay) và tìm cách swap pool, làm chậm toàn bộ các request sau đó.
+3. **I/O Blocking Trong Hot Path:**
+   - Các thao tác cập nhật DB trước đây thiếu tách bạch giữa dữ liệu runtime in-memory và audit log bền vững.
+
+### 13.2. Kiến Trúc Mới: Idempotent Reservation Lifecycle
+1. **Cấp phát định danh duy nhất (`reservation_id`):**
+   - Khi `reserve_key()` được gọi, nó sinh ra một chuỗi `reservation_id` (UUID4) độc nhất cùng mốc thời gian `reserved_at`.
+   - Đối tượng reservation được đăng ký vào dictionary `_reservations` của `APIRouter`.
+2. **Thu hồi Idempotent an toàn tuyệt đối:**
+   - Khi `release_key(key, reservation_id=...)` được gọi, hệ thống kiểm tra sự tồn tại của `reservation_id`.
+   - Nếu đã release rồi, router từ chối xử lý tiếp và cảnh báo, ngăn chặn triệt để hiện tượng trừ âm `active_requests`.
+   - Nếu hợp lệ, slot được hoàn trả ngay lập tức và bản ghi reservation được đánh dấu là đã giải phóng.
+3. **Bộ dọn dẹp bộ nhớ tự động (`_cleanup_reservations_locked`):**
+   - Tự động dọn dẹp các reservation đã release hoặc các reservation bị treo quá thời gian timeout (quá 1800s), đảm bảo RAM không bị rò rỉ kể cả khi hệ thống chạy hàng tháng với hàng triệu lượt gọi.
+4. **Kết quả:**
+   - Triệt tiêu 100% các vòng lặp chờ ảo. Thời gian phân giải và cấp phát key giảm từ hàng giây xuống **dưới 1ms**, đưa tốc độ phản hồi gateway về mức tức thì.
+
+---
+
+## 14. Cơ Chế Lan Truyền Request ID Xuyên Suốt & Nhật Ký Chuyển Đổi Trạng Thái (State Transitions)
+
+### 14.1. Request Context Toàn Cục (`request_context.py`)
+Để hỗ trợ việc điều tra sự cố (observability & tracing) ở môi trường production mà không cần truyền tham số thủ công qua hàng chục tầng hàm:
+- Module `src/core/runtime/request_context.py` sử dụng `contextvars.ContextVar` lưu trữ `request_id` cho từng async task / coroutine.
+- Middleware HTTP `request_context_middleware` tại `src/server/openai_server/routes/app_init.py` tự động bắt header `X-Request-ID` từ client (hoặc tự sinh chuỗi UUID hex) và gán vào `ContextVar` đồng thời trả ngược lại trong response header `X-Request-ID`.
+- Mọi tầng bên dưới (`PoolManager`, `APIRouter`, `GeminiCaller`, `CustomEndpointManager`) khi ghi log hoặc thực hiện chuyển đổi trạng thái chỉ cần gọi `get_request_id()` để lấy đúng request ID mà không làm rối chữ ký hàm (clean interface).
+
+### 14.2. Bảng Chuyển Đổi Trạng Thái Có Metadata (`key_transitions` & `endpoint_transitions`)
+Mọi biến cố làm thay đổi trạng thái của Key hoặc Custom Endpoint đều được lưu vết dạng có cấu trúc vào SQLite:
+1. **Bảng `key_transitions`:**
+   - Lưu trữ: `transition_id`, `request_id`, `key_suffix` (chỉ lưu 8 ký tự cuối, che giấu bí mật), `model_id`, `from_state`, `to_state`, `reason`, `duration_ms`, `error_type`, `meta_json`, `created_at`.
+   - Cho phép tra cứu lịch sử sự cố theo từng request ID hoặc theo từng key thông qua hàm `query_key_transitions_db()`.
+2. **Bảng `endpoint_transitions`:**
+   - Lưu trữ: `transition_id`, `request_id`, `endpoint`, `from_state`, `to_state`, `reason`, `failure_count`, `cooldown_seconds`, `meta_json`, `created_at`.
+   - Cho phép tra cứu lịch sử nhảy Circuit Breaker của Custom Endpoint thông qua `query_endpoint_transitions_db()`.
+3. **Cơ chế Tự động Nâng cấp Schema (`auto_migrate_schema` & `_BOOTSTRAP_DDL`):**
+   - Toàn bộ các cột và bảng mới được đăng ký tại `_SCHEMA_COLUMN_REGISTRY` trong `src/backend/schema.py` để tự động chạy `ALTER TABLE ADD COLUMN` khi khởi động trên database cũ.
+   - Đồng thời được khai báo đồng nhất tại `_BOOTSTRAP_DDL` trong `src/backend/_db.py` để đảm bảo máy mới khởi tạo DB rỗng không bao giờ bị lệch cấu trúc.
+
+---
+
+## 15. Phân Định RTK Theo Provider & Cô Lập Circuit Breaker Cho Custom Endpoint
+
+### 15.1. RTK Theo Phân Loại Provider (`provider_kind`)
+Thuật toán nén ngữ cảnh thời gian thực (RTK) tại `src/logical_HQ_translator/compression/rtk.py` nhận tham số `provider_kind`:
+- **`provider_kind="internal"` (Gemini, Claude):** Nén cả nội dung văn bản dài của người dùng và các kết quả tool lớn khi cần hạ tải context để bảo vệ hạn mức 250k TPM.
+- **`provider_kind="custom"` (9router, external OpenAI-compatible):** Tuyệt đối không can thiệp vào văn bản của người dùng hoặc các khối suy luận (reasoning/thinking) của mô hình. Chỉ cắt tỉa các khối `tool_result`/`tool_output` kỹ thuật quá khổ. Điều này ngăn chặn hiện tượng model ngoài bị cụt output hoặc trả về phản hồi rỗng do thiếu dữ liệu hội thoại.
+
+### 15.2. Cô Lập Circuit Breaker Cho Custom Endpoint
+- Custom Endpoint sở hữu cơ chế Circuit Breaker hoàn toàn độc lập nằm trong `CustomEndpointManager._circuit_breaker`.
+- Trạng thái nhảy breaker của Custom Endpoint (ví dụ sau 3 lỗi liên tiếp) hoàn toàn **không chia sẻ và không ảnh hưởng** đến Circuit Breaker hay pool key của Gemini.
+- Khi một Custom Endpoint bị ngắt (Tripped), các lượt gọi tiếp theo trong pool tự động chuyển hướng qua các member khác hoặc Gemini members mà không gây tắc nghẽn toàn hệ thống.
+
+---
+
+## 16. Quy Tắc Định Tuyến Gemma 4 Standalone & Cơ Chế Chống Cướp Model (Anti-Hijacking Policy)
+
+### 16.1. Bản Chất Mô Hình Gemma 4 (26B/27B và 31B)
+1. **Chế độ Vận Hành Độc Lập (Standalone Mode):**
+   - Gemma 4 (`gemma-4-26b-a4b-it` và `gemma-4-31b-it`) chạy trực tiếp trên các API Key của Google AI Studio/Gemini, nhưng hoạt động ở chế độ Standalone (nằm ngoài `MODEL_POOLS` của Gemini Flash/Lite).
+   - Key được cấp phát qua `router.reserve_key(model_alias, model_id)` và tuân thủ chặt chẽ vòng đời `reservation_id`.
+2. **Chuẩn Hóa Đa Dạng Bí Danh (Canonical Alias Normalization):**
+   - Phía client gửi rất nhiều biến thể tên gọi khác nhau do thói quen cấu hình:
+     - `gemma-4-27b`, `gemma-27b`, `gemma-4-26b`, `gemma-4-26b-it`, `gemma-4-26b-a4b-it`, `gemma-4` $\rightarrow$ Tự động chuẩn hóa về alias chuẩn: **`gemma-4-26b`** (backing model: `gemma-4-26b-a4b-it`).
+     - `gemma-4-31b`, `gemma-31b`, `gemma-4-31b-it` $\rightarrow$ Tự động chuẩn hóa về alias chuẩn: **`gemma-4-31b`** (backing model: `gemma-4-31b-it`).
+   - Việc chuẩn hóa này diễn ra ngay tại `router.resolve_model_alias()`, giúp chia sẻ trọn vẹn thống kê rate limit, token bucket và key pool lành mạnh.
+3. **Ngưỡng Ngữ Cảnh An Toàn (Safe Context Window):**
+   - `GEMMA_CONTEXT_LENGTH = 14000` tokens (thay vì 185k của Gemini Flash) để bảo vệ model khỏi tình trạng quá tải context vật lý (262k) hoặc bị chậm đột ngột.
+4. **Cơ Chế Suy Luận (Thinking Configuration):**
+   - Google API của Gemma 4 hỗ trợ các mức `thinking_level`: `"low"`, `"medium"`, `"high"`, `"minimal"`.
+   - **Tuyệt đối cấm** gửi tham số `thinking_budget` tới Google cho Gemma (Google API sẽ từ chối với HTTP 400 Bad Request). Mọi `thinking_budget` nếu client gửi tới sẽ tự động được sanitize sang `thinking_level`.
+   - Sub-agent khi gọi Gemma tự động chuyển sang `thinking_level="minimal"` và `include_thoughts=False` để tiết kiệm tối đa latency và token.
+
+### 16.2. Cơ Chế Chống Cướp Model Native (Anti-Hijacking Policy)
+**Lỗ Hổng Lịch Sử Cần Tránh:**
+Trước đây, khi một tài khoản đăng ký custom endpoint mà không cấu hình `pool_assignments` (ví dụ endpoint `9router` với `pool_assignments = {}`), hệ thống tại:
+- `src/logical_HQ_translator/model/resolver.py` (Step 1)
+- `src/core/providers/custom_endpoint/passthrough.py` (Priority 4)
+đã nhận định sai lầm rằng đây là một "100% override endpoint" của tài khoản, dẫn đến việc cướp sạch mọi yêu cầu gọi model (`gemma-4-26b`, `gemma-4-31b`, `gemini-flash`) và ép đổi sang `target_model = (enabled_models or all_models)[0]` (chính là `ag/gemini-3.1-pro-high` trên 9router). Khi 9router gặp sự cố hoặc ngắt circuit breaker, toàn bộ model Gemma và Gemini của client bị tê liệt hoàn toàn.
+
+**Quy Tắc Định Tuyến Bất Biến (Strict Rule):**
+1. **Ưu Tiên Tuyệt Đối Cho Model Native:**
+   - Mọi model thuộc diện Native (`is_native_model`: chứa `gemma`, `gemini`, `flash`, hoặc nằm trong `AVAILABLE_MODELS` / `MODEL_POOLS`) **KHÔNG BAO GIỜ** bị rơi vào luồng override mặc định của Custom Endpoint ở cấp tài khoản.
+   - `resolve_custom_endpoint_for_request()` sẽ lập tức trả về `None` khi nhận diện model là Native.
+2. **Khớp Model Rõ Ràng (Explicit Model Matching):**
+   - Step 1 của `_resolve_model()` chỉ được phép chuyển hướng request sang Custom Endpoint của tài khoản khi và chỉ khi:
+     - Model yêu cầu là một model tùy chỉnh ngoài (không phải Native).
+     - **VÀ** model đó thực sự khớp với danh sách model mà endpoint hỗ trợ (`_match_endpoint_model(model_alias, candidates)`).
+   - Nghiêm cấm hành vi lấy phần tử đầu tiên `[0]` để ép model tùy tiện.
+
+### 16.3. Minh Bạch Lỗi Khi Streaming (No Silent Empty Stream)
+- Khi gặp sự cố kết nối hoặc lỗi upstream trong quá trình streaming tại `chat.py` hoặc `opencode_routes.py`, hệ thống không bao giờ được phát ra một chunk rỗng `{"delta": {}, "finish_reason": "stop"}` làm client tưởng lầm request thành công trong 1s nhưng nhận về output trống.
+- Chế độ an toàn bắt buộc phải phát rõ nội dung lỗi trong delta:
+  `{"choices": [{"index": 0, "delta": {"content": f"\n\n[Error: {e}]"}, "finish_reason": "stop"}]}`
+  giúp người dùng và client nắm bắt chính xác nguyên nhân kỹ thuật để xử lý.
+

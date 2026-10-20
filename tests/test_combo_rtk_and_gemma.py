@@ -342,3 +342,40 @@ def test_gemma_thinking_support_and_budget_sanitization():
     assert resolved_thinking == {"thinking_level": "high", "include_thoughts": True}
     assert "thinking_budget" not in resolved_thinking
 
+
+# ---------------------------------------------------------------------------
+# 7. Gemma Model Alias Resolution & Anti-Hijack Routing Tests
+# ---------------------------------------------------------------------------
+
+def test_gemma_alias_normalization():
+    from src.core.router import router
+
+    assert router.resolve_model_alias("gemma-4-26b") == "gemma-4-26b"
+    assert router.resolve_model_alias("gemma-4-26b-a4b-it") == "gemma-4-26b"
+    assert router.resolve_model_alias("gemma-4-27b") == "gemma-4-26b"
+    assert router.resolve_model_alias("gemma-27b") == "gemma-4-26b"
+    assert router.resolve_model_alias("gemma-4-31b") == "gemma-4-31b"
+    assert router.resolve_model_alias("gemma-4-31b-it") == "gemma-4-31b"
+    assert router.resolve_model_alias("gemma-31b") == "gemma-4-31b"
+    assert router.resolve_model_alias("gemma-4") == "gemma-4-26b"
+
+
+@pytest.mark.anyio
+async def test_gemma_and_native_never_hijacked_by_account_endpoint():
+    from src.core.providers.custom_endpoint.passthrough import resolve_custom_endpoint_for_request
+
+    fake_account = {"account_id": "c39b4e87be0dc8af"}
+    # Native and Gemma models must NEVER be captured by account-level default custom endpoints
+    for model_name in [
+        "gemma-4-26b",
+        "gemma-4-27b",
+        "gemma-27b",
+        "gemma-4-31b",
+        "gemma-31b",
+        "gemini-flash",
+        "gemini-flash-lite",
+    ]:
+        ep = await resolve_custom_endpoint_for_request(account=fake_account, requested_model=model_name)
+        assert ep is None, f"{model_name} should not be hijacked to a custom endpoint!"
+
+

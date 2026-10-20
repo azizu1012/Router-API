@@ -36,7 +36,7 @@ router_api/
     │   ├── accounts/             # Quản lý tài khoản
     │   ├── limits/               # Giới hạn Rate Limit, Account, Token (gemini/limiter.py)
     │   ├── providers/            # Gemini (facade, manager, caller), Custom Endpoints
-    │   ├── runtime/              # Sub-agent detection, tool cache, sse format
+    │   ├── runtime/              # Sub-agent detection, tool cache, sse format, request_context (ContextVar)
     │   └── router/               # APIRouter, ModelPool, KeyResolver
     ├── backend/                  # Tầng DB SQLite (accounts/, endpoints/, keys/, models/)
     ├── console/                  # CLI admin (cli.py, interactive/)
@@ -51,6 +51,10 @@ router_api/
     *   **Khởi tạo:** Khi khởi động, `_key_status` được tải từ cơ sở dữ liệu SQLite (`src/backend/keys/status.py`) và hợp nhất với trạng thái mặc định cho các key mới hoặc chưa đầy đủ thông tin.
     *   **Đồng bộ hóa:** Mọi cập nhật trạng thái key (ví dụ: `acquire_key`, `record_success`, `record_failure`, `freeze_key`, `release_key`) sẽ thay đổi trạng thái in-memory và sau đó kích hoạt các thao tác ghi **bất đồng bộ** vào SQLite thông qua các hàm `atomic_reserve_key`, `atomic_release_key`, `atomic_freeze_key`, `atomic_record_success` trong `src/backend/keys/status.py`. Điều này đảm bảo tính bền vững của dữ liệu mà không làm chặn luồng xử lý chính.
 *   **Chọn Model**: Chịu trách nhiệm chọn mô hình phù hợp nhất dựa trên ưu tiên, tình trạng sức khỏe và giới hạn.
+*   **Vòng Đời Key Reservation (`reservation_id`) & Idempotent Release**: `reserve_key` cấp phát một token `reservation_id` duy nhất và lưu vào dictionary `_reservations`. `release_key` chỉ giải phóng đúng 1 lần cho mỗi `reservation_id`, triệt tiêu hoàn toàn lỗi underflow hoặc kẹt giữ chỗ `active_requests` (nguyên nhân từng gây delay 1s–3s ở hot path). Tự động dọn dẹp các reservation hết hạn quá 1800s.
+*   **Truy Vết Chuyển Đổi Trạng Thái (Authoritative Transitions)**: `APIRouter.record_attempt_failure()` đóng vai trò là cửa ngõ duy nhất ghi nhận lỗi thất bại của key, ghi log và lưu vết có cấu trúc vào bảng `key_transitions` (kèm `transition_id`, `request_id`, `key_suffix`, `duration_ms`, `error_type`).
+*   **Phân Lập Phạm Vi Lỗi (Scoped Failure Handling)**: Các lỗi cục bộ của key (`invalid_key`, `permission_denied`) chỉ đóng băng duy nhất key vi phạm. `update_model_health` chỉ được gọi khi gặp lỗi cấp hạ tầng/nhà cung cấp, bảo vệ điểm sức khỏe của Model Alias luôn đạt 100%.
+*   **Emergency Freeze Bảo Vệ**: `freeze_all_keys()` bị hạn chế ở cấp cứu hộ khẩn cấp, bắt buộc truyền `actor` và `reason` rõ ràng.
 *   **Giới hạn tốc độ**: Tương tác với `src/core/limits/gemini/limiter.py` để thực thi các giới hạn RPM/TPM.
 *   **Theo dõi sức khỏe Model**: `update_model_health` điều chỉnh điểm số của mô hình dựa trên thành công/thất bại.
 
@@ -78,9 +82,9 @@ router_api/
 ### 3.5. Backend (`src/backend/`)
 *   **Vai trò**: Lớp truy cập cơ sở dữ liệu SQLite.
 *   **Chức năng chính**:
-    *   **`_db.py`**: Quản lý kết nối DB dùng chung, **và tạo các bảng đọc lúc import**.
-    *   **`schema.py`**: Schema đầy đủ + các `ALTER TABLE` migration, chạy trong startup hook.
-    *   **`keys/status.py`**: Các thao tác nguyên tất (atomic) để cập nhật trạng thái key (reserve, release, freeze, disable).
+    *   **`_db.py`**: Quản lý kết nối DB dùng chung, **và tạo các bảng đọc lúc import**. Khởi tạo bootstrap DDL chuẩn xác đồng bộ với `schema.py`.
+    *   **`schema.py`**: Schema đầy đủ + bộ tự động `ALTER TABLE` migration qua `_SCHEMA_COLUMN_REGISTRY` (tự động thêm cột mới như `last_transition_*` của `key_status`, bảng `key_transitions`, `endpoint_transitions`), chạy trong startup hook.
+    *   **`keys/status.py`**: Các thao tác nguyên tử (atomic) để cập nhật trạng thái key (reserve, release, freeze, disable), lưu vết chuyển đổi trạng thái (`record_key_transition_db`), và truy vấn lịch sử chuyển đổi (`query_key_transitions_db`, `query_endpoint_transitions_db`).
     *   **`accounts.py`, `endpoints.py`, `model_prices.py`**: CRUD cho tài khoản, custom endpoints và giá model thực tế chuẩn Google Gemini API (với cơ chế auto-migration loại bỏ giá ảo cũ).
     *   **`model_config.py`**: Quản lý cấu hình per-model trong bảng `model_config` (RPM, TPM, RPD, pool_name, priority) và cung cấp hàm đồng bộ hai chiều `sync_env_to_db()`.
     *   **`account_keys.py`**: Auth token theo `sk-<name>-<6 ký tự>`, web credential, invite code.
@@ -192,6 +196,16 @@ Hệ thống Router API được thiết kế như một lớp trừu tượng, 
     *   **KHÔNG** nén văn bản cào về thành plain-text một dòng bằng `re.sub(r"\s+", " ", text)` (sẽ làm mất bảng, danh sách và cấu trúc mà LLM cần).
     *   **KHÔNG** đổi logic trích đoạn về `evidence[:evidence_max]` từ đầu trang (sẽ dính rác header/menu/intro).
     *   Giữ nguyên chữ ký hàm `search_with_citations(query: str) -> Tuple[str, List[Dict[str, str]]]`.
+
+### 3.11. Định Tuyến Gemma 4 Standalone & Chính Sách Chống Cướp Model (Anti-Hijacking Policy)
+*   **Vận Hành Standalone:**
+    *   Gemma 4 (`gemma-4-26b-a4b-it` và `gemma-4-31b-it`) vận hành độc lập (ngoài `MODEL_POOLS`), sử dụng trực tiếp các API key Google AI Studio/Gemini.
+    *   Hạn mức context an toàn được áp đặt là `GEMMA_CONTEXT_LENGTH = 14000` tokens.
+    *   Cơ chế thinking: Hỗ trợ các mức suy luận `low`, `medium`, `high`, `minimal`. Mọi cấu hình gửi lên Google API bắt buộc phải sanitize sang `thinking_level` (Google API sẽ trả 400 nếu nhận `thinking_budget`).
+*   **Chính Sách Chống Cướp Model Native (Anti-Hijacking Policy):**
+    *   Các model Native (`gemma`, `gemini`, `flash`, hoặc nằm trong `AVAILABLE_MODELS`/`MODEL_POOLS`) được bảo vệ nghiêm ngặt: **tuyệt đối không bao giờ** bị chiếm quyền bởi các Custom Endpoint cấp tài khoản không có pool_assignments (như `9router`).
+    *   Custom Endpoint tại Step 1 của `_resolve_model` chỉ được nhận request khi: (1) Model được yêu cầu là model bên ngoài (không phải native) VÀ (2) Tên model khớp chính xác với danh sách model mà Custom Endpoint đó hỗ trợ (`_match_endpoint_model`). Nghiêm cấm hành vi gán ép model đầu tiên `[0]` một cách tùy tiện.
+    *   `router.resolve_model_alias` chuẩn hóa tự động mọi biến thể tên gọi từ client (`gemma-4-27b`, `gemma-27b`, `gemma-31b`, `gemma-4-31b-it`) về đúng alias chuẩn của hệ thống (`gemma-4-26b` hoặc `gemma-4-31b`).
 
 **Luồng chung:** Tất cả các proxy đều ủy quyền cho `PoolManager`. `PoolManager` sau đó sử dụng `APIRouter` để giải quyết key và `gemini/facade` để thực hiện cuộc gọi API thực tế đến Gemini hoặc Custom Endpoint, và cuối cùng xử lý phản hồi trước khi trả về cho proxy để định dạng lại cho client.
 
