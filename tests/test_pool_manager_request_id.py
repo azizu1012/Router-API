@@ -13,6 +13,8 @@ import ast
 import inspect
 import textwrap
 
+import pytest
+
 from src.core.orchestration.pool_manager import PoolManager
 
 
@@ -56,3 +58,103 @@ def test_standalone_stream_path_label():
         "call_stream standalone path logs 'standalone_nonstream' — "
         "should be 'standalone_stream'"
     )
+
+
+def test_safe_release_key_fallback():
+    """_safe_release_key must support both modern 3-arg and legacy 1-arg signatures."""
+    from src.core.orchestration.pool_manager import _safe_release_key
+    import src.core.orchestration.pool_manager as pm_module
+
+    # Test modern 3-arg call
+    called_modern = []
+    class ModernRouter:
+        def release_key(self, key, res_id=None, metadata=None):
+            called_modern.append((key, res_id, metadata))
+            return True
+
+    orig_router = pm_module.router
+    try:
+        pm_module.router = ModernRouter()
+        res = _safe_release_key("key-123", "res-456", {"req": "test"})
+        assert res is True
+        assert called_modern == [("key-123", "res-456", {"req": "test"})]
+
+        # Test legacy 1-arg mock
+        called_legacy = []
+        class LegacyRouter:
+            def release_key(self, key):
+                called_legacy.append(key)
+                return True
+
+        pm_module.router = LegacyRouter()
+        res_legacy = _safe_release_key("key-123", "res-456", {"req": "test"})
+        assert res_legacy is True
+        assert called_legacy == ["key-123"]
+    finally:
+        pm_module.router = orig_router
+
+
+@pytest.mark.anyio
+async def test_stream_releases_key_on_quota_exhausted(monkeypatch):
+    """When acquire_quota fails in call_stream, the key MUST be released to prevent capacity leaks."""
+    import asyncio
+    import src.core.orchestration.pool_manager as pool_module
+
+    pm = pool_module.PoolManager()
+    monkeypatch.setattr(pool_module.router, "resolve_pool", lambda alias: None)
+    monkeypatch.setattr(
+        pool_module,
+        "_resolve_model",
+        lambda *args, **kwargs: asyncio.sleep(
+            0,
+            result=(
+                "gemini-flash",
+                "gemini-flash-38",
+                "test-leaked-key",
+                "gemini-flash-38",
+                {"provider": "gemini", "model_alias": "gemini-flash", "reservation_id": "res-999"},
+            ),
+        ),
+    )
+    # Simulate quota exhausted
+    monkeypatch.setattr(pool_module.router, "acquire_quota", lambda *args: asyncio.sleep(0, result=False))
+
+    released_keys = []
+    monkeypatch.setattr(
+        pool_module.router,
+        "release_key",
+        lambda key, *args, **kwargs: released_keys.append(key) or True,
+    )
+    monkeypatch.setattr(pool_module, "apply_error_penalty", lambda *args: None)
+    monkeypatch.setattr(pool_module.router, "record_attempt_failure", lambda *args, **kwargs: None)
+    monkeypatch.setattr(pool_module, "_retry_delay", lambda attempt: 0)
+
+    with pytest.raises(RuntimeError, match="Standalone stream failed after retries"):
+        async for _ in pm.call_stream("gemini-flash", [{"role": "user", "content": "hi"}]):
+            pass
+
+    # Across MAX_RETRIES attempts, the key MUST have been released each time!
+    assert len(released_keys) == pool_module.config.MAX_RETRIES
+    assert all(k == "test-leaked-key" for k in released_keys)
+
+
+@pytest.mark.anyio
+async def test_nonstream_standalone_unbound_reservation_protection(monkeypatch):
+    """If _resolve_and_call raises early in standalone nonstream, reservation must not be unbound."""
+    import asyncio
+    import src.core.orchestration.pool_manager as pool_module
+
+    pm = pool_module.PoolManager()
+    monkeypatch.setattr(pool_module.router, "resolve_pool", lambda alias: None)
+
+    async def fail_resolve(*args, **kwargs):
+        raise ValueError("simulated network crash before reservation")
+
+    monkeypatch.setattr(pm, "_resolve_and_call", fail_resolve)
+    monkeypatch.setattr(pool_module, "_classify_error", lambda e: "network_error")
+    monkeypatch.setattr(pool_module, "_retry_delay", lambda attempt: 0)
+
+    # Should raise ValueError, NOT UnboundLocalError
+    with pytest.raises(ValueError, match="simulated network crash before reservation"):
+        await pm.call_nonstream("gemini-flash", [{"role": "user", "content": "hi"}])
+

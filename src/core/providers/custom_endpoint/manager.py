@@ -71,6 +71,9 @@ class CustomEndpointManager:
     def _record_transition(self, name: str, state: str, metadata: Optional[Dict[str, Any]] = None) -> None:
         transition_id = uuid.uuid4().hex
         payload = dict(metadata or {})
+        from src.core.runtime.request_context import get_request_id
+        req_id = (payload.get("request_id") or "").strip() or get_request_id() or uuid.uuid4().hex
+        payload["request_id"] = req_id
         payload.update({"endpoint": name, "state": state, "transition_id": transition_id})
         try:
             with _LOCK:
@@ -78,7 +81,7 @@ class CustomEndpointManager:
                 c.execute("""INSERT OR IGNORE INTO endpoint_transitions
                     (request_id, endpoint, state, failures, frozen_until, metadata, created_at, transition_id)
                     VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
-                    (payload.get("request_id", ""), name, state,
+                    (req_id, name, state,
                      int(payload.get("failures", 0)), float(payload.get("frozen_until", 0)),
                      json.dumps(payload, default=str), time.time(), transition_id))
                 c.commit()

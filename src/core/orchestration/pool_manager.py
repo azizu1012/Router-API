@@ -9,6 +9,7 @@ import asyncio
 import os
 import random
 import time
+import uuid
 from typing import Any, AsyncIterator, Dict, List, Optional, Set, Tuple
 
 from src.core.config_n_logg import config
@@ -137,6 +138,18 @@ async def _close_async_stream(stream: Any) -> None:
         pass
 
 
+def _safe_release_key(
+    key: str,
+    reservation_id: Optional[str] = None,
+    metadata: Optional[Dict[str, Any]] = None,
+) -> bool:
+    """Release a reserved key safely, falling back to legacy single-argument mocks."""
+    try:
+        return router.release_key(key, reservation_id, metadata)
+    except TypeError:
+        return router.release_key(key)
+
+
 def _classify_error(e: Exception) -> str:
     """
     Helper function to classify raw exceptions into unified, categorized reasons.
@@ -235,7 +248,7 @@ class PoolManager:
         Raises:
             RuntimeError: If the pool is exhausted or all retry attempts fail.
         """
-        request_id = request_id or get_request_id()
+        request_id = (request_id or "").strip() or get_request_id() or uuid.uuid4().hex
         pool = router.resolve_pool(model_alias)
         if pool:
             # --- POOL MODE (concurrent worker pool) ---
@@ -282,7 +295,10 @@ class PoolManager:
                         member_used = reservation.get("model_alias", member)
                         is_custom = reservation.get("provider") == "custom"
                         if is_custom:
-                            endpoint_manager.mark_endpoint_success(reservation.get("name", member_used))
+                            endpoint_manager.mark_endpoint_success(
+                                reservation.get("name", member_used),
+                                metadata={"request_id": request_id},
+                            )
                         else:
                             router.update_model_health(member_used, success=True)
                         return {
@@ -304,7 +320,7 @@ class PoolManager:
                             logger.warning("[PoolManager] Custom endpoint failed: %s, swapping...", e)
                             endpoint_manager.mark_endpoint_failure(
                                 reservation.get("name", member_used),
-                                {"model_id": model_id_val, "reason": str(e), "attempt": pool_try, "path": "stream"},
+                                {"model_id": model_id_val, "reason": str(e), "attempt": pool_try, "path": "pool_nonstream", "request_id": request_id},
                             )
                             _retire_member(pool, exhausted_members, member)
                             continue
@@ -316,7 +332,7 @@ class PoolManager:
                                 router.record_429()
 
                             if api_key_val and model_id_val:
-                                router.record_attempt_failure(key=api_key_val, model_id=model_id_val, reason=reason, duration=config.KEY_429_COOLDOWN_SECONDS, metadata={"path": "pool_nonstream", "attempt": pool_try, "member": member, "request_id": request_id or ""})
+                                router.record_attempt_failure(key=api_key_val, model_id=model_id_val, reason=reason, duration=config.KEY_429_COOLDOWN_SECONDS, metadata={"path": "pool_nonstream", "attempt": pool_try, "member": member, "request_id": request_id})
                                 apply_error_penalty(api_key_val, reason, model_id_val)
 
                             consecutive_transient += 1
@@ -334,7 +350,7 @@ class PoolManager:
                             logger.error("[PoolManager] Hard error %s on member %s: %s", reason, member_used, e)
                             if api_key_val and model_id_val:
                                 cooldown = config.KEY_INVALID_COOLDOWN_SECONDS if reason in ("invalid_key", "permission_denied") else config.KEY_429_COOLDOWN_SECONDS
-                                router.record_attempt_failure(key=api_key_val, model_id=model_id_val, reason=reason, duration=cooldown, metadata={"path": "pool_nonstream", "attempt": pool_try, "member": member, "request_id": request_id or ""})
+                                router.record_attempt_failure(key=api_key_val, model_id=model_id_val, reason=reason, duration=cooldown, metadata={"path": "pool_nonstream", "attempt": pool_try, "member": member, "request_id": request_id})
                                 apply_error_penalty(api_key_val, reason, model_id_val)
                             # ponytail: if key is invalid, rotate to next available key without retiring member
                             if reason in ("invalid_key", "permission_denied"):
@@ -352,6 +368,7 @@ class PoolManager:
             for attempt in range(config.MAX_RETRIES):
                 api_key_val = None
                 model_id_val = None
+                reservation: dict = {}
                 try:
                     resp, api_key_val, model_id_val, input_tokens, reservation = await self._resolve_and_call(
                         model_alias, messages, tools, temperature, max_tokens, thinking_config,
@@ -361,7 +378,10 @@ class PoolManager:
                     )
                     is_custom = reservation.get("provider") == "custom"
                     if is_custom:
-                        endpoint_manager.mark_endpoint_success(reservation.get("name", model_alias))
+                        endpoint_manager.mark_endpoint_success(
+                            reservation.get("name", model_alias),
+                            metadata={"request_id": request_id},
+                        )
                     return {
                         "response": resp,
                         "api_key": api_key_val,
@@ -380,7 +400,7 @@ class PoolManager:
                         logger.warning("[PoolManager] Standalone custom endpoint error (attempt %d): %s", attempt, e)
                         endpoint_manager.mark_endpoint_failure(
                             reservation.get("name", model_alias),
-                            {"model_id": model_id_val, "reason": str(e), "attempt": attempt, "path": "nonstream"},
+                            {"model_id": model_id_val, "reason": str(e), "attempt": attempt, "path": "standalone_nonstream", "request_id": request_id},
                         )
                         raise e
                     reason = _classify_error(e)
@@ -395,7 +415,7 @@ class PoolManager:
                     if api_key_val and model_id_val:
                         # Đóng băng key tương tự và áp dụng Timing Jitter khi ngủ
                         cooldown = config.KEY_INVALID_COOLDOWN_SECONDS if reason in ("invalid_key", "permission_denied") else config.KEY_429_COOLDOWN_SECONDS
-                        router.record_attempt_failure(key=api_key_val, model_id=model_id_val, reason=reason, duration=cooldown, metadata={"path": "standalone_nonstream", "attempt": attempt, "member": model_alias, "request_id": request_id or ""})
+                        router.record_attempt_failure(key=api_key_val, model_id=model_id_val, reason=reason, duration=cooldown, metadata={"path": "standalone_nonstream", "attempt": attempt, "member": model_alias, "request_id": request_id})
                         apply_error_penalty(api_key_val, reason, model_id_val)
                     if attempt < config.MAX_RETRIES - 1:
                         await asyncio.sleep(_retry_delay(attempt))
@@ -442,7 +462,7 @@ class PoolManager:
             Exception: If the stream is interrupted after committing (sending headers/chunks to client),
                        retry with a different key/model is not possible.
         """
-        request_id = request_id or get_request_id()
+        request_id = (request_id or "").strip() or get_request_id() or uuid.uuid4().hex
         pool = router.resolve_pool(model_alias)
         if pool:
             # --- POOL STREAM MODE (concurrent worker pool) ---
@@ -467,6 +487,7 @@ class PoolManager:
                     api_key_val = None
                     model_id_val = None
                     reservation = {}
+                    gen = None
                     try:
                         max_output = min(int(max_tokens or config.MAX_OUTPUT_TOKENS), config.MAX_OUTPUT_TOKENS)
                         estimated_tokens = len(str(messages)) // 4 + max_output
@@ -499,93 +520,86 @@ class PoolManager:
                         else:
                             has_quota = await router.acquire_quota(estimated_tokens, model_alias)
                             if not has_quota:
-                                apply_error_penalty(api_key_val, "rate_limit_rpm_tpm", model_id_val)
-                                router.record_attempt_failure(key=api_key_val, model_id=model_id_val, reason="rate_limit", duration=config.KEY_429_COOLDOWN_SECONDS, metadata={"path": "pool_stream", "attempt": pool_try, "member": member, "request_id": request_id or ""})
                                 raise RuntimeError("quota_exhausted")
 
-                        gen = None
-                        try:
-                            kwargs = {
-                                "model": model_full_val,
-                                "messages": messages,
-                                "api_key": api_key_val,
-                                "max_tokens": max_output,
-                                "temperature": temperature,
-                                "stream": True,
-                                "tools": tools,
-                                "thinking_config": member_tc,
-                            }
-                            if sampling_params:
-                                kwargs.update(sampling_params)
-                            if is_custom:
-                                kwargs["api_base"] = reservation["api_base"]
-                                if extra_body:
-                                    kwargs["extra_body"] = extra_body
+                        kwargs = {
+                            "model": model_full_val,
+                            "messages": messages,
+                            "api_key": api_key_val,
+                            "max_tokens": max_output,
+                            "temperature": temperature,
+                            "stream": True,
+                            "tools": tools,
+                            "thinking_config": member_tc,
+                        }
+                        if sampling_params:
+                            kwargs.update(sampling_params)
+                        if is_custom:
+                            kwargs["api_base"] = reservation["api_base"]
+                            if extra_body:
+                                kwargs["extra_body"] = extra_body
 
-                            gen = await acompletion(**kwargs)
-                            saw_payload = False
-                            pending_chunks = []
-                            # Pre-commit: use pool rotation budget so a
-                            # silent provider is replaced quickly.
-                            first_chunk_deadline = max(
-                                0.01,
-                                pool.max_retry_seconds - (time.monotonic() - start_time),
-                            )
-                            # Post-commit: the client is already receiving
-                            # data — rotation is impossible. The keepalive
-                            # layer's STREAM_STALL_TIMEOUT guards against
-                            # a provider that goes quiet mid-stream.
-                            # For complex tasks, heavy reasoning (Gemma 4,
-                            # custom endpoints), and large outputs (up to 64k tokens),
-                            # 1800s (30 minutes) gives ample runway.
-                            _COMMITTED_STREAM_CAP = float(os.getenv("COMMITTED_STREAM_CAP", "1800.0"))
-                            deadline_ctx = asyncio.timeout(first_chunk_deadline)
-                            async with deadline_ctx:
-                                async for chunk in gen:
-                                    if saw_payload:
+                        gen = await acompletion(**kwargs)
+                        saw_payload = False
+                        pending_chunks = []
+                        # Pre-commit: use pool rotation budget so a
+                        # silent provider is replaced quickly.
+                        first_chunk_deadline = max(
+                            0.01,
+                            pool.max_retry_seconds - (time.monotonic() - start_time),
+                        )
+                        # Post-commit: the client is already receiving
+                        # data — rotation is impossible. The keepalive
+                        # layer's STREAM_STALL_TIMEOUT guards against
+                        # a provider that goes quiet mid-stream.
+                        # For complex tasks, heavy reasoning (Gemma 4,
+                        # custom endpoints), and large outputs (up to 64k tokens),
+                        # 1800s (30 minutes) gives ample runway.
+                        _COMMITTED_STREAM_CAP = float(os.getenv("COMMITTED_STREAM_CAP", "1800.0"))
+                        deadline_ctx = asyncio.timeout(first_chunk_deadline)
+                        async with deadline_ctx:
+                            async for chunk in gen:
+                                if saw_payload:
+                                    yield {
+                                        "chunk": chunk,
+                                        "api_key": api_key_val,
+                                        "model_id": model_id_val,
+                                        "input_tokens": estimated_tokens,
+                                        "reservation": reservation
+                                    }
+                                    continue
+                                pending_chunks.append(chunk)
+                                if _chunk_has_payload(chunk):
+                                    saw_payload = True
+                                    committed = True
+                                    deadline_ctx.reschedule(
+                                        asyncio.get_event_loop().time()
+                                        + _COMMITTED_STREAM_CAP
+                                    )
+                                    for pending in pending_chunks:
                                         yield {
-                                            "chunk": chunk,
+                                            "chunk": pending,
                                             "api_key": api_key_val,
                                             "model_id": model_id_val,
                                             "input_tokens": estimated_tokens,
                                             "reservation": reservation
                                         }
-                                        continue
-                                    pending_chunks.append(chunk)
-                                    if _chunk_has_payload(chunk):
-                                        saw_payload = True
-                                        committed = True
-                                        deadline_ctx.reschedule(
-                                            asyncio.get_event_loop().time()
-                                            + _COMMITTED_STREAM_CAP
-                                        )
-                                        for pending in pending_chunks:
-                                            yield {
-                                                "chunk": pending,
-                                                "api_key": api_key_val,
-                                                "model_id": model_id_val,
-                                                "input_tokens": estimated_tokens,
-                                                "reservation": reservation
-                                            }
-                                        pending_chunks.clear()
+                                    pending_chunks.clear()
 
-                            if not saw_payload:
-                                # An upstream that closes before its first
-                                # frame is transient. Raising here is what
-                                # makes the retry/rotation path run.
-                                raise RuntimeError("empty_stream_response")
+                        if not saw_payload:
+                            # An upstream that closes before its first
+                            # frame is transient. Raising here is what
+                            # makes the retry/rotation path run.
+                            raise RuntimeError("empty_stream_response")
 
-                            if is_custom:
-                                endpoint_manager.mark_endpoint_success(reservation.get("name", member_used))
-                            else:
-                                router.update_model_health(member_used, success=True)
-                            return
-                        finally:
-                            if gen is not None:
-                                await _close_async_stream(gen)
-                            if api_key_val:
-                                router.release_key(api_key_val, reservation.get("reservation_id"), {"path": "stream", "attempt": pool_try})
-
+                        if is_custom:
+                            endpoint_manager.mark_endpoint_success(
+                                reservation.get("name", member_used),
+                                metadata={"request_id": request_id},
+                            )
+                        else:
+                            router.update_model_health(member_used, success=True)
+                        return
                     except Exception as e:
                         if committed:
                             logger.error("[PoolManager] Stream interrupted after committing: %s", e)
@@ -597,7 +611,7 @@ class PoolManager:
                             logger.warning("[PoolManager] Custom endpoint stream failed: %s, swapping...", e)
                             endpoint_manager.mark_endpoint_failure(
                                 reservation.get("name", member_used),
-                                {"model_id": model_id_val, "reason": str(e), "attempt": pool_try, "path": "stream"},
+                                {"model_id": model_id_val, "reason": str(e), "attempt": pool_try, "path": "pool_stream", "request_id": request_id},
                             )
                             _retire_member(pool, exhausted_members, member)
                             continue
@@ -609,7 +623,7 @@ class PoolManager:
                                 router.record_429()
 
                             if api_key_val and model_id_val:
-                                router.record_attempt_failure(key=api_key_val, model_id=model_id_val, reason=reason, duration=config.KEY_429_COOLDOWN_SECONDS, metadata={"path": "pool_stream", "attempt": pool_try, "member": member, "request_id": request_id or ""})
+                                router.record_attempt_failure(key=api_key_val, model_id=model_id_val, reason=reason, duration=config.KEY_429_COOLDOWN_SECONDS, metadata={"path": "pool_stream", "attempt": pool_try, "member": member, "request_id": request_id})
                                 apply_error_penalty(api_key_val, reason, model_id_val)
 
                             if not reservation:
@@ -632,13 +646,19 @@ class PoolManager:
                             logger.error("[PoolManager] Hard stream error %s: %s", reason, e)
                             if api_key_val and model_id_val:
                                 cooldown = config.KEY_INVALID_COOLDOWN_SECONDS if reason in ("invalid_key", "permission_denied") else config.KEY_429_COOLDOWN_SECONDS
-                                router.record_attempt_failure(key=api_key_val, model_id=model_id_val, reason=reason, duration=cooldown, metadata={"path": "pool_stream", "attempt": pool_try, "member": member, "request_id": request_id or ""})
+                                router.record_attempt_failure(key=api_key_val, model_id=model_id_val, reason=reason, duration=cooldown, metadata={"path": "pool_stream", "attempt": pool_try, "member": member, "request_id": request_id})
                                 apply_error_penalty(api_key_val, reason, model_id_val)
                             # ponytail: if key is invalid, rotate to next available key without retiring member
                             if reason in ("invalid_key", "permission_denied"):
                                 pool.release(member)
                                 continue
                             _retire_member(pool, exhausted_members, member)
+                    finally:
+                        if gen is not None:
+                            await _close_async_stream(gen)
+                        if api_key_val:
+                            _safe_release_key(api_key_val, reservation.get("reservation_id"), {"path": "pool_stream", "attempt": pool_try, "request_id": request_id})
+                            api_key_val = None
 
                 raise RuntimeError("Pool stream max_retry_seconds exhausted")
             finally:
@@ -649,11 +669,10 @@ class PoolManager:
             for attempt in range(config.MAX_RETRIES):
                 api_key_val = None
                 model_id_val = None
-                # Bound before the try: `_resolve_model` is inside it, so a failure
-                # there left `reservation` / `is_custom` unbound and the handler
-                # below raised NameError instead of the real error.
+                model_alias_val = model_alias
                 reservation: dict = {}
                 is_custom = False
+                gen = None
                 try:
                     max_output = min(int(max_tokens or config.MAX_OUTPUT_TOKENS), config.MAX_OUTPUT_TOKENS)
                     estimated_tokens = len(str(messages)) // 4 + max_output
@@ -683,57 +702,53 @@ class PoolManager:
                         if not has_quota:
                             raise RuntimeError("quota_exhausted")
 
-                    gen = None
-                    try:
-                        kwargs = {
-                            "model": model_full_val,
-                            "messages": messages,
-                            "api_key": api_key_val,
-                            "max_tokens": max_output,
-                            "temperature": temperature,
-                            "stream": True,
-                            "tools": tools,
-                            "thinking_config": member_tc,
-                        }
-                        if sampling_params:
-                            kwargs.update(sampling_params)
+                    kwargs = {
+                        "model": model_full_val,
+                        "messages": messages,
+                        "api_key": api_key_val,
+                        "max_tokens": max_output,
+                        "temperature": temperature,
+                        "stream": True,
+                        "tools": tools,
+                        "thinking_config": member_tc,
+                    }
+                    if sampling_params:
+                        kwargs.update(sampling_params)
 
-                        gen = await acompletion(**kwargs)
-                        saw_payload = False
-                        pending_chunks = []
-                        async for chunk in gen:
-                            if saw_payload:
+                    gen = await acompletion(**kwargs)
+                    saw_payload = False
+                    pending_chunks = []
+                    async for chunk in gen:
+                        if saw_payload:
+                            yield {
+                                "chunk": chunk,
+                                "api_key": api_key_val,
+                                "model_id": model_id_val,
+                                "input_tokens": estimated_tokens,
+                                "reservation": reservation
+                            }
+                            continue
+                        pending_chunks.append(chunk)
+                        if _chunk_has_payload(chunk):
+                            saw_payload = True
+                            committed = True
+                            for pending in pending_chunks:
                                 yield {
-                                    "chunk": chunk,
+                                    "chunk": pending,
                                     "api_key": api_key_val,
                                     "model_id": model_id_val,
                                     "input_tokens": estimated_tokens,
                                     "reservation": reservation
                                 }
-                                continue
-                            pending_chunks.append(chunk)
-                            if _chunk_has_payload(chunk):
-                                saw_payload = True
-                                committed = True
-                                for pending in pending_chunks:
-                                    yield {
-                                        "chunk": pending,
-                                        "api_key": api_key_val,
-                                        "model_id": model_id_val,
-                                        "input_tokens": estimated_tokens,
-                                        "reservation": reservation
-                                    }
-                                pending_chunks.clear()
-                        if not saw_payload:
-                            raise RuntimeError("empty_stream_response")
-                        if is_custom:
-                            endpoint_manager.mark_endpoint_success(reservation.get("name", model_alias_val))
-                        return
-                    finally:
-                        if gen is not None:
-                            await _close_async_stream(gen)
-                        if api_key_val:
-                            router.release_key(api_key_val, reservation.get("reservation_id"), {"path": "stream", "attempt": attempt})
+                            pending_chunks.clear()
+                    if not saw_payload:
+                        raise RuntimeError("empty_stream_response")
+                    if is_custom:
+                        endpoint_manager.mark_endpoint_success(
+                            reservation.get("name", model_alias_val),
+                            metadata={"request_id": request_id},
+                        )
+                    return
                 except Exception as e:
                     if committed:
                         logger.error("[PoolManager] Standalone stream interrupted after committing: %s", e)
@@ -749,7 +764,10 @@ class PoolManager:
                     # the pool path tripped the breaker beside it.
                     if is_custom:
                         endpoint_name = reservation.get("name", model_alias_val)
-                        endpoint_manager.mark_endpoint_failure(endpoint_name)
+                        endpoint_manager.mark_endpoint_failure(
+                            endpoint_name,
+                            {"model_id": model_id_val, "reason": str(e), "attempt": attempt, "path": "standalone_stream", "request_id": request_id},
+                        )
                         logger.error(
                             "[PoolManager] custom endpoint %s failed before stream commit "
                             "(attempt=%d, reason=%s, error=%s)",
@@ -767,10 +785,16 @@ class PoolManager:
                             router.record_429()
                     if api_key_val and model_id_val:
                         cooldown = config.KEY_INVALID_COOLDOWN_SECONDS if reason in ("invalid_key", "permission_denied") else config.KEY_429_COOLDOWN_SECONDS
-                        router.record_attempt_failure(key=api_key_val, model_id=model_id_val, reason=reason, duration=cooldown, metadata={"path": "standalone_stream", "attempt": attempt, "member": model_alias, "request_id": request_id or ""})
+                        router.record_attempt_failure(key=api_key_val, model_id=model_id_val, reason=reason, duration=cooldown, metadata={"path": "standalone_stream", "attempt": attempt, "member": model_alias, "request_id": request_id})
                         apply_error_penalty(api_key_val, reason, model_id_val)
                     if attempt < config.MAX_RETRIES - 1:
                         await asyncio.sleep(_retry_delay(attempt))
+                finally:
+                    if gen is not None:
+                        await _close_async_stream(gen)
+                    if api_key_val:
+                        _safe_release_key(api_key_val, reservation.get("reservation_id"), {"path": "standalone_stream", "attempt": attempt, "request_id": request_id})
+                        api_key_val = None
             raise RuntimeError("Standalone stream failed after retries")
 
     # ── Internal Helpers ──────────────────────────────────────────
@@ -853,8 +877,6 @@ class PoolManager:
                 else:
                     has_quota = await router.acquire_quota(estimated_tokens, model_alias)
                     if not has_quota:
-                        apply_error_penalty(api_key_val, "rate_limit_rpm_tpm", model_id_val)
-                        router.record_attempt_failure(key=api_key_val, model_id=model_id_val, reason="rate_limit", duration=config.KEY_429_COOLDOWN_SECONDS, metadata={"path": "standalone_stream", "attempt": attempt, "member": model_alias, "request_id": request_id or ""})
                         raise RuntimeError("quota_exhausted")
 
                 # Build arguments for single acompletion call
@@ -890,7 +912,8 @@ class PoolManager:
         finally:
             # Key resolution release handles concurrency
             if api_key_val:
-                router.release_key(api_key_val, reservation.get("reservation_id"), {"path": "resolve", "attempt": attempt})
+                call_path = "pool_nonstream" if pool_mode else "standalone_nonstream"
+                _safe_release_key(api_key_val, reservation.get("reservation_id"), {"path": call_path, "attempt": attempt, "request_id": request_id or ""})
 
 
 pool_manager = PoolManager()

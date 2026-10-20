@@ -391,16 +391,18 @@ class APIRouter(KeyResolverMixin, ModelResolutionMixin):
         """
         transition_id = uuid.uuid4().hex
         metadata = dict(metadata or {})
-        metadata.setdefault("request_id", uuid.uuid4().hex)
+        from src.core.runtime.request_context import get_request_id
+        req_id = (metadata.get("request_id") or "").strip() or get_request_id() or uuid.uuid4().hex
+        metadata["request_id"] = req_id
         event = {
             "ts": time.time(),
             "transition_id": transition_id,
-            "request_id": (metadata or {}).get("request_id", ""),
+            "request_id": req_id,
             "key": (key or "")[-8:] if key else None,
             "model_id": model_id,
             "reason": reason,
             "duration": duration,
-            **(metadata or {}),
+            **metadata,
         }
         try:
             with self._key_lock:
