@@ -20,6 +20,7 @@ import aiohttp
 from src.core.config_n_logg.logger import logger_proxy as logger
 
 from ..anthropic_wire import is_anthropic_format
+from ...runtime.effort import sanitize_custom_endpoint_payload
 
 TIMEOUT = int(os.getenv("CUSTOM_ENDPOINT_TIMEOUT", "900"))
 
@@ -232,6 +233,9 @@ def _build_payload(
         payload["tools"] = tools
     if extra_body:
         payload.update(extra_body)
+    # Last stop before serialisation: the endpoint must never receive a
+    # client placeholder like "auto", nor a dialect field it does not declare.
+    sanitize_custom_endpoint_payload(payload, api_format="openai")
     return payload
 
 
@@ -292,6 +296,7 @@ async def call_anthropic_nonstream(
         stream=False, tools=tools, extra_body=passthrough,
     )
     payload.pop("stream", None)
+    sanitize_custom_endpoint_payload(payload, api_format="anthropic")
 
     async with aiohttp.ClientSession(headers=anthropic_headers(api_key)) as session:
         async with session.post(
@@ -498,6 +503,7 @@ class CustomEndpointStreamGen:
             max_tokens=self._max_tokens, temperature=self._temperature,
             stream=True, tools=self._tools, extra_body=passthrough,
         )
+        sanitize_custom_endpoint_payload(payload, api_format="anthropic")
 
         self._session = aiohttp.ClientSession(headers=anthropic_headers(self._api_key))
         try:

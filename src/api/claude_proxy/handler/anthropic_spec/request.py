@@ -2,6 +2,8 @@
 
 from typing import Any, Dict, List
 
+from src.core.runtime.effort import extract_reasoning_effort
+
 
 
 def extract_sampling_params(body: Dict[str, Any]) -> Dict[str, Any]:
@@ -43,6 +45,14 @@ def extract_sampling_params(body: Dict[str, Any]) -> Dict[str, Any]:
     thinking = body.get("thinking")
     if isinstance(thinking, dict) and thinking.get("type"):
         out["thinking"] = thinking
+
+    # Anthropic spells effort as `output_config.effort` (Claude Code) or encodes
+    # it in `thinking.budget_tokens`. OpenAI-shaped custom endpoints have no
+    # such fields, so carry the equivalent under `reasoning_effort` — normalized,
+    # because "auto"/"default" are placeholders that upstream rejects with 400.
+    reasoning_effort = extract_reasoning_effort(body)
+    if reasoning_effort is not None:
+        out["reasoning_effort"] = reasoning_effort
 
     return out
 

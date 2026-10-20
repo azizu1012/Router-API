@@ -53,12 +53,12 @@ Chỉ kích hoạt OpenCode CLI hỗ trợ khi gặp các trường hợp sau:
 4. **Người dùng yêu cầu cụ thể**: Khi người dùng chỉ định dùng OpenCode để làm task.
 
 ### 3. Các Model trong OpenCode & Chiến lược phân bổ:
-1. `opencode/space-bunny-free`:
-   - **Ưu tiên số 1 mặc định**: 1M context miễn phí, cày việc trâu, nhanh, ổn định và $0 cost.
+1. `opencode/deepseek-v4.1-flash-free`:
+   - **Ưu tiên số 1 mặc định**: Miễn phí, code thông minh, nhanh, ổn định và $0 cost.
    - *Lưu ý*: Nếu chạm rate limit/hết quota preview thì chuyển sang model 2.
 2. `azuris-router/gemini-flash` (local gateway `http://127.0.0.1:58100/opencode/v1`):
    - Dùng khi cần suy luận logic sâu hoặc khi model 1 hết quota.
-   - *Lưu ý*: Nếu chạy qua local gateway bị lag/treo > 30s ➔ Lập tức fallback về `space-bunny-free`.
+   - *Lưu ý*: Nếu chạy qua local gateway bị lag/treo > 30s ➔ Lập tức fallback về `opencode/deepseek-v4.1-flash-free`.
 
 ### 4. Quy trình Thực thi & Nghiệm thu khi dùng OpenCode (Quality Gate):
 1. **Giao việc an toàn & Tiết kiệm token tối đa**:

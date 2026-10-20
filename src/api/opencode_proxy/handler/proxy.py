@@ -31,6 +31,7 @@ from .stream_executor import execute_stream
 from src.core.runtime.sub_agent_detect import (
     is_sub_agent_request_openai as _is_sub_agent_request,
 )
+from src.core.runtime.effort import extract_reasoning_effort
 
 
 def _effort_to_level(effort: Any) -> Optional[str]:
@@ -176,8 +177,12 @@ def _client_sampling_params(body: Dict[str, Any]) -> Dict[str, Any]:
     if isinstance(top_k, int) and not isinstance(top_k, bool):
         out["top_k"] = top_k
         
-    reasoning_effort = body.get("reasoning_effort")
-    if isinstance(reasoning_effort, str) and reasoning_effort:
+    # The client's own effort spelling (reasoning_effort, reasoning.effort or
+    # output_config.effort) is normalized before it travels. "auto"/"default"
+    # are client placeholders, not provider values: a strict custom endpoint
+    # answers them with 400 invalid_value, so they are omitted instead.
+    reasoning_effort = extract_reasoning_effort(body)
+    if reasoning_effort is not None:
         out["reasoning_effort"] = reasoning_effort
 
     return out

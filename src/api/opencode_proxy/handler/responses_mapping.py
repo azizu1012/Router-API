@@ -18,6 +18,8 @@ model endpoint.
 
 from typing import Any, Dict, List, Tuple
 
+from src.core.runtime.effort import normalize_reasoning_effort
+
 # Responses names hosted tools by type; the chat paths speak function tools.
 _HOSTED_SEARCH_TYPES = {"web_search", "web_search_preview", "web_search_2025_08_26"}
 _HOSTED_FETCH_TYPES = {"web_fetch", "url_context"}
@@ -166,10 +168,14 @@ def responses_to_chat_body(body: Dict[str, Any]) -> Dict[str, Any]:
     if wants_fetch:
         chat["web_fetch"] = True
 
-    # reasoning effort, spelled the Responses way
+    # reasoning effort, spelled the Responses way. "auto"/"default" mean "let
+    # the model decide", so the field is omitted rather than forwarded — strict
+    # OpenAI-compatible endpoints reject the placeholder with 400.
     reasoning = body.get("reasoning")
-    if isinstance(reasoning, dict) and reasoning.get("effort"):
-        chat["reasoning_effort"] = reasoning["effort"]
+    if isinstance(reasoning, dict) and reasoning.get("effort") is not None:
+        effort = normalize_reasoning_effort(reasoning.get("effort"))
+        if effort is not None:
+            chat["reasoning_effort"] = effort
 
     if body.get("stream"):
         chat["stream"] = True

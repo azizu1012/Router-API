@@ -70,6 +70,16 @@ async def chat_completions(
             if custom_ep and custom_ep.get("enabled", True):
                 from src.core.providers.custom_endpoint.passthrough import call_custom_endpoint_passthrough
                 stream = body.get("stream", False)
+                # The alias branch bypasses pool_manager, so the client's
+                # reasoning parameters have to be carried into extra_body
+                # explicitly or they are silently dropped. The custom endpoint
+                # client normalizes/omits "auto" before serialising.
+                extra_body = dict(body.get("extra_body") or {})
+                if body.get("reasoning_effort") is not None:
+                    extra_body.setdefault("reasoning_effort", body.get("reasoning_effort"))
+                if body.get("reasoning") is not None:
+                    extra_body.setdefault("reasoning", body.get("reasoning"))
+                extra_body = extra_body or None
                 if stream:
                     _, stream_gen = await call_custom_endpoint_passthrough(
                         endpoint=custom_ep,
@@ -79,7 +89,7 @@ async def chat_completions(
                         temperature=body.get("temperature"),
                         max_tokens=body.get("max_tokens"),
                         tools=body.get("tools"),
-                        extra_body=body.get("extra_body"),
+                        extra_body=extra_body,
                         tool_choice=body.get("tool_choice"),
                         response_format=body.get("response_format"),
                     )
@@ -141,7 +151,7 @@ async def chat_completions(
                         temperature=body.get("temperature"),
                         max_tokens=body.get("max_tokens"),
                         tools=body.get("tools"),
-                        extra_body=body.get("extra_body"),
+                        extra_body=extra_body,
                         tool_choice=body.get("tool_choice"),
                         response_format=body.get("response_format"),
                     )

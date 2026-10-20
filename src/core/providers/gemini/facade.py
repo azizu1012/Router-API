@@ -365,6 +365,7 @@ async def acompletion(**kwargs: Any) -> Any:
     if api_base:
         from ..custom_endpoint.client import CustomEndpointStreamGen, call_custom_nonstream
         from ..anthropic_wire import is_anthropic_format
+        from ...runtime.effort import normalize_reasoning_effort
         
         merged = dict(extra_body or {})
         is_anth = is_anthropic_format(api_format)
@@ -377,8 +378,9 @@ async def acompletion(**kwargs: Any) -> Any:
         
         if is_anth:
             # Destination is Anthropic
-            # Prevent reasoning_effort from leaking into Anthropic body
+            # Prevent OpenAI-only reasoning fields from leaking into Anthropic body
             merged.pop("reasoning_effort", None)
+            merged.pop("reasoning", None)
             
             if thinking:
                 # Client sent Anthropic thinking, pass it verbatim.
@@ -390,14 +392,33 @@ async def acompletion(**kwargs: Any) -> Any:
                 merged["thinking"] = thinking
         else:
             # Destination is OpenAI-compatible
-            # Prevent thinking block from leaking into OpenAI body
+            # Prevent Anthropic-only fields from leaking into an OpenAI body.
             merged.pop("thinking", None)
+            merged.pop("output_config", None)
             
-            if reasoning_effort:
-                # Client sent OpenAI reasoning_effort natively. Pass it verbatim.
-                # Do NOT synthesize reasoning_effort if the client didn't ask for it
-                # because standard models like gpt-4o, vLLM, or Ollama reject it with 400.
-                merged["reasoning_effort"] = reasoning_effort
+            # "auto"/"default" are client placeholders, not provider values: a
+            # strict endpoint answers with 400 invalid_value. Normalize, and
+            # omit entirely when there is no usable value so the model applies
+            # its own default.
+            source_effort = reasoning_effort
+            if source_effort is None:
+                source_effort = merged.get("reasoning_effort")
+            normalized_effort = normalize_reasoning_effort(source_effort)
+            if normalized_effort:
+                merged["reasoning_effort"] = normalized_effort
+            else:
+                merged.pop("reasoning_effort", None)
+            
+            reasoning = merged.get("reasoning")
+            if isinstance(reasoning, dict):
+                if reasoning.get("effort") is not None:
+                    normalized_reasoning = normalize_reasoning_effort(reasoning.get("effort"))
+                    if normalized_reasoning is None:
+                        reasoning.pop("effort", None)
+                    else:
+                        reasoning["effort"] = normalized_reasoning
+                if not reasoning:
+                    merged.pop("reasoning", None)
 
         if top_k is not None and is_anth:
             # Only Anthropic (and Gemini natively) officially support top_k.
