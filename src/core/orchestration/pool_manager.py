@@ -275,6 +275,7 @@ class PoolManager:
                                 account, extra_body, pool_mode=True, pool=pool, is_stream=False,
                                 attempt=pool_try, thinking_params=thinking_params,
                                 member_override=member, sampling_params=sampling_params,
+                                request_id=request_id,
                             ),
                             timeout=remaining,
                         )
@@ -356,6 +357,7 @@ class PoolManager:
                         model_alias, messages, tools, temperature, max_tokens, thinking_config,
                         account, extra_body, pool_mode=False, is_stream=False, attempt=attempt,
                         thinking_params=thinking_params, sampling_params=sampling_params,
+                        request_id=request_id,
                     )
                     is_custom = reservation.get("provider") == "custom"
                     if is_custom:
@@ -765,7 +767,7 @@ class PoolManager:
                             router.record_429()
                     if api_key_val and model_id_val:
                         cooldown = config.KEY_INVALID_COOLDOWN_SECONDS if reason in ("invalid_key", "permission_denied") else config.KEY_429_COOLDOWN_SECONDS
-                        router.record_attempt_failure(key=api_key_val, model_id=model_id_val, reason=reason, duration=cooldown, metadata={"path": "standalone_nonstream", "attempt": attempt, "member": model_alias, "request_id": request_id or ""})
+                        router.record_attempt_failure(key=api_key_val, model_id=model_id_val, reason=reason, duration=cooldown, metadata={"path": "standalone_stream", "attempt": attempt, "member": model_alias, "request_id": request_id or ""})
                         apply_error_penalty(api_key_val, reason, model_id_val)
                     if attempt < config.MAX_RETRIES - 1:
                         await asyncio.sleep(_retry_delay(attempt))
@@ -790,6 +792,7 @@ class PoolManager:
         thinking_params: Optional[Dict[str, Any]] = None,
         member_override: Optional[str] = None,
         sampling_params: Optional[Dict[str, Any]] = None,
+        request_id: Optional[str] = None,
     ) -> Tuple[Any, str, str, int, dict]:
         """
         Internal helper method to resolve the optimal API key and model, check quotas,
