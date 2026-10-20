@@ -36,9 +36,6 @@ async def chat_completions(
         )
 
     try:
-        from src.logical_HQ_translator.compression.rtk import compress_messages
-        compress_messages(body, enabled=True)
-
         requested_model = body.get("model", "")
         original_model_name = requested_model  # Save for response spoofing
 
@@ -59,6 +56,11 @@ async def chat_completions(
             # Store original name for response spoofing
             body["_original_model_name"] = original_model_name
             body["_alias_info"] = alias_info
+
+        # RTK belongs to the selected provider branch, not the generic route.
+        from src.logical_HQ_translator.compression.rtk import compress_messages
+        provider_kind = "custom" if alias_info and alias_info.get("target_endpoint") else "internal"
+        compress_messages(body, enabled=True, provider_kind=provider_kind)
 
         # Route directly to custom endpoint if specified in alias
         target_ep_name = alias_info.get("target_endpoint") if alias_info else None

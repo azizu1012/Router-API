@@ -269,7 +269,7 @@ def _clean_system_prompt(text: str) -> str:
 
 def _convert_messages(body: Dict[str, Any]) -> Tuple[List[Dict[str, Any]], List[Dict[str, Any]]]:
     from src.logical_HQ_translator.compression.rtk import compress_messages
-    compress_messages(body, enabled=True)
+    compress_messages(body, enabled=True, provider_kind="internal")
 
     # Sanitize all tool IDs in the request body for Anthropic compatibility
     ensure_tool_ids_in_messages(body.get("messages", []))

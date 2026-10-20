@@ -544,7 +544,18 @@ def compress_text(text: str, stats: Dict[str, Any]) -> str:
     return out
 
 
-def compress_messages(body: Any, enabled: bool = True) -> Optional[Dict[str, Any]]:
+def compress_messages(
+    body: Any,
+    enabled: bool = True,
+    provider_kind: str = "internal",
+) -> Optional[Dict[str, Any]]:
+    """Compress tool output while keeping provider ownership explicit.
+
+    RTK is shared policy, but the payload belongs to exactly one provider
+    branch.  The label is carried into diagnostics so custom passthrough and
+    internal providers cannot be mistaken for one another when debugging
+    transformed tool results.
+    """
     if not enabled or not body:
         return None
 
@@ -580,15 +591,39 @@ def compress_messages(body: Any, enabled: bool = True) -> Optional[Dict[str, Any
                 for part in content:
                     if isinstance(part, dict) and part.get("type") == "text" and isinstance(part.get("text"), str):
                         part["text"] = compress_text(part["text"], stats)
-        elif role == "user" and isinstance(content, str) and (len(content) >= 8192 or content.startswith("[Tool Result:")):
+        elif (
+            provider_kind == "internal"
+            and role == "user"
+            and isinstance(content, str)
+            and (len(content) >= 8192 or content.startswith("[Tool Result:"))
+        ):
+            # Internal/Anthropic translation may carry tool output as a plain
+            # user block.  Custom OpenAI-compatible endpoints must not have
+            # this heuristic applied to ordinary user prompts.
             msg["content"] = compress_text(content, stats)
+
+        elif provider_kind == "custom" and role == "assistant" and isinstance(content, list):
+            # OpenAI-compatible custom endpoints can encode tool output in an
+            # assistant content array.  Compress only explicit tool-result
+            # shaped blocks; never rewrite normal assistant text.
+            for block in content:
+                if (
+                    isinstance(block, dict)
+                    and block.get("type") in {"tool_result", "tool_output"}
+                    and isinstance(block.get("content"), str)
+                ):
+                    block["content"] = compress_text(block["content"], stats)
 
     if stats["hits"]:
         saved = stats["bytes_before"] - stats["bytes_after"]
         pct = (saved / stats["bytes_before"] * 100) if stats["bytes_before"] > 0 else 0
         filters = ",".join(set(h["filter"] for h in stats["hits"]))
         from src.core.config_n_logg.logger import logger_proxy as logger
-        logger.info(f"[RTK] saved {saved}B / {stats['bytes_before']}B ({pct:.1f}%) via [{filters}] hits={len(stats['hits'])}")
+        logger.info(
+            f"[RTK] provider={provider_kind} saved {saved}B / "
+            f"{stats['bytes_before']}B ({pct:.1f}%) via [{filters}] "
+            f"hits={len(stats['hits'])}"
+        )
 
     return stats
 

@@ -732,7 +732,13 @@ class PoolManager:
                     # same broken endpoint the full budget on every request while
                     # the pool path tripped the breaker beside it.
                     if is_custom:
-                        endpoint_manager.mark_endpoint_failure(reservation.get("name", model_alias_val))
+                        endpoint_name = reservation.get("name", model_alias_val)
+                        endpoint_manager.mark_endpoint_failure(endpoint_name)
+                        logger.error(
+                            "[PoolManager] custom endpoint %s failed before stream commit "
+                            "(attempt=%d, reason=%s, error=%s)",
+                            endpoint_name, attempt, reason, e,
+                        )
                         raise
 
                     if reason not in TRANSIENT_REASONS and reason not in ("invalid_key", "permission_denied"):
