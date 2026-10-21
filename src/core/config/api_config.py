@@ -162,8 +162,8 @@ def resolve_model_alias(model_id: str) -> str:
 MODEL_POOLS: Dict[str, Dict[str, Any]] = {
     "gemini-flash": {
         "pool_name": "gemini-flash",
-        "members": ["gemini-flash-38", "gemini-flash-37", "gemini-flash-36",
-                    "gemini-flash-35", "gemini-flash-30", "gemini-flash-25"],
+        "members": ["gemini-flash-36", "gemini-flash-30", "gemini-flash-38",
+                    "gemini-flash-37", "gemini-flash-35", "gemini-flash-25"],
         "swap_failures": int(os.getenv("POOL_SWAP_FAILURES", "5")),
         "max_attempts": int(os.getenv("POOL_MAX_ATTEMPTS", "15")),
         "max_retry_seconds": int(os.getenv("POOL_MAX_RETRY_SECONDS", "300")),

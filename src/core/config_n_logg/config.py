@@ -226,7 +226,7 @@ class RouterApiConfig:
     KEY_UNKNOWN_ERROR_COOLDOWN_SECONDS: int = _get_int("KEY_UNKNOWN_ERROR_COOLDOWN_SECONDS", 30, 5, 300)
 
     # Per-key throttle tuning (Gemini provider manager)
-    GEMINI_API_GLOBAL_INTERVAL: float = _get_int("GEMINI_API_GLOBAL_INTERVAL", 25, 10, 40) / 10.0
+    GEMINI_API_GLOBAL_INTERVAL: float = _get_int("GEMINI_API_GLOBAL_INTERVAL", 1, 0, 40) / 10.0
     GEMINI_API_KEY_INTERVAL: float = _get_int("GEMINI_API_KEY_INTERVAL", 25, 10, 40) / 10.0
     GEMINI_API_MAX_CONCURRENT: int = _get_int("GEMINI_API_MAX_CONCURRENT", 0, 0, 500)
     GEMINI_GLOBAL_COOLDOWN_SEC: int = _get_int("GEMINI_GLOBAL_COOLDOWN_SEC", 5, 1, 60)

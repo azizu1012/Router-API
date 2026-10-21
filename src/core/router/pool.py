@@ -77,7 +77,10 @@ class ModelPool:
             # Gemini concurrency is enforced by the selected API key's
             # active_requests limit. Do not serialize every key on one member
             # lock: a slow stream on key A must not block key B for this model.
-            for member in self._gemini_members:
+            from src.core.router import router
+            ordered_gemini = [m for m in self.members if m in self._gemini_members]
+            sorted_gemini = router.get_healthy_pool_members(ordered_gemini)
+            for member in sorted_gemini:
                 if member in skip:
                     continue
                 if lock_gemini:

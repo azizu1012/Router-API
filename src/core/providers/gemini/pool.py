@@ -83,12 +83,13 @@ class ClientPool:
         sleep_duration = 0.0
         async with self._throttle_lock:
             now = time.time()
-            global_interval = max(0.2, config.GEMINI_API_GLOBAL_INTERVAL)
-            jitter = random.uniform(-global_interval * 0.4, global_interval * 0.4)
-            target_global = max(0.2, global_interval + jitter)
-            scheduled_time = max(now, self._last_api_time + target_global)
-            sleep_duration = scheduled_time - now
-            self._last_api_time = scheduled_time
+            global_interval = max(0.0, config.GEMINI_API_GLOBAL_INTERVAL)
+            if global_interval > 0:
+                jitter = random.uniform(-global_interval * 0.4, global_interval * 0.4)
+                target_global = max(0.0, global_interval + jitter)
+                scheduled_time = max(now, self._last_api_time + target_global)
+                sleep_duration = scheduled_time - now
+                self._last_api_time = scheduled_time
 
         if sleep_duration > 0:
             await asyncio.sleep(sleep_duration)

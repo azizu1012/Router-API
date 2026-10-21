@@ -335,3 +335,49 @@ class TestRecovery:
             m = await _acquire(pool)
             pool.release(m)
         assert not pool._locks["a"].locked()
+
+    @pytest.mark.anyio
+    async def test_gemini_members_sorted_by_health_prioritizes_healthy_member(self, monkeypatch):
+        """When member 'm1' is penalized in router._model_health, acquire() must prefer 'm2'."""
+        import time
+        from src.core.router import router
+        now = time.time()
+        monkeypatch.setattr(router, "_model_health", {
+            "m1": {"score": 10.0, "updated": now},
+            "m2": {"score": 100.0, "updated": now},
+        })
+        pool = make_pool(["m1", "m2"])
+        got = await _acquire(pool)
+        assert got == "m2", f"expected healthy m2, got {got}"
+        pool.release(got)
+
+    @pytest.mark.anyio
+    async def test_resolve_model_reserves_acquired_member_in_pool_mode(self, monkeypatch):
+        """In pool mode with member_override, _resolve_model must reserve specifically for member_override."""
+        from src.logical_HQ_translator.model.resolver import _resolve_model
+        from src.core.router import router
+
+        # Mock reserve_key to record the alias it was asked to reserve
+        reserved_aliases = []
+        def fake_reserve_key(alias, mid=None, **k):
+            reserved_aliases.append((alias, mid))
+            return {
+                "key": "test-key-12345",
+                "model_alias": alias,
+                "model_id": mid or alias,
+                "provider": "gemini",
+                "reservation_id": "res_123",
+            }
+        monkeypatch.setattr(router, "reserve_key", fake_reserve_key)
+
+        res = await _resolve_model(
+            {"model": "gemini-flash"},
+            pool_alias_override="gemini-flash",
+            pool_mode=True,
+            member_override="gemini-flash-36",
+        )
+
+        assert reserved_aliases[0][0] == "gemini-flash-36"
+        assert res[0] == "gemini-flash"
+        assert res[1] == "gemini-3.6-flash"
+        assert res[4]["model_alias"] == "gemini-flash-36"

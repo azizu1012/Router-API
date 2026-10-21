@@ -58,7 +58,7 @@ async def _resolve_model(body: Dict[str, Any], pool_alias_override: Optional[str
     if not model_alias:
         model_alias = config.DEFAULT_MODEL_ALIAS
 
-    from src.core.config.api_config import is_model_enabled, is_model_sunset, is_sunset_25
+    from src.core.config.api_config import is_model_enabled, is_model_sunset
     if is_model_sunset(model_alias):
         raise HTTPException(
             status_code=400,
@@ -184,6 +184,9 @@ async def _resolve_model(body: Dict[str, Any], pool_alias_override: Optional[str
                 except Exception as e:
                     logger.warning("[CustomPoolEndpoint] %s ping error: %s", ep_name, e)
 
+    target_alias = member_override if (pool_mode and member_override) else model_alias
+    target_mid = router.get_model_id(target_alias) if (pool_mode and member_override) else model_id
+
     # In pool_mode, don't wait long — the pool loop handles retry timing.
     # In standalone mode, keep key acquisition wait bounded so requests don't hang.
     max_wait = config.GEMINI_API_KEY_INTERVAL * 2 if pool_mode else min(float(config.KEY_429_COOLDOWN_SECONDS), 2.0)
@@ -191,7 +194,7 @@ async def _resolve_model(body: Dict[str, Any], pool_alias_override: Optional[str
     attempt = 0
     while True:
         if not router.is_global_cooldown_active():
-            reservation = router.reserve_key(model_alias, model_id, account=account, estimated_tokens=estimated_tokens, retry_attempt=retry_attempt)
+            reservation = router.reserve_key(target_alias, target_mid, account=account, estimated_tokens=estimated_tokens, retry_attempt=retry_attempt)
             if reservation:
                 actual_model_id = reservation["model_id"]
                 api_key = reservation["key"]

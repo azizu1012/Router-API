@@ -43,8 +43,13 @@ def client():
     finally:
         db_mod._DB = original
         db_mod._bootstrapped = False
+        import gc
+        gc.collect()
         for suffix in ("", "-wal", "-shm"):
-            Path(str(tmp) + suffix).unlink(missing_ok=True)
+            try:
+                Path(str(tmp) + suffix).unlink(missing_ok=True)
+            except OSError:
+                pass
 
 
 def _admin(client):

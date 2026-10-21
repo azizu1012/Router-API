@@ -3,7 +3,6 @@
 import time
 import random
 import uuid
-from datetime import datetime, timedelta
 from typing import Any, Dict, Optional
 
 from src.core.config.api_config import (
@@ -12,7 +11,6 @@ from src.core.config.api_config import (
     active_pool_members,
     is_model_enabled,
     is_model_sunset,
-    is_sunset_25,
 )
 from src.core.config_n_logg import config
 from src.core.config_n_logg.logger import logger_keys as logger
@@ -219,6 +217,14 @@ class KeyResolverMixin:
         if isinstance(pm_entry, dict) and pm_entry.get("frozen_until", 0) >= now:
             return False
 
+        # Check GCP project freeze: if another key in the same project got rate-limited for this model, skip it
+        try:
+            from src.core.providers.gemini.manager import api_manager
+            if api_manager.pool.is_key_frozen_by_project(key, model_id):
+                return False
+        except Exception:
+            pass
+
         # Checks RPM/TPM limits for the key
         if retry_attempt < 10:
             if not check_key_model_limits(key, model_id, estimated_tokens, rpm_limit, tpm_limit):
@@ -354,7 +360,7 @@ class KeyResolverMixin:
             allowed_tiers = self._get_allowed_tiers(account)
             concrete_model_id = model_id or self.get_model_id(model_alias)
 
-            pool_cfg = MODEL_POOLS.get(model_alias)
+            pool_cfg = MODEL_POOLS.get(model_alias) if not model_id else None
             if pool_cfg:
                 members = active_pool_members(model_alias)
                 if exclude_models:

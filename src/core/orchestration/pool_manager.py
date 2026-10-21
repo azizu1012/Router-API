@@ -333,20 +333,34 @@ class PoolManager:
                             count_transient_error(reason)
                             if reason == "rate_limit":
                                 router.record_429()
+                                if api_key_val and model_id_val:
+                                    try:
+                                        from src.core.providers.gemini.helpers import GeminiAPIHelpersMixin
+                                        project_id = GeminiAPIHelpersMixin._parse_project(str(e))
+                                        if project_id:
+                                            from src.core.providers.gemini.manager import api_manager
+                                            api_manager.pool.set_key_project(api_key_val, project_id)
+                                            api_manager.pool.freeze_project(project_id, model_id_val, float(config.GEMINI_PROJECT_FREEZE_SEC))
+                                    except Exception:
+                                        pass
 
                             if api_key_val and model_id_val:
                                 router.record_attempt_failure(key=api_key_val, model_id=model_id_val, reason=reason, duration=config.KEY_429_COOLDOWN_SECONDS, metadata={"path": "pool_nonstream", "attempt": pool_try, "member": member, "request_id": request_id})
                                 apply_error_penalty(api_key_val, reason, model_id_val)
 
+                            if not is_custom and reason in ("unavailable", "server_error"):
+                                router.update_model_health(member_used, success=False, reason=reason)
+
+                            swap_threshold = 1 if reason == "unavailable" else config.POOL_SWAP_FAILURES
                             consecutive_transient += 1
-                            if consecutive_transient >= config.POOL_SWAP_FAILURES:
-                                logger.warning("[PoolManager] Transient error %s on member %s, too many retries - swapping...", reason, member_used)
+                            if consecutive_transient >= swap_threshold:
+                                logger.warning("[PoolManager] Transient error %s on member %s (%s: %s), swapping...", reason, member_used, type(e).__name__, e)
                                 _retire_member(pool, exhausted_members, member)
                                 has_active_slot = False
                                 consecutive_transient = 0
                             else:
                                 delay = _retry_delay(consecutive_transient)
-                                logger.warning("[PoolManager] Transient error %s on member %s, retrying in %.1fs (attempt %d)", reason, member_used, delay, consecutive_transient)
+                                logger.warning("[PoolManager] Transient error %s on member %s (%s: %s), retrying in %.1fs (attempt %d)", reason, member_used, type(e).__name__, e, delay, consecutive_transient)
                                 await asyncio.sleep(delay)
                             continue
                         else:
@@ -629,31 +643,45 @@ class PoolManager:
                             count_transient_error(reason)
                             if reason == "rate_limit":
                                 router.record_429()
+                                if api_key_val and model_id_val:
+                                    try:
+                                        from src.core.providers.gemini.helpers import GeminiAPIHelpersMixin
+                                        project_id = GeminiAPIHelpersMixin._parse_project(str(e))
+                                        if project_id:
+                                            from src.core.providers.gemini.manager import api_manager
+                                            api_manager.pool.set_key_project(api_key_val, project_id)
+                                            api_manager.pool.freeze_project(project_id, model_id_val, float(config.GEMINI_PROJECT_FREEZE_SEC))
+                                    except Exception:
+                                        pass
 
                             if api_key_val and model_id_val:
                                 router.record_attempt_failure(key=api_key_val, model_id=model_id_val, reason=reason, duration=config.KEY_429_COOLDOWN_SECONDS, metadata={"path": "pool_stream", "attempt": pool_try, "member": member, "request_id": request_id})
                                 apply_error_penalty(api_key_val, reason, model_id_val)
 
+                            if not is_custom and reason in ("unavailable", "server_error"):
+                                router.update_model_health(member_used, success=False, reason=reason)
+
+                            swap_threshold = 1 if reason == "unavailable" else config.POOL_SWAP_FAILURES
                             if not reservation:
-                                logger.warning("[PoolManager] Transient stream error %s on member %s, no key available - swapping...", reason, member_used)
+                                logger.warning("[PoolManager] Transient stream error %s on member %s (%s: %s), no key available - swapping...", reason, member_used, type(e).__name__, e)
                                 _retire_member(pool, exhausted_members, member)
                                 has_active_slot = False
                                 consecutive_transient = 0
                             else:
                                 consecutive_transient += 1
-                                if consecutive_transient >= config.POOL_SWAP_FAILURES:
-                                    logger.warning("[PoolManager] Transient stream error %s on member %s, too many retries - swapping...", reason, member_used)
+                                if consecutive_transient >= swap_threshold:
+                                    logger.warning("[PoolManager] Transient stream error %s on member %s (%s: %s), swapping...", reason, member_used, type(e).__name__, e)
                                     _retire_member(pool, exhausted_members, member)
                                     has_active_slot = False
                                     consecutive_transient = 0
                                 else:
                                     delay = _retry_delay(consecutive_transient)
-                                    logger.warning("[PoolManager] Transient stream error %s on member %s, retrying in %.1fs (attempt %d)", reason, member_used, delay, consecutive_transient)
+                                    logger.warning("[PoolManager] Transient stream error %s on member %s (%s: %s), retrying in %.1fs (attempt %d)", reason, member_used, type(e).__name__, e, delay, consecutive_transient)
                                     await asyncio.sleep(delay)
                             continue
                         else:
                             consecutive_transient = 0
-                            logger.error("[PoolManager] Hard stream error %s: %s", reason, e)
+                            logger.error("[PoolManager] Hard stream error %s on member %s: %s", reason, member_used, e)
                             if api_key_val and model_id_val:
                                 cooldown = config.KEY_INVALID_COOLDOWN_SECONDS if reason in ("invalid_key", "permission_denied") else config.KEY_429_COOLDOWN_SECONDS
                                 router.record_attempt_failure(key=api_key_val, model_id=model_id_val, reason=reason, duration=cooldown, metadata={"path": "pool_stream", "attempt": pool_try, "member": member, "request_id": request_id})
