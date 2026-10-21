@@ -365,9 +365,8 @@ class PoolManager:
                                     has_active_slot = False
                                     consecutive_transient = 0
                                 else:
-                                    # Rotate project first: if rate-limited, switch to another project immediately without long sleep
-                                    delay = 0.05 if reason == "rate_limit" and consecutive_transient <= 3 else _retry_delay(consecutive_transient)
-                                    logger.warning("[PoolManager] Transient error %s on member %s (%s: %s), rotating project in %.2fs (attempt %d)", reason, member_used, type(e).__name__, e, delay, consecutive_transient)
+                                    delay = _retry_delay(consecutive_transient)
+                                    logger.warning("[PoolManager] Transient error %s on member %s (%s: %s), retrying with Timing Jitter in %.2fs (attempt %d)", reason, member_used, type(e).__name__, e, delay, consecutive_transient)
                                     await asyncio.sleep(delay)
                             continue
                         else:
@@ -682,9 +681,8 @@ class PoolManager:
                                     has_active_slot = False
                                     consecutive_transient = 0
                                 else:
-                                    # Rotate project first: if rate-limited, switch to another project immediately without long sleep
-                                    delay = 0.05 if reason == "rate_limit" and consecutive_transient <= 3 else _retry_delay(consecutive_transient)
-                                    logger.warning("[PoolManager] Transient stream error %s on member %s (%s: %s), rotating project in %.2fs (attempt %d)", reason, member_used, type(e).__name__, e, delay, consecutive_transient)
+                                    delay = _retry_delay(consecutive_transient)
+                                    logger.warning("[PoolManager] Transient stream error %s on member %s (%s: %s), retrying with Timing Jitter in %.2fs (attempt %d)", reason, member_used, type(e).__name__, e, delay, consecutive_transient)
                                     await asyncio.sleep(delay)
                             continue
                         else:
