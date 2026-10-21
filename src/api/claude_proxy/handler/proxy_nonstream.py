@@ -12,6 +12,7 @@ from src.core.config_n_logg.logger import logger_proxy as logger
 from src.core.router import router
 from src.core.orchestration.pool_manager import pool_manager
 from src.core.observability.usage_logger import log_usage
+from src.core.runtime.tool_name_match import declared_tool_names, resolve_declared_tool_name
 from src.logical_HQ_translator import _convert_messages, XMLThinkingExtractor
 from .anthropic_spec import (
     apply_tool_choice_to_tools,
@@ -172,7 +173,6 @@ class ClaudeProxyNonstreamMixin:
         thought = None
         finish_reason = "stop"
         msg = None
-        used_api_key = ""
         used_model_id = ""
 
         # Check for custom endpoint passthrough BEFORE pool logic
@@ -242,7 +242,6 @@ class ClaudeProxyNonstreamMixin:
                     result = await _call_provider(max_tokens)
 
             resp = result["response"]
-            used_api_key = result.get("api_key", "") or ""
             used_model_id = result.get("model_id", "") or model_alias
             usage = getattr(resp, "usage", None) or {}
             output_tokens = 0
@@ -434,6 +433,7 @@ class ClaudeProxyNonstreamMixin:
         has_tool_calls = False
         incomplete_tool_call = False
         if raw_tool_calls:
+            declared_names = declared_tool_names(openai_tools)
             for tc in raw_tool_calls:
                 if isinstance(tc, dict):
                     fn = tc.get("function", {})
@@ -447,6 +447,13 @@ class ClaudeProxyNonstreamMixin:
                     tc_id = getattr(tc, "id", f"toolu_{uuid.uuid4().hex[:16]}")
                 if name:
                     has_tool_calls = True
+                    resolved = resolve_declared_tool_name(name, declared_names)
+                    if resolved != name:
+                        logger.warning(
+                            "[Claude NonStream] model emitted %r; the client declared %r",
+                            name, resolved,
+                        )
+                        name = resolved
                     if isinstance(args, str):
                         if args.strip():
                             try:
@@ -463,7 +470,6 @@ class ClaudeProxyNonstreamMixin:
                                     "not valid JSON, the provider stopped mid-call",
                                     name, tc_id,
                                 )
-                                has_tool_calls = False
                                 incomplete_tool_call = True
                                 continue
                         else:
@@ -477,7 +483,6 @@ class ClaudeProxyNonstreamMixin:
                         logger.info(
                             "[Claude NonStream] dropping unhandled %s at "
                             "recursion limit", name)
-                        has_tool_calls = False
                         continue
                     if name in ("Agent", "Task"):
                         prompt_str = args.get("prompt", "") if isinstance(args, dict) else str(args)
@@ -503,6 +508,7 @@ class ClaudeProxyNonstreamMixin:
             else:
                 content_blocks.append({"type": "text", "text": ""})
 
+        has_tool_calls = any(b.get("type") in ("tool_use", "agent_use") for b in content_blocks)
         stop_reason, stop_sequence = map_stop_reason(
             finish_reason,
             has_tool_calls=has_tool_calls,

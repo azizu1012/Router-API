@@ -151,6 +151,59 @@ class TestRetireMember:
         assert not pool._locks[member].locked()
         assert exhausted == {member}
 
+    def test_retired_member_not_released_again_on_acquire_timeout(self):
+        """When a member is retired and acquiring a next member times out,
+        the finally block must not release the retired member a second time."""
+        import src.core.orchestration.pool_manager as pm
+        from unittest.mock import patch
+
+        release_calls = []
+
+        class TrackingPool:
+            max_retry_seconds = 1.0
+
+            def __init__(self):
+                self._acquired = False
+
+            async def acquire(self, *a, **k):
+                if not self._acquired:
+                    self._acquired = True
+                    return "m1"
+                raise TimeoutError("no free member")
+
+            def release(self, member):
+                release_calls.append(member)
+
+        pool = TrackingPool()
+
+        async def fake_resolve_and_call(*args, **kwargs):
+            raise pm.PoolCallError(
+                RuntimeError("custom endpoint failed"),
+                api_key="k",
+                model_id="m1",
+                reservation={"provider": "custom", "name": "m1"},
+            )
+
+        def dummy_endpoint_failure(*a, **k):
+            pass
+
+        patches = [
+            patch.object(router, "resolve_pool", lambda alias: pool),
+            patch.object(pm.pool_manager, "_resolve_and_call", fake_resolve_and_call),
+            patch.object(pm.endpoint_manager, "mark_endpoint_failure", dummy_endpoint_failure),
+        ]
+        for p in patches:
+            p.start()
+        try:
+            with pytest.raises(TimeoutError):
+                asyncio.run(pm.pool_manager.call_nonstream("gemini-flash", [{"role": "user", "content": "hi"}]))
+        finally:
+            for p in patches:
+                p.stop()
+
+        # m1 must be released exactly once (when retired), NOT twice
+        assert release_calls == ["m1"], f"expected ['m1'], got {release_calls}"
+
     def test_pool_nonstream_deadline_cannot_be_exceeded_by_provider_timeout(self):
         """A provider's 600s request timeout must not bypass the pool budget."""
         import time

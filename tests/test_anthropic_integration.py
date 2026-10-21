@@ -292,6 +292,40 @@ class TestNonStreamResponseShape:
         assert uses and uses[0]["input"] == {"file_path": "/a.py"}, uses
         assert msg["stop_reason"] == "tool_use", msg["stop_reason"]
 
+    def test_multiple_tool_calls_one_truncated_still_reports_tool_use(
+        self, proxy, capture, monkeypatch):
+        """When Tool 1 is valid and Tool 2 is truncated, Tool 1 is emitted
+        and stop_reason must be tool_use (not max_tokens), because tool_use
+        blocks were delivered to the client."""
+        import src.api.claude_proxy.handler.proxy_nonstream as ns
+
+        async def fake_call_nonstream(**kwargs):
+            return {
+                "response": FakeResponse(FakeMessage(content="", tool_calls=[
+                    {
+                        "id": "toolu_1",
+                        "function": {"name": "Write", "arguments": '{"file_path": "/a.py"}'},
+                    },
+                    {
+                        "id": "toolu_2",
+                        "function": {"name": "Read", "arguments": '{"file_path": "/b.'},
+                    },
+                ])),
+                "api_key": "key-abcdef123456",
+                "model_id": "gemini-3-flash",
+                "input_tokens": 1000,
+                "reservation": {},
+            }
+
+        monkeypatch.setattr(ns.pool_manager, "call_nonstream", fake_call_nonstream)
+        msg = self._run(proxy, capture, {
+            "model": "gemini-flash", "messages": [{"role": "user", "content": "hi"}]})
+        uses = [b for b in msg["content"] if b["type"] == "tool_use"]
+        assert len(uses) == 1
+        assert uses[0]["name"] == "Write"
+        assert uses[0]["id"] == "toolu_1"
+        assert msg["stop_reason"] == "tool_use"
+
     def test_a_cut_tool_call_is_retried_with_a_bigger_max_tokens(
         self, proxy, capture, monkeypatch):
         """Anthropic: "retry the request with a higher max_tokens value".
@@ -649,3 +683,83 @@ class TestModelsEndpointShape:
         assert entry["type"] == "model"
         assert entry["created_at"].endswith("Z")
         assert entry["display_name"] == "Gemini Flash"
+
+
+# ── Tool names: the client only knows the names it declared ─────────────────
+
+class TestTheEmittedToolNameIsTheDeclaredOne:
+    """A provider may respell a namespace on the way out.
+
+    Gemini returns ``codegraph__codegraph_explore`` for a declared
+    ``mcp__codegraph__codegraph_explore``. The client validates the name
+    against its own declarations, rejects the unknown one, and the turn is
+    lost — so the proxy repairs it before emitting. The id is opaque and is
+    left untouched.
+    """
+
+    DECLARED = "mcp__codegraph__codegraph_explore"
+    EMITTED = "codegraph__codegraph_explore"
+
+    def _body(self):
+        return {
+            "model": "gemini-flash",
+            "messages": [{"role": "user", "content": "explore the code"}],
+            "tools": [{"name": self.DECLARED, "description": "graph",
+                       "input_schema": {"type": "object"}}],
+        }
+
+    def test_nonstream_emits_the_declared_spelling(self, proxy, capture, monkeypatch):
+        import src.api.claude_proxy.handler.proxy_nonstream as ns
+
+        tool_calls = [types.SimpleNamespace(
+            id="call_1",
+            function=types.SimpleNamespace(name=self.EMITTED, arguments='{"query":"x"}'),
+        )]
+
+        async def fake_call_nonstream(**kwargs):
+            return {
+                "response": FakeResponse(FakeMessage(tool_calls=tool_calls)),
+                "api_key": "key-abcdef123456",
+                "model_id": "gemini-3-flash",
+                "input_tokens": 10,
+                "reservation": {},
+            }
+
+        monkeypatch.setattr(ns.pool_manager, "call_nonstream", fake_call_nonstream)
+        msg = asyncio.run(proxy.create_message(self._body()))
+        uses = [b for b in msg["content"] if b["type"] == "tool_use"]
+        assert [b["name"] for b in uses] == [self.DECLARED]
+        assert uses[0]["id"] == "call_1"
+
+    def test_stream_emits_the_declared_spelling(self, proxy, capture):
+        tool_call = {"index": 0, "id": "toolu_x1", "function": {
+            "name": self.EMITTED, "arguments": '{"query":"x"}'}}
+        chunks = [
+            FakeChunk(FakeDelta(tool_calls=[tool_call])),
+            FakeChunk(FakeDelta(tool_calls=[tool_call]), finish_reason="tool_calls"),
+        ]
+        events = stream_events(proxy, capture, chunks, self._body())
+        starts = [d for n, d in events
+                  if n == "content_block_start"
+                  and d["content_block"]["type"] == "tool_use"]
+        assert [d["content_block"]["name"] for d in starts] == [self.DECLARED]
+
+    def test_a_name_the_client_did_not_declare_is_left_alone(self, proxy, capture):
+        body = {
+            "model": "gemini-flash",
+            "messages": [{"role": "user", "content": "hi"}],
+            "tools": [{"name": "Read", "description": "read",
+                       "input_schema": {"type": "object"}}],
+        }
+        tool_call = {"index": 0, "id": "toolu_x1", "function": {
+            "name": "Bash", "arguments": '{"command":"ls"}'}}
+        chunks = [
+            FakeChunk(FakeDelta(tool_calls=[tool_call])),
+            FakeChunk(FakeDelta(tool_calls=[tool_call]), finish_reason="tool_calls"),
+        ]
+        events = stream_events(proxy, capture, chunks, body)
+        starts = [d for n, d in events
+                  if n == "content_block_start"
+                  and d["content_block"]["type"] == "tool_use"]
+        # Repair must not invent a tool: a genuine mismatch stays visible.
+        assert [d["content_block"]["name"] for d in starts] == ["Bash"]

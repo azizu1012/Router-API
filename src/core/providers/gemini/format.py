@@ -34,6 +34,17 @@ DEFAULT_SAFETY_SETTINGS = [
 ]
 
 
+# Google rejects a replayed `functionCall` that carries no `thoughtSignature`
+# with HTTP 400 ("Function call is missing a thought_signature in functionCall
+# parts"). The documented escape hatch is this exact dummy value: the validator
+# recognises it and skips signature verification.
+#
+# It must be sent as a plain ``str``. The SDK base64-encodes ``bytes`` on the
+# way out, so passing ``sentinel.encode()`` would put a base64 blob on the wire
+# that no longer equals the sentinel Google compares against.
+SKIP_THOUGHT_SIGNATURE_VALIDATOR = "skip_thought_signature_validator"
+
+
 def sanitize_function_name(name: str) -> str:
     """
     Làm sạch tên hàm để tuân thủ các quy tắc đặt tên của Gemini API.
@@ -157,6 +168,14 @@ def convert_messages_to_contents(messages: List[Dict[str, Any]]) -> Dict[str, An
                             p_dict["thought_signature"] = base64.b64decode(tsig)
                         except Exception:
                             p_dict["thought_signature"] = tsig if isinstance(tsig, bytes) else tsig.encode("utf-8")
+                    else:
+                        # The proxy drops Anthropic `thinking` blocks
+                        # (converter.py), so a replayed client tool call has no
+                        # provider signature left to forward. Sending none is a
+                        # deterministic 400 on Gemini 3, and the client answers
+                        # it by replaying the same turn — the retry loop the
+                        # sentinel breaks.
+                        p_dict["thought_signature"] = SKIP_THOUGHT_SIGNATURE_VALIDATOR
                     parts.append(p_dict)
 
             if parts:

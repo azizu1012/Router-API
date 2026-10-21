@@ -3,7 +3,6 @@
 Pool/key/custom management is centralized in PoolManager.
 """
 
-import asyncio
 import json
 import uuid
 from typing import Any, Dict, List, Optional, AsyncIterator
@@ -13,6 +12,7 @@ from src.core.config_n_logg.logger import logger_proxy as logger
 from src.core.router import router
 from src.core.orchestration.pool_manager import pool_manager
 from src.core.observability.usage_logger import log_usage
+from src.core.runtime.tool_name_match import declared_tool_names, resolve_declared_tool_name
 from src.logical_HQ_translator import (
     _convert_messages,
     _dict_to_sse_events,
@@ -76,6 +76,7 @@ async def _recover_tool_call(
     or produced no complete call.
     """
     buffers: Dict[int, Dict[str, Any]] = {}
+    index_map: Dict[int, int] = {}
     text_parts: List[str] = []
     try:
         stream = make_stream(budget)
@@ -90,7 +91,7 @@ async def _recover_tool_call(
             content = getattr(delta, "content", None)
             if isinstance(content, str) and content:
                 text_parts.append(content)
-            buffer_tool_calls(delta, buffers)
+            buffer_tool_calls(delta, buffers, index_map)
     except Exception as exc:
         logger.warning("[Claude Stream] tool call recovery failed: %s", exc)
         return None
@@ -293,6 +294,7 @@ class ClaudeProxyStreamMixin:
             provider_output_tokens = 0
             finish_reason = "end_turn"
             tool_buffers: Dict[int, Dict[str, Any]] = {}
+            tool_index_map: Dict[int, int] = {}
             accumulated_text = []
             accumulated_thought = []
             accumulated_thought_signature = []
@@ -579,7 +581,7 @@ class ClaudeProxyStreamMixin:
                                 })
                                 output_chars += len(norm_val)
 
-                buffer_tool_calls(delta, tool_buffers)
+                buffer_tool_calls(delta, tool_buffers, tool_index_map)
                 if fr:
                     # Keep the provider's raw reason here. Mapping it to the
                     # Anthropic enum now loses information — "length" contains no
@@ -854,9 +856,23 @@ class ClaudeProxyStreamMixin:
                 if tool_buffers:
                     logger.info("[ToolCallEmit] Emitting %d tool buffer(s) for model=%s depth=%d",
                                 len(tool_buffers), model_alias, recursion_depth)
+                    declared_names = declared_tool_names(openai_tools)
                     for tc_idx in sorted(tool_buffers.keys()):
                         buf = tool_buffers[tc_idx]
                         name = buf["name"]
+                        # The client validates the name against its own
+                        # declarations and rejects anything else outright, so an
+                        # unambiguous respelling is repaired here, at emit time.
+                        # The id is left alone: it is an opaque handle, and
+                        # clients that echo it back only need it to be unique.
+                        resolved = resolve_declared_tool_name(name, declared_names)
+                        if resolved != name:
+                            logger.warning(
+                                "[ToolCallEmit] model emitted %r; the client declared %r",
+                                name, resolved,
+                            )
+                            name = resolved
+                            buf["name"] = name
                         logger.info("[ToolCallEmit]   idx=%d id=%s name=%s args_len=%d args_preview=%s",
                                     tc_idx, buf["id"], name, len(buf["args"]), buf["args"][:120])
                         # A provider that stops mid-arguments — max_tokens, a
@@ -904,6 +920,14 @@ class ClaudeProxyStreamMixin:
                                             tool_buffers[r_idx] = recovered[r_idx]
                                         buf = tool_buffers[tc_idx]
                                         name = buf["name"]
+                                        resolved = resolve_declared_tool_name(name, declared_names)
+                                        if resolved != name:
+                                            logger.warning(
+                                                "[ToolCallEmit] recovered call emitted %r; "
+                                                "the client declared %r", name, resolved,
+                                            )
+                                            name = resolved
+                                            buf["name"] = name
                                         emitted_tool_blocks += 1
                                         next_block_idx += 1
                                         yield _sse("content_block_start", {

@@ -2,10 +2,14 @@
 
 import json
 import uuid
-from typing import Any, Dict
+from typing import Any, Dict, Optional
 
 
-def buffer_tool_calls(delta: Any, tool_buffers: Dict[int, Dict[str, Any]]) -> None:
+def buffer_tool_calls(
+    delta: Any,
+    tool_buffers: Dict[int, Dict[str, Any]],
+    index_map: Optional[Dict[int, int]] = None,
+) -> None:
     """Accumulate streamed tool calls keyed by provider index.
 
     Providers send the name and id in one fragment, then argument fragments
@@ -20,7 +24,9 @@ def buffer_tool_calls(delta: Any, tool_buffers: Dict[int, Dict[str, Any]]) -> No
 
     for tc in tool_calls_val:
         if isinstance(tc, dict):
-            tc_idx = tc.get("index", 0)
+            raw_idx = tc.get("index", 0)
+            if raw_idx is None:
+                raw_idx = 0
             fn = tc.get("function", {})
             fn_name = (
                 fn.get("name", "")
@@ -39,7 +45,9 @@ def buffer_tool_calls(delta: Any, tool_buffers: Dict[int, Dict[str, Any]]) -> No
             )
             tc_id = tc.get("id", generated_id)
         else:
-            tc_idx = getattr(tc, "index", 0)
+            raw_idx = getattr(tc, "index", 0)
+            if raw_idx is None:
+                raw_idx = 0
             fn = getattr(tc, "function", {})
             fn_name = getattr(fn, "name", "")
             fn_args = getattr(fn, "arguments", None)
@@ -50,19 +58,34 @@ def buffer_tool_calls(delta: Any, tool_buffers: Dict[int, Dict[str, Any]]) -> No
             )
             tc_id = getattr(tc, "id", generated_id)
 
-        if tc_idx not in tool_buffers:
+        if index_map is not None:
+            if raw_idx in index_map:
+                buf_idx = index_map[raw_idx]
+                existing_name = tool_buffers.get(buf_idx, {}).get("name", "")
+                if fn_name and existing_name and fn_name != existing_name:
+                    buf_idx = max(tool_buffers.keys(), default=-1) + 1
+                    index_map[raw_idx] = buf_idx
+            else:
+                buf_idx = raw_idx if raw_idx not in tool_buffers else (max(tool_buffers.keys(), default=-1) + 1)
+                index_map[raw_idx] = buf_idx
+        else:
+            buf_idx = raw_idx
+            if buf_idx in tool_buffers and fn_name and tool_buffers[buf_idx].get("name") and tool_buffers[buf_idx]["name"] != fn_name:
+                buf_idx = max(tool_buffers.keys(), default=-1) + 1
+
+        if buf_idx not in tool_buffers:
             generated_id = (
                 f"toolu_{fn_name}_{uuid.uuid4().hex[:12]}"
                 if fn_name
                 else f"toolu_{uuid.uuid4().hex}"
             )
-            tool_buffers[tc_idx] = {
+            tool_buffers[buf_idx] = {
                 "id": tc_id,
                 "name": fn_name,
                 "args": "",
             }
         elif fn_name:
-            tool_buffers[tc_idx]["name"] = fn_name
+            tool_buffers[buf_idx]["name"] = fn_name
 
         if fn_args:
             if isinstance(fn_args, dict):
@@ -83,11 +106,11 @@ def buffer_tool_calls(delta: Any, tool_buffers: Dict[int, Dict[str, Any]]) -> No
             #
             # The repeat is not hypothetical: a provider that re-sends the whole
             # tool_call alongside finish_reason turned one call into two.
-            current = tool_buffers[tc_idx]["args"]
+            current = tool_buffers[buf_idx]["args"]
             if current == args_str:
                 continue
             if current == "{}":
-                tool_buffers[tc_idx]["args"] = args_str
+                tool_buffers[buf_idx]["args"] = args_str
             else:
-                tool_buffers[tc_idx]["args"] = current + args_str
+                tool_buffers[buf_idx]["args"] = current + args_str
 

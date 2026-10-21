@@ -387,6 +387,87 @@ class TestToolCallsSurvive:
 
         assert "tool_use" in starts, starts
 
+    def test_colliding_index_different_name_emits_both_calls(self, monkeypatch):
+        """When two sequential tool calls collide on index (e.g. index omitted or 0),
+        the second call must not overwrite the first or concatenate arguments."""
+        turns = [[
+            _item({"tool_calls": [{
+                "index": 0, "id": "call_1", "type": "function",
+                "function": {"name": "TodoWrite", "arguments": '{"scope":"test"}'},
+            }]}),
+            _item({"tool_calls": [{
+                "index": 0, "id": "call_2", "type": "function",
+                "function": {"name": "codegraph", "arguments": '{"query":"abc"}'},
+            }]}, finish="tool_calls"),
+        ]]
+        _stub_pool(turns, monkeypatch)
+
+        body = dict(TOOL_BODY)
+        body["tools"] = [
+            {"name": "TodoWrite", "description": "", "input_schema": {"type": "object"}},
+            {"name": "codegraph", "description": "", "input_schema": {"type": "object"}},
+        ]
+        events = _run_stream(body)
+        starts = [e for e in events if e["type"] == "content_block_start" and e["content_block"]["type"] == "tool_use"]
+        names = [s["content_block"]["name"] for s in starts]
+        assert names == ["TodoWrite", "codegraph"], f"names={names}"
+        finals = [e for e in events if e["type"] == "message_delta"]
+        assert finals[-1]["delta"]["stop_reason"] == "tool_use"
+
+    def test_colliding_index_multi_chunk_args_do_not_leak_into_earlier_buffer(self, monkeypatch):
+        """When Tool2 streams arguments across chunks without fn_name on the same raw_idx=0,
+        those arguments must route to Tool2's buffer, not Tool1's buffer."""
+        turns = [[
+            # Tool 1: name + partial arg
+            _item({"tool_calls": [{
+                "index": 0, "id": "call_1", "type": "function",
+                "function": {"name": "TodoWrite", "arguments": '{"scope":'},
+            }]}),
+            # Tool 1: remaining arg
+            _item({"tool_calls": [{
+                "index": 0, "type": "function",
+                "function": {"arguments": '"test"}'},
+            }]}),
+            # Tool 2: starts on raw_idx 0 with new name
+            _item({"tool_calls": [{
+                "index": 0, "id": "call_2", "type": "function",
+                "function": {"name": "codegraph", "arguments": ""},
+            }]}),
+            # Tool 2: partial arg (no fn_name in chunk)
+            _item({"tool_calls": [{
+                "index": 0, "type": "function",
+                "function": {"arguments": '{"query":'},
+            }]}),
+            # Tool 2: remaining arg (no fn_name in chunk)
+            _item({"tool_calls": [{
+                "index": 0, "type": "function",
+                "function": {"arguments": '"abc"}'},
+            }]}, finish="tool_calls"),
+        ]]
+        _stub_pool(turns, monkeypatch)
+
+        body = dict(TOOL_BODY)
+        body["tools"] = [
+            {"name": "TodoWrite", "description": "", "input_schema": {"type": "object"}},
+            {"name": "codegraph", "description": "", "input_schema": {"type": "object"}},
+        ]
+        events = _run_stream(body)
+
+        tool_blocks = [e["content_block"] for e in events
+                       if e["type"] == "content_block_start" and e["content_block"]["type"] == "tool_use"]
+        assert len(tool_blocks) == 2
+        assert tool_blocks[0]["name"] == "TodoWrite"
+        assert tool_blocks[1]["name"] == "codegraph"
+
+        # Check deltas per block index (0 and 1)
+        deltas_0 = "".join(e["delta"].get("partial_json", "") for e in events
+                           if e["type"] == "content_block_delta" and e["index"] == 0)
+        deltas_1 = "".join(e["delta"].get("partial_json", "") for e in events
+                           if e["type"] == "content_block_delta" and e["index"] == 1)
+
+        assert json.loads(deltas_0) == {"scope": "test"}
+        assert json.loads(deltas_1) == {"query": "abc"}
+
 
 class TestAnthropicAccumulator:
     """The order the router emits must survive the SDK's own state machine."""

@@ -27,6 +27,12 @@ def map_stop_reason(
     if fr in _REFUSAL_FINISH_REASONS:
         return "refusal", None
 
+    # Pending tool calls outrank every other reason: the client only executes them
+    # when we say `tool_use`, so reporting anything else would strand the calls and
+    # deadlock the conversation.
+    if has_tool_calls:
+        return "tool_use", None
+
     # A tool call whose arguments never finished parsing was cut off mid-call.
     # Anthropic's guidance for that case is to report `max_tokens`, since the
     # prescribed remedy is "raise max_tokens and retry". A client told
@@ -36,12 +42,6 @@ def map_stop_reason(
     # from the finish reason.
     if incomplete_tool_call:
         return "max_tokens", None
-
-    # Pending tool calls outrank every other reason: the client only executes them
-    # when we say `tool_use`, so reporting anything else would strand the calls and
-    # deadlock the conversation.
-    if has_tool_calls:
-        return "tool_use", None
 
     if "max" in fr or "length" in fr:
         return "max_tokens", None

@@ -259,6 +259,7 @@ class PoolManager:
             start_time = time.monotonic()
             member: str
             member = await _acquire_pool_member(pool, pool.max_retry_seconds)
+            has_active_slot = True
             pool_try = -1
 
             try:
@@ -269,6 +270,7 @@ class PoolManager:
                             max(0.01, pool.max_retry_seconds - (time.monotonic() - start_time)),
                             skip=exhausted_members,
                         )
+                        has_active_slot = True
 
                     pool_try += 1
                     api_key_val = None
@@ -323,6 +325,7 @@ class PoolManager:
                                 {"model_id": model_id_val, "reason": str(e), "attempt": pool_try, "path": "pool_nonstream", "request_id": request_id},
                             )
                             _retire_member(pool, exhausted_members, member)
+                            has_active_slot = False
                             continue
 
                         reason = _classify_error(e)
@@ -339,6 +342,7 @@ class PoolManager:
                             if consecutive_transient >= config.POOL_SWAP_FAILURES:
                                 logger.warning("[PoolManager] Transient error %s on member %s, too many retries - swapping...", reason, member_used)
                                 _retire_member(pool, exhausted_members, member)
+                                has_active_slot = False
                                 consecutive_transient = 0
                             else:
                                 delay = _retry_delay(consecutive_transient)
@@ -354,14 +358,15 @@ class PoolManager:
                                 apply_error_penalty(api_key_val, reason, model_id_val)
                             # ponytail: if key is invalid, rotate to next available key without retiring member
                             if reason in ("invalid_key", "permission_denied"):
-                                pool.release(member)
                                 continue
                             _retire_member(pool, exhausted_members, member)
+                            has_active_slot = False
 
                 raise RuntimeError("Pool max_retry_seconds exhausted")
             finally:
-                if member:
+                if has_active_slot and member:
                     pool.release(member)
+                    has_active_slot = False
         else:
             # --- STANDALONE MODE ---
             # Directly calls the model without pool rotation.
@@ -471,6 +476,7 @@ class PoolManager:
             start_time = time.monotonic()
             member: str
             member = await _acquire_pool_member(pool, pool.max_retry_seconds)
+            has_active_slot = True
             committed = False
             pool_try = -1
 
@@ -482,6 +488,7 @@ class PoolManager:
                             max(0.01, pool.max_retry_seconds - (time.monotonic() - start_time)),
                             skip=exhausted_members,
                         )
+                        has_active_slot = True
 
                     pool_try += 1
                     api_key_val = None
@@ -614,6 +621,7 @@ class PoolManager:
                                 {"model_id": model_id_val, "reason": str(e), "attempt": pool_try, "path": "pool_stream", "request_id": request_id},
                             )
                             _retire_member(pool, exhausted_members, member)
+                            has_active_slot = False
                             continue
 
                         reason = _classify_error(e)
@@ -629,12 +637,14 @@ class PoolManager:
                             if not reservation:
                                 logger.warning("[PoolManager] Transient stream error %s on member %s, no key available - swapping...", reason, member_used)
                                 _retire_member(pool, exhausted_members, member)
+                                has_active_slot = False
                                 consecutive_transient = 0
                             else:
                                 consecutive_transient += 1
                                 if consecutive_transient >= config.POOL_SWAP_FAILURES:
                                     logger.warning("[PoolManager] Transient stream error %s on member %s, too many retries - swapping...", reason, member_used)
                                     _retire_member(pool, exhausted_members, member)
+                                    has_active_slot = False
                                     consecutive_transient = 0
                                 else:
                                     delay = _retry_delay(consecutive_transient)
@@ -650,9 +660,9 @@ class PoolManager:
                                 apply_error_penalty(api_key_val, reason, model_id_val)
                             # ponytail: if key is invalid, rotate to next available key without retiring member
                             if reason in ("invalid_key", "permission_denied"):
-                                pool.release(member)
                                 continue
                             _retire_member(pool, exhausted_members, member)
+                            has_active_slot = False
                     finally:
                         if gen is not None:
                             await _close_async_stream(gen)
@@ -662,7 +672,9 @@ class PoolManager:
 
                 raise RuntimeError("Pool stream max_retry_seconds exhausted")
             finally:
-                pool.release(member)
+                if has_active_slot and member:
+                    pool.release(member)
+                    has_active_slot = False
         else:
             # --- CHẾ ĐỘ ĐƠN LẺ STREAM (STANDALONE STREAM MODE) ---
             committed = False

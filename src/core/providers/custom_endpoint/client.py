@@ -9,6 +9,7 @@ Exposes:
 
 import asyncio
 import os
+import re
 import time
 from collections import defaultdict
 import json
@@ -23,6 +24,132 @@ from ..anthropic_wire import is_anthropic_format
 from ...runtime.effort import sanitize_custom_endpoint_payload
 
 TIMEOUT = int(os.getenv("CUSTOM_ENDPOINT_TIMEOUT", "900"))
+
+# ── Output-limit retry ───────────────────────────────────────────────────
+#
+# Some OpenAI-compatible backends cap the *response* at a fraction of what the
+# router asks for and answer 400 instead of clamping — e.g. "Response exceeded
+# the output limit". The model and the prompt are fine, so the useful move is a
+# smaller budget, not a failed turn. Bounded because a provider that rejects
+# every budget must surface its error rather than spin.
+
+_OUTPUT_LIMIT_FLOOR = 4096
+_OUTPUT_LIMIT_MAX_RETRIES = 4
+_OUTPUT_BUDGET_KEYS = ("max_tokens", "max_completion_tokens")
+
+_OUTPUT_LIMIT_PATTERN = re.compile(
+    r"exceeded\s+the\s+output\s+limit"
+    r"|output[\s_]+limit[\s_]+(?:exceeded|reached|hit)"
+    r"|(?:max|maximum)[\s_]*(?:output[\s_]*|completion[\s_]*|new[\s_]*)?tokens?"
+    r"[^.\n;]{0,80}?(?:exceed|too\s+(?:large|big|high)|greater\s+than"
+    r"|less\s+than\s+or\s+equal|out\s+of\s+range|invalid)"
+    r"|(?:invalid|unsupported|illegal)[^.\n;]{0,40}?"
+    r"(?:max|maximum)[\s_]*(?:output[\s_]*|completion[\s_]*|new[\s_]*)?tokens?",
+    re.IGNORECASE,
+)
+
+
+def is_output_limit_error(status: int, body: str) -> bool:
+    """True only for a 4xx that names the output budget as the problem.
+
+    429 is excluded on purpose: it is a rate limit, so halving ``max_tokens``
+    would spend a retry on the wrong axis. 5xx is excluded as well — the
+    request was not rejected for its size.
+    """
+    if not isinstance(status, int) or not 400 <= status < 500 or status == 429:
+        return False
+    return bool(_OUTPUT_LIMIT_PATTERN.search(body or ""))
+
+
+def next_output_retry_budget(budget: Any) -> Optional[int]:
+    """Halve a budget, stopping at the floor. ``None`` means don't retry."""
+    try:
+        current = int(budget)
+    except (TypeError, ValueError):
+        return None
+    if current <= _OUTPUT_LIMIT_FLOOR:
+        return None
+    return max(_OUTPUT_LIMIT_FLOOR, current // 2)
+
+
+def _output_budget_keys(payload: Dict[str, Any]) -> List[str]:
+    return [key for key in _OUTPUT_BUDGET_KEYS if payload.get(key) is not None]
+
+
+def _output_budget_key(payload: Dict[str, Any]) -> Optional[str]:
+    keys = _output_budget_keys(payload)
+    return keys[0] if keys else None
+
+
+def _retry_budget_for_output_limit(
+    status: int, body: str, payload: Dict[str, Any], retries: int
+) -> Optional[int]:
+    if retries >= _OUTPUT_LIMIT_MAX_RETRIES:
+        return None
+    if not is_output_limit_error(status, body):
+        return None
+    keys = _output_budget_keys(payload)
+    if not keys:
+        return None
+    valid_budgets = []
+    for k in keys:
+        try:
+            valid_budgets.append(int(payload[k]))
+        except (TypeError, ValueError):
+            pass
+    if not valid_budgets:
+        return None
+    return next_output_retry_budget(max(valid_budgets))
+
+
+def _first_line(body: str, limit: int = 200) -> str:
+    line = (body or "").strip().splitlines()[0] if (body or "").strip() else ""
+    return line[:limit]
+
+
+async def _post_with_output_limit_retry(
+    session: Any,
+    url: str,
+    payload: Dict[str, Any],
+    *,
+    log_context: str = "Custom endpoint",
+) -> Any:
+    """POST ``payload``, lowering the output budget when the endpoint rejects it.
+
+    Mutates ``payload`` in place so the next attempt sends the smaller budget —
+    the caller built it once, including any ``extra_body`` override, and
+    re-deriving it from the call arguments would silently discard that.
+
+    Returns the first response under 400. Every other status is raised as the
+    same ``RuntimeError`` the call sites used before, so error text visible to
+    the client does not change.
+    """
+    retries = 0
+    while True:
+        response = await session.post(
+            url, json=payload, timeout=aiohttp.ClientTimeout(total=TIMEOUT)
+        )
+        if response.status < 400:
+            return response
+
+        # Read the rejection body inside the context manager: that is what
+        # returns the connection to the pool, exactly as the ``async with
+        # session.post(...)`` these call sites used to use did.
+        async with response:
+            body_text = await response.text()
+        status = response.status
+        keys = _output_budget_keys(payload)
+        budget = _retry_budget_for_output_limit(status, body_text, payload, retries)
+        if budget is None:
+            raise RuntimeError(f"{log_context} HTTP {status}: {body_text[:500]}")
+        keys_summary = ", ".join(f"{k}={payload.get(k)}" for k in keys)
+        logger.warning(
+            "[CustomEndpoint] endpoint rejected %s (%s); retrying with %s",
+            keys_summary, _first_line(body_text), budget,
+        )
+        for k in keys:
+            payload[k] = budget
+        retries += 1
 
 # ── Custom pool rate limiting ────────────────────────────────────────────
 
@@ -89,6 +216,8 @@ def _make_tool_call(tc: dict) -> Any:
     obj = types.SimpleNamespace()
     obj.id = tc.get("id", "")
     obj.type = tc.get("type", "function")
+    if "index" in tc:
+        obj.index = tc["index"]
     obj.function = types.SimpleNamespace()
     obj.function.name = tc.get("function", {}).get("name", "")
     obj.function.arguments = tc.get("function", {}).get("arguments", "")
@@ -299,12 +428,8 @@ async def call_anthropic_nonstream(
     sanitize_custom_endpoint_payload(payload, api_format="anthropic")
 
     async with aiohttp.ClientSession(headers=anthropic_headers(api_key)) as session:
-        async with session.post(
-            url, json=payload, timeout=aiohttp.ClientTimeout(total=TIMEOUT)
-        ) as response:
-            if response.status >= 400:
-                body_text = await response.text()
-                raise RuntimeError(f"Custom endpoint HTTP {response.status}: {body_text[:500]}")
+        response = await _post_with_output_limit_retry(session, url, payload)
+        async with response:
             data = await response.json()
 
     return _openai_namespace(anthropic_to_openai_message(data), model)
@@ -378,12 +503,8 @@ async def call_custom_nonstream(
                              extra_body, tool_choice, parallel_tool_calls, response_format)
 
     async with aiohttp.ClientSession(headers=headers) as session:
-        async with session.post(
-            url, json=payload, timeout=aiohttp.ClientTimeout(total=TIMEOUT)
-        ) as response:
-            if response.status >= 400:
-                body_text = await response.text()
-                raise RuntimeError(f"Custom endpoint HTTP {response.status}: {body_text[:500]}")
+        response = await _post_with_output_limit_retry(session, url, payload)
+        async with response:
             data = await response.json()
 
     resp = types.SimpleNamespace()
@@ -471,13 +592,7 @@ class CustomEndpointStreamGen:
 
         self._session = aiohttp.ClientSession(headers=headers)
         try:
-            resp = await self._session.post(
-                url, json=payload, timeout=aiohttp.ClientTimeout(total=TIMEOUT)
-            )
-            if resp.status >= 400:
-                body_text = await resp.text()
-                await self._cleanup()
-                raise RuntimeError(f"Custom endpoint HTTP {resp.status}: {body_text[:500]}")
+            resp = await _post_with_output_limit_retry(self._session, url, payload)
             self._response = resp
             self._sse_gen = self._parse_sse_stream(resp)
             self._started = True
@@ -507,13 +622,7 @@ class CustomEndpointStreamGen:
 
         self._session = aiohttp.ClientSession(headers=anthropic_headers(self._api_key))
         try:
-            resp = await self._session.post(
-                url, json=payload, timeout=aiohttp.ClientTimeout(total=TIMEOUT)
-            )
-            if resp.status >= 400:
-                body_text = await resp.text()
-                await self._cleanup()
-                raise RuntimeError(f"Custom endpoint HTTP {resp.status}: {body_text[:500]}")
+            resp = await _post_with_output_limit_retry(self._session, url, payload)
             self._response = resp
             self._sse_gen = self._parse_anthropic_stream(resp)
             self._started = True
@@ -624,14 +733,17 @@ class CustomEndpointStreamGen:
             if c_delta.get("tool_calls"):
                 tcs = []
                 for tc in c_delta["tool_calls"]:
-                    tcs.append({
+                    tc_dict = {
                         "id": tc.get("id"),
                         "type": tc.get("type", "function"),
                         "function": {
                             "name": tc.get("function", {}).get("name", ""),
                             "arguments": tc.get("function", {}).get("arguments", ""),
                         },
-                    })
+                    }
+                    if "index" in tc:
+                        tc_dict["index"] = tc["index"]
+                    tcs.append(tc_dict)
                 delta["tool_calls"] = tcs
 
             fr = c.get("finish_reason")

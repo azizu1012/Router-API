@@ -489,6 +489,69 @@ class TestGeminiToolArgsAreNotFaked:
         assert calls[0]["args"] == {}, calls
 
 
+class TestReplayedToolCallsCarryASignature:
+    """A replayed `functionCall` with no signature is a hard 400 from Gemini.
+
+    The proxy drops Anthropic `thinking` blocks, so by the time a client sends a
+    tool call back there is no provider signature left to forward. Google
+    documents `skip_thought_signature_validator` for exactly this case, and
+    sending nothing is the one thing it will not accept. The wire value must be
+    the literal string: the SDK base64-decodes a `str` on the way in, so only a
+    value that survives that round trip reaches the API intact.
+    """
+
+    @staticmethod
+    def _parts(messages):
+        from src.core.providers.gemini.format import convert_messages_to_contents
+
+        body = convert_messages_to_contents(messages)
+        return [
+            part
+            for c in (body.get("contents") or [])
+            for part in (c.get("parts") or [])
+            if "functionCall" in part
+        ]
+
+    @staticmethod
+    def _tool_turn(**extra):
+        msg = {
+            "role": "assistant",
+            "content": "",
+            "tool_calls": [
+                {"id": "c1", "type": "function",
+                 "function": {"name": "mcp__codegraph__codegraph_explore",
+                              "arguments": '{"query": "x"}'}},
+            ],
+        }
+        msg.update(extra)
+        return msg
+
+    def test_a_replay_without_a_signature_gets_the_documented_sentinel(self):
+        from src.core.providers.gemini.format import SKIP_THOUGHT_SIGNATURE_VALIDATOR
+
+        parts = self._parts([self._tool_turn()])
+        assert len(parts) == 1, parts
+        assert parts[0]["thought_signature"] == SKIP_THOUGHT_SIGNATURE_VALIDATOR
+
+    def test_the_sentinel_reaches_the_wire_as_the_literal_string(self):
+        from google.genai import _common, types
+
+        from src.core.providers.gemini.format import SKIP_THOUGHT_SIGNATURE_VALIDATOR
+
+        part = self._parts([self._tool_turn()])[0]
+        on_wire = _common.encode_unserializable_types(
+            _common.convert_to_dict(types.Part.model_validate(part))
+        )
+        assert on_wire["thought_signature"] == SKIP_THOUGHT_SIGNATURE_VALIDATOR
+
+    def test_a_real_signature_is_not_replaced(self):
+        import base64
+
+        real = base64.b64encode(b"real-provider-signature").decode()
+        part = self._parts([self._tool_turn(thought_signature=real)])[0]
+        assert part["thought_signature"] == b"real-provider-signature"
+
+
 def test_truncation_does_not_mutate_the_callers_messages():
     """The notice must not be written back into the caller's history.
 
