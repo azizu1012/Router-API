@@ -32,7 +32,7 @@ class ModelPool:
         # Callers can raise this explicitly for slow providers.
         self.max_retry_seconds = max(1, int(pool_config.get("max_retry_seconds", 30)))
         self.acquire_poll_interval = max(0.01, float(pool_config.get("acquire_poll_interval", 0.05)))
-        self.acquire_deadline = max(1, int(pool_config.get("acquire_deadline", self.max_retry_seconds)))
+        self.acquire_deadline = max(1, int(pool_config.get("acquire_deadline", 15)))
         self._custom_members: Set[str] = custom_endpoint_members or set()
         self._gemini_members: Set[str] = {m for m in self.members if m not in self._custom_members}
         self._locks: Dict[str, asyncio.Lock] = {m: asyncio.Lock() for m in self.members}
@@ -60,6 +60,10 @@ class ModelPool:
         members retain the original one-request-per-member behavior.
         """
         skip = skip or set()
+        candidates = list(self._custom_members) + [m for m in self.members if m in self._gemini_members]
+        if candidates and all(m in skip for m in candidates):
+            raise TimeoutError(f"Pool {self.members}: all members are exhausted/skipped")
+
         timeout = self.acquire_deadline if timeout is None else max(0.01, timeout)
 
         # A wall-clock adjustment must not extend a request's pool deadline.

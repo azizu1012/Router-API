@@ -265,9 +265,12 @@ class PoolManager:
             try:
                 while time.monotonic() - start_time < pool.max_retry_seconds:
                     if member in exhausted_members:
+                        remaining_budget = pool.max_retry_seconds - (time.monotonic() - start_time)
+                        if remaining_budget <= 0:
+                            break
                         member = await _acquire_pool_member(
                             pool,
-                            max(0.01, pool.max_retry_seconds - (time.monotonic() - start_time)),
+                            max(0.01, remaining_budget),
                             skip=exhausted_members,
                         )
                         has_active_slot = True
@@ -503,9 +506,12 @@ class PoolManager:
             try:
                 while time.monotonic() - start_time < pool.max_retry_seconds:
                     if member in exhausted_members:
+                        remaining_budget = pool.max_retry_seconds - (time.monotonic() - start_time)
+                        if remaining_budget <= 0:
+                            break
                         member = await _acquire_pool_member(
                             pool,
-                            max(0.01, pool.max_retry_seconds - (time.monotonic() - start_time)),
+                            max(0.01, remaining_budget),
                             skip=exhausted_members,
                         )
                         has_active_slot = True
