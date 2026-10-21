@@ -97,6 +97,12 @@ async def token_limit_middleware(request: Request, call_next):
     """
     from ..auth import _resolve_auth, _check_auth, _enforce_token_limits
 
+    path = request.scope.get("path", "/")
+    if path in ("/v1/messages/count_tokens", "/messages/count_tokens"):
+        # Local token estimation only — does not call a provider, so it must not
+        # consume token concurrency slots, RPM, or TPM budgets.
+        return await call_next(request)
+
     release = None
     token = _resolve_auth(
         request.headers.get("authorization"),

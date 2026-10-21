@@ -86,7 +86,9 @@ class ClientPool:
             global_interval = max(0.2, config.GEMINI_API_GLOBAL_INTERVAL)
             jitter = random.uniform(-global_interval * 0.4, global_interval * 0.4)
             target_global = max(0.2, global_interval + jitter)
-            scheduled_time = max(now, self._last_api_time + target_global)
+            # Cap the scheduled delay to at most target_global from now so a burst
+            # of requests or retries does not create an unbounded multi-minute queue.
+            scheduled_time = max(now, min(now + target_global, self._last_api_time + target_global))
             sleep_duration = scheduled_time - now
             self._last_api_time = scheduled_time
 

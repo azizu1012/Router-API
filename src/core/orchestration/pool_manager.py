@@ -287,6 +287,9 @@ class PoolManager:
                         # timeout (the local config is 600s). A pool retry
                         # budget must still be a hard deadline, otherwise one
                         # hung member monopolizes its slot for ten minutes.
+                        # Pre-commit: bounded member timeout so a stalling provider
+                        # is swapped quickly without soaking the whole 5-minute pool budget.
+                        member_timeout = float(os.getenv("POOL_MEMBER_TIMEOUT", "35.0"))
                         resp, api_key_val, model_id_val, input_tokens, reservation = await asyncio.wait_for(
                             self._resolve_and_call(
                                 model_alias, messages, tools, temperature, max_tokens, thinking_config,
@@ -295,7 +298,7 @@ class PoolManager:
                                 member_override=member, sampling_params=sampling_params,
                                 request_id=request_id,
                             ),
-                            timeout=remaining,
+                            timeout=max(0.01, min(member_timeout, remaining)),
                         )
                         member_used = reservation.get("model_alias", member)
                         is_custom = reservation.get("provider") == "custom"
@@ -575,11 +578,12 @@ class PoolManager:
                         gen = await acompletion(**kwargs)
                         saw_payload = False
                         pending_chunks = []
-                        # Pre-commit: use pool rotation budget so a
-                        # silent provider is replaced quickly.
+                        # Pre-commit: use bounded member timeout so a
+                        # silent/stalling provider is swapped quickly without soaking 5 minutes.
+                        member_timeout = float(os.getenv("POOL_MEMBER_TIMEOUT", "35.0"))
                         first_chunk_deadline = max(
                             0.01,
-                            pool.max_retry_seconds - (time.monotonic() - start_time),
+                            min(member_timeout, pool.max_retry_seconds - (time.monotonic() - start_time)),
                         )
                         # Post-commit: the client is already receiving
                         # data — rotation is impossible. The keepalive

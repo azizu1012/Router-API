@@ -38,18 +38,19 @@ def _free_port(host: str, port: int) -> None:
     logger.warning("Port %s:%d already in use — killing old process", host, port)
     if sys.platform == "win32":
         try:
-            ps = subprocess.run(
-                ["powershell", "-Command",
-                 f"Get-NetTCPConnection -LocalPort {port} -State Listen "
-                 f"| Select-Object -ExpandProperty OwningProcess -Unique"],
-                capture_output=True, text=True, timeout=10,
-            )
-            for line in ps.stdout.strip().splitlines():
-                pid = line.strip()
-                if pid.isdigit():
+            ns = subprocess.run(["netstat", "-ano"], capture_output=True, text=True, timeout=10)
+            pids = set()
+            for line in ns.stdout.splitlines():
+                if f":{port}" in line and "LISTENING" in line:
+                    parts = line.strip().split()
+                    if parts and parts[-1].isdigit():
+                        pids.add(parts[-1])
+            current_pid = str(os.getpid())
+            for pid in pids:
+                if pid != current_pid and pid != "0":
                     subprocess.run(["taskkill", "/F", "/PID", pid], capture_output=True, timeout=5)
         except Exception as e:
-            logger.warning("Failed to free port via PowerShell: %s", e)
+            logger.warning("Failed to free port: %s", e)
     else:
         try:
             subprocess.run(["fuser", "-k", f"{port}/tcp"], capture_output=True, timeout=10)
