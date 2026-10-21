@@ -33,9 +33,9 @@ class KeyResolverMixin:
     adaptive cooldown strategies, and priority-based key selection.
     This mixin is intended to be used by classes like APIRouter to manage API keys effectively.
     """
-    def _key_is_circuit_open(self, key: str) -> bool:
+    def _key_is_circuit_open(self, key: str, model_id: Optional[str] = None) -> bool:
         """
-        Determines if the circuit breaker is open for a given key.
+        Determines if the circuit breaker is open for a given key, optionally scoped to a model.
         A key's circuit is considered open if it has accumulated enough consecutive failures
         and is currently within its frozen period.
         """
@@ -44,8 +44,14 @@ class KeyResolverMixin:
         ks = self._key_status.get(key)
         if not ks:
             return False
-        # If the key is no longer in its freeze period, the circuit is half-open (we can retry it)
-        if time.time() >= ks.get("frozen_until", 0.0):
+        now = time.time()
+        if model_id:
+            pm = ks.get("per_model", {}).get(model_id, {})
+            if isinstance(pm, dict):
+                if now >= pm.get("frozen_until", 0.0):
+                    return False
+                return pm.get("failures", 0) >= config.CIRCUIT_FAILURE_THRESHOLD
+        if now >= ks.get("frozen_until", 0.0):
             return False
         return ks.get("consecutive_failures", 0) >= config.CIRCUIT_FAILURE_THRESHOLD
 
@@ -191,7 +197,7 @@ class KeyResolverMixin:
         if retry_attempt < 10:
             if status["frozen_until"] >= now:
                 return False
-            if self._key_is_circuit_open(key):
+            if self._key_is_circuit_open(key, model_id):
                 return False
             
             # Emergency auto-release of stale active_requests
@@ -207,7 +213,7 @@ class KeyResolverMixin:
             # Extreme Checking (high load, attempt >= 10)
             if status["frozen_until"] >= now:
                 return False
-            if self._key_is_circuit_open(key):
+            if self._key_is_circuit_open(key, model_id):
                 return False
             if status.get("active_requests", 0) > 0:
                 return False
@@ -286,8 +292,15 @@ class KeyResolverMixin:
         if not candidates_with_priority:
             return None
 
-        # Sorts by priority: fewest active_requests -> highest jittered priority -> fewest failures
-        candidates_with_priority.sort(key=lambda x: (x[3].get("active_requests", 0), -x[0], x[3].get("consecutive_failures", 0)))
+        # Sorts by priority: fewest active_requests -> highest jittered priority -> fewest model-specific failures
+        def _cand_sort_key(x):
+            active_reqs = x[3].get("active_requests", 0)
+            jittered_pri = x[0]
+            cand_mid = x[4]
+            pm_f = x[3].get("per_model", {}).get(cand_mid, {}).get("failures", 0) if cand_mid else x[3].get("consecutive_failures", 0)
+            return (active_reqs, -jittered_pri, pm_f)
+
+        candidates_with_priority.sort(key=_cand_sort_key)
 
         # Sizing the candidate selection pool:
         # - If 1 key: pool = 1

@@ -20,6 +20,7 @@ _BOOTSTRAP_DDL = """
 CREATE TABLE IF NOT EXISTS key_status (
     key TEXT PRIMARY KEY,
     enabled INTEGER DEFAULT 1,
+    project_id TEXT DEFAULT '',
     usage INTEGER DEFAULT 0,
     active_requests INTEGER DEFAULT 0,
     frozen_until REAL DEFAULT 0,

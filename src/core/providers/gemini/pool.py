@@ -131,7 +131,28 @@ class ClientPool:
         )
 
     def set_key_project(self, api_key: str, project_id: str) -> None:
-        self._project_id_of_key[api_key] = project_id
+        if not api_key or not project_id:
+            return
+        proj_str = str(project_id).strip()
+        self._project_id_of_key[api_key] = proj_str
+        try:
+            from src.backend.keys.status import update_key_project_db
+            update_key_project_db(api_key, proj_str)
+        except Exception as e:
+            logger.debug("[ClientPool] Failed to persist project_id to DB: %s", e)
+
+    def get_key_project(self, api_key: str) -> str:
+        return self._project_id_of_key.get(api_key) or f"unknown_{api_key[-6:] if api_key else 'none'}"
+
+    def load_projects_from_status(self, key_status: Dict[str, Dict[str, Any]]) -> None:
+        loaded = 0
+        for k, v in (key_status or {}).items():
+            proj = v.get("project_id") if isinstance(v, dict) else None
+            if proj and str(proj).strip():
+                self._project_id_of_key[k] = str(proj).strip()
+                loaded += 1
+        if loaded > 0:
+            logger.info("[ClientPool] Loaded %d key-to-project mappings from DB", loaded)
 
     # ── Utility ──────────────────────────────────────────────────
 

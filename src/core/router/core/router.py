@@ -2,16 +2,12 @@ import random
 import threading
 import uuid
 import time
-from typing import Any, Dict, List, Optional, Set
+from typing import Any, Dict, Optional
 
 from src.core.config.api_config import (
     AVAILABLE_MODELS,
-    MODEL_POOLS,
     MODEL_PRIORITY,
-    active_pool_members,
-    is_sunset_25,
 )
-from src.core.router.pool import ModelPool
 from src.core.config_n_logg import config
 from src.core.config_n_logg.logger import logger_keys as logger
 from src.core.limits.gemini.limiter import (
@@ -142,6 +138,12 @@ class APIRouter(KeyResolverMixin, ModelResolutionMixin):
                 continue
             self._model_health[_alias] = {"score": 100.0, "updated": time.time()}
 
+        try:
+            from src.core.providers.gemini.manager import api_manager
+            api_manager.pool.load_projects_from_status(self._key_status)
+        except Exception:
+            pass
+
         logger.info(
             "APIRouter initialized models=%s keys=%d (API: %d)",
             ", ".join(self.model_priority),
@@ -224,6 +226,11 @@ class APIRouter(KeyResolverMixin, ModelResolutionMixin):
 
             self._key_status = new_key_status
             logger.info("APIRouter keys refreshed in-memory. Total keys: %d (API: %d)", len(self._key_status), len(config.GEMINI_API_KEYS))
+            try:
+                from src.core.providers.gemini.manager import api_manager
+                api_manager.pool.load_projects_from_status(self._key_status)
+            except Exception:
+                pass
 
     def is_global_cooldown_active(self) -> bool:
         """Compatibility hook; key availability is never global.
@@ -479,21 +486,28 @@ class APIRouter(KeyResolverMixin, ModelResolutionMixin):
                     remove_banned_key_from_env(key)
                     return
 
-                cf = self._key_status[key].get("consecutive_failures", 0)
-                if reason != "bad_request_spam_prevent":
-                    cf += 1
-                adj_duration = self._adaptive_cooldown(reason, cf)
-                jitter = random.uniform(adj_duration * -0.3, adj_duration * 0.3)
-                adj_duration = int(adj_duration + jitter)
-                until_ts = time.time() + adj_duration
-                self._key_status[key]["consecutive_failures"] = cf
                 ks = self._key_status[key]
                 if model_id:
                     pm = ks.setdefault("per_model", {})
                     pm_entry = pm.setdefault(model_id, {"failures": 0, "frozen_until": 0.0})
+                    cf = pm_entry.get("failures", 0)
+                    if reason != "bad_request_spam_prevent":
+                        cf += 1
+                    adj_duration = self._adaptive_cooldown(reason, cf)
+                    jitter = random.uniform(adj_duration * -0.3, adj_duration * 0.3)
+                    adj_duration = int(adj_duration + jitter)
+                    until_ts = time.time() + adj_duration
                     pm_entry["frozen_until"] = until_ts
-                    pm_entry["failures"] = pm_entry.get("failures", 0) + 1
+                    pm_entry["failures"] = cf
                 else:
+                    cf = ks.get("consecutive_failures", 0)
+                    if reason != "bad_request_spam_prevent":
+                        cf += 1
+                    adj_duration = self._adaptive_cooldown(reason, cf)
+                    jitter = random.uniform(adj_duration * -0.3, adj_duration * 0.3)
+                    adj_duration = int(adj_duration + jitter)
+                    until_ts = time.time() + adj_duration
+                    ks["consecutive_failures"] = cf
                     ks["frozen_until"] = until_ts
             atomic_freeze_key(key, until_ts, model_id, cf)
 

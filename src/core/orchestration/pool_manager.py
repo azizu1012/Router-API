@@ -351,17 +351,24 @@ class PoolManager:
                             if not is_custom and reason in ("unavailable", "server_error"):
                                 router.update_model_health(member_used, success=False, reason=reason)
 
-                            swap_threshold = 1 if reason == "unavailable" else config.POOL_SWAP_FAILURES
-                            consecutive_transient += 1
-                            if consecutive_transient >= swap_threshold:
-                                logger.warning("[PoolManager] Transient error %s on member %s (%s: %s), swapping...", reason, member_used, type(e).__name__, e)
+                            if not reservation:
+                                logger.warning("[PoolManager] Transient error %s on member %s (%s: %s), no key/project available - swapping...", reason, member_used, type(e).__name__, e)
                                 _retire_member(pool, exhausted_members, member)
                                 has_active_slot = False
                                 consecutive_transient = 0
                             else:
-                                delay = _retry_delay(consecutive_transient)
-                                logger.warning("[PoolManager] Transient error %s on member %s (%s: %s), retrying in %.1fs (attempt %d)", reason, member_used, type(e).__name__, e, delay, consecutive_transient)
-                                await asyncio.sleep(delay)
+                                consecutive_transient += 1
+                                swap_threshold = 1 if reason == "unavailable" else config.POOL_SWAP_FAILURES
+                                if consecutive_transient >= swap_threshold:
+                                    logger.warning("[PoolManager] Transient error %s on member %s (%s: %s), swapping member...", reason, member_used, type(e).__name__, e)
+                                    _retire_member(pool, exhausted_members, member)
+                                    has_active_slot = False
+                                    consecutive_transient = 0
+                                else:
+                                    # Rotate project first: if rate-limited, switch to another project immediately without long sleep
+                                    delay = 0.05 if reason == "rate_limit" and consecutive_transient <= 3 else _retry_delay(consecutive_transient)
+                                    logger.warning("[PoolManager] Transient error %s on member %s (%s: %s), rotating project in %.2fs (attempt %d)", reason, member_used, type(e).__name__, e, delay, consecutive_transient)
+                                    await asyncio.sleep(delay)
                             continue
                         else:
                             consecutive_transient = 0
@@ -661,22 +668,23 @@ class PoolManager:
                             if not is_custom and reason in ("unavailable", "server_error"):
                                 router.update_model_health(member_used, success=False, reason=reason)
 
-                            swap_threshold = 1 if reason == "unavailable" else config.POOL_SWAP_FAILURES
                             if not reservation:
-                                logger.warning("[PoolManager] Transient stream error %s on member %s (%s: %s), no key available - swapping...", reason, member_used, type(e).__name__, e)
+                                logger.warning("[PoolManager] Transient stream error %s on member %s (%s: %s), no key/project available - swapping...", reason, member_used, type(e).__name__, e)
                                 _retire_member(pool, exhausted_members, member)
                                 has_active_slot = False
                                 consecutive_transient = 0
                             else:
                                 consecutive_transient += 1
+                                swap_threshold = 1 if reason == "unavailable" else config.POOL_SWAP_FAILURES
                                 if consecutive_transient >= swap_threshold:
-                                    logger.warning("[PoolManager] Transient stream error %s on member %s (%s: %s), swapping...", reason, member_used, type(e).__name__, e)
+                                    logger.warning("[PoolManager] Transient stream error %s on member %s (%s: %s), swapping member...", reason, member_used, type(e).__name__, e)
                                     _retire_member(pool, exhausted_members, member)
                                     has_active_slot = False
                                     consecutive_transient = 0
                                 else:
-                                    delay = _retry_delay(consecutive_transient)
-                                    logger.warning("[PoolManager] Transient stream error %s on member %s (%s: %s), retrying in %.1fs (attempt %d)", reason, member_used, type(e).__name__, e, delay, consecutive_transient)
+                                    # Rotate project first: if rate-limited, switch to another project immediately without long sleep
+                                    delay = 0.05 if reason == "rate_limit" and consecutive_transient <= 3 else _retry_delay(consecutive_transient)
+                                    logger.warning("[PoolManager] Transient stream error %s on member %s (%s: %s), rotating project in %.2fs (attempt %d)", reason, member_used, type(e).__name__, e, delay, consecutive_transient)
                                     await asyncio.sleep(delay)
                             continue
                         else:

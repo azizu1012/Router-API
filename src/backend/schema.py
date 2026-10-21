@@ -43,6 +43,7 @@ _SCHEMA_COLUMN_REGISTRY = {
     },
     "key_status": {
         "enabled": "INTEGER DEFAULT 1",
+        "project_id": "TEXT DEFAULT ''",
         "last_transition_id": "TEXT DEFAULT ''",
         "last_transition_at": "REAL DEFAULT 0",
         "last_transition_json": "TEXT DEFAULT '{}'",
@@ -170,6 +171,7 @@ def init_config_tables() -> None:
                 CREATE TABLE IF NOT EXISTS key_status (
                     key TEXT PRIMARY KEY,
                     enabled INTEGER DEFAULT 1,
+                    project_id TEXT DEFAULT '',
                     usage INTEGER DEFAULT 0,
                     active_requests INTEGER DEFAULT 0,
                     frozen_until REAL DEFAULT 0,

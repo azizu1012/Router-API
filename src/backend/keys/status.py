@@ -106,6 +106,7 @@ def get_key_status_db() -> Dict[str, Dict[str, Any]]:
                         pass
 
                 d.setdefault("enabled", 1)
+                d.setdefault("project_id", "")
                 d.setdefault("usage", 0)
                 d.setdefault("active_requests", 0)
                 d.setdefault("frozen_until", 0.0)
@@ -305,6 +306,24 @@ def register_keys_in_db(keys: List[str]) -> None:
                         )
                     placeholders = ",".join("?" for _ in keys)
                     c.execute(f"DELETE FROM key_status WHERE key NOT IN ({placeholders})", keys)
+                c.commit()
+            finally:
+                c.close()
+    _db_executor.submit(_write)
+
+
+def update_key_project_db(key: str, project_id: str) -> None:
+    """Persist discovered Google Cloud project_id for an API key."""
+    if not key or not project_id:
+        return
+    def _write():
+        with _LOCK:
+            c = _conn()
+            try:
+                c.execute(
+                    "UPDATE key_status SET project_id = ? WHERE key = ?",
+                    (str(project_id).strip(), key),
+                )
                 c.commit()
             finally:
                 c.close()
