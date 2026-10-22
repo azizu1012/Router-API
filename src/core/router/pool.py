@@ -26,7 +26,8 @@ class ModelPool:
         cls._instances.clear()
 
     def __init__(self, pool_config: dict, custom_endpoint_members: Optional[Set[str]] = None):
-        self.members = list(pool_config["members"])
+        from src.core.config.api_config import is_model_sunset, is_model_enabled
+        self.members = [m for m in pool_config["members"] if not is_model_sunset(m) and is_model_enabled(m)]
         self.swap_failures = int(pool_config["swap_failures"])
         # Do not hold every request for two minutes when a pool is exhausted.
         # Callers can raise this explicitly for slow providers.

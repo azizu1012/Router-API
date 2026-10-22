@@ -1,5 +1,6 @@
 # pyright: reportAttributeAccessIssue=false
 
+import os
 import time
 import random
 import uuid
@@ -108,14 +109,12 @@ class KeyResolverMixin:
 
         # Fix: when a pool member shares its alias with the pool name (e.g. "gemini-flash-lite"),
         # _recompute_pool_aggregates overwrites cfg["rpm"] with the POOL aggregate,
-        # not the individual per-key limit. Subtract other members' contributions.
+        # not the individual per-key limit. Read the individual per-key limit directly.
         pool_cfg = MODEL_POOLS.get(model_alias)
-        if pool_cfg and model_alias in pool_cfg["members"]:
-            for m in pool_cfg["members"]:
-                if m != model_alias:
-                    m_cfg = AVAILABLE_MODELS.get(m, {})
-                    rpm_limit = max(1, rpm_limit - int(m_cfg.get("rpm", 0)))
-                    tpm_limit = max(1, tpm_limit - int(m_cfg.get("tpm", 0)))
+        if pool_cfg and model_alias in pool_cfg.get("members", []):
+            prefix = model_alias.upper().replace("-", "_")
+            rpm_limit = int(os.getenv(f"{prefix}_RPM", 3))
+            tpm_limit = int(os.getenv(f"{prefix}_TPM", 250000))
 
         return rpm_limit, tpm_limit
 

@@ -250,7 +250,9 @@ class ClaudeProxyStreamMixin:
                 yield chunk
         except Exception as e:
             logger.error("[Claude Stream] stream_message failed: %s", e, exc_info=True)
-            raise e
+            from .anthropic_spec.response import build_error_event
+            err_type = "rate_limit_error" if "429" in str(e) or "rate_limit" in str(e).lower() else "api_error"
+            yield _sse("error", build_error_event(e, err_type))
 
     async def _stream_message_impl(
         self,
