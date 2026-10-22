@@ -16,6 +16,49 @@ layer and the protocol adapters can import them without breaking layering.
 
 from typing import Any, Dict, Optional
 
+_MAX_TOOL_NAME_LENGTH = 64
+
+
+def _truncate_tool_name(value: Any) -> Any:
+    """Keep provider-facing tool names within strict endpoint limits."""
+    if isinstance(value, str):
+        return value[:_MAX_TOOL_NAME_LENGTH]
+    return value
+
+
+def _sanitize_tool_names(payload: Dict[str, Any]) -> None:
+    """Normalize tool names in schemas, choices, and prior tool blocks."""
+    tools = payload.get("tools")
+    if isinstance(tools, list):
+        for tool in tools:
+            if not isinstance(tool, dict):
+                continue
+            function = tool.get("function")
+            if isinstance(function, dict) and "name" in function:
+                function["name"] = _truncate_tool_name(function["name"])
+            elif "name" in tool:
+                tool["name"] = _truncate_tool_name(tool["name"])
+
+    choice = payload.get("tool_choice")
+    if isinstance(choice, dict):
+        function = choice.get("function")
+        if isinstance(function, dict) and "name" in function:
+            function["name"] = _truncate_tool_name(function["name"])
+        elif "name" in choice:
+            choice["name"] = _truncate_tool_name(choice["name"])
+
+    messages = payload.get("messages")
+    if isinstance(messages, list):
+        for message in messages:
+            content = message.get("content") if isinstance(message, dict) else None
+            if not isinstance(content, list):
+                continue
+            for block in content:
+                if isinstance(block, dict) and block.get("type") in ("tool_use", "agent_use"):
+                    if "name" in block:
+                        block["name"] = _truncate_tool_name(block["name"])
+
+
 _VALID_EFFORTS = ("none", "minimal", "low", "medium", "high", "xhigh", "max")
 
 # Spellings that mean "let the model decide". Sending them as-is fails.
@@ -116,6 +159,7 @@ def sanitize_custom_endpoint_payload(
         return
 
     effort = extract_reasoning_effort(payload)
+    _sanitize_tool_names(payload)
 
     if api_format == "anthropic":
         # Anthropic has no reasoning_effort field; the equivalent is the

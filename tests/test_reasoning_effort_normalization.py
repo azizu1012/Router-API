@@ -140,6 +140,28 @@ class TestSanitizeOpenAI:
         sanitize_custom_endpoint_payload(payload, api_format="openai")
         assert payload == {"model": "m", "messages": [], "temperature": 0.2}
 
+    def test_tool_names_are_limited_to_provider_maximum(self):
+        long_name = "mcp__" + "x" * 70
+        payload = {
+            "tools": [{"type": "function", "function": {"name": long_name}}],
+            "tool_choice": {"type": "function", "function": {"name": long_name}},
+            "messages": [{"role": "assistant", "content": [{"type": "tool_use", "name": long_name}]}],
+        }
+        sanitize_custom_endpoint_payload(payload, api_format="openai")
+        assert len(payload["tools"][0]["function"]["name"]) == 64
+        assert len(payload["tool_choice"]["function"]["name"]) == 64
+        assert len(payload["messages"][0]["content"][0]["name"]) == 64
+
+    def test_anthropic_tool_schemas_are_also_limited(self):
+        long_name = "tool_" + "y" * 70
+        payload = {
+            "tools": [{"name": long_name}],
+            "messages": [{"role": "assistant", "content": [{"type": "tool_use", "name": long_name}]}],
+        }
+        sanitize_custom_endpoint_payload(payload, api_format="anthropic")
+        assert len(payload["tools"][0]["name"]) == 64
+        assert len(payload["messages"][0]["content"][0]["name"]) == 64
+
 
 class TestSanitizeAnthropic:
     def test_openai_spellings_are_removed(self):
