@@ -106,6 +106,9 @@ async def stream_custom_endpoint_native(
     top_p: float,
     auth_key_prefix: str,
     api_format: str = "openai",
+    tools: Optional[list] = None,
+    response_format: Optional[dict] = None,
+    tool_choice: Any = None,
 ) -> AsyncIterator[bytes]:
     from src.core.providers.custom_endpoint.adapter import stream_custom_as_genai
 
@@ -119,6 +122,9 @@ async def stream_custom_endpoint_native(
         top_p=top_p,
         auth_key_prefix=auth_key_prefix,
         api_format=api_format,  # type: ignore
+        tools=tools,
+        response_format=response_format,
+        tool_choice=tool_choice,
     ):
         yield chunk
 

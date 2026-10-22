@@ -154,20 +154,35 @@ async def _post_with_output_limit_retry(
 # ── Custom pool rate limiting ────────────────────────────────────────────
 
 # ponytail: 120 RPM custom pool rate; adjust when per-endpoint RPM config is added
-_CUSTOM_POOL_RPM = 120
+_DEFAULT_CUSTOM_POOL_RPM = 120
+_CUSTOM_POOL_RPM = _DEFAULT_CUSTOM_POOL_RPM
 _custom_pool_usage: Dict[str, List[float]] = defaultdict(list)
 _custom_pool_lock = asyncio.Lock()
 
 
-async def check_custom_pool_rate(model_id: str) -> bool:
-    """Sliding-window RPM check. Returns True if under limit."""
+async def check_custom_pool_rate(model_id: str, endpoint_name: Optional[str] = None, rpm: int = 0) -> bool:
+    """Sliding-window RPM check keyed by endpoint. Returns True if under limit.
+
+    rpm is the provider-declared ceiling from the endpoint row (0 = unset, use
+    the default). The account-side gate runs separately in the request path, so
+    the effective ceiling is min(provider_rpm, account_rpm) with neither layer
+    knowing about the other. Two endpoints serving the same model_id get their
+    own buckets, keyed by endpoint name.
+    """
+    try:
+        limit = int(rpm or 0)
+    except (TypeError, ValueError):
+        limit = 0
+    if limit <= 0:
+        limit = _DEFAULT_CUSTOM_POOL_RPM
+    key = endpoint_name or model_id
     now = time.time()
     window = now - 60
     async with _custom_pool_lock:
-        _custom_pool_usage[model_id] = [t for t in _custom_pool_usage[model_id] if t > window]
-        if len(_custom_pool_usage[model_id]) >= _CUSTOM_POOL_RPM:
+        _custom_pool_usage[key] = [t for t in _custom_pool_usage[key] if t > window]
+        if len(_custom_pool_usage[key]) >= limit:
             return False
-        _custom_pool_usage[model_id].append(now)
+        _custom_pool_usage[key].append(now)
     return True
 
 

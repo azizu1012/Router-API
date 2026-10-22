@@ -551,7 +551,7 @@ class PoolManager:
                         # bypasses (it has to hold the key for the whole stream), so
                         # streaming bypassed custom endpoint RPM entirely.
                         if is_custom:
-                            if not await check_custom_pool_rate(model_id_val):
+                            if not await check_custom_pool_rate(model_id_val, reservation.get("name"), reservation.get("rpm")):
                                 raise RuntimeError("custom_endpoint_rate_limited")
                         else:
                             has_quota = await router.acquire_quota(estimated_tokens, model_alias)
@@ -751,7 +751,7 @@ class PoolManager:
                     # never went through _resolve_and_call, so custom pool models
                     # were exempt from their per-model RPM limit.
                     if is_custom:
-                        if not await check_custom_pool_rate(model_id_val):
+                        if not await check_custom_pool_rate(model_id_val, reservation.get("name"), reservation.get("rpm")):
                             raise RuntimeError("custom_endpoint_rate_limited")
                     else:
                         has_quota = await router.acquire_quota(estimated_tokens, model_alias)
@@ -928,7 +928,7 @@ class PoolManager:
         try:
             try:
                 if is_custom:
-                    if not await check_custom_pool_rate(model_id_val):
+                    if not await check_custom_pool_rate(model_id_val, reservation.get("name"), reservation.get("rpm")):
                         raise RuntimeError("custom_endpoint_rate_limited")
                 else:
                     has_quota = await router.acquire_quota(estimated_tokens, model_alias)

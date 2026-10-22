@@ -156,8 +156,8 @@ class CustomEndpointManager:
     # ── CRUD ─────────────────────────────────────────────────────
 
     def add(self, name: str, base_url: str, auth_key: str,
-            api_format: str = "openai") -> Dict[str, Any]:
-        r = add_endpoint_db(name, base_url, auth_key)
+            api_format: str = "openai", rpm: int = 0, timeout: int = 0) -> Dict[str, Any]:
+        r = add_endpoint_db(name, base_url, auth_key, rpm=rpm, timeout=timeout)
         if api_format and api_format != "openai":
             r = update_endpoint_db(name, api_format=api_format) or r
         self._invalidate_cache()
@@ -345,7 +345,9 @@ class CustomEndpointManager:
                          max_tokens: int = 4096, temperature: float = 0.7, top_p: float = 0.95,
                          stream: bool = False, timeout: int = 120,
                          extra_body: Optional[Dict[str, Any]] = None,
-                         endpoint_name: str = "") -> Dict[str, Any]:
+                         endpoint_name: str = "",
+                         tools: Optional[list] = None,
+                         response_format: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
         """Raw HTTP call to custom endpoint. Merges SSE if server returns stream despite settings."""
         import json as _json
         import time as _time
@@ -364,6 +366,10 @@ class CustomEndpointManager:
             "top_p": top_p,
             "stream": stream,
         }
+        if tools:
+            payload["tools"] = tools
+        if response_format:
+            payload["response_format"] = response_format
         if extra_body:
             payload.update(extra_body)
         async with aiohttp.ClientSession(headers=headers) as session:
@@ -376,6 +382,7 @@ class CustomEndpointManager:
                     finish_reason = "stop"
                     in_tokens = 0
                     out_tokens = 0
+                    sse_tool_calls: list = []
                     async for line in resp.content:
                         line = line.decode("utf-8", errors="replace").strip()
                         if not line.startswith("data: "):
@@ -393,6 +400,19 @@ class CustomEndpointManager:
                             content = delta.get("content")
                             if content:
                                 full_text += content
+                            for tc in delta.get("tool_calls") or []:
+                                if not isinstance(tc, dict):
+                                    continue
+                                tfn = tc.get("function", {}) or {}
+                                sse_tool_calls.append({
+                                    "id": tc.get("id", ""),
+                                    "index": tc.get("index", len(sse_tool_calls)),
+                                    "type": "function",
+                                    "function": {
+                                        "name": tfn.get("name", ""),
+                                        "arguments": tfn.get("arguments", ""),
+                                    },
+                                })
                             fr = ch.get("finish_reason")
                             if fr:
                                 finish_reason = fr
@@ -403,7 +423,8 @@ class CustomEndpointManager:
                     if not out_tokens and full_text:
                         out_tokens = max(1, len(full_text) // 4)
                     result = {"text": full_text, "finish_reason": finish_reason,
-                              "input_tokens": in_tokens, "output_tokens": out_tokens}
+                              "input_tokens": in_tokens, "output_tokens": out_tokens,
+                              "tool_calls": sse_tool_calls}
                     await self._broadcast_live(endpoint_name, model, "success", latency, result)
                     return result
 
@@ -418,11 +439,19 @@ class CustomEndpointManager:
                 if choice:
                     msg = choice.get("message", {})
                     text = msg.get("content") or ""
+                    raw_tcs = msg.get("tool_calls") or []
+                    norm_tcs = []
+                    for tc in raw_tcs:
+                        if not isinstance(tc, dict):
+                            continue
+                        tfn = tc.get("function", {}) or {}
+                        norm_tcs.append({"id": tc.get("id", ""), "type": "function", "function": {"name": tfn.get("name", ""), "arguments": tfn.get("arguments", "")}})
                     finish_reason = choice.get("finish_reason") or "stop"
                 usage = data.get("usage", {})
                 in_tokens = usage.get("prompt_tokens", 0) or 0
                 out_tokens = usage.get("completion_tokens", 0) or 0
                 result = {"text": text, "finish_reason": finish_reason,
+                          "tool_calls": norm_tcs,
                           "input_tokens": in_tokens, "output_tokens": out_tokens}
                 await self._broadcast_live(endpoint_name, model, "success", latency, result)
                 return result

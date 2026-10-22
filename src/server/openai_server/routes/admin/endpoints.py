@@ -26,7 +26,11 @@ async def admin_add_endpoint(request: Request):
 
     from src.backend.endpoints.manager import add_endpoint_db
     try:
-        ep = add_endpoint_db(name, base_url, auth_key)
+        ep = add_endpoint_db(
+            name, base_url, auth_key,
+            rpm=body.get("rpm") or 0,
+            timeout=body.get("timeout") or 0,
+        )
         if api_format != "openai":
             from src.backend.endpoints.manager import update_endpoint_db
             from src.core.providers import _custom_endpoint_manager
@@ -269,3 +273,37 @@ async def admin_assign_endpoint_to_key(request: Request):
         raise HTTPException(status_code=400, detail=str(e))
 
 
+
+@app.post("/dashboard/admin/endpoints/limits")
+async def admin_set_endpoint_limits(request: Request):
+    """Set the provider-declared RPM ceiling and HTTP timeout of an endpoint.
+
+    rpm = 0 means unset (the built-in default applies). The account-side gate
+    runs separately, so the effective ceiling is min(provider_rpm, account_rpm).
+    timeout = 0 means unset (the server default applies).
+    """
+    _require_admin(request)
+    try:
+        body = await request.json()
+        name = str(body.get("name", "")).strip()
+    except Exception:
+        raise HTTPException(status_code=400, detail="Invalid JSON")
+    if not name:
+        raise HTTPException(status_code=400, detail="name is required")
+
+    updates = {}
+    if "rpm" in body:
+        updates["rpm"] = body.get("rpm") or 0
+    if "timeout" in body:
+        updates["timeout"] = body.get("timeout") or 0
+    if not updates:
+        raise HTTPException(status_code=400, detail="rpm or timeout is required")
+
+    from src.backend.endpoints.manager import update_endpoint_db
+    from src.core.providers import _custom_endpoint_manager
+
+    ep = update_endpoint_db(name, **updates)
+    if not ep:
+        raise HTTPException(status_code=404, detail="Endpoint not found")
+    _custom_endpoint_manager._invalidate_cache()
+    return {"status": "success", "endpoint": ep}

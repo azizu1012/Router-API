@@ -92,6 +92,8 @@ async def _resolve_model(body: Dict[str, Any], pool_alias_override: Optional[str
                         "provider": "custom",
                         "api_base": ep["base_url"],
                         "api_format": ep.get("api_format") or "openai",
+                        "rpm": int(ep.get("rpm") or 0),
+                        "timeout": int(ep.get("timeout") or 0),
                     }
                 except Exception as e:
                     logger.warning("[MemberOverride] %s error: %s, falling back to Gemini", ep_name, e)
@@ -145,6 +147,8 @@ async def _resolve_model(body: Dict[str, Any], pool_alias_override: Optional[str
                         "provider": "custom",
                         "api_base": ep["base_url"],
                         "api_format": ep.get("api_format") or "openai",
+                        "rpm": int(ep.get("rpm") or 0),
+                        "timeout": int(ep.get("timeout") or 0),
                     }
                 except Exception as e:
                     logger.warning("[AccountEndpoint] %s ping error (%s), trying next endpoint", ep_name, e)
@@ -175,6 +179,8 @@ async def _resolve_model(body: Dict[str, Any], pool_alias_override: Optional[str
                         "provider": "custom",
                         "api_base": ep["base_url"],
                         "api_format": ep.get("api_format") or "openai",
+                        "rpm": int(ep.get("rpm") or 0),
+                        "timeout": int(ep.get("timeout") or 0),
                     }
                 except Exception as e:
                     logger.warning("[CustomPoolEndpoint] %s ping error: %s", ep_name, e)
@@ -221,6 +227,8 @@ async def _resolve_model(body: Dict[str, Any], pool_alias_override: Optional[str
             "provider": "custom",
             "api_base": fb_ep["base_url"],
 "api_format": fb_ep.get("api_format") or "openai",
+            "rpm": int(fb_ep.get("rpm") or 0),
+            "timeout": int(fb_ep.get("timeout") or 0)
         }
 
     if router.is_global_cooldown_active():

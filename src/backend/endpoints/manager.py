@@ -16,6 +16,8 @@ def _endpoint_row(r) -> Dict[str, Any]:
     d["account_key_id"] = d.get("account_key_id") or ""
     # An endpoint belongs to whoever paid for it; openai unless told otherwise.
     d["api_format"] = (d.get("api_format") or "openai").strip().lower()
+    d["rpm"] = int(d.get("rpm") or 0) if str(d.get("rpm") or 0).lstrip("-").isdigit() else 0
+    d["timeout"] = int(d.get("timeout") or 0) if str(d.get("timeout") or 0).lstrip("-").isdigit() else 0
     d["pool_assignments"] = json.loads(d.get("pool_assignments") or "{}")
     return d
 
@@ -52,7 +54,7 @@ def get_endpoint_by_account_db(account_id: str) -> Optional[Dict[str, Any]]:
             c.close()
 
 
-def add_endpoint_db(name: str, base_url: str, auth_key: str) -> Dict[str, Any]:
+def add_endpoint_db(name: str, base_url: str, auth_key: str, rpm: int = 0, timeout: int = 0) -> Dict[str, Any]:
     name = name.strip().lower().replace(" ", "-")
     if not name:
         raise ValueError("Name is required")
@@ -69,6 +71,8 @@ def add_endpoint_db(name: str, base_url: str, auth_key: str) -> Dict[str, Any]:
         "account_id": "",
         "account_key_id": "",
         "api_format": "openai",
+        "rpm": int(rpm or 0) if str(rpm or 0).lstrip("-").isdigit() else 0,
+        "timeout": int(timeout or 0) if str(timeout or 0).lstrip("-").isdigit() else 0,
         "fallback": False,
         "pool_assignments": {},
         "updated_at": datetime.now(timezone.utc).isoformat(),
@@ -78,10 +82,10 @@ def add_endpoint_db(name: str, base_url: str, auth_key: str) -> Dict[str, Any]:
         try:
             c.execute(
                 """INSERT INTO custom_endpoints
-                   (name, base_url, auth_key, enabled, models, disabled_models, enabled_models, account_id, account_key_id, fallback, pool_assignments, updated_at)
-                   VALUES (?,?,?,?,?,?,?,?,?,?,?,?)""",
+                   (name, base_url, auth_key, enabled, models, disabled_models, enabled_models, account_id, account_key_id, rpm, timeout, fallback, pool_assignments, updated_at)
+                   VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
                 (ep["name"], ep["base_url"], ep["auth_key"],
-                 1, "[]", "[]", "[]", "", "", 0, "{}", ep["updated_at"]),
+                 1, "[]", "[]", "[]", "", "", ep["rpm"], ep["timeout"], 0, "{}", ep["updated_at"]),
             )
             c.commit()
         finally:
@@ -143,15 +147,17 @@ def update_endpoint_db(name: str, **updates: Any) -> Optional[Dict[str, Any]]:
     ep = get_endpoint_db(name)
     if not ep:
         return None
-    allowed = {"base_url", "auth_key", "enabled", "models", "disabled_models", "enabled_models", "account_id", "account_key_id", "fallback", "pool_assignments", "api_format"}
+    allowed = {"base_url", "auth_key", "enabled", "models", "disabled_models", "enabled_models", "account_id", "account_key_id", "fallback", "pool_assignments", "api_format", "rpm", "timeout"}
     merged = {k: v for k, v in updates.items() if k in allowed}
     ep.update(merged)
+    ep["rpm"] = int(ep.get("rpm") or 0) if str(ep.get("rpm") or 0).lstrip("-").isdigit() else 0
+    ep["timeout"] = int(ep.get("timeout") or 0) if str(ep.get("timeout") or 0).lstrip("-").isdigit() else 0
     with _LOCK:
         c = _conn()
         try:
             c.execute(
                 """UPDATE custom_endpoints SET base_url=?, auth_key=?, enabled=?, models=?, disabled_models=?, enabled_models=?,
-                      account_id=?, account_key_id=?, fallback=?, pool_assignments=?, api_format=?, updated_at=? WHERE name=?""",
+                      account_id=?, account_key_id=?, rpm=?, timeout=?, fallback=?, pool_assignments=?, api_format=?, updated_at=? WHERE name=?""",
                 (ep["base_url"], ep["auth_key"],
                  1 if ep.get("enabled", True) else 0,
                  json.dumps(ep.get("models") or []),
@@ -159,6 +165,8 @@ def update_endpoint_db(name: str, **updates: Any) -> Optional[Dict[str, Any]]:
                  json.dumps(ep.get("enabled_models") or []),
                  ep.get("account_id", ""),
                  ep.get("account_key_id", ""),
+                 ep.get("rpm", 0),
+                 ep.get("timeout", 0),
                  1 if ep.get("fallback", False) else 0,
                  json.dumps(ep.get("pool_assignments") or {}),
                  ep.get("api_format") or "openai",

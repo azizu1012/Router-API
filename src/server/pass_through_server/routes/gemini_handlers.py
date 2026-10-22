@@ -185,9 +185,16 @@ async def _handle_gemini_native_inner(
         if model_to_use in enabled_models:
             from src.core.providers.custom_endpoint.adapter import (
                 genai_contents_to_openai_messages,
+                genai_tools_to_openai_tools,
                 openai_result_to_genai_response,
             )
             openai_messages = genai_contents_to_openai_messages(contents, system_instruction)
+            openai_tools = genai_tools_to_openai_tools(tools)
+            mime = gen_config.get("responseMimeType") or gen_config.get("response_mime_type") or ""
+            if isinstance(mime, str) and mime.strip().lower() == "application/json":
+                openai_response_format = {"type": "json_object"}
+            else:
+                openai_response_format = None
             try:
                 if stream:
                     return StreamingResponse(
@@ -200,6 +207,9 @@ async def _handle_gemini_native_inner(
                             temperature=temperature,
                             top_p=top_p,
                             auth_key_prefix=auth_key_prefix,
+                            api_format=ep.get("api_format") or "openai",
+                            tools=openai_tools or None,
+                            response_format=openai_response_format,
                         ),
                         media_type="text/event-stream"
                     )
@@ -213,13 +223,17 @@ async def _handle_gemini_native_inner(
                         temperature=temperature,
                         top_p=top_p,
                         stream=False,
-                        timeout=config.REQUEST_TIMEOUT_SECONDS,
+                        timeout=int(ep.get("timeout") or config.REQUEST_TIMEOUT_SECONDS),
                         endpoint_name=ep.get("name", ""),
+                        tools=openai_tools or None,
+                        response_format=openai_response_format,
                     )
                     resp_dict = openai_result_to_genai_response(
                         result["text"],
                         result.get("input_tokens", 0),
                         result.get("output_tokens", 0),
+                        tool_calls=result.get("tool_calls"),
+                        finish_reason=result.get("finish_reason") or "STOP",
                     )
                     await log_usage(
                         model_to_use,

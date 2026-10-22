@@ -49,7 +49,7 @@ async def _run_standalone(*, provider_raises):
                  "model_alias": "gemini-flash", "model_id": "my-model",
                  "provider": "custom", "api_base": "http://endpoint.local/v1"})
 
-    async def gate(model_id):
+    async def gate(model_id, *args, **kwargs):
         return True
 
     async def provider(*a, **k):
@@ -128,7 +128,7 @@ async def test_the_endpoint_is_released_once_the_breaker_has_taken_over():
                  "model_alias": "gemini-flash", "model_id": "my-model",
                  "provider": "custom", "api_base": "http://endpoint.local/v1"})
 
-    async def gate(model_id):
+    async def gate(model_id, *args, **kwargs):
         return True
 
     async def provider(*a, **k):
@@ -187,7 +187,7 @@ async def test_a_failing_custom_endpoint_marks_failure_on_standalone_nonstream_p
                  "model_alias": "gemini-flash", "model_id": "my-model",
                  "provider": "custom", "api_base": "http://endpoint.local/v1"})
 
-    async def gate(model_id):
+    async def gate(model_id, *args, **kwargs):
         return True
 
     async def provider(*a, **k):
@@ -230,7 +230,7 @@ async def test_a_successful_custom_endpoint_clears_breaker_on_nonstream_path():
                  "model_alias": "gemini-flash", "model_id": "my-model",
                  "provider": "custom", "api_base": "http://endpoint.local/v1"})
 
-    async def gate(model_id):
+    async def gate(model_id, *args, **kwargs):
         return True
 
     async def provider(*a, **k):

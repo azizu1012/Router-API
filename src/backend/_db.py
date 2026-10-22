@@ -46,6 +46,8 @@ CREATE TABLE IF NOT EXISTS custom_endpoints (
     account_id TEXT DEFAULT '',
     fallback INTEGER DEFAULT 0,
     api_format TEXT DEFAULT 'openai',
+    rpm INTEGER DEFAULT 0,
+    timeout INTEGER DEFAULT 0,
     pool_assignments TEXT DEFAULT '{}',
     updated_at TEXT
 );

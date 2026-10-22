@@ -53,6 +53,8 @@ def _custom_reservation():
         "model_id": "my-model",
         "provider": "custom",
         "api_base": "http://endpoint.local/v1",
+        "rpm": 0,
+        "timeout": 0,
     }
 
 
@@ -66,7 +68,7 @@ async def _run(path, *, rate_ok, pool_mode):
     async def resolve_model(*a, **k):
         return "gemini-flash", "my-model", "endpoint-auth-key", "my-model", _custom_reservation()
 
-    async def gate(model_id):
+    async def gate(model_id, *args, **kwargs):
         return rate_ok
 
     async def provider(*a, **k):
@@ -150,7 +152,7 @@ async def test_the_rate_check_runs_before_the_provider():
     async def resolve_model(*a, **k):
         return "gemini-flash", "my-model", "k", "my-model", _custom_reservation()
 
-    async def gate(model_id):
+    async def gate(model_id, *args, **kwargs):
         order.append("gate")
         return False
 
@@ -208,7 +210,7 @@ async def test_gemini_keys_are_not_gated_by_the_custom_limit():
             "model_id": "gemini-3.5-flash", "provider": "gemini",
         }
 
-    async def gate(model_id):
+    async def gate(model_id, *args, **kwargs):
         calls.append("gate")
         return False
 
