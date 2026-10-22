@@ -48,7 +48,8 @@ async def extract_search_queries(prompt_text: str, messages: list, auth_key_pref
         last_msg = messages[-1:] if messages else []
         
         res_dict = None
-        for alias in ["gemini-flash-lite", "gemini-flash-25-lite", "gemini-flash"]:
+        from src.core.config.api_config import search_fallback_chain
+        for alias in search_fallback_chain():
             try:
                 res_dict = await api_manager.call_gemini_json(
                     model_alias=alias,

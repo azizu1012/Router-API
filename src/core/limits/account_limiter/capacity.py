@@ -38,11 +38,11 @@ def _resolve_pool_model_ids(pool_type: str, available_models: dict) -> set[str]:
     Đọc từ MODEL_POOLS và AVAILABLE_MODELS (đã nạp từ env & db).
     """
     try:
-        from src.core.config.api_config import active_pool_members
+        from src.core.config.api_config import active_pool_members, pool_name_for_tier
     except Exception:
         active_pool_members = None
 
-    target_pool_name = "gemini-flash-lite" if pool_type == "lite" else "gemini-flash"
+    target_pool_name = pool_name_for_tier(pool_type)
     if active_pool_members:
         members = active_pool_members(target_pool_name)
     else:

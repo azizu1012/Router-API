@@ -29,9 +29,10 @@ def estimate_cost(input_tokens: int, output_tokens: int, model_alias: str) -> fl
 
     try:
         from src.backend.models.prices import get_model_price
+        from src.core.config.api_config import pool_name_for_tier
         cfg = get_model_price(model_alias)
         if not cfg:
-            pool_key = "gemini-flash-lite" if is_lite else "gemini-flash"
+            pool_key = pool_name_for_tier("lite" if is_lite else "flash")
             cfg = get_model_price(pool_key)
         if cfg:
             input_rate = float(cfg.get("input_rate_per_1k", input_rate))

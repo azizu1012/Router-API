@@ -1,5 +1,12 @@
 import os
 from typing import Any, Dict, List
+from src.core.config.model_registry import (
+    build_available_models,
+    build_backing_to_alias,
+    build_model_pools,
+    default_search_chain as _default_search_chain,
+    pool_for_tier as _pool_for_tier,
+)
 
 
 # Deprecated: sunset mechanism removed 2026-10-23. Admin disables models
@@ -11,184 +18,32 @@ def is_sunset_25() -> bool:
 MODEL_CONTEXT_LENGTH: int = int(os.getenv("MODEL_CONTEXT_LENGTH", "185000"))
 GEMMA_CONTEXT_LENGTH: int = int(os.getenv("GEMMA_CONTEXT_LENGTH", "14000"))
 
-AVAILABLE_MODELS: Dict[str, Dict[str, Any]] = {
-    "gemini-flash-38": {
-        "display": "Gemini Flash 3.8",
-        "priority": 1,
-        "model_id": os.getenv("GEMINI_FLASH_38_MODEL", "gemini-3.8-flash"),
-        "rpm": int(os.getenv("GEMINI_FLASH_38_RPM", "5")),
-        "tpm": int(os.getenv("GEMINI_FLASH_38_TPM", "250000")),
-        "rpd": int(os.getenv("GEMINI_FLASH_38_RPD", "20")),
-        "context_length": MODEL_CONTEXT_LENGTH,
-        "physical_context": 1048576,
-        "hidden": True,
-    },
-    # 3.7 is capacity-constrained upstream: measured ~1/3 successful calls with
-    # 503 "high demand" on the rest (2026-10-05). Token budget is left at the
-    # standard ceiling so a single large request is not artificially truncated;
-    # request rate is what gets throttled, since bursts are what the model drops.
-    # Raise GEMINI_FLASH_37_RPM once the model stabilises.
-    "gemini-flash-37": {
-        "display": "Gemini Flash 3.7",
-        "priority": 1,
-        "model_id": os.getenv("GEMINI_FLASH_37_MODEL", "gemini-3.7-flash"),
-        "rpm": int(os.getenv("GEMINI_FLASH_37_RPM", "1")),
-        "tpm": int(os.getenv("GEMINI_FLASH_37_TPM", "250000")),
-        "rpd": int(os.getenv("GEMINI_FLASH_37_RPD", "15")),
-        "context_length": MODEL_CONTEXT_LENGTH,
-        "hidden": True,
-    },
-    "gemini-flash-36": {
-        "display": "Gemini Flash 3.6",
-        "priority": 1,
-        "model_id": os.getenv("GEMINI_FLASH_36_MODEL", "gemini-3.6-flash"),
-        "rpm": int(os.getenv("GEMINI_FLASH_36_RPM", "5")),
-        "tpm": int(os.getenv("GEMINI_FLASH_36_TPM", "250000")),
-        "rpd": int(os.getenv("GEMINI_FLASH_36_RPD", "20")),
-        "context_length": MODEL_CONTEXT_LENGTH,
-        "physical_context": 1048576,
-        "hidden": True,
-    },
-    "gemini-flash-35": {
-        "display": "Gemini Flash Latest",
-        "priority": 1,
-        "model_id": os.getenv("GEMINI_FLASH_35_MODEL", "gemini-3.5-flash"),
-        "rpm": int(os.getenv("GEMINI_FLASH_35_RPM", "2")),
-        "tpm": int(os.getenv("GEMINI_FLASH_35_TPM", "250000")),
-        "rpd": int(os.getenv("GEMINI_FLASH_35_RPD", "50")),
-        "context_length": MODEL_CONTEXT_LENGTH,
-        "physical_context": 1048576,
-        "hidden": True,
-    },
-    "gemini-flash-30": {
-        "display": "Gemini Flash 3.0 Latest",
-        "priority": 1,
-        "model_id": os.getenv("GEMINI_FLASH_30_MODEL", "gemini-3-flash-preview"),
-        "rpm": int(os.getenv("GEMINI_FLASH_30_RPM", "5")),
-        "tpm": int(os.getenv("GEMINI_FLASH_30_TPM", "250000")),
-        "rpd": int(os.getenv("GEMINI_FLASH_30_RPD", "20")),
-        "context_length": MODEL_CONTEXT_LENGTH,
-        "physical_context": 1048576,
-        "hidden": True,
-    },
-    "gemini-flash": {
-        "display": os.getenv("GEMINI_FLASH_DISPLAY", "Gemini Flash Pool (38↔36↔30)"),
-        "priority": 1,
-        "model_id": "gemini-flash-pool",
-        "rpm": int(os.getenv("GEMINI_FLASH_RPM", "15")),
-        "tpm": int(os.getenv("GEMINI_FLASH_TPM", "750000")),
-        "rpd": int(os.getenv("GEMINI_FLASH_RPD", "60")),
-        "context_length": MODEL_CONTEXT_LENGTH,
-        "physical_context": 1048576,
-    },
-    "gemini-flash-lite": {
-        "display": "Gemini Flash Lite Pool",
-        "priority": 2,
-        "model_id": os.getenv("GEMINI_FLASH_LITE_MODEL", "gemini-3.1-flash-lite"),
-        "rpm": int(os.getenv("GEMINI_FLASH_LITE_RPM", "15")),
-        "tpm": int(os.getenv("GEMINI_FLASH_LITE_TPM", "250000")),
-        "rpd": int(os.getenv("GEMINI_FLASH_LITE_RPD", "500")),
-        "context_length": MODEL_CONTEXT_LENGTH,
-        "physical_context": 1048576,
-    },
-    "gemini-flash-31-lite": {
-        "display": "Gemini Flash Lite 3.1",
-        "priority": 2,
-        "model_id": os.getenv("GEMINI_FLASH_LITE_MODEL", "gemini-3.1-flash-lite"),
-        "rpm": int(os.getenv("GEMINI_FLASH_LITE_RPM", "15")),
-        "tpm": int(os.getenv("GEMINI_FLASH_LITE_TPM", "250000")),
-        "rpd": int(os.getenv("GEMINI_FLASH_LITE_RPD", "500")),
-        "context_length": MODEL_CONTEXT_LENGTH,
-        "physical_context": 1048576,
-        "hidden": True,
-    },
-    "gemini-flash-35-lite": {
-        "display": "Gemini Flash Lite 3.5",
-        "priority": 2,
-        "model_id": os.getenv("GEMINI_FLASH_35_LITE_MODEL", "gemini-3.5-flash-lite"),
-        "rpm": int(os.getenv("GEMINI_FLASH_35_LITE_RPM", "15")),
-        "tpm": int(os.getenv("GEMINI_FLASH_35_LITE_TPM", "250000")),
-        "rpd": int(os.getenv("GEMINI_FLASH_35_LITE_RPD", "500")),
-        "context_length": MODEL_CONTEXT_LENGTH,
-        "physical_context": 1048576,
-        "hidden": True,
-    },
-    "gemma-4-26b": {
-        "display": "Gemma 4 26B (Standalone)",
-        "priority": 3,
-        "model_id": os.getenv("GEMMA_4_26B_MODEL", "gemma-4-26b-a4b-it"),
-        "rpm": int(os.getenv("GEMMA_4_26B_RPM", "30")),
-        "tpm": int(os.getenv("GEMMA_4_26B_TPM", "16000")),
-        "rpd": int(os.getenv("GEMMA_4_26B_RPD", "14400")),
-        "context_length": GEMMA_CONTEXT_LENGTH,
-        "physical_context": 262144,
-        "hidden": False,
-    },
-    "gemma-4-31b": {
-        "display": "Gemma 4 31B (Standalone)",
-        "priority": 3,
-        "model_id": os.getenv("GEMMA_4_31B_MODEL", "gemma-4-31b-it"),
-        "rpm": int(os.getenv("GEMMA_4_31B_RPM", "30")),
-        "tpm": int(os.getenv("GEMMA_4_31B_TPM", "16000")),
-        "rpd": int(os.getenv("GEMMA_4_31B_RPD", "14400")),
-        "context_length": GEMMA_CONTEXT_LENGTH,
-        "physical_context": 262144,
-        "hidden": False,
-    },
-    "gemini-flash-25": {
-        "display": "Gemini Flash 2.5",
-        "priority": 1,
-        "model_id": os.getenv("GEMINI_FLASH_25_MODEL", "gemini-2.5-flash"),
-        "rpm": int(os.getenv("GEMINI_FLASH_25_RPM", "5")),
-        "tpm": int(os.getenv("GEMINI_FLASH_25_TPM", "250000")),
-        "rpd": int(os.getenv("GEMINI_FLASH_25_RPD", "20")),
-        "context_length": MODEL_CONTEXT_LENGTH,
-        "hidden": True,
-    },
-    "gemini-flash-25-lite": {
-        "display": "Gemini Flash 2.5 Lite",
-        "priority": 2,
-        "model_id": os.getenv("GEMINI_FLASH_25_LITE_MODEL", "gemini-2.5-flash-lite"),
-        "rpm": int(os.getenv("GEMINI_FLASH_25_LITE_RPM", "3")),
-        "tpm": int(os.getenv("GEMINI_FLASH_25_LITE_TPM", "250000")),
-        "rpd": int(os.getenv("GEMINI_FLASH_25_LITE_RPD", "20")),
-        "context_length": MODEL_CONTEXT_LENGTH,
-        "hidden": True,
-    },
-}
-
+AVAILABLE_MODELS: Dict[str, Dict[str, Any]] = build_available_models({"gemini": MODEL_CONTEXT_LENGTH, "gemma": GEMMA_CONTEXT_LENGTH})
 MODEL_PRIORITY: List[str] = ["gemini-flash", "gemini-flash-lite", "gemma-4-26b", "gemma-4-31b"]
 
 # Reverse map: backing model_id → virtual pool alias
-BACKING_TO_ALIAS: Dict[str, str] = {}
-for _alias, _cfg in AVAILABLE_MODELS.items():
-    _mid = str(_cfg.get("model_id", ""))
-    if _mid and _mid not in ("gemini-flash-pool",):
-        BACKING_TO_ALIAS[_mid] = _alias
+BACKING_TO_ALIAS: Dict[str, str] = build_backing_to_alias(AVAILABLE_MODELS)
 
 def resolve_model_alias(model_id: str) -> str:
     """Map backing model ID → virtual pool alias. Falls back to original if unknown."""
     return BACKING_TO_ALIAS.get(model_id, model_id)
 
-MODEL_POOLS: Dict[str, Dict[str, Any]] = {
-    "gemini-flash": {
-        "pool_name": "gemini-flash",
-        "members": ["gemini-flash-36", "gemini-flash-30", "gemini-flash-38",
-                    "gemini-flash-37", "gemini-flash-35", "gemini-flash-25"],
-        "swap_failures": int(os.getenv("POOL_SWAP_FAILURES", "5")),
-        "max_attempts": int(os.getenv("POOL_MAX_ATTEMPTS", "15")),
-        "max_retry_seconds": int(os.getenv("POOL_MAX_RETRY_SECONDS", "300")),
-        "acquire_deadline": int(os.getenv("POOL_ACQUIRE_DEADLINE", "180")),
-    },
-    "gemini-flash-lite": {
-        "pool_name": "gemini-flash-lite",
-        "members": ["gemini-flash-35-lite", "gemini-flash-31-lite", "gemini-flash-25-lite"],
-        "swap_failures": int(os.getenv("POOL_SWAP_FAILURES", "5")),
-        "max_attempts": int(os.getenv("POOL_MAX_ATTEMPTS", "15")),
-        "max_retry_seconds": int(os.getenv("POOL_MAX_RETRY_SECONDS", "300")),
-        "acquire_deadline": int(os.getenv("POOL_ACQUIRE_DEADLINE", "180")),
-    },
-}
+
+def get_model_meta(alias: str) -> Dict[str, Any]:
+    '''Single lookup for a model alias full metadata (display, backing model_id, limits).'''
+    return AVAILABLE_MODELS.get(str(alias or "").strip().lower(), {})
+
+
+def pool_name_for_tier(tier: str) -> str:
+    '''Pool alias serving a tier (lite or flash). Unknown tiers fall back to flash.'''
+    return _pool_for_tier(MODEL_POOLS, str(tier or "").strip().lower())
+
+
+def search_fallback_chain() -> List[str]:
+    '''Ordered aliases for cheap fallback calls (search query extraction).'''
+    return _default_search_chain(MODEL_POOLS)
+
+MODEL_POOLS: Dict[str, Dict[str, Any]] = build_model_pools()
 
 
 def is_model_sunset(alias_or_model_id: str) -> bool:
