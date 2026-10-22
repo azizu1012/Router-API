@@ -219,6 +219,12 @@ async def drive_search_loop(
         target = find_intercepted(tool_calls)
         if target is None:
             return result, messages, tools, trace
+        intercepted = [tc for tc in tool_calls
+                       if _tool_name(tc) in SEARCH_TOOL_NAMES + FETCH_TOOL_NAMES]
+        same_count = len(intercepted) == len(list(tool_calls))
+        if not same_count:
+            # mixed parallel tools return to client
+            return result, messages, tools, trace
 
         result_text, record = await run_intercepted(
             target, body, account, auth_key_prefix)
@@ -229,8 +235,7 @@ async def drive_search_loop(
         })
         messages = list(messages) + [
             {"role": "assistant", "content": "",
-             "tool_calls": [_as_assistant_tool_call(tc)
-                            for tc in tool_calls]},
+             "tool_calls": [_as_assistant_tool_call(target)]},
             {"role": "tool", "tool_call_id": _tool_id(target),
              "name": _tool_name(target), "content": result_text},
         ]
