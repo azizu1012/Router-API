@@ -83,7 +83,7 @@ DEFAULT_MODEL_PRICES: list[tuple[str, float, float, str]] = [
     ("gemini-3.5-flash-lite", 0.000075, 0.0003, "gemini-3.5-flash-lite"),
     ("gemini-flash-35-lite", 0.000075, 0.0003, "gemini-3.5-flash-lite"),
     ("gemini-3.1-flash-lite", 0.000075, 0.0003, "gemini-3.1-flash-lite"),
-    ("gemini-flash-lite", 0.000075, 0.0003, "gemini-3.1-flash-lite"),
+    ("gemini-flash-31-lite", 0.000075, 0.0003, "gemini-3.1-flash-lite"),
     ("gemini-2.5-flash-lite", 0.000075, 0.0003, "gemini-2.5-flash-lite"),
     ("gemini-flash-25-lite", 0.000075, 0.0003, "gemini-2.5-flash-lite"),
     # Flash 2.x series

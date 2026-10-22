@@ -58,12 +58,7 @@ async def _resolve_model(body: Dict[str, Any], pool_alias_override: Optional[str
     if not model_alias:
         model_alias = config.DEFAULT_MODEL_ALIAS
 
-    from src.core.config.api_config import is_model_enabled, is_model_sunset
-    if is_model_sunset(model_alias):
-        raise HTTPException(
-            status_code=400,
-            detail={"type": "error", "error": {"type": "invalid_request_error", "message": f"Model '{model_alias}' has been discontinued."}}
-        )
+    from src.core.config.api_config import is_model_enabled
     if not is_model_enabled(model_alias):
         raise HTTPException(
             status_code=400,

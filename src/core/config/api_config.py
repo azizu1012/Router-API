@@ -1,11 +1,11 @@
 import os
-from datetime import date as _date
 from typing import Any, Dict, List
 
-SUNSET_DATE_25 = _date(2026, 10, 16)
 
+# Deprecated: sunset mechanism removed 2026-10-23. Admin disables models
+# in dashboard web. Kept so existing imports keep working.
 def is_sunset_25() -> bool:
-    return _date.today() >= SUNSET_DATE_25
+    return False
 
 
 MODEL_CONTEXT_LENGTH: int = int(os.getenv("MODEL_CONTEXT_LENGTH", "185000"))
@@ -82,7 +82,7 @@ AVAILABLE_MODELS: Dict[str, Dict[str, Any]] = {
         "physical_context": 1048576,
     },
     "gemini-flash-lite": {
-        "display": "Gemini Flash Lite Pool (3.5↔3.1)",
+        "display": "Gemini Flash Lite Pool",
         "priority": 2,
         "model_id": os.getenv("GEMINI_FLASH_LITE_MODEL", "gemini-3.1-flash-lite"),
         "rpm": int(os.getenv("GEMINI_FLASH_LITE_RPM", "15")),
@@ -90,6 +90,17 @@ AVAILABLE_MODELS: Dict[str, Dict[str, Any]] = {
         "rpd": int(os.getenv("GEMINI_FLASH_LITE_RPD", "500")),
         "context_length": MODEL_CONTEXT_LENGTH,
         "physical_context": 1048576,
+    },
+    "gemini-flash-31-lite": {
+        "display": "Gemini Flash Lite 3.1",
+        "priority": 2,
+        "model_id": os.getenv("GEMINI_FLASH_LITE_MODEL", "gemini-3.1-flash-lite"),
+        "rpm": int(os.getenv("GEMINI_FLASH_LITE_RPM", "15")),
+        "tpm": int(os.getenv("GEMINI_FLASH_LITE_TPM", "250000")),
+        "rpd": int(os.getenv("GEMINI_FLASH_LITE_RPD", "500")),
+        "context_length": MODEL_CONTEXT_LENGTH,
+        "physical_context": 1048576,
+        "hidden": True,
     },
     "gemini-flash-35-lite": {
         "display": "Gemini Flash Lite 3.5",
@@ -171,7 +182,7 @@ MODEL_POOLS: Dict[str, Dict[str, Any]] = {
     },
     "gemini-flash-lite": {
         "pool_name": "gemini-flash-lite",
-        "members": ["gemini-flash-35-lite", "gemini-flash-lite", "gemini-flash-25-lite"],
+        "members": ["gemini-flash-35-lite", "gemini-flash-31-lite", "gemini-flash-25-lite"],
         "swap_failures": int(os.getenv("POOL_SWAP_FAILURES", "5")),
         "max_attempts": int(os.getenv("POOL_MAX_ATTEMPTS", "15")),
         "max_retry_seconds": int(os.getenv("POOL_MAX_RETRY_SECONDS", "300")),
@@ -180,39 +191,11 @@ MODEL_POOLS: Dict[str, Dict[str, Any]] = {
 }
 
 
-_SUNSET_MEMBERS = (
-    "gemini-flash-25",
-    "gemini-flash-25-lite",
-    "gemini-flash-35",
-    "gemini-flash-37",
-)
-
-_SUNSET_MODEL_IDS = (
-    "gemini-2.5-flash",
-    "gemini-2.5-flash-lite",
-    "gemini-3.5-flash",
-    "gemini-3.7-flash",
-)
-
-
 def is_model_sunset(alias_or_model_id: str) -> bool:
-    """Check if a model alias or model_id has been sunsetted / discontinued.
-
-    Covers:
-    - Gemini 2.5: gemini-flash-25, gemini-flash-25-lite (sunset since 2026-10-16)
-    - Gemini 3.5 Flash (standard): gemini-flash-35 (discontinued)
-    - Gemini 3.7 Flash: gemini-flash-37 (discontinued / retired from active pool)
-
-    Note: gemini-flash-35-lite (Gemini 3.5 Flash Lite) remains active in gemini-flash-lite pool.
-    """
-    alias = str(alias_or_model_id).strip().lower()
-    resolved_alias = BACKING_TO_ALIAS.get(alias, alias)
-    if resolved_alias in ("gemini-flash-25", "gemini-flash-25-lite") or alias in ("gemini-2.5-flash", "gemini-2.5-flash-lite"):
-        return is_sunset_25()
-    return (
-        resolved_alias in ("gemini-flash-35", "gemini-flash-37")
-        or alias in _SUNSET_MODEL_IDS
-    )
+    '''Sunset mechanism removed 2026-10-23.
+    Admin disables models in dashboard web. Always returns False.
+    Kept for backward-compatible imports.'''
+    return False
 
 
 def is_model_enabled(alias: str) -> bool:
@@ -226,7 +209,7 @@ def is_model_enabled(alias: str) -> bool:
 
 
 def active_pool_members(pool_name: str) -> List[str]:
-    """Members a pool may actually hand out, honouring both sunset and the admin switch.
+    """Members a pool may actually hand out, honouring the admin switch.
 
     Every read of ``MODEL_POOLS[...]["members"]`` that feeds routing has to go
     through here. Reading the raw list is what let a disabled member keep
@@ -239,8 +222,6 @@ def active_pool_members(pool_name: str) -> List[str]:
     members = []
     for m in cfg.get("members", []):
         m_str = str(m)
-        if is_model_sunset(m_str):
-            continue
         if not is_model_enabled(m_str):
             continue
         members.append(m_str)

@@ -11,7 +11,6 @@ from src.core.config.api_config import (
     MODEL_POOLS,
     active_pool_members,
     is_model_enabled,
-    is_model_sunset,
 )
 from src.core.config_n_logg import config
 from src.core.config_n_logg.logger import logger_keys as logger
@@ -355,10 +354,6 @@ class KeyResolverMixin:
         # Key cooldown is scoped below to the concrete model/key pair.
         # Do not block unrelated aliases or account credentials globally.
 
-        # Bảo vệ chống các model đã bị Google khai tử (Sunsetted: 2.5, 3.5, 3.7)
-        if is_model_sunset(model_alias):
-            logger.warning("Model %s has been sunsetted. Blocking reservation.", model_alias)
-            return None
 
         # Model bị admin tắt trên dashboard: chặn cả request trực tiếp, không chỉ
         # pool rotation. Client gọi thẳng alias này vẫn nhận 400 từ tầng trên,

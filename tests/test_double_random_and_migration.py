@@ -4,7 +4,7 @@ from unittest.mock import patch
 
 from fastapi import HTTPException
 
-from src.core.config.api_config import is_model_sunset, active_pool_members
+from src.core.config.api_config import is_model_sunset, is_model_enabled, active_pool_members
 from src.core.router import router
 from src.backend.schema import auto_migrate_schema, _SCHEMA_COLUMN_REGISTRY
 from src.logical_HQ_translator.model.resolver import _resolve_model
@@ -86,55 +86,30 @@ class TestAutoMigrateSchema:
 
 
 class TestSunsetModels:
-    def test_sunset_models_identification(self):
-        """Models 2.5, 3.5 (standard), and 3.7 must be recognized as sunsetted; 3.5-lite is preserved."""
-        # Sunset aliases
-        assert is_model_sunset("gemini-flash-25") is True
-        assert is_model_sunset("gemini-flash-25-lite") is True
-        assert is_model_sunset("gemini-flash-35") is True
-        assert is_model_sunset("gemini-flash-37") is True
+    def test_sunset_mechanism_removed(self):
+        '''Sunset mechanism removed 2026-10-23: admin disables models in dashboard web.'''
+        for alias in ('gemini-flash-25', 'gemini-flash-25-lite', 'gemini-flash-35', 'gemini-flash-37', 'gemini-2.5-flash', 'gemini-2.5-flash-lite', 'gemini-3.5-flash', 'gemini-3.7-flash', 'gemini-flash-35-lite', 'gemini-3.5-flash-lite', 'gemini-flash-38', 'gemini-flash-36', 'gemini-flash-30', 'gemini-flash-lite', 'gemini-flash-31-lite', 'gemini-3.1-flash-lite'):
+            assert is_model_sunset(alias) is False
 
-        # Sunset backing model IDs
-        assert is_model_sunset("gemini-2.5-flash") is True
-        assert is_model_sunset("gemini-3.5-flash") is True
-        assert is_model_sunset("gemini-3.7-flash") is True
-
-        # Active models must NOT be sunset (including 3.5 lite!)
-        assert is_model_sunset("gemini-flash-35-lite") is False
-        assert is_model_sunset("gemini-3.5-flash-lite") is False
-        assert is_model_sunset("gemini-flash-38") is False
-        assert is_model_sunset("gemini-flash-36") is False
-        assert is_model_sunset("gemini-flash-30") is False
-        assert is_model_sunset("gemini-flash-lite") is False
-        assert is_model_sunset("gemini-3.1-flash-lite") is False
-
-    def test_active_pool_members_excludes_sunset(self):
-        """active_pool_members must exclude 25, 35, and 37; lite pool preserves 35-lite."""
-        flash_members = active_pool_members("gemini-flash")
-        assert "gemini-flash-35" not in flash_members
-        assert "gemini-flash-37" not in flash_members
-        assert "gemini-flash-25" not in flash_members
-        assert "gemini-flash-38" in flash_members
-        assert "gemini-flash-36" in flash_members
-        assert "gemini-flash-30" in flash_members
-
-        lite_members = active_pool_members("gemini-flash-lite")
-        assert "gemini-flash-25-lite" not in lite_members
-        assert "gemini-flash-35-lite" in lite_members
-        assert "gemini-flash-lite" in lite_members
+    def test_active_pool_members_includes_all_configured(self):
+        '''Without sunset filtering, every configured member is handed out unless admin-disabled.'''
+        for m in ('gemini-flash-36', 'gemini-flash-30', 'gemini-flash-38', 'gemini-flash-37', 'gemini-flash-35', 'gemini-flash-25'):
+            assert m in active_pool_members('gemini-flash') or not is_model_enabled(m), m
+        for m in ('gemini-flash-35-lite', 'gemini-flash-31-lite', 'gemini-flash-25-lite'):
+            assert m in active_pool_members('gemini-flash-lite') or not is_model_enabled(m), m
 
     @pytest.mark.anyio
-    async def test_resolve_model_rejects_sunsetted_model(self):
-        """Resolving a sunsetted model directly must raise HTTP 400."""
-        for discontinued in ("gemini-flash-35", "gemini-flash-37", "gemini-flash-25"):
-            with pytest.raises(HTTPException) as exc_info:
-                await _resolve_model({"model": discontinued}, account={"account_id": "test_acc"})
-            assert exc_info.value.status_code == 400
-            assert "discontinued" in str(exc_info.value.detail)
+    async def test_resolve_model_no_longer_rejects_discontinued(self):
+        '''Previously sunsetted aliases must not raise 400-discontinued anymore.'''
+        for alias in ('gemini-flash-35', 'gemini-flash-37'):
+            try:
+                await _resolve_model({'model': alias}, account={'account_id': 'test_acc'})
+            except HTTPException as e:
+                assert 'discontinued' not in str(e.detail)
 
-    def test_reserve_key_rejects_sunsetted_model(self):
-        """reserve_key must block reservations for sunsetted models."""
-        for discontinued in ("gemini-flash-35", "gemini-flash-37", "gemini-flash-25"):
-            res = router.reserve_key(discontinued, account={"account_id": "test_acc"})
-            assert res is None
-
+    def test_reserve_key_treats_previously_discontinued_like_active(self):
+        '''reserve_key must not single out previously discontinued models.'''
+        with patch('src.core.router.core.key_resolver.is_model_enabled', return_value=True):
+            res_old = router.reserve_key('gemini-flash-35', account={'account_id': 'test_acc'})
+            res_new = router.reserve_key('gemini-flash-38', account={'account_id': 'test_acc'})
+            assert (res_old is None) == (res_new is None)
