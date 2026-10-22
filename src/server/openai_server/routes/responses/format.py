@@ -152,7 +152,7 @@ def _responses_usage(usage: dict | None) -> dict | None:
 
 
 def _responses_envelope(rid: str, model: str, status: str, output: list,
-                        created_at: int, usage: dict | None = None) -> dict:
+                        created_at: int, usage: dict | None = None, response_tools: list | None = None) -> dict:
     """The `response` object embedded in created/in_progress/completed.
 
     `parallel_tool_calls`, `tool_choice` and `tools` are required members of the
@@ -167,7 +167,7 @@ def _responses_envelope(rid: str, model: str, status: str, output: list,
         "output": output,
         "parallel_tool_calls": True,
         "tool_choice": "auto",
-        "tools": [],
+        "tools": list(response_tools or []),
         "usage": usage,
     }
 
@@ -248,6 +248,9 @@ def _url_citations(text: str, citations: list) -> list:
             "end_index": len(text),
         })
     return out
+
+
+
 
 
 

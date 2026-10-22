@@ -2257,3 +2257,29 @@ Tạo mới file test `tests/test_server_runtime_bugfixes.py` phủ đầy đủ
 - `test_stream_executor_closes_gen`: Pass
 - `test_gemini_caller_stream_close_logger`: Pass
 Toàn bộ test suite liên quan (116 tests) pass 100%, `pyflakes src/` sạch 100% không còn bất kỳ biến undefined nào.
+
+---
+
+## Bug: OpenCat qua POST /v1/responses bao JSON va file khong hop le (2026-10-23)
+
+### Trieu chung
+Client OpenCat (noi Responses dialect) bao JSON khong hop le va file gui khong hop le, du test suite xanh 100%. Khong co client nao khac sai OpenAI Responses nen khong phat hien som.
+
+### Root cause (4 loi, cung 1 pattern: mapping rot field + test khong phu)
+1. input_image / input_file bi str() hoa: _text_of trong responses_mapping.py flatten moi part ve string, nen mot part anh thanh chuoi {type: input_image, ...} model doc nhu prosa, con file khong bao gio toi duoc file handling - client thay file bi tu choi.
+2. JSON mode bi drop: text.format (Responses) / response_format khong duoc forward sang chat body, nen upstream tra free-text trong khi client parse JSON - bao JSON khong hop le.
+3. Envelope non-stream tools: [] cung: _responses_envelope luon tra tools rong thay vi echo tools client gui - strict client reject.
+4. Stream envelope cung tools []: _responses_sse_stream khong co kenh nhan tools.
+
+### Vi sao test cu xanh
+tests/test_responses_mapping.py chi gui string va input_text, khong co case image / file / JSON-mode nao - dung vung khong duoc test thi khong rot.
+
+### Fix
+- src/api/opencode_proxy/handler/responses_mapping.py: them _content_parts (giu block image_url, file thanh marker chu khong stringify), _message_content (text-only giu plain string cho client cu byte-identical, co multimodal moi tra block list), _extract_response_format (chuan hoa Responses json_schema co name/schema/strict ve chat shape co json_schema key).
+- src/server/openai_server/routes/responses/format.py: _responses_envelope them param response_tools, echo thay vi [] cung.
+- src/server/openai_server/routes/completions/responses.py: truyen body tools vao envelope ca 2 duong stream va non-stream.
+- src/server/openai_server/routes/responses/stream.py: _responses_sse_stream them param response_tools.
+- tests/test_responses_opencat.py (8 tests) + dong allowlist trong .gitignore.
+
+### Ket qua
+tests/test_responses_opencat.py (8) + test_responses_mapping.py (37) + test_responses_conformance.py (42) + test_hosted_search_shape.py (93) + test_response_format.py (20) + test_finish_reason/test_server_runtime_bugfixes/test_layering (52) - tat ca xanh.

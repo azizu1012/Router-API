@@ -96,7 +96,7 @@ async def responses(
                     ),
                     model=str(body.get("model", "")),
                     search_trace=search_trace,
-                    input_tokens_hint=estimate_input_tokens(dict(stream_body)),
+                    input_tokens_hint=estimate_input_tokens(dict(stream_body)), response_tools=body.get('tools'),
                 ),
                 media_type="text/event-stream",
                 headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
@@ -174,8 +174,10 @@ async def responses(
     # would be a field the official model rejects under extra="forbid".
     return _responses_envelope(
         rid, result.get("model") or body.get("model", ""), "completed",
-        output, int(time.time()), _responses_usage(usage),
+        output, int(time.time()), _responses_usage(usage), response_tools=body.get('tools'),
     )
+
+
 
 
 

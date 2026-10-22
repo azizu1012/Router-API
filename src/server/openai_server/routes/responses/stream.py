@@ -10,7 +10,7 @@ from .format import (
 )
 async def _responses_sse_stream(chunks, model: str = "",
                                 search_trace: list | None = None,
-                                input_tokens_hint: int = 0):
+                                input_tokens_hint: int = 0, response_tools: list | None = None):
     """Re-frame chat-completions SSE into Responses API events.
 
     The chat proxy speaks the chat dialect: `data: {"choices":[{"delta":...}]}`.
@@ -47,7 +47,7 @@ async def _responses_sse_stream(chunks, model: str = "",
     output: list = []
 
     def envelope(status, u=None):
-        return _responses_envelope(rid, model, status, output, created, u)
+        return _responses_envelope(rid, model, status, output, created, u, response_tools)
 
     yield _responses_event("response.created", seq,
                            response=envelope("in_progress"))
@@ -240,6 +240,8 @@ async def _responses_sse_stream(chunks, model: str = "",
         response=envelope("completed", final_usage),
     )
     yield b"data: [DONE]\n\n"
+
+
 
 
 

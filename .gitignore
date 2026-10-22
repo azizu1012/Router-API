@@ -163,3 +163,4 @@ test_sse_raw.txt
 coverage
 
 !tests/test_custom_provider_limits.py
+!tests/test_responses_opencat.py
