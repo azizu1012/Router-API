@@ -74,4 +74,6 @@ Chỉ kích hoạt OpenCode CLI hỗ trợ khi gặp các trường hợp sau:
 <!-- claude-reflect: learned rules (saved from the band; edit freely) -->
 ## Learned rules
 - Implement robust key rotation that automatically switches keys on failure rather than returning errors, and ensure core functionality survives agent failures without relying solely on 9router.
+- Sau mỗi `git push`, kiểm tra CI ngay bằng `gh run list --branch main --limit 2` (và `gh run view <id> --log-failed` nếu đỏ). Đừng đợi user nhắc — CI đỏ sau push là việc của mình.
+- Khi CI fail với `stream_ended_without_finish_reason` (hoặc `empty_stream_response`), kiểm tra fixture mock trước khi sửa code: stream fixture phải yield đúng contract provider thật (frame payload + frame có `finish_reason`), frame trần kiểu `{"ok": True}` sẽ bị drain-and-validate reject đúng luật. Lịch sử: `tests/test_custom_endpoint_stream_circuit_breaker.py` (commit dc756ff).
 <!-- end claude-reflect -->
