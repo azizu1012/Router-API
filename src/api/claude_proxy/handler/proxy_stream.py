@@ -10,7 +10,11 @@ from typing import Any, Dict, List, Optional, AsyncIterator
 from src.core.config_n_logg import config
 from src.core.config_n_logg.logger import logger_proxy as logger
 from src.core.router import router
-from src.core.orchestration.pool_manager import pool_manager
+from src.core.orchestration.pool_manager import (
+    _chunk_has_finish_reason,
+    _chunk_has_payload,
+    pool_manager,
+)
 from src.core.observability.usage_logger import log_usage
 from src.core.runtime.tool_name_match import declared_tool_names, resolve_declared_tool_name
 from src.logical_HQ_translator import (
@@ -364,17 +368,38 @@ class ClaudeProxyStreamMixin:
                         tool_choice=tool_choice,
                     )
 
-                    # Wrap custom endpoint stream to match pool_manager format
+                    # Wrap custom endpoint stream to match pool_manager format.
+                    # Step 3 of the stream union: the bypass runs the same
+                    # drain-and-validate rules the pool path enforces inside
+                    # _drain_and_validate_stream (payload before EOF, finish
+                    # signal before close), so a 9router-class EOF without
+                    # finish raises here instead of reaching the renderer as a
+                    # silent end_turn. The renderer below keeps its own
+                    # provider_finish_seen check as a second gate.
+                    async def _custom_frame(chunk):
+                        return {
+                            "chunk": chunk,
+                            "api_key": custom_ep["auth_key"],
+                            "model_id": body.get("model", ""),
+                            "input_tokens": 0,  # Custom endpoints don't report this
+                        }
+
                     async def custom_stream_wrapper():
-                        if stream_gen is not None:
-                            async for chunk in stream_gen:
-                                # Pool manager yields dicts with {chunk, api_key, model_id}
-                                yield {
-                                    "chunk": chunk,
-                                    "api_key": custom_ep["auth_key"],
-                                    "model_id": body.get("model", ""),
-                                    "input_tokens": 0,  # Custom endpoints don't report this
-                                }
+                        if stream_gen is None:
+                            return
+                        saw_payload = False
+                        saw_finish = False
+                        async for chunk in stream_gen:
+                            saw_finish = saw_finish or _chunk_has_finish_reason(chunk)
+                            if _chunk_has_payload(chunk):
+                                saw_payload = True
+                            yield await _custom_frame(chunk)
+                        if not saw_payload:
+                            raise RuntimeError("custom_endpoint_empty_response")
+                        if not saw_finish:
+                            raise RuntimeError(
+                                "custom_endpoint_stream_ended_without_finish_reason"
+                            )
 
                     stream = custom_stream_wrapper()
                 except RuntimeError as e:

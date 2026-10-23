@@ -312,6 +312,18 @@ def _drop_orphaned_tool_results(
                 if isinstance(tc, dict):
                     called.add(str(tc.get("id") or ""))
 
+    # The reverse orphan is the 9router failure: an assistant tool_calls whose
+    # tool result was pruned upstream (middle-out truncation cuts on message,
+    # not exchange, boundaries). Sending the call without its result makes
+    # strict aggregators answer `No tool output found for function call ...`.
+    # Drop the unanswered call rather than one side of the pair — the model
+    # simply re-issues it on the next turn if it still needs it.
+    answered: set = set()
+    for msg in messages:
+        role = str(msg.get("role") or "")
+        if role == "tool" or role.startswith("tool"):
+            answered.add(str(msg.get("tool_call_id") or ""))
+
     kept: List[Dict[str, Any]] = []
     for msg in messages:
         role = str(msg.get("role") or "")
@@ -323,6 +335,20 @@ def _drop_orphaned_tool_results(
                     cid,
                 )
                 continue
+        elif role == "assistant" and msg.get("tool_calls"):
+            live = [tc for tc in msg.get("tool_calls") or []
+                    if not isinstance(tc, dict) or str(tc.get("id") or "") in answered]
+            dropped = len(msg.get("tool_calls") or []) - len(live)
+            if dropped:
+                logger.warning(
+                    "[CustomEndpoint] dropped %d unanswered tool_call(s); "
+                    "9router rejects calls without results", dropped,
+                )
+            if not live and not (msg.get("content")):
+                # The turn was only unanswered calls — nothing left to send.
+                continue
+            if len(live) != len(msg.get("tool_calls") or []):
+                msg = dict(msg, tool_calls=live)
         kept.append(msg)
 
     return _merge_adjacent_assistant_turns(kept)
@@ -724,7 +750,16 @@ class CustomEndpointStreamGen:
             self._session = None
 
     async def _parse_sse_stream(self, response: Any) -> AsyncIterator[Dict[str, Any]]:
+        # 9router-class aggregators have closed the connection after several
+        # chunks without a finish_reason or [DONE] — the pool then raises
+        # stream_ended_without_finish_reason with no trace of what the wire
+        # actually carried. Count frames and remember the tail so the abnormal
+        # EOF log below can name endpoint, chunk count and last-frame shape
+        # (metadata only, never tool/result content which can be huge).
         buffer = ""
+        frames = 0
+        saw_done = False
+        last_shape = ""
         async for chunk_bytes in response.content:
             buffer += chunk_bytes.decode("utf-8", errors="replace")
             lines = buffer.split("\n")
@@ -740,18 +775,36 @@ class CustomEndpointStreamGen:
                 else:
                     continue
                 if data_str.strip() == "[DONE]":
+                    saw_done = True
                     return
                 try:
-                    yield json.loads(data_str)
+                    obj = json.loads(data_str)
                 except json.JSONDecodeError:
                     continue
+                frames += 1
+                if isinstance(obj, dict):
+                    ch = (obj.get("choices") or [{}])[0] if obj.get("choices") else {}
+                    delta = ch.get("delta") or {}
+                    last_shape = (
+                        f"keys={sorted(obj.keys())} "
+                        f"delta_keys={sorted(delta.keys()) if isinstance(delta, dict) else '?'} "
+                        f"finish={ch.get('finish_reason')}"
+                    )
+                yield obj
         if buffer.strip():
             trimmed = buffer.strip()
             if trimmed.startswith("data: "):
                 try:
                     yield json.loads(trimmed[6:])
+                    frames += 1
                 except json.JSONDecodeError:
                     pass
+        if not saw_done:
+            logger.warning(
+                "[CustomEndpoint] SSE closed without [DONE]: endpoint=%s model=%s "
+                "frames=%d last=%s",
+                self._api_base, self._model, frames, last_shape or "none",
+            )
 
     def __aiter__(self):
         return self
@@ -780,6 +833,28 @@ class CustomEndpointStreamGen:
 
             choices = raw_chunk.get("choices", [])
             if not choices:
+                # 9router can emit non-OpenAI frames mid-stream (usage-only
+                # frames, error objects, keepalive comments already stripped by
+                # the parser). A frame with an error payload is the upstream
+                # telling us the turn failed — surfacing it beats looping until
+                # EOF and then reporting a contentless
+                # stream_ended_without_finish_reason.
+                err = raw_chunk.get("error")
+                if err:
+                    logger.warning(
+                        "[CustomEndpoint] upstream error frame: endpoint=%s "
+                        "model=%s error=%s",
+                        self._api_base, self._model, str(err)[:300],
+                    )
+                    raise RuntimeError(f"custom_endpoint_upstream_error: {err}")
+                usage_only = raw_chunk.get("usage")
+                if usage_only and not any(
+                    k in raw_chunk for k in ("id", "model", "created")
+                ):
+                    logger.info(
+                        "[CustomEndpoint] usage-only frame outside chunk envelope; "
+                        "endpoint=%s", self._api_base,
+                    )
                 continue
 
             delta = {}

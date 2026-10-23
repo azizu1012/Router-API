@@ -269,6 +269,58 @@ class TestTextBlock:
             for payload in deltas
         ), events
 
+    def test_custom_endpoint_payload_without_finish_is_not_reported_as_end_turn(self):
+        """9router-class EOF: payload arrived but no finish_reason and no [DONE].
+
+        The stream validated in the custom bypass (Step 3 of the union) must
+        raise, so the client gets an `error` event — not a `message_delta`
+        with end_turn that makes Claude Code stop the tool loop mid-task.
+        """
+        from src.api.claude_proxy import claude_proxy
+
+        async def payload_no_finish():
+            from src.core.providers.custom_endpoint.client import NativeChunk
+            yield NativeChunk({
+                "id": "c1", "object": "chat.completion.chunk",
+                "created": 0, "model": "muse-spark",
+                "choices": [{"index": 0,
+                             "delta": {"content": "partial answer"},
+                             "finish_reason": None}],
+            })
+
+        async def fake_resolve(**kwargs):
+            return {
+                "name": "9router-test",
+                "auth_key": "test-key",
+                "base_url": "http://9router.invalid/v1",
+                "api_format": "openai",
+            }
+
+        async def fake_call(**kwargs):
+            return None, payload_no_finish()
+
+        async def collect():
+            return [c async for c in claude_proxy.stream_message({
+                "model": "test-model",
+                "messages": [{"role": "user", "content": "continue the task"}],
+            })]
+
+        with patch(
+            "src.core.providers.custom_endpoint.passthrough.resolve_custom_endpoint_for_request",
+            fake_resolve,
+        ), patch(
+            "src.core.providers.custom_endpoint.passthrough.call_custom_endpoint_passthrough",
+            fake_call,
+        ):
+            events = parse_sse(asyncio.run(collect()))
+
+        assert any(name == "error" for name, _ in events), events
+        deltas = [payload for name, payload in events if name == "message_delta"]
+        assert not any(
+            payload.get("delta", {}).get("stop_reason") == "end_turn"
+            for payload in deltas
+        ), events
+
     def test_max_tokens_reaches_the_backend(self):
         body = {"model": "gemini-flash", "max_tokens": 4321,
                 "messages": [{"role": "user", "content": "hi"}]}

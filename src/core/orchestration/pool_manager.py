@@ -10,7 +10,8 @@ import os
 import random
 import time
 import uuid
-from typing import Any, AsyncIterator, Dict, List, Optional, Set, Tuple
+from contextlib import asynccontextmanager
+from typing import Any, AsyncIterator, Callable, Dict, List, Optional, Set, Tuple
 from fastapi import HTTPException
 
 from src.core.config_n_logg import config
@@ -147,6 +148,68 @@ async def _close_async_stream(stream: Any) -> None:
         # Preserve the original provider/cancellation error. The key and pool
         # slot are released by the caller's surrounding finally blocks.
         pass
+
+
+@asynccontextmanager
+async def _stream_budget(first_chunk_deadline: Optional[float]):
+    """Arm the pre-commit budget, or yield ``None`` when the caller has none."""
+    if first_chunk_deadline is None:
+        yield None
+        return
+    async with asyncio.timeout(first_chunk_deadline) as timeout_ctx:
+        yield timeout_ctx
+
+
+async def _drain_and_validate_stream(
+    gen: AsyncIterator[Any],
+    emit: Callable[[Any], Dict[str, Any]],
+    *,
+    commit_cap: Optional[float],
+    first_chunk_deadline: Optional[float],
+) -> AsyncIterator[Dict[str, Any]]:
+    """Buffer a provider stream until it proves it can produce payload, then
+    release it, and validate that the turn actually completed.
+
+    This body lived twice — once in the pool path and once in the standalone
+    path — and the copies had already diverged: only the pool path armed a
+    deadline, and only the pool path extended it after commit. ``None`` in
+    ``commit_cap`` or ``first_chunk_deadline`` is how a caller says "unbounded";
+    passing a number where the old code had none would fix a bug inside a
+    refactor, so the divergence stays a parameter.
+
+    ``emit`` builds the frame the caller yields. The buffering and validation
+    rules live here; each path keeps its own frame shape.
+
+    Raises:
+        RuntimeError: ``empty_stream_response`` when the upstream closes before
+            its first usable frame (transient — callers retry), or
+            ``stream_ended_without_finish_reason`` when the turn never finished.
+    """
+    saw_payload = False
+    saw_finish_reason = False
+    pending_chunks: List[Any] = []
+
+    async with _stream_budget(first_chunk_deadline) as deadline_ctx:
+        async for chunk in gen:
+            saw_finish_reason = saw_finish_reason or _chunk_has_finish_reason(chunk)
+            if saw_payload:
+                yield emit(chunk)
+                continue
+            pending_chunks.append(chunk)
+            if _chunk_has_payload(chunk):
+                saw_payload = True
+                if deadline_ctx is not None and commit_cap is not None:
+                    deadline_ctx.reschedule(
+                        asyncio.get_running_loop().time() + commit_cap
+                    )
+                for pending in pending_chunks:
+                    yield emit(pending)
+                pending_chunks.clear()
+
+    if not saw_payload:
+        raise RuntimeError("empty_stream_response")
+    if not saw_finish_reason:
+        raise RuntimeError("stream_ended_without_finish_reason")
 
 
 def _safe_release_key(
@@ -591,9 +654,6 @@ class PoolManager:
                                 kwargs["extra_body"] = extra_body
 
                         gen = await acompletion(**kwargs)
-                        saw_payload = False
-                        saw_finish_reason = False
-                        pending_chunks = []
                         # Pre-commit: use bounded member timeout so a
                         # silent/stalling provider is swapped quickly without soaking 5 minutes.
                         member_timeout = float(os.getenv("POOL_MEMBER_TIMEOUT", "35.0"))
@@ -609,44 +669,24 @@ class PoolManager:
                         # custom endpoints), and large outputs (up to 64k tokens),
                         # 1800s (30 minutes) gives ample runway.
                         _COMMITTED_STREAM_CAP = float(os.getenv("COMMITTED_STREAM_CAP", "1800.0"))
-                        deadline_ctx = asyncio.timeout(first_chunk_deadline)
-                        async with deadline_ctx:
-                            async for chunk in gen:
-                                saw_finish_reason = saw_finish_reason or _chunk_has_finish_reason(chunk)
-                                if saw_payload:
-                                    yield {
-                                        "chunk": chunk,
-                                        "api_key": api_key_val,
-                                        "model_id": model_id_val,
-                                        "input_tokens": estimated_tokens,
-                                        "reservation": reservation
-                                    }
-                                    continue
-                                pending_chunks.append(chunk)
-                                if _chunk_has_payload(chunk):
-                                    saw_payload = True
-                                    committed = True
-                                    deadline_ctx.reschedule(
-                                        asyncio.get_event_loop().time()
-                                        + _COMMITTED_STREAM_CAP
-                                    )
-                                    for pending in pending_chunks:
-                                        yield {
-                                            "chunk": pending,
-                                            "api_key": api_key_val,
-                                            "model_id": model_id_val,
-                                            "input_tokens": estimated_tokens,
-                                            "reservation": reservation
-                                        }
-                                    pending_chunks.clear()
 
-                        if not saw_payload:
-                            # An upstream that closes before its first
-                            # frame is transient. Raising here is what
-                            # makes the retry/rotation path run.
-                            raise RuntimeError("empty_stream_response")
-                        if not saw_finish_reason:
-                            raise RuntimeError("stream_ended_without_finish_reason")
+                        def _pool_frame(chunk: Any) -> Dict[str, Any]:
+                            return {
+                                "chunk": chunk,
+                                "api_key": api_key_val,
+                                "model_id": model_id_val,
+                                "input_tokens": estimated_tokens,
+                                "reservation": reservation
+                            }
+
+                        async for frame in _drain_and_validate_stream(
+                            gen,
+                            _pool_frame,
+                            commit_cap=_COMMITTED_STREAM_CAP,
+                            first_chunk_deadline=first_chunk_deadline,
+                        ):
+                            committed = True
+                            yield frame
 
                         if is_custom:
                             endpoint_manager.mark_endpoint_success(
@@ -793,37 +833,27 @@ class PoolManager:
                         kwargs.update(sampling_params)
 
                     gen = await acompletion(**kwargs)
-                    saw_payload = False
-                    saw_finish_reason = False
-                    pending_chunks = []
-                    async for chunk in gen:
-                        saw_finish_reason = saw_finish_reason or _chunk_has_finish_reason(chunk)
-                        if saw_payload:
-                            yield {
-                                "chunk": chunk,
-                                "api_key": api_key_val,
-                                "model_id": model_id_val,
-                                "input_tokens": estimated_tokens,
-                                "reservation": reservation
-                            }
-                            continue
-                        pending_chunks.append(chunk)
-                        if _chunk_has_payload(chunk):
-                            saw_payload = True
-                            committed = True
-                            for pending in pending_chunks:
-                                yield {
-                                    "chunk": pending,
-                                    "api_key": api_key_val,
-                                    "model_id": model_id_val,
-                                    "input_tokens": estimated_tokens,
-                                    "reservation": reservation
-                                }
-                            pending_chunks.clear()
-                    if not saw_payload:
-                        raise RuntimeError("empty_stream_response")
-                    if not saw_finish_reason:
-                        raise RuntimeError("stream_ended_without_finish_reason")
+
+                    def _standalone_frame(chunk: Any) -> Dict[str, Any]:
+                        return {
+                            "chunk": chunk,
+                            "api_key": api_key_val,
+                            "model_id": model_id_val,
+                            "input_tokens": estimated_tokens,
+                            "reservation": reservation
+                        }
+
+                    # Standalone never armed a deadline before this refactor, and
+                    # this refactor does not add one: both bounds stay None.
+                    async for frame in _drain_and_validate_stream(
+                        gen,
+                        _standalone_frame,
+                        commit_cap=None,
+                        first_chunk_deadline=None,
+                    ):
+                        committed = True
+                        yield frame
+
                     if is_custom:
                         endpoint_manager.mark_endpoint_success(
                             reservation.get("name", model_alias_val),

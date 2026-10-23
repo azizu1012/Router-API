@@ -77,6 +77,45 @@ def test_tool_pair_survives_orphan_guard():
     assert any(m.get("role") == "tool" for m in kept)
 
 
+def test_unanswered_tool_call_is_dropped_not_sent():
+    """9router rejects assistant tool_calls with no matching tool result.
+
+    Middle-out truncation cuts on message boundaries, so a call can lose its
+    result upstream. The guard must drop the unanswered call (the model
+    re-issues it next turn) instead of sending a pair 9router answers 400
+    `No tool output found for function call ...`.
+    """
+    from src.core.providers.custom_endpoint.client import _drop_orphaned_tool_results
+    msgs = [
+        {"role": "user", "content": "hi"},
+        {"role": "assistant", "content": None,
+         "tool_calls": [{"id": "call_lost", "type": "function",
+                         "function": {"name": "Bash", "arguments": "{}"}}]},
+        # No tool message answering call_lost — its result was pruned upstream.
+    ]
+    kept = _drop_orphaned_tool_results(msgs)
+    for m in kept:
+        assert not (m.get("role") == "assistant" and m.get("tool_calls")), kept
+
+
+def test_answered_call_kept_while_unanswered_sibling_dropped():
+    from src.core.providers.custom_endpoint.client import _drop_orphaned_tool_results
+    msgs = [
+        {"role": "assistant", "content": None, "tool_calls": [
+            {"id": "call_ok", "type": "function",
+             "function": {"name": "Bash", "arguments": "{}"}},
+            {"id": "call_lost", "type": "function",
+             "function": {"name": "Read", "arguments": "{}"}},
+        ]},
+        {"role": "tool", "tool_call_id": "call_ok", "content": "done"},
+    ]
+    kept = _drop_orphaned_tool_results(msgs)
+    assistants = [m for m in kept if m.get("role") == "assistant"]
+    assert len(assistants) == 1
+    ids = [tc.get("id") for tc in assistants[0].get("tool_calls") or []]
+    assert ids == ["call_ok"], kept
+
+
 def test_genai_tools_convert_to_openai():
     tools = [gt.Tool(function_declarations=[gt.FunctionDeclaration(
         name="get_weather",
