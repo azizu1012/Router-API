@@ -134,7 +134,11 @@ async def test_the_endpoint_is_released_once_the_breaker_has_taken_over():
     async def provider(*a, **k):
         if k.get("stream"):
             async def gen():
-                yield {"ok": True}
+                # A successful stream must carry payload AND a finish signal:
+                # _drain_and_validate_stream rejects a turn that never
+                # finished, so a bare {"ok": True} is not a success fixture.
+                yield {"choices": [{"delta": {"content": "ok"}}]}
+                yield {"choices": [{"delta": {}, "finish_reason": "stop"}]}
             return gen()
         return {"ok": True}
 
