@@ -22,6 +22,7 @@ from src.core.config_n_logg.logger import logger_proxy as logger
 
 from ..anthropic_wire import is_anthropic_format
 from ...runtime.effort import sanitize_custom_endpoint_payload
+from ...runtime.sse_format import sse_data
 
 TIMEOUT = int(os.getenv("CUSTOM_ENDPOINT_TIMEOUT", "900"))
 
@@ -749,22 +750,11 @@ class CustomEndpointStreamGen:
             await self._session.close()
             self._session = None
 
-    @staticmethod
-    def _sse_data(line: str) -> Optional[str]:
-        """Return the payload of an SSE data line, or None if not one.
-
-        One helper for both the in-loop parser and the trailing-buffer parser
-        below: the two had diverged (the tail only accepted ``data: `` with a
-        space), so a final frame like ``data:{...}`` was silently dropped when
-        the connection closed right after it. Gateways each end SSE slightly
-        differently; the tail must accept every shape the loop does.
-        """
-        trimmed = line.strip()
-        if trimmed.startswith("data: "):
-            return trimmed[6:]
-        if trimmed.startswith("data:"):
-            return trimmed[5:]
-        return None
+    # SSE data-line parsing lives in src/core/runtime/sse_format.py as
+    # ``sse_data`` so every parser in the repo shares one spelling.
+    # (It used to be a static method here; only _parse_sse_stream used it,
+    # and manager._call_chat kept its own narrower copy.)
+    _sse_data = staticmethod(sse_data)
 
     async def _parse_sse_stream(self, response: Any) -> AsyncIterator[Dict[str, Any]]:
         # 9router-class aggregators have closed the connection after several

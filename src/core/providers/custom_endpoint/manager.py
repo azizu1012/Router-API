@@ -11,6 +11,7 @@ from src.backend._db import _LOCK, conn as _conn
 import json
 import uuid
 from ..anthropic_wire import is_anthropic_format
+from ...runtime.sse_format import sse_data
 # from src.server.realtime.websocket import ws_manager # Layering violation
 from src.backend.endpoints.manager import (
     list_endpoints_db,
@@ -384,10 +385,11 @@ class CustomEndpointManager:
                     out_tokens = 0
                     sse_tool_calls: list = []
                     async for line in resp.content:
-                        line = line.decode("utf-8", errors="replace").strip()
-                        if not line.startswith("data: "):
+                        # Shared SSE shape with client._parse_sse_stream:
+                        # accept every `data:` spelling, not just `data: `.
+                        data_str = sse_data(line)
+                        if data_str is None:
                             continue
-                        data_str = line[6:]
                         if data_str.strip() == "[DONE]":
                             break
                         try:

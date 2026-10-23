@@ -31,7 +31,13 @@ class StreamEventType(str, Enum):
     """A content delta the client should render."""
 
     TOOL_CALL = "tool_call"
-    """A tool/function call delta, possibly partial and later merged by id."""
+    """A complete tool/function call, emitted only once fully assembled.
+
+    Fragments are never forwarded: the producer buffers argument shards until
+    id + name + JSON-valid arguments are all present, then emits exactly one
+    event. A consumer that receives TOOL_CALL may execute it without
+    re-validating the arguments.
+    """
 
     USAGE = "usage"
     """Token accounting for the turn (prompt/completion counts)."""

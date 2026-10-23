@@ -9,7 +9,33 @@ It was not a cycle: the proxies never import auth. This module has no imports
 beyond json, so nothing can make it one. See docs/bug-logs.md Bug #6.
 """
 import json
-from typing import Any, Dict
+from typing import Any, Dict, Optional
+
+
+def sse_data(line: Any) -> Optional[str]:
+    """Return the payload of an SSE data line, or None if not one.
+
+    Gateways each end SSE slightly differently (``data: {...}`` with or
+    without the space, final frame with or without a trailing newline), so
+    every parser in the repo must accept every shape. This helper is that
+    single spelling: ``client._parse_sse_stream`` and ``manager._call_chat``
+    used to diverge here, and the tail half of the former silently dropped a
+    final ``data:{...finish...}`` frame — turning a good turn into an
+    abnormal EOF (commit 6ddf8b7).
+    """
+    if isinstance(line, (bytes, bytearray)):
+        try:
+            line = line.decode("utf-8")
+        except UnicodeDecodeError:
+            return None
+    if not isinstance(line, str):
+        return None
+    trimmed = line.strip()
+    if trimmed.startswith("data: "):
+        return trimmed[6:]
+    if trimmed.startswith("data:"):
+        return trimmed[5:]
+    return None
 
 
 def sse_event(event: str, data: Dict[str, Any]) -> bytes:

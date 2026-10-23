@@ -73,6 +73,19 @@ async def build_response(
             args = getattr(fn, "arguments", None) or "" if fn else ""
             if isinstance(args, dict):
                 args = json.dumps(args)
+            # Complete-call only: a call whose arguments do not parse is never
+            # handed to the client (same rule the stream paths enforce by
+            # buffering). The client would execute it and fail — a failure the
+            # stream would then report as success.
+            if isinstance(args, str) and args:
+                try:
+                    json.loads(args)
+                except ValueError:
+                    logger.warning(
+                        "[OpenCode Response] dropping %s: arguments are not "
+                        "valid JSON, the upstream stopped mid-call",
+                        getattr(tc, "id", "?"))
+                    continue
             tool_calls.append({
                 "id": getattr(tc, "id", f"call_{uuid.uuid4().hex}"),
                 "type": "function",

@@ -164,3 +164,4 @@ coverage
 
 !tests/test_custom_provider_limits.py
 !tests/test_responses_opencat.py
+!tests/test_tool_call_assembly_parity.py

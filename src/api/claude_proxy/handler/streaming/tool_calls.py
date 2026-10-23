@@ -43,7 +43,9 @@ def buffer_tool_calls(
                 if fn_name
                 else f"toolu_{uuid.uuid4().hex}"
             )
-            tc_id = tc.get("id", generated_id)
+            tc_id = tc.get("id")
+            id_explicit = tc_id is not None
+            tc_id = tc_id or generated_id
         else:
             raw_idx = getattr(tc, "index", 0)
             if raw_idx is None:
@@ -56,13 +58,26 @@ def buffer_tool_calls(
                 if fn_name
                 else f"toolu_{uuid.uuid4().hex}"
             )
-            tc_id = getattr(tc, "id", generated_id)
+            tc_id = getattr(tc, "id", None)
+            id_explicit = tc_id is not None
+            tc_id = tc_id or generated_id
 
+        # A provider may reuse an index for a second call, so an explicit new
+        # id on an occupied slot means a new call even when the name matches:
+        # without this, two same-name calls concatenate into one unparseable
+        # args blob. The id must be explicit on the wire — argument-only
+        # continuation fragments carry no id, and a generated placeholder must
+        # never split a call in two.
         if index_map is not None:
             if raw_idx in index_map:
                 buf_idx = index_map[raw_idx]
                 existing_name = tool_buffers.get(buf_idx, {}).get("name", "")
+                existing_id = tool_buffers.get(buf_idx, {}).get("id", "")
                 if fn_name and existing_name and fn_name != existing_name:
+                    buf_idx = max(tool_buffers.keys(), default=-1) + 1
+                    index_map[raw_idx] = buf_idx
+                elif (id_explicit and existing_id and tc_id != existing_id
+                        and fn_args and not existing_id.startswith("toolu_")):
                     buf_idx = max(tool_buffers.keys(), default=-1) + 1
                     index_map[raw_idx] = buf_idx
             else:
@@ -70,8 +85,15 @@ def buffer_tool_calls(
                 index_map[raw_idx] = buf_idx
         else:
             buf_idx = raw_idx
-            if buf_idx in tool_buffers and fn_name and tool_buffers[buf_idx].get("name") and tool_buffers[buf_idx]["name"] != fn_name:
-                buf_idx = max(tool_buffers.keys(), default=-1) + 1
+            if buf_idx in tool_buffers:
+                same_name = (fn_name and tool_buffers[buf_idx].get("name")
+                             and tool_buffers[buf_idx]["name"] != fn_name)
+                stored_id = tool_buffers[buf_idx].get("id", "")
+                new_id = (id_explicit and stored_id
+                          and stored_id != tc_id and fn_args
+                          and not stored_id.startswith("toolu_"))
+                if same_name or new_id:
+                    buf_idx = max(tool_buffers.keys(), default=-1) + 1
 
         if buf_idx not in tool_buffers:
             generated_id = (
