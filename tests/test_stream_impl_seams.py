@@ -321,6 +321,63 @@ class TestTextBlock:
             for payload in deltas
         ), events
 
+    class _FakeContent:
+        """Minimal async-iterable stand-in for aiohttp response.content."""
+
+        def __init__(self, blobs):
+            self._blobs = blobs
+
+        def __aiter__(self):
+            async def gen():
+                for b in self._blobs:
+                    yield b
+            return gen()
+
+    class _FakeResponse:
+        def __init__(self, blobs):
+            self.content = TestTextBlock._FakeContent(blobs)
+
+    @staticmethod
+    async def _parse(blobs):
+        from src.core.providers.custom_endpoint.client import (
+            CustomEndpointStreamGen,
+        )
+        gen = CustomEndpointStreamGen.__new__(CustomEndpointStreamGen)
+        gen._api_base = "http://test.invalid/v1"
+        gen._model = "test-model"
+        return [
+            c async for c in gen._parse_sse_stream(
+                TestTextBlock._FakeResponse(blobs)
+            )
+        ]
+
+    def test_sse_trailing_finish_without_newline_is_kept(self):
+        """A gateway that closes right after the final frame must not lose it.
+
+        The tail parser only accepted ``data: `` with a space; a final
+        ``data:{...finish...}`` with no trailing newline was dropped, so a
+        good turn looked like an abnormal EOF downstream.
+        """
+        finish = {"choices": [{"delta": {}, "finish_reason": "stop"}]}
+        wire = (
+            b'data: {"choices": [{"delta": {"content": "hi"}}]}\n\n'
+            + b"data:" + json.dumps(finish).encode()
+        )
+        chunks = asyncio.run(self._parse([wire]))
+        reasons = [
+            (c.get("choices") or [{}])[0].get("finish_reason") for c in chunks
+        ]
+        assert "stop" in reasons, chunks
+        assert len(chunks) == 2, chunks
+
+    def test_sse_trailing_done_without_newline_counts_as_done(self):
+        chunks = asyncio.run(self._parse([b'data: {"a": 1}\n\ndata: [DONE]']))
+        assert chunks == [{"a": 1}], chunks
+
+    def test_sse_trailing_garbage_is_ignored(self):
+        chunks = asyncio.run(self._parse([b'data: {"a": 1}\n\nnot-a-frame']))
+        assert chunks == [{"a": 1}], chunks
+
     def test_max_tokens_reaches_the_backend(self):
         body = {"model": "gemini-flash", "max_tokens": 4321,
                 "messages": [{"role": "user", "content": "hi"}]}

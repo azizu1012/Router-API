@@ -749,6 +749,23 @@ class CustomEndpointStreamGen:
             await self._session.close()
             self._session = None
 
+    @staticmethod
+    def _sse_data(line: str) -> Optional[str]:
+        """Return the payload of an SSE data line, or None if not one.
+
+        One helper for both the in-loop parser and the trailing-buffer parser
+        below: the two had diverged (the tail only accepted ``data: `` with a
+        space), so a final frame like ``data:{...}`` was silently dropped when
+        the connection closed right after it. Gateways each end SSE slightly
+        differently; the tail must accept every shape the loop does.
+        """
+        trimmed = line.strip()
+        if trimmed.startswith("data: "):
+            return trimmed[6:]
+        if trimmed.startswith("data:"):
+            return trimmed[5:]
+        return None
+
     async def _parse_sse_stream(self, response: Any) -> AsyncIterator[Dict[str, Any]]:
         # 9router-class aggregators have closed the connection after several
         # chunks without a finish_reason or [DONE] — the pool then raises
@@ -768,11 +785,8 @@ class CustomEndpointStreamGen:
                 trimmed = line.strip()
                 if not trimmed:
                     continue
-                if trimmed.startswith("data: "):
-                    data_str = trimmed[6:]
-                elif trimmed.startswith("data:"):
-                    data_str = trimmed[5:]
-                else:
+                data_str = self._sse_data(line)
+                if data_str is None:
                     continue
                 if data_str.strip() == "[DONE]":
                     saw_done = True
@@ -792,13 +806,28 @@ class CustomEndpointStreamGen:
                     )
                 yield obj
         if buffer.strip():
-            trimmed = buffer.strip()
-            if trimmed.startswith("data: "):
+            # The connection closed mid-line: the final frame never got its
+            # newline. Parse it with the same shapes the loop accepts, or a
+            # trailing finish_reason is lost and a good turn looks broken.
+            data_str = self._sse_data(buffer)
+            if data_str is not None and data_str.strip() != "[DONE]":
                 try:
-                    yield json.loads(trimmed[6:])
-                    frames += 1
+                    obj = json.loads(data_str)
                 except json.JSONDecodeError:
                     pass
+                else:
+                    frames += 1
+                    if isinstance(obj, dict):
+                        ch = (obj.get("choices") or [{}])[0] if obj.get("choices") else {}
+                        delta = ch.get("delta") or {}
+                        last_shape = (
+                            f"keys={sorted(obj.keys())} "
+                            f"delta_keys={sorted(delta.keys()) if isinstance(delta, dict) else '?'} "
+                            f"finish={ch.get('finish_reason')}"
+                        )
+                    yield obj
+            elif data_str is not None:
+                saw_done = True
         if not saw_done:
             logger.warning(
                 "[CustomEndpoint] SSE closed without [DONE]: endpoint=%s model=%s "
