@@ -188,6 +188,30 @@ async def _resolve_model(body: Dict[str, Any], pool_alias_override: Optional[str
     target_alias = member_override if (pool_mode and member_override) else model_alias
     target_mid = router.get_model_id(target_alias) if (pool_mode and member_override) else model_id
 
+    # A request larger than one key's per-minute budget cannot be fixed by
+    # rotation. Fail before reserving a key so the client can compact and retry
+    # instead of seeing a misleading 429 after every pool member is tried.
+    try:
+        _, per_key_tpm = router._get_model_limits(target_alias, target_mid)
+    except (AttributeError, TypeError, ValueError):
+        per_key_tpm = 250000
+    if estimated_tokens > per_key_tpm:
+        raise HTTPException(
+            status_code=400,
+            detail={
+                "type": "error",
+                "error": {
+                    "type": "invalid_request_error",
+                    "message": (
+                        f"Request is approximately {estimated_tokens:,} tokens, "
+                        f"above this model's per-key TPM budget of {per_key_tpm:,}. "
+                        "Compact the conversation on the client and retry."
+                    ),
+                },
+            },
+            headers={"x-error-code": "model_context_window_exceeded"},
+        )
+
     # In pool_mode, don't wait long — the pool loop handles retry timing.
     # In standalone mode, keep key acquisition wait bounded so requests don't hang.
     max_wait = config.GEMINI_API_KEY_INTERVAL * 2 if pool_mode else min(float(config.KEY_429_COOLDOWN_SECONDS), 2.0)

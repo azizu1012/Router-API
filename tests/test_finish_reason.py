@@ -132,7 +132,7 @@ class TestOpenCodeStreamDoesNotShipATruncatedCall:
     """
 
     @staticmethod
-    def _events(tool_call, finish_reason=None):
+    def _events(tool_call, finish_reason="stop"):
         import asyncio
         import types
         from unittest.mock import patch
@@ -201,7 +201,9 @@ class TestOpenCodeStreamDoesNotShipATruncatedCall:
 
         async def gen(**kwargs):
             yield _chunk('{"path": ')
-            yield _chunk('"/a.py"}')
+            final = _chunk('"/a.py"}')
+            final["chunk"].choices[0].finish_reason = "tool_calls"
+            yield final
 
         async def collect():
             out = []

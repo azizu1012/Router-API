@@ -20,6 +20,7 @@ import asyncio
 import json
 
 import pytest
+from fastapi import HTTPException
 
 from src.logical_HQ_translator.messages.converter import _convert_messages
 from src.server.openai_server.routes.completions.responses import _responses_sse_stream
@@ -151,6 +152,31 @@ class TestResponsesStreamEmitsTypedEvents:
                   if e["type"] == "response.output_text.delta"]
 
         assert deltas == ["survived"], deltas
+
+    def test_upstream_http_error_becomes_response_failed(self):
+        async def _broken():
+            yield b'data: {"choices": [{"delta": {"content": "before"}}]}\n\n'
+            raise HTTPException(
+                status_code=400,
+                detail={"error": {"type": "invalid_request_error",
+                                   "message": "Compact the conversation and retry."}},
+            )
+
+        async def _run():
+            return [c async for c in _responses_sse_stream(_broken(), model="m")]
+
+        raw = asyncio.run(_run())
+        events = [
+            json.loads(line[6:])
+            for blob in raw
+            for line in blob.decode().splitlines()
+            if line.startswith("data: ") and line[6:].strip() != "[DONE]"
+        ]
+        failed = next(e for e in events if e["type"] == "response.failed")
+        assert failed["response"]["status"] == "failed"
+        assert failed["response"]["error"]["type"] == "invalid_request_error"
+        assert "Compact the conversation" in failed["response"]["error"]["message"]
+        assert raw[-1] == b"data: [DONE]\n\n"
 
 
 # ── Anthropic SDK server tool ───────────────────────────────────────────────

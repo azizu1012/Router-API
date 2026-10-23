@@ -111,6 +111,58 @@ def _patch(payload):
 
 
 @pytest.mark.anyio
+class TestMuseToolChoiceCompatibility:
+    @pytest.mark.parametrize("choice", ["required", FORCED])
+    async def test_muse_downgrades_unsupported_choice_to_auto(self, choice):
+        patcher, seen = _patch(OPENAI_REPLY)
+        with patcher:
+            await call_custom_nonstream(
+                "https://api.meta.ai/v1", "k", "muse-spark-1.3-contributor",
+                [{"role": "user", "content": "x"}],
+                tools=TOOLS, api_format="openai", tool_choice=choice)
+        assert seen["body"]["tool_choice"] == "auto"
+        assert seen["body"]["tools"] == TOOLS
+
+    async def test_muse_keeps_auto(self):
+        patcher, seen = _patch(OPENAI_REPLY)
+        with patcher:
+            await call_custom_nonstream(
+                "https://api.meta.ai/v1", "k", "muse-spark-1.3-contributor",
+                [{"role": "user", "content": "x"}],
+                tools=TOOLS, api_format="openai", tool_choice="auto")
+        assert seen["body"]["tool_choice"] == "auto"
+
+    async def test_muse_normalizes_the_proxy_wrapper_shape(self):
+        patcher, seen = _patch(OPENAI_REPLY)
+        with patcher:
+            await call_custom_nonstream(
+                "https://api.meta.ai/v1", "k", "muse-spark-1.3-contributor",
+                [{"role": "user", "content": "x"}],
+                tools=TOOLS, api_format="openai",
+                tool_choice={"tool_choice": "auto"})
+        assert seen["body"]["tool_choice"] == "auto"
+
+    async def test_extra_body_cannot_restore_unsupported_muse_choice(self):
+        patcher, seen = _patch(OPENAI_REPLY)
+        with patcher:
+            await call_custom_nonstream(
+                "https://api.meta.ai/v1", "k", "muse-spark-1.3-contributor",
+                [{"role": "user", "content": "x"}],
+                tools=TOOLS, api_format="openai", tool_choice="required",
+                extra_body={"tool_choice": "required"})
+        assert seen["body"]["tool_choice"] == "auto"
+
+    async def test_aggregator_muse_model_keeps_openai_choice(self):
+        patcher, seen = _patch(OPENAI_REPLY)
+        with patcher:
+            await call_custom_nonstream(
+                "http://localhost:20128/v1", "k", "muse/muse-spark-1.3",
+                [{"role": "user", "content": "x"}],
+                tools=TOOLS, api_format="openai", tool_choice="required")
+        assert seen["body"]["tool_choice"] == "required"
+
+
+@pytest.mark.anyio
 class TestAnOpenAIEndpointGetsTheOpenAISpelling:
     @pytest.mark.parametrize("choice,expected", [
         ("auto", "auto"), ("none", "none"), ("required", "required"),

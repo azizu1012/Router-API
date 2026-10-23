@@ -63,11 +63,23 @@ def _match_stop_sequence(stop_sequences: Optional[List[str]], text: str) -> Opti
 
 def build_error_event(err: Exception, error_type: str = "api_error") -> Dict[str, Any]:
     """Build an Anthropic-shaped error body for the SSE `error` event."""
+    detail = getattr(err, "detail", None)
+    message = ""
+    if isinstance(detail, dict):
+        error = detail.get("error")
+        if isinstance(error, dict):
+            message = str(error.get("message") or "")
+        if not message:
+            message = str(detail.get("message") or "")
+    elif detail is not None:
+        message = str(detail)
+    if not message:
+        message = str(err)
     return {
         "type": "error",
         "error": {
             "type": error_type,
-            "message": str(err)[:500] or "Internal error",
+            "message": message[:500] or "Internal error",
         },
     }
 

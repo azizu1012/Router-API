@@ -118,7 +118,7 @@ async def test_stream_executor_closes_gen():
 
         class MockChoice:
             delta = MockDelta()
-            finish_reason = None
+            finish_reason = "stop"
 
         class MockChunk:
             choices = [MockChoice()]

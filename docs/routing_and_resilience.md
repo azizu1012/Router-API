@@ -276,11 +276,11 @@ Test: `tests/test_effort_mapping.py` — pin cả hai chiều, kể cả việc 
 ### Virtual Pools & Backing Model Limits
 | Biến Môi Trường | Mặc Định | Mô Tả |
 |---|---|---|
-| `GEMINI_FLASH_RPM` | `14` | Tổng RPM cho `gemini-flash` pool (tổng từ 6 members: 2+1+2+2+2+5) |
-| `GEMINI_FLASH_TPM` | `1500000` | Tổng TPM cho `gemini-flash` pool |
+| `GEMINI_FLASH_RPM` | _(dynamic)_ | Tổng RPM cho `gemini-flash` pool — tự động cộng dồn từ members đang active qua `_recompute_pool_aggregates()` |
+| `GEMINI_FLASH_TPM` | _(dynamic)_ | Tổng TPM cho `gemini-flash` pool — dynamic, không hardcode |
 | `GEMINI_FLASH_RPD` | `235` | Tổng RPD cho `gemini-flash` pool (50+15+50+50+50+20) |
-| `GEMINI_FLASH_LITE_RPM` | `8` | Tổng RPM cho `gemini-flash-lite` pool (2+3+3) |
-| `GEMINI_FLASH_LITE_TPM` | `750000` | Tổng TPM cho `gemini-flash-lite` pool |
+| `GEMINI_FLASH_LITE_RPM` | _(dynamic)_ | Tổng RPM cho `gemini-flash-lite` pool — dynamic |
+| `GEMINI_FLASH_LITE_TPM` | _(dynamic)_ | Tổng TPM cho `gemini-flash-lite` pool — dynamic |
 | `GEMINI_FLASH_LITE_RPD` | `540` | Tổng RPD cho `gemini-flash-lite` pool (20+500+20) |
 | `POOL_SWAP_FAILURES` | `5` | Số lần thất bại liên tiếp trước khi đổi sang pool member tiếp theo |
 | `POOL_MAX_ATTEMPTS` | `15` | Số lần thử lại tối đa qua toàn bộ các pool members |

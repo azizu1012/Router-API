@@ -11,6 +11,7 @@ import random
 import time
 import uuid
 from typing import Any, AsyncIterator, Dict, List, Optional, Set, Tuple
+from fastapi import HTTPException
 
 from src.core.config_n_logg import config
 from src.core.config_n_logg.logger import logger_system as logger
@@ -48,6 +49,16 @@ def _chunk_has_payload(chunk: Any) -> bool:
             or getattr(delta, "thought", None)
             or getattr(delta, "tool_calls", None)
         ):
+            return True
+    return False
+
+
+def _chunk_has_finish_reason(chunk: Any) -> bool:
+    """Return whether a provider frame explicitly terminates the turn."""
+    choices = chunk.get("choices") if isinstance(chunk, dict) else getattr(chunk, "choices", None)
+    for choice in choices or []:
+        finish = choice.get("finish_reason") if isinstance(choice, dict) else getattr(choice, "finish_reason", None)
+        if finish is not None:
             return True
     return False
 
@@ -317,6 +328,8 @@ class PoolManager:
                             "reservation": reservation
                         }
                     except Exception as e:
+                        if isinstance(e, HTTPException):
+                            raise
                         if isinstance(e, PoolCallError):
                             api_key_val = e.api_key
                             model_id_val = e.model_id
@@ -421,6 +434,8 @@ class PoolManager:
                         "reservation": reservation
                     }
                 except Exception as e:
+                    if isinstance(e, HTTPException):
+                        raise
                     if isinstance(e, PoolCallError):
                         api_key_val = e.api_key
                         model_id_val = e.model_id
@@ -577,6 +592,7 @@ class PoolManager:
 
                         gen = await acompletion(**kwargs)
                         saw_payload = False
+                        saw_finish_reason = False
                         pending_chunks = []
                         # Pre-commit: use bounded member timeout so a
                         # silent/stalling provider is swapped quickly without soaking 5 minutes.
@@ -596,6 +612,7 @@ class PoolManager:
                         deadline_ctx = asyncio.timeout(first_chunk_deadline)
                         async with deadline_ctx:
                             async for chunk in gen:
+                                saw_finish_reason = saw_finish_reason or _chunk_has_finish_reason(chunk)
                                 if saw_payload:
                                     yield {
                                         "chunk": chunk,
@@ -628,6 +645,8 @@ class PoolManager:
                             # frame is transient. Raising here is what
                             # makes the retry/rotation path run.
                             raise RuntimeError("empty_stream_response")
+                        if not saw_finish_reason:
+                            raise RuntimeError("stream_ended_without_finish_reason")
 
                         if is_custom:
                             endpoint_manager.mark_endpoint_success(
@@ -638,6 +657,8 @@ class PoolManager:
                             router.update_model_health(member_used, success=True)
                         return
                     except Exception as e:
+                        if isinstance(e, HTTPException):
+                            raise
                         if committed:
                             logger.error("[PoolManager] Stream interrupted after committing: %s", e)
                             raise
@@ -773,8 +794,10 @@ class PoolManager:
 
                     gen = await acompletion(**kwargs)
                     saw_payload = False
+                    saw_finish_reason = False
                     pending_chunks = []
                     async for chunk in gen:
+                        saw_finish_reason = saw_finish_reason or _chunk_has_finish_reason(chunk)
                         if saw_payload:
                             yield {
                                 "chunk": chunk,
@@ -799,6 +822,8 @@ class PoolManager:
                             pending_chunks.clear()
                     if not saw_payload:
                         raise RuntimeError("empty_stream_response")
+                    if not saw_finish_reason:
+                        raise RuntimeError("stream_ended_without_finish_reason")
                     if is_custom:
                         endpoint_manager.mark_endpoint_success(
                             reservation.get("name", model_alias_val),
@@ -806,6 +831,8 @@ class PoolManager:
                         )
                     return
                 except Exception as e:
+                    if isinstance(e, HTTPException):
+                        raise
                     if committed:
                         logger.error("[PoolManager] Standalone stream interrupted after committing: %s", e)
                         raise
@@ -964,6 +991,8 @@ class PoolManager:
                 resp = await acompletion(**kwargs)
                 return resp, api_key_val, model_id_val, estimated_tokens, reservation
             except Exception as e:
+                if isinstance(e, HTTPException):
+                    raise
                 raise PoolCallError(e, api_key_val, model_id_val, reservation)
         finally:
             # Key resolution release handles concurrency

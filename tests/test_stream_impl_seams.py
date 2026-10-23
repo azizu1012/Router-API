@@ -228,6 +228,47 @@ class TestTextBlock:
         events, _ = Harness([Chunk(Delta(content="hi"), finish_reason="stop")]).run()
         assert names(events)[-1] == "message_stop", names(events)
 
+    def test_custom_endpoint_empty_stream_is_not_reported_as_end_turn(self):
+        """A clean upstream EOF must not make Claude Code think the task finished."""
+        from src.api.claude_proxy import claude_proxy
+
+        async def empty_stream():
+            if False:
+                yield None
+
+        async def fake_resolve(**kwargs):
+            return {
+                "name": "test-endpoint",
+                "auth_key": "test-key",
+                "base_url": "http://endpoint.invalid/v1",
+                "api_format": "openai",
+            }
+
+        async def fake_call(**kwargs):
+            return None, empty_stream()
+
+        async def collect():
+            return [c async for c in claude_proxy.stream_message({
+                "model": "test-model",
+                "messages": [{"role": "user", "content": "continue the task"}],
+            })]
+
+        with patch(
+            "src.core.providers.custom_endpoint.passthrough.resolve_custom_endpoint_for_request",
+            fake_resolve,
+        ), patch(
+            "src.core.providers.custom_endpoint.passthrough.call_custom_endpoint_passthrough",
+            fake_call,
+        ):
+            events = parse_sse(asyncio.run(collect()))
+
+        assert any(name == "error" for name, _ in events), events
+        deltas = [payload for name, payload in events if name == "message_delta"]
+        assert not any(
+            payload.get("delta", {}).get("stop_reason") == "end_turn"
+            for payload in deltas
+        ), events
+
     def test_max_tokens_reaches_the_backend(self):
         body = {"model": "gemini-flash", "max_tokens": 4321,
                 "messages": [{"role": "user", "content": "hi"}]}

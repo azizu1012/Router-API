@@ -82,107 +82,132 @@ async def _responses_sse_stream(chunks, model: str = "",
         output.append(item)
     seq += 1
 
-    async for raw in chunks:
-        # The chat proxy yields bytes; a literal "[DONE]" ends the stream.
-        if isinstance(raw, (bytes, bytearray)):
-            try:
-                text = raw.decode("utf-8")
-            except UnicodeDecodeError:
+    try:
+        async for raw in chunks:
+            # The chat proxy yields bytes; a literal "[DONE]" ends the stream.
+            if isinstance(raw, (bytes, bytearray)):
+                try:
+                    text = raw.decode("utf-8")
+                except UnicodeDecodeError:
+                    continue
+            else:
+                text = str(raw)
+            if not text.startswith("data:"):
                 continue
-        else:
-            text = str(raw)
-        if not text.startswith("data:"):
-            continue
-        data = text[5:].strip()
-        if not data or data == "[DONE]":
-            continue
-        try:
-            payload = json.loads(data)
-        except ValueError:
-            continue
-        if not isinstance(payload, dict):
-            continue
-        if payload.get("usage"):
-            usage = _responses_usage(payload["usage"])
+            data = text[5:].strip()
+            if not data or data == "[DONE]":
+                continue
+            try:
+                payload = json.loads(data)
+            except ValueError:
+                continue
+            if not isinstance(payload, dict):
+                continue
+            if payload.get("usage"):
+                usage = _responses_usage(payload["usage"])
 
-        for choice in payload.get("choices") or []:
-            delta = choice.get("delta") or {}
+            for choice in payload.get("choices") or []:
+                delta = choice.get("delta") or {}
 
-            content = delta.get("content")
-            if isinstance(content, str) and content:
+                content = delta.get("content")
+                if isinstance(content, str) and content:
                 # The message item is opened on the first text fragment rather
                 # than up front: a turn that only calls a function must not emit
                 # an empty message item.
-                if not msg_open:
-                    msg_open = True
-                    msg_index = next_index
-                    next_index += 1
+                    if not msg_open:
+                        msg_open = True
+                        msg_index = next_index
+                        next_index += 1
+                        yield _responses_event(
+                            "response.output_item.added", seq,
+                            output_index=msg_index,
+                            item={"id": msg_id, "type": "message",
+                                  "status": "in_progress", "content": [],
+                                  "role": "assistant"},
+                        )
+                        seq += 1
+                        yield _responses_event(
+                            "response.content_part.added", seq,
+                            item_id=msg_id, output_index=msg_index, content_index=0,
+                            part=_output_text_part(""),
+                        )
+                        seq += 1
+                    parts.append(content)
                     yield _responses_event(
-                        "response.output_item.added", seq,
-                        output_index=msg_index,
-                        item={"id": msg_id, "type": "message",
-                              "status": "in_progress", "content": [],
-                              "role": "assistant"},
-                    )
-                    seq += 1
-                    yield _responses_event(
-                        "response.content_part.added", seq,
+                        "response.output_text.delta", seq,
                         item_id=msg_id, output_index=msg_index, content_index=0,
-                        part=_output_text_part(""),
+                        delta=content, logprobs=[],
                     )
                     seq += 1
-                parts.append(content)
-                yield _responses_event(
-                    "response.output_text.delta", seq,
-                    item_id=msg_id, output_index=msg_index, content_index=0,
-                    delta=content, logprobs=[],
-                )
-                seq += 1
 
-            for tc in delta.get("tool_calls") or []:
-                if not isinstance(tc, dict):
-                    continue
-                fn = tc.get("function") or {}
-                name = fn.get("name") or tc.get("name") or ""
-                if name in ("WebSearch", "web_search", "WebFetch",
-                            "web_fetch"):
+                for tc in delta.get("tool_calls") or []:
+                    if not isinstance(tc, dict):
+                        continue
+                    fn = tc.get("function") or {}
+                    name = fn.get("name") or tc.get("name") or ""
+                    if name in ("WebSearch", "web_search", "WebFetch",
+                                "web_fetch"):
                     # The router runs these itself and reports them as hosted
                     # tool calls. A function_call for them would ask the client
                     # to execute a tool the client was never given.
-                    continue
-                idx = int(tc.get("index", 0) or 0)
-                fn = tc.get("function") or {}
-                args = fn.get("arguments")
-                args = args if isinstance(args, str) else (
-                    json.dumps(args) if args else "")
-                entry = tools.get(idx)
-                if entry is None:
-                    fc_id = tc.get("id") or f"fc_{uuid.uuid4().hex}"
-                    name = fn.get("name") or ""
-                    entry = {"id": f"fc_{uuid.uuid4().hex}",
-                             "call_id": fc_id, "name": name,
-                             "arguments": "", "index": next_index}
-                    next_index += 1
-                    tools[idx] = entry
+                        continue
+                    idx = int(tc.get("index", 0) or 0)
+                    fn = tc.get("function") or {}
+                    args = fn.get("arguments")
+                    args = args if isinstance(args, str) else (
+                        json.dumps(args) if args else "")
+                    entry = tools.get(idx)
+                    if entry is None:
+                        fc_id = tc.get("id") or f"fc_{uuid.uuid4().hex}"
+                        name = fn.get("name") or ""
+                        entry = {"id": f"fc_{uuid.uuid4().hex}",
+                                 "call_id": fc_id, "name": name,
+                                 "arguments": "", "index": next_index}
+                        next_index += 1
+                        tools[idx] = entry
+                        yield _responses_event(
+                            "response.output_item.added", seq,
+                            output_index=entry["index"],
+                            item={"id": entry["id"], "type": "function_call",
+                                  "status": "in_progress",
+                                  "call_id": fc_id, "name": name, "arguments": ""},
+                        )
+                        seq += 1
+                    elif fn.get("name") and not entry["name"]:
+                        entry["name"] = fn["name"]
+                    if not args:
+                        continue
+                    entry["arguments"] += args
                     yield _responses_event(
-                        "response.output_item.added", seq,
-                        output_index=entry["index"],
-                        item={"id": entry["id"], "type": "function_call",
-                              "status": "in_progress",
-                              "call_id": fc_id, "name": name, "arguments": ""},
+                        "response.function_call_arguments.delta", seq,
+                        item_id=entry["id"], output_index=entry["index"],
+                        delta=args,
                     )
                     seq += 1
-                elif fn.get("name") and not entry["name"]:
-                    entry["name"] = fn["name"]
-                if not args:
-                    continue
-                entry["arguments"] += args
-                yield _responses_event(
-                    "response.function_call_arguments.delta", seq,
-                    item_id=entry["id"], output_index=entry["index"],
-                    delta=args,
-                )
-                seq += 1
+
+    except Exception as exc:
+        # Streaming headers are already committed, so preserve the Responses
+        # lifecycle with a structured terminal failure instead of resetting the
+        # connection. This is what lets clients compact/retry context errors.
+        detail = getattr(exc, "detail", None)
+        message = ""
+        if isinstance(detail, dict):
+            error = detail.get("error")
+            if isinstance(error, dict):
+                message = str(error.get("message") or "")
+            if not message:
+                message = str(detail.get("message") or "")
+        elif detail is not None:
+            message = str(detail)
+        if not message:
+            message = str(exc) or "Service temporarily unavailable"
+        status = getattr(exc, "status_code", None)
+        error_type = "invalid_request_error" if status == 400 else "api_error"
+        failed = envelope("failed")
+        failed["error"] = {"type": error_type, "message": message[:500]}
+        yield _responses_event("response.failed", seq, response=failed)
+        yield b"data: [DONE]\n\n"
+        return
 
     text = "".join(parts)
     cites = [c for r in searches for c in (r.get("citations") or [])

@@ -14,6 +14,7 @@ from src.core.orchestration.pool_manager import pool_manager
 from src.core.observability.usage_logger import log_usage
 from src.core.runtime.tool_name_match import declared_tool_names, resolve_declared_tool_name
 from src.logical_HQ_translator import _convert_messages, XMLThinkingExtractor
+from src.logical_HQ_translator.messages.truncation import trim_old_tool_results_softly
 from .anthropic_spec import (
     apply_tool_choice_to_tools,
     compute_usage,
@@ -35,9 +36,6 @@ from .anthropic_spec import (
     SEARCH_SYNTHESIS_FALLBACK,
     is_raw_search_context,
 )
-from .compaction import _pre_compact_and_truncate
-
-
 def _tool_call_was_cut_off(resp: Any) -> bool:
     """Whether the response's last tool call has arguments that are not JSON.
 
@@ -133,8 +131,13 @@ class ClaudeProxyNonstreamMixin:
         strip_tools_for_compaction(body, openai_messages, openai_tools, is_claude_or_opencode=True)
 
         model_alias = router.resolve_model_alias(body.get("model", "")) or config.DEFAULT_MODEL_ALIAS
+        openai_messages = trim_old_tool_results_softly(
+            openai_messages, max_output_tokens=int(body.get("max_tokens", 4096) or 4096)
+        )
 
-        await _pre_compact_and_truncate(body, openai_messages, openai_tools, model_alias)
+        # No server-side middle truncation: messages go to the pool untouched.
+        # Oversized requests fail fast inside PoolManager's hard guard so the
+        # client can compact and retry with full history intact.
 
         max_tokens = max(1, min(int(body.get("max_tokens", 4096)), config.MAX_OUTPUT_TOKENS))
         temperature = float(body.get("temperature", 0.7))

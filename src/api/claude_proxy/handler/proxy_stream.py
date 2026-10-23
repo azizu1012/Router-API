@@ -20,6 +20,7 @@ from src.logical_HQ_translator import (
     StreamingTextNormalizer,
     XMLThinkingExtractor,
 )
+from src.logical_HQ_translator.messages.truncation import trim_old_tool_results_softly
 from .anthropic_spec import (
     apply_tool_choice_to_tools,
     build_error_event,
@@ -42,7 +43,6 @@ from .anthropic_spec import (
     SEARCH_SYNTHESIS_FALLBACK,
     is_raw_search_context,
 )
-from .compaction import _pre_compact_and_truncate
 from .streaming import (
     KEEPALIVE_INTERVAL,
     _KEEPALIVE,
@@ -200,7 +200,12 @@ class ClaudeProxyStreamMixin:
         strip_tools_for_compaction(body, openai_messages, openai_tools, is_claude_or_opencode=True)
 
         model_alias = router.resolve_model_alias(body.get("model", "")) or config.DEFAULT_MODEL_ALIAS
-        await _pre_compact_and_truncate(body, openai_messages, openai_tools, model_alias)
+        openai_messages = trim_old_tool_results_softly(
+            openai_messages, max_output_tokens=int(body.get("max_tokens", 4096) or 4096)
+        )
+        # No server-side middle truncation: messages go to the pool untouched.
+        # Oversized requests fail fast inside PoolManager's hard guard so the
+        # client can compact and retry with full history intact.
 
         try:
             max_tokens = max(1, min(int(body.get("max_tokens", 4096)), config.MAX_OUTPUT_TOKENS))
@@ -251,8 +256,18 @@ class ClaudeProxyStreamMixin:
         except Exception as e:
             logger.error("[Claude Stream] stream_message failed: %s", e, exc_info=True)
             from .anthropic_spec.response import build_error_event
-            err_type = "rate_limit_error" if "429" in str(e) or "rate_limit" in str(e).lower() else "api_error"
+            from .helpers import _classify_error_reason
+            reason = _classify_error_reason(str(e))
+            status = getattr(e, "status_code", None)
+            msg_l = str(e).lower()
+            if status == 400 or "compact the conversation" in msg_l or "per-key tpm budget" in msg_l or "model_context_window_exceeded" in msg_l:
+                err_type = "invalid_request_error"
+            elif "429" in str(e) or "rate_limit" in msg_l:
+                err_type = reason if reason in ("rate_limit_error", "invalid_request_error") else "rate_limit_error"
+            else:
+                err_type = "api_error"
             yield _sse("error", build_error_event(e, err_type))
+            yield _sse("message_stop", {"type": "message_stop"})
 
     async def _stream_message_impl(
         self,
@@ -310,6 +325,8 @@ class ClaudeProxyStreamMixin:
             normalizer = StreamingTextNormalizer()
             used_api_key = ""
             used_model_id = ""
+            provider_meaningful_output = False
+            provider_finish_seen = False
 
             started = False
 
@@ -363,8 +380,18 @@ class ClaudeProxyStreamMixin:
                 except RuntimeError as e:
                     # Custom endpoint errors are NOT retried - return error event immediately
                     logger.error("[Claude Stream] Custom endpoint error: %s", e)
-                    error_event = build_error_event(e, "api_error")
+                    status = getattr(e, "status_code", None)
+                    msg_l = str(e).lower()
+                    error_type = (
+                        "invalid_request_error"
+                        if status == 400 or "compact the conversation" in msg_l
+                        or "per-key tpm budget" in msg_l
+                        or "model_context_window_exceeded" in msg_l
+                        else "api_error"
+                    )
+                    error_event = build_error_event(e, error_type)
                     yield _sse("error", error_event)
+                    yield _sse("message_stop", {"type": "message_stop"})
                     return
             else:
                 # Standard pool logic for Gemini keys
@@ -456,8 +483,15 @@ class ClaudeProxyStreamMixin:
                     continue
                 delta = chunk.choices[0].delta
                 fr = chunk.choices[0].finish_reason
+                if fr is not None:
+                    provider_finish_seen = True
                 content = getattr(delta, "content", None)
                 reasoning = getattr(delta, "reasoning_content", None) or getattr(delta, "thought", None)
+                tool_calls = getattr(delta, "tool_calls", None)
+                if tool_calls is None and hasattr(delta, "get"):
+                    tool_calls = delta.get("tool_calls")
+                if content or reasoning or tool_calls:
+                    provider_meaningful_output = True
                 tsig = getattr(delta, "thought_signature", None) or (delta.get("thought_signature") if hasattr(delta, "get") else None)
                 if tsig:
                     accumulated_thought_signature.append(tsig)
@@ -812,13 +846,10 @@ class ClaudeProxyStreamMixin:
                     if not remaining_budget or is_redundant:
                         recurse_tools = None
 
-                # A hosted search result is appended after the initial request
-                # compaction. Re-apply the same chat budget before the recursive
-                # synthesis turn so multiple searches cannot grow the payload
-                # past the provider's TPM ceiling.
-                await _pre_compact_and_truncate(
-                    body, new_messages, recurse_tools or [], model_alias
-                )
+                # A hosted search result is appended to the history. No
+                # server-side truncation here either — the recursive turn goes
+                # through PoolManager, whose hard guard rejects oversized
+                # payloads before any provider call.
 
                 # The first provider stream is wrapped with keepalive above,
                 # but this recursive synthesis turn starts after the search
@@ -1053,6 +1084,14 @@ class ClaudeProxyStreamMixin:
                     text_started = True
                     next_block_idx += 1
 
+                # A custom endpoint can close its SSE response cleanly without
+                # sending text, reasoning, or a tool call. Treating that EOF as
+                # `end_turn` makes Claude Code believe the task completed and it
+                # stops issuing follow-up tool requests. This is an upstream
+                # failure, not a valid assistant response.
+                if custom_ep and not provider_finish_seen:
+                    raise RuntimeError("custom_endpoint_stream_ended_without_finish_reason")
+
                 output_tokens = max(provider_output_tokens,
                                     max(1, output_chars // 4) + len(tool_buffers) * 50)
                 final_stop_reason, final_stop_sequence = map_stop_reason(
@@ -1131,7 +1170,12 @@ class ClaudeProxyStreamMixin:
                     # leaves the client with a truncated stream. Emit a proper
                     # Anthropic `error` event instead, then close the message.
                     logger.error("[Claude Stream] emitting SSE error event: %s", e)
-                    yield _sse("error", build_error_event(e, "api_error"))
+                    status = getattr(e, "status_code", None)
+                    msg_l = str(e).lower()
+                    err_type = "api_error"
+                    if status == 400 or "compact the conversation" in msg_l or "per-key tpm budget" in msg_l or "model_context_window_exceeded" in msg_l:
+                        err_type = "invalid_request_error"
+                    yield _sse("error", build_error_event(e, err_type))
                     yield _sse("message_stop", {"type": "message_stop"})
             else:
                 raise e

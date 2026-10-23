@@ -233,12 +233,18 @@ async def chat_completions(
                     else:
                         # Emit a terminal chunk with finish_reason and explicit error info
                         # so clients receive actionable feedback instead of an empty silent response.
+                        # The TPM guard's compact-and-retry instruction rides in the
+                        # delta text because SSE has no error envelope for it.
+                        _status = getattr(e, "status_code", None)
+                        _msg_l = str(e).lower()
+                        _is_guard = _status == 400 or "compact the conversation" in _msg_l or "per-key tpm budget" in _msg_l
+                        _prefix = "[Context too large — compact and retry] " if _is_guard else ""
                         error_chunk = {
                             "id": f"chatcmpl-error",
                             "object": "chat.completion.chunk",
                             "created": int(time.time()),
                             "model": body.get("model", "unknown"),
-                            "choices": [{"index": 0, "delta": {"content": f"\n\n[Error: {e}]"}, "finish_reason": "stop"}],
+                            "choices": [{"index": 0, "delta": {"content": f"\n\n[{_prefix}Error: {e}]"}, "finish_reason": "length" if _is_guard else "stop"}],
                         }
                         yield f"data: {json.dumps(error_chunk, ensure_ascii=False)}\n\n".encode("utf-8")
                         yield "data: [DONE]\n\n".encode("utf-8")

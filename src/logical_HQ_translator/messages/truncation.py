@@ -4,6 +4,8 @@ Keeps all system messages and the most recent chat messages,
 ensuring the first retained message has role ``user``.
 """
 
+import copy
+import os
 from typing import Any, Dict, List
 
 from src.core.config_n_logg.logger import logger_proxy as logger
@@ -159,4 +161,44 @@ def emergency_truncate_to_limit(messages: List[Dict[str, Any]], limit: int) -> L
         final_chat.extend(recent_msgs)
 
     return system_msgs + final_chat
+
+
+def trim_old_tool_results_softly(
+    messages: List[Dict[str, Any]],
+    limit: int | None = None,
+    max_overage_ratio: float = 0.20,
+    max_output_tokens: int = 0,
+) -> List[Dict[str, Any]]:
+    """Shrink old tool output without deleting the tool-call conversation.
+
+    This is deliberately a small safety valve for agent turns: preserve message
+    and tool-call structure, replace only the oldest tool-result bodies, and
+    leave requests that are too large for the client to compact itself.
+    """
+    # This guard follows the per-key TPM budget, not the client-advertised
+    # context-window metadata (which may intentionally be lower).
+    budget = int(limit or os.getenv("SOFT_TOOL_RESULT_TRIM_LIMIT", "250000")) - max(0, int(max_output_tokens))
+    if budget <= 0:
+        return messages
+
+    def size(items: List[Dict[str, Any]]) -> int:
+        return len(str(items)) // 4
+
+    current = size(messages)
+    if current <= budget or current > int(budget * (1.0 + max_overage_ratio)):
+        return messages
+
+    trimmed = copy.deepcopy(messages)
+    marker = "[older tool output trimmed; client context remains authoritative]"
+    for message in trimmed:
+        if str(message.get("role") or "") != "tool":
+            continue
+        content = message.get("content")
+        if isinstance(content, str) and len(content) > len(marker):
+            message["content"] = marker
+        elif isinstance(content, list):
+            message["content"] = [{"type": "text", "text": marker}]
+        if size(trimmed) <= budget:
+            return trimmed
+    return trimmed if size(trimmed) <= budget else messages
 

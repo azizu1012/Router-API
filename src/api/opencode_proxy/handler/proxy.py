@@ -15,9 +15,9 @@ from src.core.config_n_logg.logger import logger_proxy as logger
 from src.core.router import router
 from src.core.providers import _custom_endpoint_manager as endpoint_manager
 from src.logical_HQ_translator import (
-    _emergency_truncate_to_limit,
     _sanitize_schema_for_gemini,
 )
+from src.logical_HQ_translator.messages.truncation import trim_old_tool_results_softly
 from src.api.claude_proxy.handler.helpers import _reinforce_messages_for_retry
 
 from .websearch import (
@@ -312,7 +312,13 @@ class OpenCodeProxy:
 
         from src.core.runtime.compaction_detect import strip_tools_for_compaction
         strip_tools_for_compaction(body, messages, tools, is_claude_or_opencode=is_opencode)
-        
+        # Same Tier-2 valve as the Claude path: shrink oldest tool output when
+        # slightly over the per-key TPM budget. Oversized requests still fail
+        # fast inside PoolManager's hard guard so the client compacts and retries.
+        messages = trim_old_tool_results_softly(
+            messages, max_output_tokens=int(body.get("max_tokens", 4096) or 4096)
+        )
+
         messages, tools = self._inject_websearch_tool(body, messages, tools, account)
 
         thinking_config = _resolve_thinking_config(body, model_alias)
@@ -391,7 +397,10 @@ class OpenCodeProxy:
 
         from src.core.runtime.compaction_detect import strip_tools_for_compaction
         strip_tools_for_compaction(body, messages, tools, is_claude_or_opencode=is_opencode)
-        
+        messages = trim_old_tool_results_softly(
+            messages, max_output_tokens=int(body.get("max_tokens", 4096) or 4096)
+        )
+
         messages, tools = self._inject_websearch_tool(body, messages, tools, account)
 
         async for chunk in execute_stream(
@@ -424,6 +433,9 @@ class OpenCodeProxy:
         Returns (messages, tools, trace).
         """
         messages, tools = body.get("messages", []), list(body.get("tools", []))
+        messages = trim_old_tool_results_softly(
+            messages, max_output_tokens=int(body.get("max_tokens", 4096) or 4096)
+        )
         messages, tools = self._inject_websearch_tool(body, messages, tools,
                                                       account)
         if not any(t.get("function", {}).get("name") == "WebSearch"

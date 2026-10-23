@@ -26,6 +26,7 @@ from src.api.claude_proxy.handler.anthropic_spec import (
     thinking_signature,
 )
 from src.logical_HQ_translator.messages.converter import _convert_messages
+from fastapi import HTTPException
 
 
 # ── Request params ──────────────────────────────────────────────────────────
@@ -162,6 +163,16 @@ class TestMapStopReason:
             map_stop_reason("content_filter")[0],
         }
         assert seen == {"end_turn", "max_tokens", "stop_sequence", "tool_use", "refusal"}
+
+
+class TestErrorEvent:
+    def test_http_exception_preserves_actionable_detail(self):
+        err = HTTPException(
+            status_code=400,
+            detail={"error": {"type": "invalid_request_error", "message": "compact and retry"}},
+        )
+        event = build_error_event(err, "invalid_request_error")
+        assert event["error"]["message"] == "compact and retry"
 
 
 # ── Response: usage ─────────────────────────────────────────────────────────

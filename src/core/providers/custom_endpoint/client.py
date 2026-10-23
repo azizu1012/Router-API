@@ -25,6 +25,32 @@ from ...runtime.effort import sanitize_custom_endpoint_payload
 
 TIMEOUT = int(os.getenv("CUSTOM_ENDPOINT_TIMEOUT", "900"))
 
+
+def _is_muse_endpoint(api_base: str, model: str) -> bool:
+    """Identify only Meta's direct Muse API, not aggregators such as 9router."""
+    # Model names are not sufficient: 9router advertises Muse models too and
+    # may support the full OpenAI tool-choice contract on its own endpoint.
+    return "api.meta.ai" in (api_base or "").lower()
+
+
+def _normalize_muse_tool_choice(api_base: str, model: str, tool_choice: Any) -> Any:
+    """Keep tools enabled while using Muse's restricted tool-choice dialect."""
+    if not _is_muse_endpoint(api_base, model):
+        return tool_choice
+    if isinstance(tool_choice, dict) and "tool_choice" in tool_choice:
+        choice = tool_choice.get("tool_choice")
+    else:
+        choice = tool_choice
+    if choice is None:
+        return tool_choice
+    if choice == "auto":
+        return "auto"
+    # Muse does not accept required/none or the OpenAI forced-function object.
+    # `none` is handled earlier by removing tools from the request.
+    if choice == "none":
+        return None
+    return "auto"
+
 # ── Output-limit retry ───────────────────────────────────────────────────
 #
 # Some OpenAI-compatible backends cap the *response* at a fraction of what the
@@ -355,6 +381,7 @@ def _build_payload(
     tool_choice: Any = None,
     parallel_tool_calls: Optional[bool] = None,
     response_format: Any = None,
+    endpoint_base: str = "",
 ) -> Dict[str, Any]:
     payload: Dict[str, Any] = {
         "model": model,
@@ -365,8 +392,9 @@ def _build_payload(
     if isinstance(response_format, dict) and response_format.get("type"):
         payload["response_format"] = response_format
     # Both are already in the spelling an OpenAI-compatible endpoint reads.
-    if tool_choice is not None:
-        payload["tool_choice"] = tool_choice
+    normalized_tool_choice = _normalize_muse_tool_choice(endpoint_base, model, tool_choice)
+    if normalized_tool_choice is not None:
+        payload["tool_choice"] = normalized_tool_choice
     if parallel_tool_calls is not None:
         payload["parallel_tool_calls"] = parallel_tool_calls
     if temperature is not None:
@@ -377,6 +405,20 @@ def _build_payload(
         payload["tools"] = tools
     if extra_body:
         payload.update(extra_body)
+    # Sampling params / extra_body may carry the same field; normalize after
+    # the merge so Muse cannot receive the unsupported OpenAI
+    # "required"/forced-tool form. Re-read the MERGED value — the original
+    # `tool_choice` arg may be None while extra_body smuggles "required".
+    if "tool_choice" in payload:
+        merged_choice = payload.get("tool_choice")
+        normalized_after = _normalize_muse_tool_choice(endpoint_base, model, merged_choice)
+        if normalized_after is None:
+            payload.pop("tool_choice", None)
+            effective = merged_choice.get("tool_choice") if isinstance(merged_choice, dict) and "tool_choice" in merged_choice else merged_choice
+            if effective == "none":
+                payload.pop("tools", None)
+        else:
+            payload["tool_choice"] = normalized_after
     # Last stop before serialisation: the endpoint must never receive a
     # client placeholder like "auto", nor a dialect field it does not declare.
     sanitize_custom_endpoint_payload(payload, api_format="openai")
@@ -515,7 +557,8 @@ async def call_custom_nonstream(
     }
     payload = _build_payload(model, _drop_orphaned_tool_results(messages), False,
                              temperature, max_tokens, tools,
-                             extra_body, tool_choice, parallel_tool_calls, response_format)
+                             extra_body, tool_choice, parallel_tool_calls, response_format,
+                             api_base)
 
     async with aiohttp.ClientSession(headers=headers) as session:
         response = await _post_with_output_limit_retry(session, url, payload)
@@ -603,6 +646,7 @@ class CustomEndpointStreamGen:
             self._model, _drop_orphaned_tool_results(self._messages), True,
             self._temperature, self._max_tokens, self._tools, self._extra_body,
             self._tool_choice, self._parallel_tool_calls, self._response_format,
+            self._api_base,
         )
 
         self._session = aiohttp.ClientSession(headers=headers)

@@ -122,7 +122,7 @@ async def test_pool_stream_retries_an_empty_upstream_before_committing(monkeypat
         async def stream():
             if calls > 1:
                 yield SimpleNamespace(
-                    choices=[SimpleNamespace(delta=SimpleNamespace(content="ok", reasoning_content=None, tool_calls=[]))]
+                    choices=[SimpleNamespace(delta=SimpleNamespace(content="ok", reasoning_content=None, tool_calls=[]), finish_reason="stop")]
                 )
 
         return stream()
@@ -175,7 +175,7 @@ async def test_pool_stream_retries_role_only_frames(monkeypatch):
                 )
             else:
                 yield SimpleNamespace(
-                    choices=[SimpleNamespace(delta=SimpleNamespace(content="ok", reasoning_content=None, tool_calls=[]))]
+                    choices=[SimpleNamespace(delta=SimpleNamespace(content="ok", reasoning_content=None, tool_calls=[]), finish_reason="stop")]
                 )
 
         return stream()

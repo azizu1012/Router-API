@@ -2,7 +2,7 @@ import json
 import uuid
 import time
 
-from fastapi import Header, Request
+from fastapi import Header, HTTPException, Request
 from fastapi.responses import JSONResponse, StreamingResponse
 
 from src.core.config_n_logg.logger import logger_api
@@ -108,12 +108,18 @@ async def opencode_chat_completions(
                     else:
                         # Emit a terminal chunk with finish_reason and explicit error info
                         # so clients receive actionable feedback instead of an empty silent response.
+                        # The TPM guard's compact-and-retry instruction rides in the
+                        # delta text because SSE has no error envelope for it.
+                        status = getattr(e, "status_code", None)
+                        msg_l = str(e).lower()
+                        is_guard = status == 400 or "compact the conversation" in msg_l or "per-key tpm budget" in msg_l
+                        prefix = "[Context too large — compact and retry] " if is_guard else ""
                         error_chunk = {
                             "id": f"chatcmpl-error",
                             "object": "chat.completion.chunk",
                             "created": int(time.time()),
                             "model": body.get("model", "unknown"),
-                            "choices": [{"index": 0, "delta": {"content": f"\n\n[Error: {e}]"}, "finish_reason": "stop"}],
+                            "choices": [{"index": 0, "delta": {"content": f"\n\n[{prefix}Error: {e}]"}, "finish_reason": "length" if is_guard else "stop"}],
                         }
                         yield f"data: {json.dumps(error_chunk, ensure_ascii=False)}\n\n".encode("utf-8")
                         yield "data: [DONE]\n\n".encode("utf-8")
@@ -142,6 +148,18 @@ async def opencode_chat_completions(
                 headers=response_headers,
             )
 
+    except HTTPException as e:
+        # The hard TPM guard (400 invalid_request_error) must reach the client
+        # so it can compact and retry — swallowing it into a simulated
+        # pool_exhausted 200 would strand the conversation at full size.
+        detail = e.detail
+        if isinstance(detail, dict) and "error" in detail:
+            return JSONResponse(status_code=e.status_code, content=detail, headers=response_headers)
+        return JSONResponse(
+            status_code=e.status_code,
+            content={"error": {"message": str(detail), "type": "invalid_request_error" if e.status_code == 400 else "api_error"}},
+            headers=response_headers,
+        )
     except Exception as e:
         logger_api.error("opencode_chat_completions failed: %s", e)
         if is_sub_agent_request(body, is_opencode=True):

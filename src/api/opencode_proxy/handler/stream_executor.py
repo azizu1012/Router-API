@@ -171,8 +171,11 @@ async def execute_stream(
     Handles SSE formatting, keepalive, thinking extraction, WebSearch progress.
     """
     from .response import get_client_model_name
-    from .proxy import _resolve_thinking_config
+    from .proxy import _resolve_thinking_config, _client_sampling_params
 
+    # Same canonical client fields the nonstream path forwards: without this a
+    # client asking for a forced tool got an automatic one on streams only.
+    sampling_params = _client_sampling_params(body)
     include_thoughts = body.get("include_thoughts", True)
     thinking_params = {
         "thinking_level": body.get("thinking_level"),
@@ -218,6 +221,7 @@ async def execute_stream(
             thinking_config=thinking_config,
             account=account,
             thinking_params=thinking_params,
+            sampling_params=sampling_params,
         ):
             chunk = item["chunk"]
             delta = chunk.choices[0].delta if chunk.choices else None
@@ -249,6 +253,7 @@ async def execute_stream(
     _reasoning_buf: List[str] = []
     _BUF_FLUSH_SIZE = 80
     stream_finish_reason = None
+    stream_finished = False
     has_tool_calls = False
     # Tool calls are held back until the stream ends so an unfinished one can be
     # discarded. Forwarding fragments as they arrive means a call that
@@ -333,6 +338,7 @@ async def execute_stream(
             thinking_config=thinking_config,
             account=account,
             thinking_params=thinking_params,
+            sampling_params=sampling_params,
         )
         try:
             first_item = await g.__anext__()
@@ -445,6 +451,7 @@ async def execute_stream(
             fr = chunk.choices[0].finish_reason if chunk.choices else None
             if fr:
                 stream_finish_reason = fr
+                stream_finished = True
 
             if reasoning:
                 reasoning_received = True
@@ -516,6 +523,12 @@ async def execute_stream(
                 "id": buf["id"], "type": buf["type"],
                 "index": idx, "name": buf["name"], "arguments": buf["args"],
             }], thought_signature=ts, chunk_id=chunk_id)
+
+        if not stream_finished:
+            # An upstream EOF without a provider finish signal is a broken
+            # stream, not a successful `stop`. Let the route expose an error so
+            # an agent can retry instead of ending its task silently.
+            raise RuntimeError("stream_ended_without_finish_reason")
 
         stop_reason = normalize_finish_reason(stream_finish_reason,
                                           has_tool_calls=has_tool_calls,
