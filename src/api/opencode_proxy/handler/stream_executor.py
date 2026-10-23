@@ -27,6 +27,11 @@ from src.api.claude_proxy.handler.streaming.keepalive import (
     STREAM_STALL_TIMEOUT,
     StreamStalled,
 )
+# Step 5 of the stream union: one tool-fragment buffer for both dialects.
+# stream_executor used to inline its own copy of these three rules (fragments
+# concatenate, '{}' placeholder is replaced, repeated fragment ignored) and the
+# copies had already diverged in their id handling.
+from src.api.claude_proxy.handler.streaming.tool_calls import buffer_tool_calls
 from src.core.observability.usage_logger import log_usage
 from src.core.providers.finish_reason import normalize_finish_reason
 from src.logical_HQ_translator import (
@@ -469,28 +474,11 @@ async def execute_stream(
                     async for c in _process_content(content, bool(reasoning)):
                         yield c
             if tool_calls:
-                for tc in tool_calls:
-                    idx = tc.get("index", 0)
-                    buf = tool_buffers.setdefault(
-                        idx, {"id": None, "type": "function", "name": "", "args": ""},
-                    )
-                    if tc.get("id"):
-                        buf["id"] = tc["id"]
-                    if tc.get("name"):
-                        buf["name"] = tc["name"]
-                    raw = tc.get("arguments") or ""
-                    if isinstance(raw, dict):
-                        raw = json.dumps(raw)
-                    # Same three shapes the Claude proxy has to survive: real
-                    # fragments concatenate, a `{}` placeholder is replaced by
-                    # the body that follows it, and a fragment a provider repeats
-                    # alongside finish_reason is not counted twice.
-                    if buf["args"] == raw:
-                        continue
-                    if buf["args"] == "{}":
-                        buf["args"] = raw
-                    else:
-                        buf["args"] += raw
+                # Single shared buffer (see import note above): the three
+                # fragment rules live in one place now. tool_buffers values
+                # gain no "type" key from buffer_tool_calls, so the emit
+                # below defaults it to "function".
+                buffer_tool_calls(delta, tool_buffers)
 
         if extractor:
             async for c in _flush_reasoning():
@@ -520,7 +508,7 @@ async def execute_stream(
                 continue
             has_tool_calls = True
             yield _openai_sse(model_name, tool_calls=[{
-                "id": buf["id"], "type": buf["type"],
+                "id": buf["id"], "type": buf.get("type", "function"),
                 "index": idx, "name": buf["name"], "arguments": buf["args"],
             }], thought_signature=ts, chunk_id=chunk_id)
 

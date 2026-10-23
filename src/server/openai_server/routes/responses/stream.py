@@ -45,6 +45,13 @@ async def _responses_sse_stream(chunks, model: str = "",
     next_index = 0
     tools: dict[int, dict] = {}
     output: list = []
+    # Terminals already emitted, in order. A Responses stream has exactly one
+    # ending — `response.completed` or `response.failed` — and the client reads
+    # the first terminal it sees as the outcome. Emitting both means a failed
+    # turn can be reported as a success, or retried after it already finished,
+    # and no status code or log line would say so. The asserts below keep that
+    # an enforced property instead of one that merely follows from indentation.
+    terminals: list[str] = []
 
     def envelope(status, u=None):
         return _responses_envelope(rid, model, status, output, created, u, response_tools)
@@ -189,6 +196,11 @@ async def _responses_sse_stream(chunks, model: str = "",
         # Streaming headers are already committed, so preserve the Responses
         # lifecycle with a structured terminal failure instead of resetting the
         # connection. This is what lets clients compact/retry context errors.
+        #
+        # The `return` below is half of the terminal invariant: the closing
+        # frames — text done, tool done, `response.completed` — belong to the
+        # success path only. A turn that failed must not also report that its
+        # answer was finished.
         detail = getattr(exc, "detail", None)
         message = ""
         if isinstance(detail, dict):
@@ -205,10 +217,16 @@ async def _responses_sse_stream(chunks, model: str = "",
         error_type = "invalid_request_error" if status == 400 else "api_error"
         failed = envelope("failed")
         failed["error"] = {"type": error_type, "message": message[:500]}
+        assert not terminals, "a terminal event was already emitted"
+        terminals.append("response.failed")
         yield _responses_event("response.failed", seq, response=failed)
         yield b"data: [DONE]\n\n"
         return
 
+    # Only reachable when the loop above finished: the error path returned, so
+    # the success tail and its single `response.completed` cannot run after a
+    # `response.failed`. `is_terminal` in src/core/runtime/stream_events.py is
+    # the provider-side spelling of the same rule (FINISH / ERROR are terminal).
     text = "".join(parts)
     cites = [c for r in searches for c in (r.get("citations") or [])
              if isinstance(c, dict)]
@@ -260,6 +278,8 @@ async def _responses_sse_stream(chunks, model: str = "",
         "prompt_tokens": input_tokens_hint,
         "completion_tokens": max(1, sum(len(p) for p in parts) // 4),
     })
+    assert not terminals, "response.completed cannot follow an earlier terminal"
+    terminals.append("response.completed")
     yield _responses_event(
         "response.completed", seq,
         response=envelope("completed", final_usage),

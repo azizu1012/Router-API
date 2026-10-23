@@ -179,6 +179,68 @@ class TestResponsesStreamEmitsTypedEvents:
         assert raw[-1] == b"data: [DONE]\n\n"
 
 
+class TestResponsesTerminalInvariant:
+    """A Responses stream ends exactly once.
+
+    `response.completed` and `response.failed` are alternatives, not a
+    sequence. The client reads the first terminal it sees as the outcome, so
+    both appearing means a failed turn can be reported as a success — or
+    retried after it already finished — with no status code and no log line to
+    say anything went wrong.
+    """
+
+    @staticmethod
+    def _framed(raw):
+        events = [
+            json.loads(line[6:])
+            for blob in raw
+            for line in blob.decode().splitlines()
+            if line.startswith("data: ") and line[6:].strip() != "[DONE]"
+        ]
+        return events, [e["type"] for e in events]
+
+    @staticmethod
+    def _broken_after(text):
+        async def _gen():
+            chunk = {"choices": [{"delta": {"content": text}}]}
+            yield f"data: {json.dumps(chunk)}\n\n".encode("utf-8")
+            raise HTTPException(
+                status_code=400,
+                detail={"error": {"type": "invalid_request_error",
+                                   "message": "Compact the conversation and retry."}},
+            )
+        return _gen()
+
+    def test_a_clean_run_has_one_completed_and_no_failure(self):
+        raw = _collect(_responses_sse_stream(_chat_stream(["hi"]), model="m"))
+        _, types = self._framed(raw)
+
+        assert types.count("response.completed") == 1, types
+        assert types.count("response.failed") == 0, types
+        assert raw[-1] == b"data: [DONE]\n\n"
+
+    def test_a_mid_stream_400_has_one_failure_and_no_completion(self):
+        raw = _collect(_responses_sse_stream(self._broken_after("before"), model="m"))
+        _, types = self._framed(raw)
+
+        assert types.count("response.failed") == 1, types
+        assert types.count("response.completed") == 0, types
+        assert raw[-1] == b"data: [DONE]\n\n"
+
+    def test_the_success_tail_does_not_run_after_a_failure(self):
+        """The closing frames sit after the try/except, so they run only when
+        the loop finished. Reaching them after `response.failed` would say the
+        answer was finished, and `response.completed` right after would override
+        the failure entirely."""
+        raw = _collect(_responses_sse_stream(self._broken_after("before"), model="m"))
+        _, types = self._framed(raw)
+
+        assert types[-1] == "response.failed", types
+        assert "response.output_text.done" not in types, types
+        assert "response.content_part.done" not in types, types
+        assert "response.output_item.done" not in types, types
+
+
 # ── Anthropic SDK server tool ───────────────────────────────────────────────
 
 class TestAnthropicServerSearchTool:
