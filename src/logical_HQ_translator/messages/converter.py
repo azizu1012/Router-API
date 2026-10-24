@@ -355,6 +355,21 @@ def _convert_messages(body: Dict[str, Any]) -> Tuple[List[Dict[str, Any]], List[
 
     seen_tool_calls = set()
     seen_tool_results = set()
+    tool_use_counts: Dict[str, int] = {}
+    for source_msg in body.get("messages") or []:
+        for source_block in source_msg.get("content") or []:
+            if not isinstance(source_block, dict):
+                continue
+            if source_block.get("type") in ("tool_use", "agent_use", "server_tool_use"):
+                source_id = source_block.get("id")
+                if source_id:
+                    tool_use_counts[source_id] = tool_use_counts.get(source_id, 0) + 1
+    repeated_tool_ids = {key for key, count in tool_use_counts.items() if count > 1}
+    if repeated_tool_ids:
+        logger.warning(
+            "[Converter] dropping stale repeated tool exchange(s): %s",
+            ",".join(sorted(repeated_tool_ids)),
+        )
     tool_name_map: Dict[str, str] = {}
 
     for msg in body.get("messages") or []:
@@ -393,6 +408,8 @@ def _convert_messages(body: Dict[str, Any]) -> Tuple[List[Dict[str, Any]], List[
                     text_parts.append(sr_text)
                 elif b_type in ("tool_use", "agent_use", "server_tool_use"):
                     t_id = block.get("id")
+                    if t_id in repeated_tool_ids:
+                        continue
                     if t_id and t_id in seen_tool_calls:
                         logger.warning(
                             "[Converter] dropped duplicate tool_use (tool_call_id=%r)",
@@ -413,6 +430,8 @@ def _convert_messages(body: Dict[str, Any]) -> Tuple[List[Dict[str, Any]], List[
                     })
                 elif b_type in ("tool_result", "agent_result", "web_search_tool_result"):
                     t_id = block.get("tool_use_id") or block.get("agent_use_id") or block.get("id")
+                    if t_id in repeated_tool_ids:
+                        continue
                     # Claude Code can resend an old turn when continuing after a
                     # disconnect. Responses-compatible endpoints accept exactly
                     # one output for each call_id, so keep the first result.

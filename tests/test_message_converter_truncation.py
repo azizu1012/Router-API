@@ -57,9 +57,7 @@ def test_duplicate_claude_tool_calls_are_emitted_once():
 
     messages, _ = _convert_messages(body)
     calls = [tc for msg in messages for tc in msg.get("tool_calls", [])]
-    assert [tc["id"] for tc in calls] == [
-        "call_01a16cc88b5572a99e9614c9abbd1daa"
-    ]
+    assert calls == []
 
 def test_conversion_normal_and_truncated():
     # 1. Test normal message flow where tool call is present
