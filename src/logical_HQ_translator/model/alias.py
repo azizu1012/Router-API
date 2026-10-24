@@ -105,7 +105,7 @@ def get_model_safe_context_length(model_name: str, endpoint_name: Optional[str] 
                 return int(ep["context_length"])
         except Exception:
             pass
-        return 128000  # Default standard custom endpoint context
+        return 200000  # Default standard custom endpoint context
 
     m_lower = (model_name or "").strip().lower()
     if "gemma" in m_lower:
