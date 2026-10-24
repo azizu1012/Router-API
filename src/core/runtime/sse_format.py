@@ -1,11 +1,19 @@
-"""Anthropic SSE frame formatting.
+"""Shared SSE wire helpers.
 
-One line of string building, used by the claude proxy (35 call sites) and the
-SSE cache agent (16). Both used to import sse_cache_agent for this frame
-formatter — an import inside a function, which is the shape a cycle takes.
+``sse_event`` writes one Anthropic-style frame; the Claude proxy is its only
+caller — 59 sites in ``claude_proxy/handler/proxy_stream.py``. ``sse_data``
+reads the payload back out of a ``data:`` line and is shared by both
+custom-endpoint stream readers, which is why it accepts every spacing and
+trailing-newline variant.
 
-It was not a cycle: the proxies never import auth. This module has no imports
-beyond json, so nothing can make it one. See docs/bug-logs.md Bug #6.
+Streaming is the common transport for every endpoint, but framing is not yet
+centralised: the OpenAI-compatible paths build ``chat.completion.chunk``
+frames inside ``opencode_proxy``, and the Responses adapter emits its own
+typed events. Only the Anthropic dialect goes through this module today.
+
+Nothing here imports beyond ``json``/``typing``, so it cannot take part in an
+import cycle. The old function-local import from ``sse_cache_agent`` was not
+one either — see docs/bug-logs.md Bug #6.
 """
 import json
 from typing import Any, Dict, Optional
