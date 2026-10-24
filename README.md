@@ -346,7 +346,7 @@ pytest                                    # full suite
 pytest tests/test_anthropic_protocol.py   # protocol conformance
 ```
 
-CI runs an advisory [secret scanner](https://github.com/azizu1012/Router-API/actions/workflows/secret_scan.yml). It does not block a build, and the test suite runs locally — see `docs/ci_workflow.md`.
+CI runs on every push to `main` and every pull request. `ci.yml` runs the full test suite (`pytest -q`) and `scripts/scan_security.py`, and both are blocking — a failing test turns the run red. The [secret scanner](https://github.com/azizu1012/Router-API/actions/workflows/secret_scan.yml) blocks new credentials in the current diff while reporting historical findings without failing. See `docs/ci_workflow.md`.
 
 Further reading in `docs/`:
 

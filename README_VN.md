@@ -342,7 +342,7 @@ pytest                                    # toàn bộ suite
 pytest tests/test_anthropic_protocol.py   # tuân thủ giao thức
 ```
 
-CI chạy một workflow advisory là [secret scanner](https://github.com/azizu1012/Router-API/actions/workflows/secret_scan.yml). Workflow không chặn build; test suite chạy local — xem `docs/ci_workflow.md`.
+CI chạy trên mỗi push lên `main` và mỗi pull request. `ci.yml` chạy toàn bộ test suite (`pytest -q`) và `scripts/scan_security.py`, cả hai đều là gate — test fail là run đỏ. [Secret scanner](https://github.com/azizu1012/Router-API/actions/workflows/secret_scan.yml) chặn credential mới trong diff hiện tại, còn finding lịch sử chỉ báo cáo chứ không làm đỏ. Xem `docs/ci_workflow.md`.
 
 Tài liệu chi tiết trong `docs/`:
 

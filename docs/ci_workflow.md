@@ -1,18 +1,31 @@
 # CI Workflows
 
-Workflow chạy trên mỗi push lên `main`, mỗi pull request, và theo yêu cầu tay:
+Hai workflow chạy trên mỗi push lên `main` và mỗi pull request. `secret_scan.yml`
+có thêm `workflow_dispatch` để bấm tay.
 
-| Workflow | Job | Tính chất |
-|---|---|---|
-| `secret_scan.yml` | `scan` | advisory — phát hiện credential trong file đã track |
+| Workflow | Job | Tính chất | Nội dung |
+|---|---|---|---|
+| `ci.yml` | `test` | **gate** — fail là run đỏ | `pytest -q` toàn bộ suite, sau đó `scripts/scan_security.py` |
+| `secret_scan.yml` | `scan` | gate cho diff, advisory cho lịch sử | credential mới trong diff làm đỏ; finding cũ chỉ báo cáo |
 
-Workflow dùng `continue-on-error: true`: có finding thì vẫn report nhưng **không làm CI đỏ**.
+`ci.yml` chạy trên `ubuntu-latest`, Python 3.11, timeout 15 phút, và **không** có
+`|| true`: exit code của pytest chính là kết quả job. Vì vậy test suite là một
+phần của CI, không phải việc chỉ chạy local.
 
-> Test suite **không** chạy trong CI — xem mục dưới.
+> Tài liệu này từng ghi "test suite không chạy trong CI". Điều đó sai từ commit
+> `7059aa0` (2026-10-09), khi `ci.yml` được thêm. Nếu bạn đọc một bản docs cũ
+> nói ngược lại, bản đó lỗi thời.
 
 ## 1. Test suite
 
-Chạy local:
+CI chạy đúng lệnh này:
+
+```bash
+python -m pytest -q
+python scripts/scan_security.py
+```
+
+Chạy local cũng cùng lệnh (bỏ `-q` nếu muốn xem chi tiết):
 
 ```bash
 pytest
@@ -30,7 +43,6 @@ pytest
 | `test_search_endpoint.py` | `/v1/search` |
 | `test_anthropic_protocol.py` | tuân thủ Anthropic Messages API |
 | `test_anthropic_integration.py` | proxy Claude end-to-end (PoolManager mock) |
-| `test_search_backend.py` | Router search safety parity + optional dependency |
 | `test_account_auth.py` | token format, giới hạn 4 lớp, invite code |
 | `test_secret_scanner.py` | scanner bắt secret thật, không báo động giả |
 | `test_schema_bootstrap.py` | DDL lúc import khớp `schema.py` |
@@ -59,9 +71,17 @@ pytest
 | `test_anthropic_stream_order.py` | Thứ tự SSE Anthropic (`message_start` trước `ping`), ping đúng spec, và tool_use không bị rơi |
 | `test_responses_conformance.py` | Mọi event `/v1/responses` validate bằng model chính thức của OpenAI SDK, kể cả `strict=True`; tool call phải quay lại đủ |
 | `test_finish_reason.py` | `finish_reason` luôn nằm trong enum OpenAI; có tool call thì là `tool_calls` |
-| `test_native_gemini_errors.py` | Native Gemini trả envelope lỗi đúng chuẩn Google, không báo nhầm quota, không ship field nội bộ của SDK |
 | `test_uncovered_routes.py` | `/v1/completions` không 503 khi thiếu `max_tokens`; `/v1/models` là superset hợp lệ; `web_search` chạy server-side chứ không rò tool ra client |
 | `test_hosted_search_shape.py` | Hosted web search đúng hình dạng chuẩn của từng provider: `web_search_call` + `sources` + `url_citation` bên OpenAI, `server_tool_use` + citations + `usage.server_tool_use` + `max_uses` bên Anthropic, không tự bật search. Gate dùng `strict=True` **và** `extra="forbid"` — `strict` một mình không bắt field ngoài spec |
+
+Bảng trên là danh sách chọn lọc các suite chính, **không phải toàn bộ**. Nguồn sự
+thật là `pytest.ini`: file không nằm trong `python_files` sẽ **không được
+collect**, và vì thế CI vẫn xanh trong khi test đó chưa từng chạy. Muốn kiểm tra
+một file có thực sự được chạy hay không:
+
+```bash
+python -m pytest --collect-only -q | Select-String test_my_new_thing
+```
 
 Chạy nhanh một file:
 
@@ -77,38 +97,53 @@ Ba test dưới đây không dùng mock DB nên đáng chạy trước khi độ
 
 ## 2. Thêm test mới
 
-`tests/` chỉ chứa suite. Thêm file mới thì cần **cả hai** bước:
+`python_files` là **allowlist**, không phải glob. Pytest chỉ collect đúng những
+tên nằm trong dòng đó; mọi file `test_*.py` khác bị bỏ qua trong im lặng. Đây
+không phải chuyện lý thuyết: 10 file test đã track từng không được đăng ký, nên
+CI xanh trong khi chúng chưa từng chạy.
+
+Thêm file mới cần **cả ba** bước:
 
 ```bash
 # 1. viết test
-# 2. đăng ký vào pytest.ini
-python_files = … test_my_new_thing.py
-
+# 2. đăng ký vào pytest.ini (thêm tên vào cuối dòng python_files)
 # 3. cho phép git track
 !tests/test_my_new_thing.py
 
-# 4. chạy
+# 4. xác nhận nó thực sự được collect
+python -m pytest --collect-only -q | Select-String test_my_new_thing
 pytest tests/test_my_new_thing.py -v
 ```
 
-Bỏ bước 3 thì test chạy được local nhưng không lên GitHub, và CI báo "no tests ran" cho file đó.
+Bỏ bước 2 thì test chạy được khi gọi thẳng đường dẫn, nhưng `pytest -q` trong
+CI không thấy nó — và không có cảnh báo nào. Bỏ bước 3 thì file không lên
+GitHub, nên CI cũng không có gì để chạy.
 
 ## 3. Secret Scan
 
 `scripts/scan_secrets.py` quét file đã được git track (dùng `git ls-files`), nên file local chưa commit không xuất hiện.
 
 ```bash
-python scripts/scan_secrets.py --git --warn-only    # như CI
+python scripts/scan_secrets.py --git --warn-only    # báo cáo, không fail
 python scripts/scan_secrets.py                      # quét cả file chưa track
 ```
 
-Hai quy tắc đáng chú ý trong workflow:
+Job `scan` có **hai** lần quét, và chúng không cùng tính chất:
+
+| Bước | Phạm vi | Khi có finding |
+|---|---|---|
+| Scan current diff | chỉ thay đổi của push/PR | **fail job** — credential mới chặn thay đổi |
+| Scan tracked files | toàn bộ lịch sử đã track | chỉ in báo cáo, không fail |
+
+Lý do tách: một key đã thu hồi từ lâu sẽ làm đỏ mọi commit mãi mãi nếu full
+history là gate, và một gate đỏ vì lý do không liên quan sẽ bị người ta bỏ qua.
+
+Quy tắc đáng chú ý trong cả hai workflow:
 
 - Action được pin theo commit SHA, không phải tag
 - `persist-credentials: false` → checkout không giữ credential cho step sau
-- Quyền write chỉ cấp cho job scan, không ở top level
 - `concurrency` + `cancel-in-progress` → push mới huỷ run cũ
-- `timeout-minutes: 15` → không để scanner treo
+- `timeout-minutes` → không để job treo (CI 15 phút, secret scan 5 phút)
 
 Scanner **không** tự sửa file. Một rewrite tự động là commit bạn chưa review — nên nó chỉ báo cáo, việc sửa là thủ công.
 
