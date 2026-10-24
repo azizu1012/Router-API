@@ -646,3 +646,26 @@ class TestBroadcastDoesNotLetOneSlowClientStallTheFeed:
         assert sent == 0
 
 
+def test_server_tool_result_follows_its_assistant_tool_call():
+    """Server tool blocks must keep the assistant call before its result."""
+    from src.logical_HQ_translator.messages.converter import _convert_messages
+
+    messages, _ = _convert_messages({
+        "messages": [{
+            "role": "assistant",
+            "content": [
+                {"type": "server_tool_use", "id": "srvtoolu_1",
+                 "name": "web_search", "input": {"query": "router"}},
+                {"type": "web_search_tool_result", "tool_use_id": "srvtoolu_1",
+                 "content": [{"type": "web_search_result", "url": "https://example.com",
+                               "title": "Example", "encrypted_content": "result"}]},
+                {"type": "text", "text": "done"},
+            ],
+        }],
+    })
+
+    assert [m["role"] for m in messages] == ["assistant", "tool"]
+    assert messages[0]["tool_calls"][0]["id"] == "srvtoolu_1"
+    assert messages[1]["tool_call_id"] == "srvtoolu_1"
+
+

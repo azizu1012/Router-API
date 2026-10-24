@@ -8,6 +8,7 @@ from fastapi.responses import JSONResponse, StreamingResponse
 
 from src.core.config_n_logg import config
 from src.core.config_n_logg.logger import logger_api
+from src.core.runtime.request_session import request_sessions
 from src.api.claude_proxy import claude_proxy
 from src.api.claude_proxy.handler.anthropic_spec import estimate_input_tokens
 from src.server.openai_server.auth import (
@@ -52,9 +53,16 @@ async def anthropic_messages(
         body["max_tokens"] = config.MAX_OUTPUT_TOKENS
 
     akp = _auth_key_prefix(account)
+    request_id = getattr(request.state, "request_id", "") or ("req_" + uuid.uuid4().hex[:24])
+    last_event = request.headers.get("last-event-id", "").rsplit(":", 1)[-1]
+    try:
+        last_event_number = int(last_event) if last_event else 0
+    except ValueError:
+        last_event_number = 0
     response_headers = {
         "anthropic-version": "2023-06-01",
-        "request-id": "req_" + uuid.uuid4().hex[:24],
+        "request-id": request_id,
+        "X-Request-ID": request_id,
         "Cache-Control": "no-cache",
         "Connection": "keep-alive",
         "X-Accel-Buffering": "no",
@@ -97,8 +105,13 @@ async def anthropic_messages(
 
         stream = body.get("stream", False)
         if stream:
+            async def produce():
+                async for frame in claude_proxy.stream_message(body, akp, account=account):
+                    yield frame
+
+            session = await request_sessions.get_or_start(request_id, produce)
             return StreamingResponse(
-                claude_proxy.stream_message(body, akp, account=account),
+                session.stream(last_event_number),
                 media_type="text/event-stream",
                 headers=response_headers,
             )

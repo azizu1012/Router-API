@@ -38,7 +38,7 @@ def sse_data(line: Any) -> Optional[str]:
     return None
 
 
-def sse_event(event: str, data: Dict[str, Any]) -> bytes:
+def sse_event(event: str, data: Dict[str, Any], event_id: Optional[str] = None) -> bytes:
     """
     Tạo một chuỗi định dạng SSE (Server-Sent Events) từ tên sự kiện và dữ liệu.
 
@@ -49,4 +49,5 @@ def sse_event(event: str, data: Dict[str, Any]) -> bytes:
     Returns:
         bytes: Chuỗi bytes đã được mã hóa UTF-8 ở định dạng SSE.
     """
-    return f"event: {event}\ndata: {json.dumps(data, ensure_ascii=False)}\n\n".encode("utf-8")
+    prefix = f"id: {event_id}\n" if event_id else ""
+    return f"{prefix}event: {event}\ndata: {json.dumps(data, ensure_ascii=False)}\n\n".encode("utf-8")

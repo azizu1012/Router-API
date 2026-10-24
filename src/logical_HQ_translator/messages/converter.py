@@ -366,6 +366,7 @@ def _convert_messages(body: Dict[str, Any]) -> Tuple[List[Dict[str, Any]], List[
             text_parts: List[str] = []
             tool_calls: List[Dict[str, Any]] = []
             image_blocks: List[Dict[str, Any]] = []
+            pending_tool_messages: List[Dict[str, Any]] = []
             for block in content:
                 b_type = block.get("type")
                 if b_type == "text":
@@ -427,12 +428,12 @@ def _convert_messages(body: Dict[str, Any]) -> Tuple[List[Dict[str, Any]], List[
                     if t_id not in seen_tool_calls:
                         # Fallback: Convert orphaned tool result to a user message
                         # to avoid schema mismatch and invalid dummy argument validation.
-                        openai_messages.append({
+                        pending_tool_messages.append({
                             "role": "user",
                             "content": f"[Tool Result: {tool_name}]\n{t_content}"
                         })
                     else:
-                        openai_messages.append({
+                        pending_tool_messages.append({
                             "role": "tool",
                             "tool_call_id": t_id,
                             "name": tool_name,
@@ -449,6 +450,10 @@ def _convert_messages(body: Dict[str, Any]) -> Tuple[List[Dict[str, Any]], List[
                     if tool_calls:
                         ast_msg["tool_calls"] = tool_calls
                     openai_messages.append(ast_msg)
+                # A Claude assistant turn can contain server_tool_use and its
+                # result in the same content array. Emit the assistant first so
+                # OpenAI-compatible providers see the preceding tool call.
+                openai_messages.extend(pending_tool_messages)
             elif role == "user":
                 if image_blocks:
                     user_content: List[Dict[str, Any]] = []
@@ -461,6 +466,7 @@ def _convert_messages(body: Dict[str, Any]) -> Tuple[List[Dict[str, Any]], List[
                     combined = "\n".join(text_parts).strip()
                     if combined:
                         openai_messages.append({"role": "user", "content": combined})
+                openai_messages.extend(pending_tool_messages)
 
     if not openai_messages:
         openai_messages.append({"role": "user", "content": "Continue."})

@@ -25,6 +25,12 @@ from ...runtime.effort import sanitize_custom_endpoint_payload
 from ...runtime.sse_format import sse_data
 
 TIMEOUT = int(os.getenv("CUSTOM_ENDPOINT_TIMEOUT", "900"))
+NETWORK_RETRIES_BEFORE_OUTPUT = int(os.getenv("CUSTOM_ENDPOINT_NETWORK_RETRIES", "2"))
+
+
+def _is_retryable_network_error(exc: BaseException) -> bool:
+    """Retry transport failures before a provider response exists."""
+    return isinstance(exc, (aiohttp.ClientError, asyncio.TimeoutError, OSError))
 
 
 def _is_muse_endpoint(api_base: str, model: str) -> bool:
@@ -152,10 +158,23 @@ async def _post_with_output_limit_retry(
     the client does not change.
     """
     retries = 0
+    network_retries = 0
     while True:
-        response = await session.post(
-            url, json=payload, timeout=aiohttp.ClientTimeout(total=TIMEOUT)
-        )
+        try:
+            response = await session.post(
+                url, json=payload, timeout=aiohttp.ClientTimeout(total=TIMEOUT)
+            )
+        except Exception as exc:
+            if not _is_retryable_network_error(exc) or network_retries >= NETWORK_RETRIES_BEFORE_OUTPUT:
+                raise
+            network_retries += 1
+            logger.warning(
+                "[CustomEndpoint] transport failure before response (%d/%d) "
+                "for %s: %s; retrying with the same payload",
+                network_retries, NETWORK_RETRIES_BEFORE_OUTPUT, url, exc,
+            )
+            await asyncio.sleep(min(2 ** network_retries, 8))
+            continue
         if response.status < 400:
             return response
 
