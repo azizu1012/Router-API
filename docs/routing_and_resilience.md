@@ -161,9 +161,7 @@ Trước đó, khi gặp lỗi Rate Limit (429) hoặc Overloaded (503), Claude 
 - Agent lặp lại yêu cầu liên tục trong một vòng lặp vô hạn (Infinite Loop), khiến dung lượng context tăng vọt nhưng chỉ số token metadata của API response giả lập lại rất nhỏ (làm thanh hiển thị context của người dùng báo sai chỉ số, ví dụ `0.1k/200k`).
 
 ### Giải pháp khắc phục:
-- **Tách biệt luồng xử lý:** 
-  - Với **Main Agent** (luồng chat chính): Loại bỏ try-except giả lập ở Proxy. Khi có lỗi rate limit / timeout, hệ thống sẽ lan truyền (propagate) lỗi lên FastAPI để trả về mã lỗi HTTP thật (`429 Rate Limit` hoặc `503 Overloaded`). Client (Claude Code CLI) khi thấy mã lỗi HTTP này sẽ tự động backoff retry ở tầng client một cách tự nhiên mà không làm bẩn context.
-  - Với **Sub-Agent** (luồng chạy lệnh ngầm song song): Tiếp tục giữ cơ chế bắt lỗi và trả về text thông báo mô phỏng mã 200 OK ở hàm `handle_sub_agent_error` để tránh việc CLI của client bị crash đột ngột khi các sub-agent thăm dò tệp bị lỗi tạm thời.
+- **Lan truyền lỗi HTTP thật:** Loại bỏ try-except giả lập ở Proxy. Khi có lỗi rate limit / timeout, hệ thống lan truyền (propagate) ngoại lệ lên FastAPI để trả về mã lỗi HTTP thật (`429 Rate Limit` hoặc `503 Overloaded`). Client (Claude Code CLI) khi thấy mã lỗi HTTP này sẽ tự động backoff retry ở tầng client một cách tự nhiên mà không làm bẩn context.
 
 ---
 
@@ -226,7 +224,7 @@ Test: `tests/test_effort_mapping.py` — pin cả hai chiều, kể cả việc 
 - **Cấm kỵ `thinkingBudget`**: Gemma 4 **hoàn toàn không hỗ trợ** tham số `thinkingBudget` (Google AI Studio sẽ văng lỗi HTTP 400 `Thinking budget is not supported for this model.`), đồng thời từ chối các mức `low` hay `medium` (văng lỗi HTTP 400 `Thinking level is not supported for this model.`).
 - **Chuẩn hóa tự động (`sanitize_thinking_for_gemma`)**:
   - Bất kỳ `thinking_budget > 0` hoặc mức thinking hợp lệ nào từ client gửi lên đều được router chuẩn hóa thành `thinking_level="high"`.
-  - Tắt thinking (`none`, `off`, `false`, `minimal` hoặc `thinking_budget=0` hoặc sub-agent) được chuẩn hóa thành `thinking_level="minimal"`.
+  - Tắt thinking (`none`, `off`, `false`, `minimal` hoặc `thinking_budget=0`) được chuẩn hóa thành `thinking_level="minimal"`.
   - Router tuyệt đối loại bỏ trường `thinking_budget` khỏi payload gửi tới Google API khi gọi Gemma.
 
 ---
@@ -426,7 +424,6 @@ Thuật toán nén ngữ cảnh thời gian thực (RTK) tại `src/logical_HQ_t
 4. **Cơ Chế Suy Luận (Thinking Configuration):**
    - Google API của Gemma 4 hỗ trợ các mức `thinking_level`: `"low"`, `"medium"`, `"high"`, `"minimal"`.
    - **Tuyệt đối cấm** gửi tham số `thinking_budget` tới Google cho Gemma (Google API sẽ từ chối với HTTP 400 Bad Request). Mọi `thinking_budget` nếu client gửi tới sẽ tự động được sanitize sang `thinking_level`.
-   - Sub-agent khi gọi Gemma tự động chuyển sang `thinking_level="minimal"` và `include_thoughts=False` để tiết kiệm tối đa latency và token.
 
 ### 16.2. Cơ Chế Chống Cướp Model Native (Anti-Hijacking Policy)
 **Lỗ Hổng Lịch Sử Cần Tránh:**

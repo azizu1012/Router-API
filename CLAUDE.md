@@ -12,7 +12,7 @@ Tầng dưới **không được** import tầng trên. Quy tắc đầy đủ �
 import, đó là báo đúng, không phải test sai.
 
 Helper dùng chung cho cả hai bên thì đặt vào `src/core/runtime/` như hàm thuần:
-`src/core/runtime/sub_agent_detect.py`, `sse_format.py`, `tool_name_cache.py`.
+`src/core/runtime/sse_format.py`, `tool_name_cache.py`.
 Lý do và lịch sử: `docs/bug-logs.md` Bug #6.
 
 ## Quy tắc code

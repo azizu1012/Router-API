@@ -100,7 +100,7 @@ Router API v2 acts as an intelligent, high-availability LLM gateway and proxy. I
 | :--- | :--- | :--- | :--- | :--- | :--- |
 | **Server / App Init** | `src/server/openai_server/routes/app_init.py`, `main.py` | FastAPI setup, middleware stack, lifespan events, .env file watcher | Uvicorn | `src.core.config_n_logg`, `src.backend.schema` | Background tasks, active request reset |
 | **Middlewares** | `app_init.py`, `src/server/openai_server/security.py` | Token limits enforcement, CORS handling, payload size gating, IP rate limiting | FastAPI pipeline | `token_limiter`, `auth.py` | `request.state.auth_account`, IP attempt counts |
-| **Auth Subsystem** | `src/server/openai_server/auth.py`, `src/core/accounts/account_manager.py` | Bearer extraction, token lookup, account caching (10s TTL), sub-agent error simulation | Route handlers | `src.backend.keys.accounts`, `src.backend.accounts.manager` | In-memory token cache |
+| **Auth Subsystem** | `src/server/openai_server/auth.py`, `src/core/accounts/account_manager.py` | Bearer extraction, token lookup, account caching (10s TTL) | Route handlers | `src.backend.keys.accounts`, `src.backend.accounts.manager` | In-memory token cache |
 | **Proxy Layer** | `src/api/opencode_proxy/`, `src/api/claude_proxy/` | Bi-directional format transformation (Anthropic/OpenAI), search context injection, SSE streaming | Route handlers | `PoolManager`, `logical_HQ_translator` | Temporary message buffers |
 | **Pool Manager** | `src/core/orchestration/pool_manager.py` | Monolithic retry loop, error classification (transient vs hard), member failover | Proxies | `router`, `ModelPool`, `gemini/facade`, `limits` | Key frozen states, penalty scores |
 | **Router & Keys** | `src/core/router/core/router.py`, `key_resolver.py` | Double Random key selection, circuit breaker, tier verification, atomic key reservation | `PoolManager` | `src.backend.keys.status`, `gemini/limiter` | `keys/status` in SQLite and memory |
@@ -193,7 +193,6 @@ Router API v2 acts as an intelligent, high-availability LLM gateway and proxy. I
 
 ### Explanation:
 - **Admission Safety:** Active Reject at Step 3 prevents context overflow from reaching external providers, preserving quota.
-- **Fail-Safe Sub-Agent Errors:** If an API error hits a sub-agent request (e.g. `explore` / `grep` in Claude Code), Router API catches the error and responds with an HTTP 200 containing a simulated markdown error warning. This prevents the parent CLI tool from crashing abruptly.
 - **Stream Commit Rule:** In `pool_manager.py`, the moment `committed = True` (first byte yielded to client), retry loops are terminated. Re-trying across models after headers are flushed would corrupt client SSE streams.
 
 ---
@@ -600,8 +599,7 @@ Layering rule: `src/api/` (client protocol) and `src/server/` (transport) sit at
 the top, `src/core/` below them, `src/logical_HQ_translator/` is a peer of
 `src/core/` rather than a layer, and nothing inside `src/core/providers/` may
 import `src/logical_HQ_translator/` or `src/api/`. Shared leaf helpers that both
-sides need live in `src/core/` directly (`sub_agent_detect`, `sse_format`,
-`tool_name_cache`).
+sides need live in `src/core/` directly (`sse_format`, `tool_name_cache`).
 
 ```
 src.server.openai_server.routes.app_init
@@ -611,7 +609,6 @@ src.server.openai_server.routes.app_init
   |       +---> src.api.claude_proxy.claude_proxy
   |       |       |
   |       |       +---> src.logical_HQ_translator
-  |       |       +---> src.core.runtime.sub_agent_detect        (no longer via translator)
   |       |       +---> src.core.runtime.sse_format
   |       |       |
   |       |       +---> src.core.orchestration.pool_manager.pool_manager
@@ -628,7 +625,6 @@ src.server.openai_server.routes.app_init
   |
   +---> src.server.openai_server.auth
   |       |
-  |       +---> src.core.runtime.sub_agent_detect               (no longer imports src.api/)
   |       +---> src.core.runtime.sse_format                     (no longer imports translator)
   |
   +---> src.core.orchestration.pool_manager.pool_manager

@@ -38,9 +38,6 @@
 Nếu CI báo `429` với `tokens per minute limit exceeded` trong một test fake-provider, đó là dấu hiệu test đã lọt qua isolation seam — không phải lý do để commit database.
 
 ## 6. Luồng request & file map (đọc trước khi planning)
-
-## 6. Luồng request & file map (đọc trước khi planning)
-
 Một request đi qua các tầng theo thứ tự sau. Xác định task chạm vào tầng nào → chỉ đọc file tương ứng:
 
 ```
@@ -91,13 +88,13 @@ Bug này **không sinh ra lỗi runtime nào** — mọi hàm vẫn trả về �
 Nếu vi phạm, đừng import `from __future__` hay `# noqa` cho qua. Làm đúng một trong hai:
 
 1. **Helper thuộc về một tầng** → dời sang tầng đó. Ví dụ `_sanitize_schema_for_gemini` chỉ tồn tại để chiều google-genai → `src/core/providers/gemini/schema_sanitizer.py`.
-2. **Helper thuộc về cả hai** → đặt vào `src/core/` như hàm thuần: không đọc config, không giữ state riêng, không I/O. Ví dụ `sub_agent_detect`, `sse_format`, `tool_name_cache`.
+2. **Helper thuộc về cả hai** → đặt vào `src/core/` như hàm thuần: không đọc config, không giữ state riêng, không I/O. Ví dụ `sse_format`, `tool_name_cache`.
 
 Hàm có side effect thì phân bố lại **sẽ** đổi hành vi — phải test trước.
 
 ### Import trong hàm không phải là lá chữa
 
-Có **252** import trong thân hàm, và đó là chủ ý — chủ yếu để phá vòng lòng thật. Nhưng import trong hàm **cũng che được vi phạm tầng**: `auth.py` từng import `is_sub_agent_body` trong thân hàm, trông như vòng lòng, nhưng proxy **không bao giờ** import `auth` — nên nó chỉ là vi phạm tầng được giấu.
+Có **252** import trong thân hàm, và đó là chủ ý — chủ yếu để phá vòng lòng thật. Nhưng import trong hàm **cũng che được vi phạm tầng**: một module tầng dưới có thể import tầng trên trong thân hàm, trông như vòng lòng, trong khi chiều phụ thuộc thật chỉ là sai tầng.
 
 Muốn lazy-import một module, hãy xác nhận trước nó có tạo vòng lòng thật không. Nếu không, chuyển lên module-level.
 

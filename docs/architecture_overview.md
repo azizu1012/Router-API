@@ -36,7 +36,7 @@ router_api/
     │   ├── accounts/             # Quản lý tài khoản
     │   ├── limits/               # Giới hạn Rate Limit, Account, Token (gemini/limiter.py)
     │   ├── providers/            # Gemini (facade, manager, caller), Custom Endpoints
-    │   ├── runtime/              # Sub-agent detection, tool cache, sse format, request_context (ContextVar)
+    │   ├── runtime/              # Tool cache, sse format, request_context (ContextVar)
     │   └── router/               # APIRouter, ModelPool, KeyResolver
     ├── backend/                  # Tầng DB SQLite (accounts/, endpoints/, keys/, models/)
     ├── console/                  # CLI admin (cli.py, interactive/)
@@ -243,9 +243,8 @@ Các cơ chế này được thiết kế để đảm bảo hệ thống hoạt
     *   **Dispatch Micro-Jitter**: Thêm độ trễ vi mô (5-25ms) khi có nhiều yêu cầu đồng thời hoặc khi retry nhằm phân tán đỉnh xung đột (burst collision) ở tầng mạng trước khi gửi request tới nhà cung cấp.
     *   **Retry Timing Jitter**: Ngẫu nhiên hóa thời gian chờ giữa các lần thử lại với công thức Exponential Backoff kèm độ lệch ngẫu nhiên $\pm 20\%$ trong `_retry_delay` để chống "Thundering Herd".
 *   **Chế độ Phòng Chống Nghẽn Tải Cực Cao (Extreme Checking Logic)**: Khi gặp lỗi liên tục, hệ thống sẽ siết chặt hạn ngạch và ưu tiên các yêu cầu nhỏ để hạ nhiệt.
-*   **Cơ chế Lan Truyền Lỗi HTTP Chuẩn (Proper HTTP Error Propagation)**: Tách biệt luồng xử lý lỗi cho Main Agent (trả về lỗi HTTP thật) và Sub-Agent (trả về phản hồi mô phỏng 200 OK) để tối ưu hóa hành vi client và tránh làm bẩn context.
+*   **Cơ chế Lan Truyền Lỗi HTTP Chuẩn (Proper HTTP Error Propagation)**: Khi có lỗi rate limit / timeout, proxy lan truyền ngoại lệ lên FastAPI để trả về mã HTTP thật (`429 Rate Limit` hoặc `503 Overloaded`). Client tự backoff retry ở tầng client và không nhồi nội dung lỗi vào lịch sử chat.
 *   **Cơ chế Pool Concurrency (ModelPool slot-based workers)**: Mỗi pool member có lock riêng (`asyncio.Lock`), đảm bảo chỉ một request xử lý tại một thời điểm. Custom endpoint là first-class member qua `pool_assignments`. Model ngoài `MODEL_POOLS` chạy standalone (không qua acquire/release).
-*   **Quyết Định Định Tuyến Sub-Agent Linh Hoạt (Dynamic Sub-Agent Model Selection)**: Cho phép cấu hình mô hình sub-agent động, tránh hardcode và đảm bảo tính nhất quán giữa tính toán quota và định tuyến thực tế.
 
 ## 6. Các Quyết Định Thiết Kế & Trade-offs (Chủ ý về Coupling & Complexity)
 
@@ -257,9 +256,6 @@ Trong quá trình phát triển, đặc biệt với việc tái sử dụng cod
     *   **Tối ưu hóa hiệu suất**: Tránh overhead của việc gọi qua lại giữa nhiều dịch vụ nhỏ hơn, đặc biệt quan trọng trong các ứng dụng có độ trễ thấp.
     *   **Khả năng tái sử dụng nhanh**: Dễ dàng được các Proxy khác nhau ủy quyền mà không cần tái tạo lại logic phức tạp.
     *   **Cấp slot concurrency riêng**: Việc quản lý slot-based concurrent worker được tách biệt thành `ModelPool` nhưng vẫn do `PoolManager` gọi, giữ nguyên architecture tập trung.
-*   **Sử dụng `ContextVar` cho Sub-Agent Context**: Việc sử dụng `is_sub_agent_context` (`src/core/router/core/router.py`) là một giải pháp tình thế có chủ ý để thay đổi hành vi của `freeze_key` trong ngữ cảnh Sub-Agent. Thay vì refactor toàn bộ interface của `APIRouter` để truyền context, `ContextVar` cung cấp một cách nhanh chóng để "luồn lách" qua các tầng kiểm soát mà không cần thay đổi chữ ký hàm, giúp triển khai tính năng Sub-Agent nhanh chóng.
-*   **Xử lý lỗi "Defensive Over-engineering"**: Việc luôn cố gắng trả về phản hồi mô phỏng 200 OK cho client (trừ Main Agent) khi có lỗi là một chiến lược phòng thủ mạnh mẽ. Điều này giúp hệ thống cực kỳ lỳ lợm khi gặp lỗi từ LLM, giảm thiểu khả năng client bị crash và cung cấp trải nghiệm người dùng mượt mà hơn, dù có thể làm khó khăn cho việc debug nội bộ.
-
 Những quyết định này phản ánh triết lý "practicality over purity" (thực tế hơn lý thuyết) trong một dự án có yêu cầu cao về hiệu suất và khả năng chống chịu lỗi, đặc biệt khi có yếu tố tái sử dụng code và phát triển nhanh với AI.
 
 ## 7. Quản Lý Trạng Thái (Memory vs SQLite)

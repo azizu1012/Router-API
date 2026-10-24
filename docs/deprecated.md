@@ -147,5 +147,4 @@ Tài liệu gốc `docs/model_aliases_feature.md` từng liệt kê một số �
   - Trước đây, khi gặp lỗi 429 hoặc 503, proxy bắt ngoại lệ và trả lời client bằng chuỗi SSE text `⚠️ [Hệ thống quá tải tạm thời]...` ở mã trạng thái HTTP 200 OK.
   - Điều này khiến các Autonomous Agent (như Claude Code CLI) tưởng nhầm đây là câu trả lời của mô hình, nhồi nhét đoạn lỗi vào prompt history, gây bẩn context và lặp vô hạn.
 * **Cơ chế hiện tại**:
-  - Phân tách luồng triệt để: Main Agent nhận đúng mã HTTP 429/503 để client tự backoff retry tự nhiên.
-  - Chỉ có Sub-Agent chạy ngầm song song mới được áp dụng cơ chế bắt lỗi mô phỏng text 200 OK để tránh crash CLI ngoài ý muốn.
+  - Khi gặp lỗi 429 hoặc 503, proxy lan truyền ngoại lệ lên FastAPI để trả về đúng mã HTTP (`429 Rate Limit` hoặc `503 Overloaded`). Client tự backoff retry ở tầng client, không nhồi nội dung lỗi vào prompt history.
