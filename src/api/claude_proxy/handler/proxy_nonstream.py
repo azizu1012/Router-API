@@ -83,7 +83,7 @@ class ClaudeProxyNonstreamMixin:
 
     **Các chức năng chính bao gồm:**
     - Chuyển đổi định dạng tin nhắn từ OpenCode sang Claude và ngược lại.
-    - Chèn công cụ WebSearch nếu được yêu cầu và không phải là yêu cầu từ sub-agent.
+    - Chèn công cụ WebSearch nếu được yêu cầu.
     - Xử lý các yêu cầu "thinking" và nén ngữ cảnh (context compaction).
     - Thực thi các cuộc gọi công cụ bị chặn (ví dụ: WebSearch, WebFetch) trong một vòng lặp đệ quy.
     - Định dạng phản hồi cuối cùng, bao gồm cả việc trích xuất suy nghĩ (thoughts) từ phản hồi XML.
@@ -97,7 +97,7 @@ class ClaudeProxyNonstreamMixin:
 
         Phương thức này thực hiện các bước sau:
         1. Chuyển đổi định dạng tin nhắn từ OpenCode sang định dạng nội bộ của Claude.
-        2. Kiểm tra và chèn công cụ WebSearch nếu tìm kiếm web được kích hoạt và yêu cầu không phải từ sub-agent.
+        2. Kiểm tra và chèn công cụ WebSearch nếu tìm kiếm web được kích hoạt.
         3. Giải quyết bí danh mô hình và thực hiện nén ngữ cảnh (context compaction) nếu cần.
         4. Thiết lập cấu hình "thinking" và các tham số khác cho cuộc gọi API.
         5. Gọi `pool_manager.call_nonstream` trong một vòng lặp đệ quy để xử lý các cuộc gọi công cụ bị chặn.
@@ -120,8 +120,7 @@ class ClaudeProxyNonstreamMixin:
 
         from src.api.opencode_proxy.handler.websearch import should_enable_web_search
         from src.api.opencode_proxy.handler.proxy import _WEBSEARCH_TOOL_DEF, _resolve_thinking_config, _extract_thinking_params
-        from src.core.runtime.sub_agent_detect import is_sub_agent_body
-        if router_hosted_tools_enabled() and not is_sub_agent_body(body) and should_enable_web_search(body, account) and not any(
+        if router_hosted_tools_enabled() and should_enable_web_search(body, account) and not any(
             t.get("function", {}).get("name") in ("WebSearch", "web_search") for t in openai_tools
         ):
             openai_tools.append(_WEBSEARCH_TOOL_DEF)

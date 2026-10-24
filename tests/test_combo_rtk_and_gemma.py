@@ -318,17 +318,13 @@ def test_gemma_thinking_support_and_budget_sanitization():
         res_off = resolve_thinking_config("gemma-4-26b-a4b-it", thinking_level=off_val)
         assert res_off == {"thinking_level": "minimal", "include_thoughts": False}
 
-    # 6. Sub-agents on Gemma get thinking disabled to save latency/tokens
-    res_sub = resolve_thinking_config("gemma-4-26b-a4b-it", is_sub_agent=True)
-    assert res_sub == {"thinking_level": "minimal", "include_thoughts": False}
-
-    # 7. Direct sanitization of dirty thinking_config containing thinking_budget
+    # 6. Direct sanitization of dirty thinking_config containing thinking_budget
     dirty_cfg = {"thinking_budget": 8192, "include_thoughts": True}
     clean_cfg = sanitize_thinking_for_gemma(dirty_cfg)
     assert clean_cfg == {"thinking_level": "high", "include_thoughts": True}
     assert "thinking_budget" not in clean_cfg
 
-    # 8. build_gemini_inputs sanitizes thinking_config for Gemma models
+    # 7. build_gemini_inputs sanitizes thinking_config for Gemma models
     messages = [{"role": "user", "content": "Hello"}]
     contents, system, tools, resolved_thinking = build_gemini_inputs(
         model_id="gemma-4-26b-a4b-it",

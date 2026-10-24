@@ -8,7 +8,7 @@ from fastapi.responses import JSONResponse, StreamingResponse
 from src.core.config_n_logg.logger import logger_api
 from src.api.opencode_proxy import opencode_proxy
 
-from src.server.openai_server.auth import _resolve_auth, _check_auth, _apply_account_limit, is_sub_agent_request, handle_sub_agent_error, _sub_agent_stream_error
+from src.server.openai_server.auth import _resolve_auth, _check_auth, _apply_account_limit
 from src.core.limits.account_limiter import get_effective_limits_by_pool
 from .app_init import app
 
@@ -53,7 +53,7 @@ async def opencode_chat_completions(
             body["_original_model_name"] = requested_model
             body["_alias_info"] = alias_info
 
-        # Resolve model alias early so sub-agent override is applied for limits and headers
+        # Resolve model alias early so limits and headers use the same name
         model_alias = await opencode_proxy._resolve_alias(body, account=account, is_opencode=True)
         body["model"] = model_alias
 
@@ -102,27 +102,23 @@ async def opencode_chat_completions(
                         yield chunk
                 except Exception as e:
                     logger_api.warning("[OpenCode Route] Stream error caught: %s", e)
-                    if is_sub_agent_request(body, is_opencode=True):
-                        async for chunk in _sub_agent_stream_error(body, model_alias, e):
-                            yield chunk
-                    else:
-                        # Emit a terminal chunk with finish_reason and explicit error info
-                        # so clients receive actionable feedback instead of an empty silent response.
-                        # The TPM guard's compact-and-retry instruction rides in the
-                        # delta text because SSE has no error envelope for it.
-                        status = getattr(e, "status_code", None)
-                        msg_l = str(e).lower()
-                        is_guard = status == 400 or "compact the conversation" in msg_l or "per-key tpm budget" in msg_l
-                        prefix = "[Context too large — compact and retry] " if is_guard else ""
-                        error_chunk = {
-                            "id": f"chatcmpl-error",
-                            "object": "chat.completion.chunk",
-                            "created": int(time.time()),
-                            "model": body.get("model", "unknown"),
-                            "choices": [{"index": 0, "delta": {"content": f"\n\n[{prefix}Error: {e}]"}, "finish_reason": "length" if is_guard else "stop"}],
-                        }
-                        yield f"data: {json.dumps(error_chunk, ensure_ascii=False)}\n\n".encode("utf-8")
-                        yield "data: [DONE]\n\n".encode("utf-8")
+                    # Emit a terminal chunk with finish_reason and explicit error info
+                    # so clients receive actionable feedback instead of an empty silent response.
+                    # The TPM guard's compact-and-retry instruction rides in the
+                    # delta text because SSE has no error envelope for it.
+                    status = getattr(e, "status_code", None)
+                    msg_l = str(e).lower()
+                    is_guard = status == 400 or "compact the conversation" in msg_l or "per-key tpm budget" in msg_l
+                    prefix = "[Context too large — compact and retry] " if is_guard else ""
+                    error_chunk = {
+                        "id": f"chatcmpl-error",
+                        "object": "chat.completion.chunk",
+                        "created": int(time.time()),
+                        "model": body.get("model", "unknown"),
+                        "choices": [{"index": 0, "delta": {"content": f"\n\n[{prefix}Error: {e}]"}, "finish_reason": "length" if is_guard else "stop"}],
+                    }
+                    yield f"data: {json.dumps(error_chunk, ensure_ascii=False)}\n\n".encode("utf-8")
+                    yield "data: [DONE]\n\n".encode("utf-8")
 
             return StreamingResponse(
                 _safe_stream(),
@@ -162,9 +158,6 @@ async def opencode_chat_completions(
         )
     except Exception as e:
         logger_api.error("opencode_chat_completions failed: %s", e)
-        if is_sub_agent_request(body, is_opencode=True):
-            logger_api.info("Intercepted sub-agent opencode_chat_completions error: %s, returning simulated response", e)
-            return handle_sub_agent_error(body, e, format_type="openai")
 
         # NEVER return HTTP error to client — always return simulated response
         from src.api.opencode_proxy.handler.response import error_response

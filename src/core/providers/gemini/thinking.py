@@ -124,14 +124,9 @@ def resolve_thinking_config(
     thinking_level: Optional[str] = None,
     thinking_budget: Optional[int] = None,
     include_thoughts: Optional[bool] = None,
-    is_sub_agent: bool = False,
 ) -> Dict[str, Any]:
-    """Unified helper to build thinking config dictionary for a model, handling defaults and lite/sub-agent logic."""
+    """Unified helper to build thinking config dictionary for a model, handling defaults and lite logic."""
     m = model_id.lower()
-    if is_sub_agent:
-        if "gemma" in m:
-            return {"thinking_level": "minimal", "include_thoughts": False}
-        return {}
 
     if "lite" in m:
         return {}

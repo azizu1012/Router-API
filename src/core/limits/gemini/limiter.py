@@ -344,7 +344,6 @@ def apply_error_penalty(key: str, reason: str, actual_model_id: Optional[str] = 
         reason: The reason for the error (e.g., "rate_limit", "invalid_key").
         actual_model_id: Optional concrete model ID if the penalty is specific to a model.
     """
-    # Sub-agent traffic shares the same provider keys as the main session.
     # Record per-key/model penalties so a failing member is not retried until
     # it exhausts the whole pool and stalls unrelated dashboard/API traffic.
     cfg = PENALTY_MAP.get(reason)

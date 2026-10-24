@@ -13,8 +13,7 @@ from fastapi.responses import JSONResponse, StreamingResponse
 from src.core.config_n_logg.logger import logger_api
 from src.core.providers import _custom_endpoint_manager
 from src.server.openai_server.auth import (
-    _resolve_auth, _check_auth, _apply_account_limit, is_sub_agent_request,
-    handle_sub_agent_error, _sub_agent_stream_error,
+    _resolve_auth, _check_auth, _apply_account_limit,
 )
 from src.server.openai_server.routes.responses.format import (
     _error_type, _spoof_model_name_in_response,
@@ -227,27 +226,23 @@ async def chat_completions(
                         yield chunk
                 except Exception as e:
                     logger_api.warning("[Completion Route] Stream error caught: %s", e)
-                    if is_sub_agent_request(body, is_opencode=False):
-                        async for chunk in _sub_agent_stream_error(body, model_alias, e):
-                            yield chunk
-                    else:
-                        # Emit a terminal chunk with finish_reason and explicit error info
-                        # so clients receive actionable feedback instead of an empty silent response.
-                        # The TPM guard's compact-and-retry instruction rides in the
-                        # delta text because SSE has no error envelope for it.
-                        _status = getattr(e, "status_code", None)
-                        _msg_l = str(e).lower()
-                        _is_guard = _status == 400 or "compact the conversation" in _msg_l or "per-key tpm budget" in _msg_l
-                        _prefix = "[Context too large — compact and retry] " if _is_guard else ""
-                        error_chunk = {
-                            "id": f"chatcmpl-error",
-                            "object": "chat.completion.chunk",
-                            "created": int(time.time()),
-                            "model": body.get("model", "unknown"),
-                            "choices": [{"index": 0, "delta": {"content": f"\n\n[{_prefix}Error: {e}]"}, "finish_reason": "length" if _is_guard else "stop"}],
-                        }
-                        yield f"data: {json.dumps(error_chunk, ensure_ascii=False)}\n\n".encode("utf-8")
-                        yield "data: [DONE]\n\n".encode("utf-8")
+                    # Emit a terminal chunk with finish_reason and explicit error info
+                    # so clients receive actionable feedback instead of an empty silent response.
+                    # The TPM guard's compact-and-retry instruction rides in the
+                    # delta text because SSE has no error envelope for it.
+                    _status = getattr(e, "status_code", None)
+                    _msg_l = str(e).lower()
+                    _is_guard = _status == 400 or "compact the conversation" in _msg_l or "per-key tpm budget" in _msg_l
+                    _prefix = "[Context too large — compact and retry] " if _is_guard else ""
+                    error_chunk = {
+                        "id": f"chatcmpl-error",
+                        "object": "chat.completion.chunk",
+                        "created": int(time.time()),
+                        "model": body.get("model", "unknown"),
+                        "choices": [{"index": 0, "delta": {"content": f"\n\n[{_prefix}Error: {e}]"}, "finish_reason": "length" if _is_guard else "stop"}],
+                    }
+                    yield f"data: {json.dumps(error_chunk, ensure_ascii=False)}\n\n".encode("utf-8")
+                    yield "data: [DONE]\n\n".encode("utf-8")
             return StreamingResponse(
                 _safe_stream(),
                 media_type="text/event-stream",
@@ -262,9 +257,6 @@ async def chat_completions(
         return JSONResponse(content=result, headers=response_headers)
     except Exception as e:
         logger_api.error("chat_completion failed: %s", e)
-        if is_sub_agent_request(body, is_opencode=False):
-            logger_api.info("Intercepted sub-agent chat_completion error: %s, returning simulated response", e)
-            return handle_sub_agent_error(body, e, format_type="openai")
 
         # An HTTPException already carries the right status and body. Re-deriving
         # one from str(e) threw the reason away: _apply_account_limit raises 429

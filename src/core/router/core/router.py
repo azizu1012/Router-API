@@ -22,9 +22,6 @@ from src.backend.keys.status import (
 )
 from .key_resolver import KeyResolverMixin
 from .model_resolution import ModelResolutionMixin
-from contextvars import ContextVar
-
-is_sub_agent_context: ContextVar[bool] = ContextVar("is_sub_agent_context", default=False)
 
 class APIRouter(KeyResolverMixin, ModelResolutionMixin):
     """
@@ -465,9 +462,6 @@ class APIRouter(KeyResolverMixin, ModelResolutionMixin):
             model_id: Optional concrete model ID if the freeze is specific to a model.
             reason: The reason for freezing the key (e.g., "rate_limit", "invalid_key").
 
-        Sub-agent requests still share these keys with the main session, so
-        transient failures must freeze and penalize the failing key for everyone.
-        Only global cooldown decisions remain isolated in sub-agent context.
         For severe reasons like `invalid_key`, `permission_denied`, or
         `billing_error`, the key is permanently disabled (`enabled = 0`).
         The adaptive cooldown logic (`_adaptive_cooldown`) and jitter are applied to prevent synchronized retries.

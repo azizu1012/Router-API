@@ -249,11 +249,8 @@ async def execute_stream(
         return
 
     # ── Normal stream path ──────────────────────────────────────────────────
-    from .proxy import _is_sub_agent_request
-    is_sub_agent = _is_sub_agent_request(body)
-
     normalizer = StreamingTextNormalizer()
-    extractor = None if is_sub_agent else XMLThinkingExtractor()
+    extractor = XMLThinkingExtractor()
     out_len = 0
     _reasoning_buf: List[str] = []
     _BUF_FLUSH_SIZE = 80
@@ -460,19 +457,11 @@ async def execute_stream(
 
             if reasoning:
                 reasoning_received = True
-                if is_sub_agent:
-                    async for c in _yield_text(reasoning):
-                        yield c
-                else:
-                    async for c in _yield_reasoning(reasoning):
-                        yield c
+                async for c in _yield_reasoning(reasoning):
+                    yield c
             if content:
-                if is_sub_agent or not extractor:
-                    async for c in _yield_text(content):
-                        yield c
-                else:
-                    async for c in _process_content(content, bool(reasoning)):
-                        yield c
+                async for c in _process_content(content, bool(reasoning)):
+                    yield c
             if tool_calls:
                 # Single shared buffer (see import note above): the three
                 # fragment rules live in one place now. tool_buffers values

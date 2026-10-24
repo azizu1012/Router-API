@@ -28,9 +28,6 @@ from .response import build_response, error_response
 from .stream_executor import execute_stream
 
 
-from src.core.runtime.sub_agent_detect import (
-    is_sub_agent_request_openai as _is_sub_agent_request,
-)
 from src.core.runtime.effort import extract_reasoning_effort
 
 
@@ -205,13 +202,6 @@ def _resolve_thinking_config(body: Dict[str, Any], model_id: str) -> Dict[str, A
         thinking_level=p.get("thinking_level"),
         thinking_budget=p.get("thinking_budget"),
         include_thoughts=p.get("include_thoughts", True),
-        # The whole body, not `{"system": ...}`: on the OpenAI chat dialects
-        # there is no top-level `system` key, the prompt lives in messages[0],
-        # and the detector reads it from there via _system_prompt_with_messages.
-        # Truncating it here gave every request a False verdict while
-        # response.py and stream_executor.py, asking about the full body, gave
-        # True — one request, two answers. See docs/bug-logs.md Bug #40 item D.
-        is_sub_agent=_is_sub_agent_request(body),
     )
 
 
@@ -225,7 +215,6 @@ class OpenCodeProxy:
     - **Chuẩn bị tin nhắn:** Chuyển đổi định dạng tin nhắn đến thành định dạng tương thích với các nhà cung cấp LLM backend.
     - **Chèn tìm kiếm web:** Xử lý logic để chèn công cụ tìm kiếm web vào các yêu cầu khi cần.
     - **Định dạng phản hồi:** Chuyển đổi phản hồi từ các nhà cung cấp LLM backend trở lại định dạng OpenCode.
-    - **Phát hiện và xử lý yêu cầu sub-agent:** Xác định xem yêu cầu có đến từ sub-agent hay không và điều chỉnh hành vi phù hợp.
 
     Proxy này được thiết kế để không chứa bất kỳ logic kinh doanh phức tạp nào liên quan đến pool,
     quản lý khóa hoặc cơ chế thử lại. Thay vào đó, nó dựa hoàn toàn vào `PoolManager` để xử lý
@@ -489,8 +478,6 @@ class OpenCodeProxy:
             search drives it itself through `POST /v1/search`, or switches to
             `/v1/responses`. Nothing is injected on speculation.
             """
-            if _is_sub_agent_request(body):
-                return messages, tools
             if not body.get("_hosted_search"):
                 return messages, tools
             if not should_enable_web_search(body, account):

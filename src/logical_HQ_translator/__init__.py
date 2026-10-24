@@ -24,10 +24,6 @@ from .messages.truncation import (
     emergency_truncate_to_limit as _emergency_truncate_to_limit,
 )
 
-from src.core.runtime.sub_agent_detect import (
-    is_sub_agent_body as is_sub_agent_body,
-)
-
 from .streaming.cache_agent import (
     _estimate_msg_tokens as _estimate_msg_tokens,
     _truncate_huge_message as _truncate_huge_message,

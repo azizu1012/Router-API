@@ -13,8 +13,6 @@ from src.api.claude_proxy import claude_proxy
 from src.api.claude_proxy.handler.anthropic_spec import estimate_input_tokens
 from src.server.openai_server.auth import (
     _resolve_auth, _check_auth, _apply_account_limit, _auth_key_prefix,
-    is_sub_agent_request,
-    handle_sub_agent_error,
 )
 from ..app_init import app
 @app.post("/v1/messages")
@@ -119,9 +117,6 @@ async def anthropic_messages(
             result = await claude_proxy.create_message(body, akp, account=account)
             return JSONResponse(content=result, headers=response_headers)
     except HTTPException as e:
-        if is_sub_agent_request(body, is_opencode=False):
-            logger_api.info("Intercepted sub-agent anthropic_messages HTTPException: %s, returning simulated response", e)
-            return handle_sub_agent_error(body, e, format_type="anthropic")
         detail = e.detail
         err = detail.get("error", {}) if isinstance(detail, dict) else {}
         return JSONResponse(
@@ -130,10 +125,7 @@ async def anthropic_messages(
         )
     except Exception as e:
         logger_api.error("anthropic_messages unexpected error: %s", e, exc_info=True)
-        if is_sub_agent_request(body, is_opencode=False):
-            logger_api.info("Intercepted sub-agent anthropic_messages error: %s, returning simulated response", e)
-            return handle_sub_agent_error(body, e, format_type="anthropic")
-        
+
         msg = str(e)
         if "quota_exhausted" in msg or "rate_limit" in msg or "rate_limited" in msg.lower():
             return JSONResponse(

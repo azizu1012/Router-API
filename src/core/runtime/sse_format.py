@@ -1,8 +1,7 @@
 """Anthropic SSE frame formatting.
 
-One line of string building, used by the claude proxy (35 call sites), the SSE
-cache agent (16), and auth middleware (6). auth needed it to emit its simulated
-sub-agent failure stream, which meant auth imported sse_cache_agent for a frame
+One line of string building, used by the claude proxy (35 call sites) and the
+SSE cache agent (16). Both used to import sse_cache_agent for this frame
 formatter — an import inside a function, which is the shape a cycle takes.
 
 It was not a cycle: the proxies never import auth. This module has no imports

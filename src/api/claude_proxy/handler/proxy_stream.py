@@ -19,7 +19,6 @@ from src.core.observability.usage_logger import log_usage
 from src.core.runtime.tool_name_match import declared_tool_names, resolve_declared_tool_name
 from src.logical_HQ_translator import (
     _convert_messages,
-    _dict_to_sse_events,
     _sse,
     StreamingTextNormalizer,
     XMLThinkingExtractor,
@@ -130,7 +129,7 @@ class ClaudeProxyStreamMixin:
 
     **Các chức năng chính bao gồm:**
     - Chuyển đổi định dạng tin nhắn từ OpenCode sang Claude và ngược lại.
-    - Chèn công cụ WebSearch nếu được yêu cầu và không phải là yêu cầu từ sub-agent.
+    - Chèn công cụ WebSearch nếu được yêu cầu.
     - Xử lý các yêu cầu "thinking" và nén ngữ cảnh (context compaction).
     - Streaming phản hồi từ mô hình, bao gồm cả việc trích xuất suy nghĩ (thoughts) từ phản hồi XML.
     - Xử lý các cuộc gọi công cụ bị chặn (intercepted tool calls) như WebSearch hoặc WebFetch trong một vòng lặp đệ quy.
@@ -146,7 +145,7 @@ class ClaudeProxyStreamMixin:
 
         Phương thức này thực hiện các bước sau:
         1. Chuyển đổi định dạng tin nhắn từ OpenCode sang định dạng nội bộ của Claude.
-        2. Kiểm tra và chèn công cụ WebSearch nếu tìm kiếm web được kích hoạt và yêu cầu không phải từ sub-agent.
+        2. Kiểm tra và chèn công cụ WebSearch nếu tìm kiếm web được kích hoạt.
         3. Giải quyết bí danh mô hình và thực hiện nén ngữ cảnh (context compaction) nếu cần.
         4. Thiết lập cấu hình "thinking" và các tham số khác cho cuộc gọi API.
         5. Gọi phương thức nội bộ `_stream_message_impl` để xử lý logic streaming chính,
@@ -193,8 +192,7 @@ class ClaudeProxyStreamMixin:
 
         from src.api.opencode_proxy.handler.websearch import should_enable_web_search
         from src.api.opencode_proxy.handler.proxy import _WEBSEARCH_TOOL_DEF, _resolve_thinking_config, _extract_thinking_params
-        from src.core.runtime.sub_agent_detect import is_sub_agent_body
-        if router_hosted_tools_enabled() and not is_sub_agent_body(body) and should_enable_web_search(body, account) and not any(
+        if router_hosted_tools_enabled() and should_enable_web_search(body, account) and not any(
             t.get("function", {}).get("name") in ("WebSearch", "web_search") for t in openai_tools
         ):
             openai_tools.append(_WEBSEARCH_TOOL_DEF)
@@ -1169,39 +1167,17 @@ class ClaudeProxyStreamMixin:
         except Exception as e:
             logger.error("[Claude Stream Recurse] PoolManager failed: %s", e, exc_info=True)
             if recursion_depth == 0:
-                from src.core.runtime.sub_agent_detect import is_sub_agent_body
-                if is_sub_agent_body(body):
-                    from .helpers import _classify_error_reason
-                    reason = _classify_error_reason(str(e))
-                    # ponytail: inform main agent to proceed directly rather than triggering an infinite retry crash loop
-                    summary_text = (
-                        f"[Notice: Sub-agent could not complete background query ({reason})]. "
-                        "Proceed with the current session context directly."
-                    )
-                    fake_result = {
-                        "id": "msg_err_" + uuid.uuid4().hex[:8],
-                        "type": "message",
-                        "role": "assistant",
-                        "model": body.get("model") or model_alias,
-                        "content": [{"type": "text", "text": summary_text}],
-                        "stop_reason": "end_turn",
-                        "stop_sequence": None,
-                        "usage": {"input_tokens": len(summary_text) // 4, "output_tokens": len(summary_text) // 4},
-                    }
-                    for chunk in _dict_to_sse_events(fake_result):
-                        yield chunk
-                else:
-                    # Headers are already committed at this point, so a bare raise
-                    # leaves the client with a truncated stream. Emit a proper
-                    # Anthropic `error` event instead, then close the message.
-                    logger.error("[Claude Stream] emitting SSE error event: %s", e)
-                    status = getattr(e, "status_code", None)
-                    msg_l = str(e).lower()
-                    err_type = "api_error"
-                    if status == 400 or "compact the conversation" in msg_l or "per-key tpm budget" in msg_l or "model_context_window_exceeded" in msg_l:
-                        err_type = "invalid_request_error"
-                    yield _sse("error", build_error_event(e, err_type))
-                    yield _sse("message_stop", {"type": "message_stop"})
+                # Headers are already committed at this point, so a bare raise
+                # leaves the client with a truncated stream. Emit a proper
+                # Anthropic `error` event instead, then close the message.
+                logger.error("[Claude Stream] emitting SSE error event: %s", e)
+                status = getattr(e, "status_code", None)
+                msg_l = str(e).lower()
+                err_type = "api_error"
+                if status == 400 or "compact the conversation" in msg_l or "per-key tpm budget" in msg_l or "model_context_window_exceeded" in msg_l:
+                    err_type = "invalid_request_error"
+                yield _sse("error", build_error_event(e, err_type))
+                yield _sse("message_stop", {"type": "message_stop"})
             else:
                 raise e
         finally:

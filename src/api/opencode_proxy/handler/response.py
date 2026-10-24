@@ -51,9 +51,6 @@ async def build_response(
     if isinstance(resp, dict):
         return resp
 
-    from .proxy import _is_sub_agent_request
-    is_sub_agent = _is_sub_agent_request(body)
-
     choice = resp.choices[0] if resp.choices else None
     if not choice:
         text, finish, thinking, tool_calls, ts = "", "stop", "", [], None
@@ -94,10 +91,6 @@ async def build_response(
                     "arguments": args,
                 },
             })
-
-    if is_sub_agent and thinking:
-        text = f"<thinking>\n{thinking}\n</thinking>\n" + text
-        thinking = ""
 
     out_tokens = 0
     usage = getattr(resp, "usage", None)

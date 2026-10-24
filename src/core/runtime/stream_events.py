@@ -13,8 +13,8 @@ only the field its event type owns, and lets ``is_terminal`` stay a pure
 function over the type instead of an isinstance ladder.
 
 No imports beyond the standard library, no config, no I/O. Same rule as
-``sse_format`` and ``sub_agent_detect``: a leaf both ``src/core/`` and
-``src/api/`` may import without creating a layering violation.
+``sse_format``: a leaf both ``src/core/`` and ``src/api/`` may import without
+creating a layering violation.
 """
 from dataclasses import dataclass
 from enum import Enum

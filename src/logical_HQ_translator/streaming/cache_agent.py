@@ -1,13 +1,11 @@
 """
 Module này chứa các hàm tiện ích liên quan đến việc xử lý các sự kiện SSE (Server-Sent Events),
-quản lý cache mô phỏng, phát hiện và chặn các yêu cầu từ sub-agent, và lưu trữ thông tin
-mô hình đã giải quyết cho thư mục làm việc hiện tại.
+quản lý cache mô phỏng, và lưu trữ thông tin mô hình đã giải quyết cho thư mục làm việc hiện tại.
 
 Các chức năng chính bao gồm:
 - Tạo định dạng SSE cho các sự kiện dữ liệu.
 - Mô phỏng việc sử dụng cache token cho mục đích báo cáo.
-- Phát hiện các yêu cầu từ sub-agent dựa trên `system_prompt` và `tool_names` để ghi đè mô hình.
-- Ghi lại thông tin yêu cầu và phản hồi của sub-agent vào log.
+- Ước lượng và cắt gọt tin nhắn quá lớn.
 - Lưu trữ ánh xạ mô hình đã giải quyết cho thư mục làm việc hiện tại để đồng bộ hóa trạng thái.
 """
 import datetime

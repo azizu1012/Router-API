@@ -174,12 +174,6 @@ class TestExistingBehaviour:
             {"output_config": {"effort": "high"}}, "gemini-3.5-flash-lite")
         assert cfg == {}, "lite has no thinking support"
 
-    def test_sub_agent_gets_no_thinking(self):
-        from src.core.providers.gemini.thinking import resolve_thinking_config
-        cfg = resolve_thinking_config(V3, thinking_level="high",
-                                      is_sub_agent=True)
-        assert cfg == {}
-
     def test_gemini_25_uses_budget_never_level(self):
         for effort in ("low", "medium", "high"):
             cfg = _resolve_thinking_config({"output_config": {"effort": effort}}, V25)
