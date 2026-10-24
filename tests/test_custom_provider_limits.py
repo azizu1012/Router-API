@@ -116,6 +116,24 @@ def test_answered_call_kept_while_unanswered_sibling_dropped():
     assert ids == ["call_ok"], kept
 
 
+def test_duplicate_tool_results_keep_only_first_output():
+    """Strict Responses-compatible endpoints allow one output per call ID."""
+    from src.core.providers.custom_endpoint.client import _drop_orphaned_tool_results
+
+    msgs = [
+        {"role": "assistant", "content": None, "tool_calls": [
+            {"id": "call_once", "type": "function",
+             "function": {"name": "Bash", "arguments": "{}"}},
+        ]},
+        {"role": "tool", "tool_call_id": "call_once", "content": "first"},
+        {"role": "tool", "tool_call_id": "call_once", "content": "retry"},
+    ]
+
+    kept = _drop_orphaned_tool_results(msgs)
+    outputs = [m for m in kept if m.get("role") == "tool"]
+    assert outputs == [{"role": "tool", "tool_call_id": "call_once", "content": "first"}]
+
+
 def test_genai_tools_convert_to_openai():
     tools = [gt.Tool(function_declarations=[gt.FunctionDeclaration(
         name="get_weather",

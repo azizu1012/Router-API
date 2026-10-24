@@ -345,6 +345,7 @@ def _drop_orphaned_tool_results(
             answered.add(str(msg.get("tool_call_id") or ""))
 
     kept: List[Dict[str, Any]] = []
+    seen_results: set = set()
     for msg in messages:
         role = str(msg.get("role") or "")
         if role == "tool" or role.startswith("tool"):
@@ -355,6 +356,14 @@ def _drop_orphaned_tool_results(
                     cid,
                 )
                 continue
+            if cid in seen_results:
+                logger.warning(
+                    "[CustomEndpoint] dropped duplicate tool_result "
+                    "(tool_call_id=%r); keeping the first output",
+                    cid,
+                )
+                continue
+            seen_results.add(cid)
         elif role == "assistant" and msg.get("tool_calls"):
             live = [tc for tc in msg.get("tool_calls") or []
                     if not isinstance(tc, dict) or str(tc.get("id") or "") in answered]
@@ -861,7 +870,6 @@ class CustomEndpointStreamGen:
             try:
                 raw_chunk = await asyncio.wait_for(gen.__anext__(), timeout=chunk_timeout)
             except asyncio.TimeoutError:
-                from src.core.config_n_logg.logger import logger_proxy as logger
                 logger.warning("[Custom Endpoint Stream] Chunk read timeout (%.0fs) reached. Closing stream.", chunk_timeout)
                 await self._cleanup()
                 raise TimeoutError("custom_endpoint_stream_timeout")
