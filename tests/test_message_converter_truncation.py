@@ -7,6 +7,35 @@ sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')
 
 from src.logical_HQ_translator.messages.converter import _convert_messages, _GLOBAL_TOOL_NAME_CACHE
 
+
+def test_duplicate_claude_tool_results_are_emitted_once():
+    body = {
+        "model": "claude-sonnet-4-20250514",
+        "messages": [
+            {"role": "assistant", "content": [{
+                "type": "tool_use", "id": "call_01a16cc88b5572a99e9614c9abbd1daa",
+                "name": "mcp__ccd_turn__update_plan", "input": {"advance": True},
+            }]},
+            {"role": "user", "content": [
+                {"type": "tool_result", "tool_use_id": "call_01a16cc88b5572a99e9614c9abbd1daa", "content": "done"},
+            ]},
+            {"role": "assistant", "content": [{
+                "type": "tool_use", "id": "call_next", "name": "Read", "input": {},
+            }]},
+            {"role": "user", "content": [
+                {"type": "tool_result", "tool_use_id": "call_01a16cc88b5572a99e9614c9abbd1daa", "content": "resent"},
+                {"type": "tool_result", "tool_use_id": "call_next", "content": "next"},
+            ]},
+        ],
+    }
+
+    messages, _ = _convert_messages(body)
+    results = [m for m in messages if m.get("role") == "tool"]
+    assert [m["tool_call_id"] for m in results] == [
+        "call_01a16cc88b5572a99e9614c9abbd1daa", "call_next"
+    ]
+    assert results[0]["content"] == "done"
+
 def test_conversion_normal_and_truncated():
     # 1. Test normal message flow where tool call is present
     body = {

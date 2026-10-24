@@ -354,6 +354,7 @@ def _convert_messages(body: Dict[str, Any]) -> Tuple[List[Dict[str, Any]], List[
             openai_messages.append({"role": "system", "content": cleaned})
 
     seen_tool_calls = set()
+    seen_tool_results = set()
     tool_name_map: Dict[str, str] = {}
 
     for msg in body.get("messages") or []:
@@ -406,6 +407,17 @@ def _convert_messages(body: Dict[str, Any]) -> Tuple[List[Dict[str, Any]], List[
                     })
                 elif b_type in ("tool_result", "agent_result", "web_search_tool_result"):
                     t_id = block.get("tool_use_id") or block.get("agent_use_id") or block.get("id")
+                    # Claude Code can resend an old turn when continuing after a
+                    # disconnect. Responses-compatible endpoints accept exactly
+                    # one output for each call_id, so keep the first result.
+                    if t_id and t_id in seen_tool_results:
+                        logger.warning(
+                            "[Converter] dropped duplicate tool_result (tool_call_id=%r)",
+                            t_id,
+                        )
+                        continue
+                    if t_id:
+                        seen_tool_results.add(t_id)
                     t_content = block.get("content", "")
                     if isinstance(t_content, list):
                         extracted = []
