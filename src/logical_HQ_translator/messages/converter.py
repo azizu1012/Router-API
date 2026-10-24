@@ -393,6 +393,12 @@ def _convert_messages(body: Dict[str, Any]) -> Tuple[List[Dict[str, Any]], List[
                     text_parts.append(sr_text)
                 elif b_type in ("tool_use", "agent_use", "server_tool_use"):
                     t_id = block.get("id")
+                    if t_id and t_id in seen_tool_calls:
+                        logger.warning(
+                            "[Converter] dropped duplicate tool_use (tool_call_id=%r)",
+                            t_id,
+                        )
+                        continue
                     t_name = block.get("name") or ("Agent" if b_type == "agent_use" else "web_search" if b_type == "server_tool_use" else "Task")
                     t_input = block.get("input") or {"prompt": block.get("prompt", "")}
                     if isinstance(t_input, dict):

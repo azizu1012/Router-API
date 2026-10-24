@@ -36,6 +36,31 @@ def test_duplicate_claude_tool_results_are_emitted_once():
     ]
     assert results[0]["content"] == "done"
 
+
+def test_duplicate_claude_tool_calls_are_emitted_once():
+    body = {
+        "model": "claude-sonnet-4-20250514",
+        "messages": [
+            {"role": "assistant", "content": [{
+                "type": "tool_use", "id": "call_01a16cc88b5572a99e9614c9abbd1daa",
+                "name": "mcp__ccd_turn__update_plan", "input": {"advance": True},
+            }]},
+            {"role": "user", "content": [{
+                "type": "tool_result", "tool_use_id": "call_01a16cc88b5572a99e9614c9abbd1daa", "content": "done",
+            }]},
+            {"role": "assistant", "content": [{
+                "type": "tool_use", "id": "call_01a16cc88b5572a99e9614c9abbd1daa",
+                "name": "mcp__ccd_turn__update_plan", "input": {"advance": True},
+            }]},
+        ],
+    }
+
+    messages, _ = _convert_messages(body)
+    calls = [tc for msg in messages for tc in msg.get("tool_calls", [])]
+    assert [tc["id"] for tc in calls] == [
+        "call_01a16cc88b5572a99e9614c9abbd1daa"
+    ]
+
 def test_conversion_normal_and_truncated():
     # 1. Test normal message flow where tool call is present
     body = {
