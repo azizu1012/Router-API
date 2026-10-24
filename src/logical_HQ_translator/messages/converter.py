@@ -376,6 +376,8 @@ def _convert_messages(body: Dict[str, Any]) -> Tuple[List[Dict[str, Any]], List[
         role = msg.get("role")
         content = msg.get("content")
         if isinstance(content, str):
+            if role == "tool" and msg.get("tool_call_id") in repeated_tool_ids:
+                continue
             openai_messages.append({"role": role, "content": content})
             continue
         if isinstance(content, list):
@@ -507,5 +509,48 @@ def _convert_messages(body: Dict[str, Any]) -> Tuple[List[Dict[str, Any]], List[
 
     if not openai_messages:
         openai_messages.append({"role": "user", "content": "Continue."})
-    return openai_messages, openai_tools
+    return _dedupe_openai_tool_history(openai_messages), openai_tools
+
+
+def _dedupe_openai_tool_history(messages: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """Remove stale duplicate tool exchanges from the OpenAI wire history.
+
+    ``fix_missing_tool_responses`` may insert legacy ``role: tool`` messages
+    before the Claude blocks are converted. Normalize again at the end so no
+    conversion path can reintroduce an old call ID.
+    """
+    call_counts: Dict[str, int] = {}
+    for msg in messages:
+        if msg.get("role") != "assistant":
+            continue
+        for tc in msg.get("tool_calls") or []:
+            if isinstance(tc, dict) and tc.get("id"):
+                call_id = str(tc["id"])
+                call_counts[call_id] = call_counts.get(call_id, 0) + 1
+    stale_ids = {call_id for call_id, count in call_counts.items() if count > 1}
+    seen_results: set[str] = set()
+    kept: List[Dict[str, Any]] = []
+    for msg in messages:
+        role = msg.get("role")
+        if role == "tool":
+            call_id = str(msg.get("tool_call_id") or "")
+            if call_id in stale_ids or call_id in seen_results:
+                continue
+            seen_results.add(call_id)
+            kept.append(msg)
+            continue
+        if role != "assistant" or not msg.get("tool_calls"):
+            kept.append(msg)
+            continue
+        calls = [
+            tc for tc in msg.get("tool_calls") or []
+            if not isinstance(tc, dict) or str(tc.get("id") or "") not in stale_ids
+        ]
+        if calls:
+            if len(calls) != len(msg.get("tool_calls") or []):
+                msg = dict(msg, tool_calls=calls)
+            kept.append(msg)
+        elif msg.get("content"):
+            kept.append({k: v for k, v in msg.items() if k != "tool_calls"})
+    return kept
 
