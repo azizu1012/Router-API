@@ -1,24 +1,20 @@
 """
-Module này chứa các hàm tiện ích liên quan đến việc xử lý các sự kiện SSE (Server-Sent Events),
-quản lý cache mô phỏng, và lưu trữ thông tin mô hình đã giải quyết cho thư mục làm việc hiện tại.
+Module này chứa các hàm tiện ích liên quan đến việc quản lý cache mô phỏng và
+lưu trữ thông tin mô hình đã giải quyết cho thư mục làm việc hiện tại.
 
 Các chức năng chính bao gồm:
-- Tạo định dạng SSE cho các sự kiện dữ liệu.
 - Mô phỏng việc sử dụng cache token cho mục đích báo cáo.
 - Ước lượng và cắt gọt tin nhắn quá lớn.
 - Lưu trữ ánh xạ mô hình đã giải quyết cho thư mục làm việc hiện tại để đồng bộ hóa trạng thái.
 """
-import datetime
-import hashlib
 import json
 import os
 import re
 import threading
 from pathlib import Path
-from typing import Any, Dict, Iterator, Optional
+from typing import Any, Dict
 
 from src.core.config_n_logg.logger import logger_proxy as logger
-from src.core.runtime.sse_format import sse_event as _sse
 
 # This module is nested under src/logical_HQ_translator/streaming.
 _PROJECT_ROOT = Path(__file__).resolve().parents[3]
@@ -108,33 +104,6 @@ def is_claude_code_body(body: Dict[str, Any]) -> bool:
     system_prompt_lower = system_prompt.lower()
     return "you are claude code" in system_prompt_lower or "cc_version=" in system_prompt_lower or "claude-code" in system_prompt_lower
 
-
-def _dict_to_sse_events(result: Dict[str, Any]) -> Iterator[bytes]:
-    msg = {k: result.get(k) for k in ("id", "type", "role", "model", "content", "stop_reason", "stop_sequence")}
-    msg["usage"] = {"input_tokens": result.get("usage", {}).get("input_tokens", 0), "output_tokens": 0}
-    yield _sse("message_start", {"type": "message_start", "message": msg})
-    for idx, block in enumerate(result.get("content", [])):
-        if block.get("type") == "text":
-            yield _sse("content_block_start", {"type": "content_block_start", "index": idx, "content_block": {"type": "text", "text": ""}})
-            yield _sse("content_block_delta", {"type": "content_block_delta", "index": idx, "delta": {"type": "text_delta", "text": block.get("text", "")}})
-            yield _sse("content_block_stop", {"type": "content_block_stop", "index": idx})
-        elif block.get("type") == "thinking":
-            yield _sse("content_block_start", {"type": "content_block_start", "index": idx, "content_block": {"type": "thinking", "thinking": ""}})
-            thinking_text = block.get("thinking", "")
-            if thinking_text:
-                yield _sse("content_block_delta", {"type": "content_block_delta", "index": idx, "delta": {"type": "thinking_delta", "thinking": thinking_text}})
-            sig = block.get("signature") or "gmni_" + hashlib.sha256(thinking_text.encode()).hexdigest()[:60]
-            yield _sse("content_block_delta", {"type": "content_block_delta", "index": idx, "delta": {"type": "signature_delta", "signature": sig}})
-            yield _sse("content_block_stop", {"type": "content_block_stop", "index": idx})
-        elif block.get("type") == "tool_use":
-            yield _sse("content_block_start", {"type": "content_block_start", "index": idx, "content_block": {"type": "tool_use", "id": block.get("id"), "name": block.get("name"), "input": {}}})
-            yield _sse("content_block_delta", {"type": "content_block_delta", "index": idx, "delta": {"type": "input_json_delta", "partial_json": json.dumps(block.get("input", {}))}})
-            yield _sse("content_block_stop", {"type": "content_block_stop", "index": idx})
-        elif block.get("type") == "agent_use":
-            yield _sse("content_block_start", {"type": "content_block_start", "index": idx, "content_block": {"type": "agent_use", "id": block.get("id"), "agent_type": block.get("agent_type", "general-purpose"), "prompt": block.get("prompt", "")}})
-            yield _sse("content_block_stop", {"type": "content_block_stop", "index": idx})
-    yield _sse("message_delta", {"type": "message_delta", "delta": {"stop_reason": result.get("stop_reason", "end_turn"), "stop_sequence": None}, "usage": {"output_tokens": result.get("usage", {}).get("output_tokens", 0)}})
-    yield _sse("message_stop", {"type": "message_stop"})
 
 def save_resolved_model_for_cwd(system_prompt: Any, model_alias: str, model_id: str) -> None:
     """

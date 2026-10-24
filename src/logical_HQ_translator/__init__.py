@@ -12,6 +12,7 @@ from .model.resolver import (
 from src.core.providers.gemini.schema_sanitizer import (
     _sanitize_schema_for_gemini as _sanitize_schema_for_gemini,
 )
+from src.core.runtime.sse_format import sse_event as _sse
 
 from .messages.converter import (
     _convert_messages as _convert_messages,
@@ -29,8 +30,6 @@ from .streaming.cache_agent import (
     _truncate_huge_message as _truncate_huge_message,
     _get_simulated_cache_usage as _get_simulated_cache_usage,
     is_claude_code_body as is_claude_code_body,
-    _dict_to_sse_events as _dict_to_sse_events,
-    _sse as _sse,
     save_resolved_model_for_cwd as save_resolved_model_for_cwd,
 )
 
