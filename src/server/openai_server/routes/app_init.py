@@ -1,5 +1,6 @@
 import asyncio
 from contextlib import asynccontextmanager
+import json
 import urllib.parse
 import uuid
 from fastapi import FastAPI, HTTPException, Request
@@ -18,6 +19,104 @@ from ...realtime.stats import stats_pusher
 from src.core.runtime.request_context import set_request_id
 
 app = FastAPI(title="Router API v2", version="2.0.0")
+
+
+class ClaudeResponseSendTraceMiddleware:
+    """Trace Anthropic response frames at the final ASGI send boundary.
+
+    This confirms which SSE event frames were handed to the ASGI server after
+    route/session processing. Payload content is never logged.
+    """
+
+    def __init__(self, app):
+        self.app = app
+
+    async def __call__(self, scope, receive, send):
+        if scope.get("type") != "http" or scope.get("path") not in ("/v1/messages", "/messages"):
+            await self.app(scope, receive, send)
+            return
+
+        headers = {k.lower(): v for k, v in scope.get("headers", [])}
+        request_id = headers.get(b"x-request-id", b"").decode("latin-1")[:128]
+        response_status = None
+        frame_count = 0
+        total_bytes = 0
+        event_counts = {}
+
+        async def traced_send(message):
+            nonlocal request_id, response_status, frame_count, total_bytes
+            msg_type = message.get("type")
+            if msg_type == "http.response.start":
+                response_status = message.get("status")
+                response_headers = {k.lower(): v for k, v in message.get("headers", [])}
+                request_id = (
+                    response_headers.get(b"x-request-id", b"").decode("latin-1")[:128]
+                    or request_id or uuid.uuid4().hex
+                )
+                logger.info(
+                    "[Claude Trace] stage=asgi_response_start trace_id=%s status=%s",
+                    request_id, response_status,
+                )
+            elif msg_type == "http.response.body":
+                body = message.get("body", b"")
+                total_bytes += len(body)
+                if body:
+                    frame_count += 1
+                    event_name = "unknown"
+                    block_index = None
+                    block_type = None
+                    text_chars = 0
+                    try:
+                        decoded = body.decode("utf-8", errors="replace")
+                        event_line = next(
+                            (line for line in decoded.splitlines() if line.startswith("event: ")),
+                            None,
+                        )
+                        if event_line:
+                            event_name = event_line[7:].strip()
+                        data_line = next(
+                            (line for line in decoded.splitlines() if line.startswith("data: ")),
+                            None,
+                        )
+                        if data_line:
+                            payload = json.loads(data_line[6:])
+                            block_index = payload.get("index")
+                            delta = payload.get("delta") or {}
+                            block = payload.get("content_block") or {}
+                            block_type = delta.get("type") or block.get("type")
+                            if block_type == "text_delta":
+                                text_chars = len(str(delta.get("text") or ""))
+                            elif block_type == "text":
+                                text_chars = len(str(block.get("text") or ""))
+                    except (ValueError, TypeError):
+                        pass
+                    event_counts[event_name] = event_counts.get(event_name, 0) + 1
+                    logger.info(
+                        "[Claude Trace] stage=asgi_send trace_id=%s frame=%d event=%s "
+                        "block_index=%s block_type=%s text_chars=%d bytes=%d more_body=%s",
+                        request_id, frame_count, event_name, block_index, block_type,
+                        text_chars, len(body), message.get("more_body", False),
+                    )
+                if not message.get("more_body", False):
+                    logger.info(
+                        "[Claude Trace] stage=asgi_response_end trace_id=%s status=%s "
+                        "frames=%d bytes=%d event_counts=%s",
+                        request_id, response_status, frame_count, total_bytes, event_counts,
+                    )
+            await send(message)
+
+        try:
+            await self.app(scope, receive, traced_send)
+        except asyncio.CancelledError:
+            logger.warning(
+                "[Claude Trace] stage=asgi_response_cancelled trace_id=%s status=%s "
+                "frames=%d bytes=%d event_counts=%s",
+                request_id, response_status, frame_count, total_bytes, event_counts,
+            )
+            raise
+
+
+app.add_middleware(ClaudeResponseSendTraceMiddleware)
 
 
 @app.middleware("http")
