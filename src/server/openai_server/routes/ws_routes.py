@@ -1,4 +1,5 @@
 import json
+import asyncio
 from fastapi import WebSocket, WebSocketDisconnect
 
 from .app_init import app
@@ -30,9 +31,9 @@ async def dashboard_websocket(websocket: WebSocket):
 
     account_id = account.get("account_id")
     name = account.get("name")
-    acc = find_account_by_id(account_id) if account_id else None
+    acc = await asyncio.to_thread(find_account_by_id, account_id) if account_id else None
     if not acc and name:
-        candidate = find_account_by_name(name)
+        candidate = await asyncio.to_thread(find_account_by_name, name)
         if candidate and (not account_id or candidate.get("account_id") == account_id):
             acc = candidate
 
@@ -49,7 +50,7 @@ async def dashboard_websocket(websocket: WebSocket):
     account_id = acc.get("account_id") or account_id or "unknown"
 
     if account_id and "iat" in account:
-        cred = get_credential_db(account_id)
+        cred = await asyncio.to_thread(get_credential_db, account_id)
         if cred and cred.get("updated_at") and cred["updated_at"] > account["iat"]:
             await websocket.close(code=4001)
             return

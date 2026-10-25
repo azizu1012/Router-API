@@ -40,9 +40,12 @@ def _read_tail(filepath: Path, max_lines: int = 1000) -> List[str]:
     if not filepath.exists() or not filepath.is_file():
         return []
     try:
+        # Keep memory bounded even when a log file has grown to gigabytes.
+        # ``readlines()`` retained the entire file during every history/startup
+        # read and could compete with request bodies for RAM.
         with open(filepath, "r", encoding="utf-8", errors="replace") as f:
-            lines = f.readlines()
-            return [line.rstrip("\r\n") for line in lines[-max_lines:]]
+            tail = deque(f, maxlen=max(1, int(max_lines)))
+            return [line.rstrip("\r\n") for line in tail]
     except Exception as e:
         logger.warning("[LogWatcher] Failed to read tail of %s: %s", filepath, e)
         return []
