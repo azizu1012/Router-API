@@ -532,6 +532,20 @@ def _dedupe_openai_tool_history(messages: List[Dict[str, Any]]) -> List[Dict[str
     kept: List[Dict[str, Any]] = []
     for msg in messages:
         role = msg.get("role")
+        # Claude Code can resend the same completed assistant turn when it
+        # retries a request after a transport/provider error. Tool IDs are
+        # handled below, but a plain text turn has no ID to deduplicate on.
+        # Drop only an adjacent, byte-for-byte identical assistant message;
+        # identical text separated by another turn remains valid history.
+        if role == "assistant" and kept and kept[-1].get("role") == "assistant":
+            current_text = msg.get("content")
+            previous_text = kept[-1].get("content")
+            if (isinstance(current_text, str) and current_text.strip()
+                    and current_text == previous_text
+                    and not msg.get("tool_calls")
+                    and not kept[-1].get("tool_calls")):
+                logger.warning("[Converter] dropped adjacent duplicate assistant turn")
+                continue
         if role == "tool":
             call_id = str(msg.get("tool_call_id") or "")
             if call_id in stale_ids or call_id in seen_results:

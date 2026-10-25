@@ -721,3 +721,37 @@ def test_server_tool_result_follows_its_assistant_tool_call():
     assert messages[1]["tool_call_id"] == "srvtoolu_1"
 
 
+def test_retried_plain_assistant_turn_is_not_forwarded_twice():
+    """A client retry must not send the same RAG answer into the next prompt twice."""
+    from src.logical_HQ_translator.messages.converter import _convert_messages
+
+    repeated_answer = "Phân tích hệ thống RAG và đề xuất AnythingLLM."
+    messages, _ = _convert_messages({
+        "messages": [
+            {"role": "user", "content": "So sánh hệ thống RAG."},
+            {"role": "assistant", "content": [{"type": "text", "text": repeated_answer}]},
+            {"role": "assistant", "content": [{"type": "text", "text": repeated_answer}]},
+            {"role": "user", "content": "Tiếp tục."},
+        ],
+    })
+
+    assert [m["role"] for m in messages] == ["user", "assistant", "user"]
+    assert messages[1]["content"] == repeated_answer
+
+
+def test_same_assistant_text_with_intervening_turn_is_preserved():
+    """Only adjacent retry duplicates are removed, not legitimate repeated answers."""
+    from src.logical_HQ_translator.messages.converter import _convert_messages
+
+    repeated_answer = "Cùng một nội dung."
+    messages, _ = _convert_messages({
+        "messages": [
+            {"role": "assistant", "content": [{"type": "text", "text": repeated_answer}]},
+            {"role": "user", "content": "Lặp lại giúp tôi."},
+            {"role": "assistant", "content": [{"type": "text", "text": repeated_answer}]},
+        ],
+    })
+
+    assert [m["role"] for m in messages] == ["assistant", "user", "assistant"]
+
+
