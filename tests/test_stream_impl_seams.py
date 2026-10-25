@@ -250,6 +250,36 @@ class TestTextBlock:
         assert text_of(events) == "Compacted summary from reasoning."
         assert names(events)[-2:] == ["message_delta", "message_stop"]
 
+    def test_compaction_emits_one_canonical_assistant_text_block(self):
+        body = {
+            "model": "gemini-flash",
+            "messages": [{
+                "role": "user",
+                "content": "Write a summary of this conversation.",
+            }],
+        }
+        events, _ = Harness(
+            [
+                Chunk(Delta(content="summary part one ")),
+                Chunk(Delta(content="summary part two"), finish_reason="stop"),
+            ],
+            body=body,
+        ).run()
+
+        names_list = names(events)
+        text_starts = [
+            data for event, data in events
+            if event == "content_block_start"
+            and data["content_block"].get("type") == "text"
+        ]
+        text_stops = [data for event, data in events if event == "content_block_stop"]
+        text_deltas = deltas_of(events, "text_delta")
+        assert len(text_starts) == 1, events
+        assert len(text_stops) == 1, events
+        assert len(text_deltas) == 1, events
+        assert text_deltas[0]["text"] == "summary part one summary part two"
+        assert names_list[-2:] == ["message_delta", "message_stop"]
+
     def test_custom_endpoint_empty_stream_is_not_reported_as_end_turn(self):
         """A clean upstream EOF must not make Claude Code think the task finished."""
         from src.api.claude_proxy import claude_proxy

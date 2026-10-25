@@ -712,6 +712,19 @@ class TestTheAnthropicForm:
             assert "tool_choice" not in body
             assert body["_router_compaction_request"] is True
 
+    def test_compaction_detector_handles_claude_compact_prompt_with_trailing_messages(self):
+        from src.core.runtime.compaction_detect import is_compaction_request
+
+        messages = [
+            {
+                "role": "user",
+                "content": "Your task is to create a detailed summary of the conversation. "
+                           "Do NOT call any tools. Your entire response must be plain text.",
+            },
+            {"role": "assistant", "content": [{"type": "thinking", "thinking": "draft"}]},
+        ]
+        assert is_compaction_request(messages)
+
     def test_anthropic_thinking_block_survives_nonstream_bridge(self):
         from src.core.providers.anthropic_wire.response import anthropic_to_openai_message
 

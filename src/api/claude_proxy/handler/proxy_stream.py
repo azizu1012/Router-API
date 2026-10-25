@@ -164,6 +164,12 @@ class ClaudeProxyStreamMixin:
         # slow conversion/lookup otherwise leaves Claude showing only its
         # generic working state with no progress event.
         msg_id = "msg_" + uuid.uuid4().hex[:24]
+        from src.core.runtime.request_context import get_request_id
+        trace_id = get_request_id() or msg_id
+        logger.info(
+            "[Claude Trace] stage=proxy_start trace_id=%s message_id=%s stream=%s model=%s",
+            trace_id, msg_id, bool(body.get("stream")), body.get("model", ""),
+        )
         yield _sse("message_start", {
             "type": "message_start",
             "message": {
@@ -207,8 +213,10 @@ class ClaudeProxyStreamMixin:
             or is_compaction_request(openai_messages)
         )
         logger.info(
-            "[Claude Stream] compaction_detected=%s explicit_marker=%s",
-            is_compaction, bool(body.get("_router_compaction_request")),
+            "[Claude Trace] stage=compaction_classification trace_id=%s detected=%s explicit_marker=%s "
+            "messages=%d tools_after_strip=%d",
+            trace_id, is_compaction, bool(body.get("_router_compaction_request")),
+            len(openai_messages), len(openai_tools),
         )
 
         model_alias = router.resolve_model_alias(body.get("model", "")) or config.DEFAULT_MODEL_ALIAS
@@ -247,6 +255,85 @@ class ClaudeProxyStreamMixin:
             # max_tokens, which is the signal a caller needs in order to ask
             # again at a higher ceiling. The caller retries; the gateway does not
             # double-stream on its behalf.
+            if is_compaction:
+                # Claude Code's reactive compactor parses the completed stream
+                # into an assistant message and rejects it if it cannot find
+                # one. Buffer compact summaries and emit one plain Anthropic
+                # text block only after the provider turn completes, avoiding
+                # provider-specific thinking/multi-block framing in this path.
+                compact_text = []
+                stop_reason = "end_turn"
+                stop_sequence = None
+                compact_usage = compute_usage(body, estimate_input_tokens(body), 0)
+                async for chunk in self._stream_message_impl(
+                    body=body,
+                    openai_messages=openai_messages,
+                    openai_tools=openai_tools,
+                    model_alias=model_alias,
+                    temperature=temperature,
+                    max_tokens=max_tokens,
+                    thinking_config=thinking_config,
+                    thinking_params=thinking_params,
+                    account=account,
+                    auth_key_prefix=auth_key_prefix,
+                    msg_id=msg_id,
+                    recursion_depth=0,
+                    start_block_index=0,
+                    sampling_params=sampling_params,
+                    is_compaction=True,
+                    emit_message_start=False,
+                ):
+                    try:
+                        payload = json.loads(chunk.decode("utf-8").split("data: ", 1)[1])
+                    except (UnicodeDecodeError, IndexError, json.JSONDecodeError):
+                        yield chunk
+                        continue
+                    event_type = payload.get("type")
+                    if event_type == "ping":
+                        yield chunk
+                        continue
+                    if event_type == "content_block_delta":
+                        delta = payload.get("delta") or {}
+                        if delta.get("type") == "text_delta":
+                            compact_text.append(str(delta.get("text") or ""))
+                    elif event_type == "message_delta":
+                        delta = payload.get("delta") or {}
+                        stop_reason = delta.get("stop_reason") or stop_reason
+                        stop_sequence = delta.get("stop_sequence")
+                        compact_usage = payload.get("usage") or compact_usage
+                    elif event_type == "error":
+                        yield chunk
+                        yield _sse("message_stop", {"type": "message_stop"})
+                        return
+
+                summary = "".join(compact_text).strip()
+                if not summary:
+                    raise RuntimeError("compaction_empty_summary")
+                yield _sse("content_block_start", {
+                    "type": "content_block_start", "index": 0,
+                    "content_block": {"type": "text", "text": ""},
+                })
+                yield _sse("content_block_delta", {
+                    "type": "content_block_delta", "index": 0,
+                    "delta": {"type": "text_delta", "text": summary},
+                })
+                yield _sse("content_block_stop", {
+                    "type": "content_block_stop", "index": 0,
+                })
+                yield _sse("message_delta", {
+                    "type": "message_delta",
+                    "delta": {"stop_reason": stop_reason, "stop_sequence": stop_sequence},
+                    "usage": compact_usage,
+                })
+                yield _sse("message_stop", {"type": "message_stop"})
+                logger.info(
+                    "[Claude Trace] stage=canonical_compaction_emitted trace_id=%s "
+                    "message_id=%s text_chars=%d stop_reason=%s usage_output=%s",
+                    trace_id, msg_id, len(summary), stop_reason,
+                    compact_usage.get("output_tokens"),
+                )
+                return
+
             async for chunk in self._stream_message_impl(
                 body=body,
                 openai_messages=openai_messages,
@@ -536,10 +623,13 @@ class ClaudeProxyStreamMixin:
                     provider_finish_seen = True
                 content = getattr(delta, "content", None)
                 reasoning = getattr(delta, "reasoning_content", None) or getattr(delta, "thought", None)
+                if reasoning:
+                    # Keep reasoning available for the end-of-stream fallback.
+                    # Some providers return a reasoning-only completion; without
+                    # a text block Claude Code's compact summarizer treats the
+                    # successful response as having no assistant message.
+                    accumulated_thought.append(reasoning)
                 if is_compaction and not content and reasoning:
-                    # Compaction clients consume a summary as assistant text.
-                    # Providers that return it only in reasoning otherwise look
-                    # successful upstream but empty to Claude Code.
                     content, reasoning = reasoning, None
                 tool_calls = getattr(delta, "tool_calls", None)
                 if tool_calls is None and hasattr(delta, "get"):
@@ -551,7 +641,6 @@ class ClaudeProxyStreamMixin:
                     accumulated_thought_signature.append(tsig)
 
                 if reasoning and include_thoughts:
-                    accumulated_thought.append(reasoning)
                     if not thinking_started:
                         thinking_started = True
                         thinking_index = start_block_index + 1 if text_started else start_block_index
@@ -1194,7 +1283,7 @@ class ClaudeProxyStreamMixin:
                 # then raises "no assistant message in summarization response".
                 # Materialize the accumulated reasoning as text before the
                 # terminal events so the response has a real assistant block.
-                if is_compaction and not "".join(accumulated_text).strip() and "".join(accumulated_thought).strip():
+                if not "".join(accumulated_text).strip() and "".join(accumulated_thought).strip():
                     summary_text = "".join(accumulated_thought).strip()
                     yield _sse("content_block_start", {
                         "type": "content_block_start",
@@ -1215,11 +1304,15 @@ class ClaudeProxyStreamMixin:
                     next_block_idx += 1
 
                 if is_compaction:
+                    emitted_text_chars = len("".join(accumulated_text))
                     logger.info(
-                        "[Claude Stream] compaction response content_chars=%d "
-                        "reasoning_chars=%d tool_calls=%d finish=%s",
-                        len("".join(accumulated_text)), len("".join(accumulated_thought)),
-                        len(tool_buffers), finish_reason,
+                        "[Claude Trace] stage=provider_response_complete trace_id=%s content_chars=%d "
+                        "reasoning_chars=%d tool_calls=%d finish=%s text_block_started=%s "
+                        "text_block_index=%s text_block_emitted_chars=%d",
+                        __import__("src.core.runtime.request_context", fromlist=["get_request_id"]).get_request_id(),
+                        emitted_text_chars, len("".join(accumulated_thought)),
+                        len(tool_buffers), finish_reason, text_started,
+                        text_index if text_started else None, output_chars,
                     )
                 if is_compaction and not "".join(accumulated_text).strip():
                     raise RuntimeError("compaction_empty_summary")

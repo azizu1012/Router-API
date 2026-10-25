@@ -1,6 +1,7 @@
 """Anthropic Messages and token-counting routes."""
 
 import json
+import hashlib
 import uuid
 
 from fastapi import Header, HTTPException, Request
@@ -9,6 +10,7 @@ from fastapi.responses import JSONResponse, StreamingResponse
 from src.core.config_n_logg import config
 from src.core.config_n_logg.logger import logger_api
 from src.core.runtime.request_session import request_sessions
+from src.core.runtime.request_context import get_request_id
 from src.api.claude_proxy import claude_proxy
 from src.api.claude_proxy.handler.anthropic_spec import estimate_input_tokens
 from src.server.openai_server.auth import (
@@ -52,7 +54,20 @@ async def anthropic_messages(
 
     akp = _auth_key_prefix(account)
     request_id = getattr(request.state, "request_id", "") or ("req_" + uuid.uuid4().hex[:24])
-    last_event = request.headers.get("last-event-id", "").rsplit(":", 1)[-1]
+    trace_id = get_request_id() or request_id
+    logger_api.info(
+        "[Claude Trace] stage=route_enter trace_id=%s request_id=%s path=%s stream=%s "
+        "model=%s messages=%d tools=%d content_length=%s last_event_id_present=%s",
+        trace_id, request_id, request.url.path, bool(body.get("stream")),
+        body.get("model", ""), len(body.get("messages") or []),
+        len(body.get("tools") or []), request.headers.get("content-length", ""),
+        bool(request.headers.get("last-event-id")),
+    )
+    last_event_header = request.headers.get("last-event-id", "").strip()
+    last_event = (
+        last_event_header.rsplit(":", 1)[-1]
+        if last_event_header.startswith(request_id + ":") else ""
+    )
     try:
         last_event_number = int(last_event) if last_event else 0
     except ValueError:
@@ -103,13 +118,39 @@ async def anthropic_messages(
 
         stream = body.get("stream", False)
         if stream:
+            # Clients may reuse x-request-id across separate model turns. Keep
+            # reconnect replay scoped to the exact request body so a new turn
+            # cannot attach to an unrelated in-flight producer.
+            request_fingerprint = hashlib.sha256(
+                json.dumps(body, sort_keys=True, separators=(",", ":"), ensure_ascii=False, default=str)
+                .encode("utf-8")
+            ).hexdigest()
+
             async def produce():
+                logger_api.info(
+                    "[Claude Trace] stage=producer_start trace_id=%s request_id=%s",
+                    trace_id, request_id,
+                )
                 async for frame in claude_proxy.stream_message(body, akp, account=account):
                     yield frame
+                logger_api.info(
+                    "[Claude Trace] stage=producer_complete trace_id=%s request_id=%s",
+                    trace_id, request_id,
+                )
 
-            session = await request_sessions.get_or_start(request_id, produce)
+            session, is_reconnect = await request_sessions.get_or_start(
+                request_id, produce, request_fingerprint=request_fingerprint,
+                resume_after=last_event_number if last_event else None,
+            )
+            logger_api.info(
+                "[Claude Trace] stage=session_selected trace_id=%s request_id=%s "
+                "reconnect=%s after=%d session_state=%s published_events=%d fingerprint=%s",
+                trace_id, request_id, is_reconnect,
+                last_event_number if is_reconnect else 0, session.state,
+                session.last_event_id, request_fingerprint[:12],
+            )
             return StreamingResponse(
-                session.stream(last_event_number),
+                session.stream(last_event_number if is_reconnect else 0),
                 media_type="text/event-stream",
                 headers=response_headers,
             )

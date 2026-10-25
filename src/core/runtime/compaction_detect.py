@@ -5,16 +5,32 @@ logger = logging.getLogger(__name__)
 
 
 def is_compaction_request(messages: List[Dict[str, Any]]) -> bool:
-    """Return whether the last user turn asks for a conversation summary."""
-    if not messages or messages[-1].get("role") != "user":
+    """Return whether the latest user turn asks for a conversation summary.
+
+    Claude Code can include trailing assistant metadata/thinking messages after
+    the compact instruction. Search backwards for the latest user turn instead
+    of requiring it to be the final list element.
+    """
+    if not messages:
         return False
-    content = messages[-1].get("content", "")
-    text = content if isinstance(content, str) else " ".join(
-        str(part.get("text", "")) for part in content
-        if isinstance(part, dict)
-    ) if isinstance(content, list) else str(content)
+    user_message = next(
+        (message for message in reversed(messages) if message.get("role") == "user"),
+        None,
+    )
+    if user_message is None:
+        return False
+    content = user_message.get("content", "")
+    if isinstance(content, str):
+        text = content
+    elif isinstance(content, list):
+        text = " ".join(
+            str(part.get("text") or part.get("thinking") or "")
+            for part in content if isinstance(part, dict)
+        )
+    else:
+        text = str(content or "")
     lowered = text.lower()
-    return (
+    matches = (
         "write a summary of this conversation" in lowered
         or ("write a summary" in lowered and "conversation" in lowered)
         or "compacting conversation" in lowered
@@ -28,6 +44,17 @@ def is_compaction_request(messages: List[Dict[str, Any]]) -> bool:
         or ("summar" in lowered and "conversation" in lowered)
         or ("summar" in lowered and "context" in lowered and "preserve" in lowered)
     )
+    if not matches and lowered:
+        # Claude Code's current compact prompt is a structured instruction with
+        # both a summary task and an explicit prohibition on tool use. This
+        # catches wording/version variants without classifying ordinary chat
+        # requests that merely mention summaries.
+        matches = (
+            "summary" in lowered
+            and ("conversation" in lowered or "messages" in lowered)
+            and ("do not call any tools" in lowered or "do not use any tools" in lowered)
+        )
+    return matches
 
 def strip_tools_for_compaction(body: Dict[str, Any], messages: List[Dict[str, Any]], tools: List[Dict[str, Any]], is_claude_or_opencode: bool = False) -> None:
     """

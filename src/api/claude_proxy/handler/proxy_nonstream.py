@@ -293,11 +293,11 @@ class ClaudeProxyNonstreamMixin:
                     or getattr(msg, "reasoning", None)
                     or getattr(msg, "thought", None)
                 ) if msg else None
-            if is_compaction and not text and thought:
-                # Some providers put their entire summary in the reasoning
-                # field. Claude Code's compaction endpoint expects summary text
-                # in the assistant content field; otherwise it reports an empty
-                # summarization despite a successful provider completion.
+            if not text and thought:
+                # Some providers return reasoning without a content field.
+                # Claude Code's compact summarizer only accepts assistant text
+                # blocks; a thinking-only completion is treated as no assistant
+                # response even when usage reports successful output.
                 text = thought
                 thought = None
             tsig = None
