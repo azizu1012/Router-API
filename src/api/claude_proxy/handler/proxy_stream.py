@@ -165,7 +165,7 @@ class ClaudeProxyStreamMixin:
         # generic working state with no progress event.
         msg_id = "msg_" + uuid.uuid4().hex[:24]
         from src.core.runtime.request_context import get_request_id
-        trace_id = get_request_id() or msg_id
+        trace_id = str(body.get("_router_trace_id") or get_request_id() or msg_id)
         logger.info(
             "[Claude Trace] stage=proxy_start trace_id=%s message_id=%s stream=%s model=%s",
             trace_id, msg_id, bool(body.get("stream")), body.get("model", ""),
@@ -390,6 +390,8 @@ class ClaudeProxyStreamMixin:
         synthesis_retry: bool = False,
         is_compaction: bool = False,
     ) -> AsyncIterator[bytes]:
+        from src.core.runtime.request_context import get_request_id
+        trace_id = get_request_id() or msg_id
         # Shared across the recursion so `max_uses` counts every search in the
         # turn, not one per level, and so the final usage reports the total.
         if search_limits is None:
@@ -500,11 +502,24 @@ class ClaudeProxyStreamMixin:
                             return
                         saw_payload = False
                         saw_finish = False
+                        frame_count = 0
                         async for chunk in stream_gen:
+                            frame_count += 1
+                            if frame_count == 1:
+                                logger.info(
+                                    "[Claude Trace] stage=provider_first_frame trace_id=%s "
+                                    "route=custom_passthrough model=%s",
+                                    trace_id, body.get("model", ""),
+                                )
                             saw_finish = saw_finish or _chunk_has_finish_reason(chunk)
                             if _chunk_has_payload(chunk):
                                 saw_payload = True
                             yield await _custom_frame(chunk)
+                        logger.info(
+                            "[Claude Trace] stage=provider_stream_end trace_id=%s "
+                            "route=custom_passthrough frames=%d payload=%s finish=%s",
+                            trace_id, frame_count, saw_payload, saw_finish,
+                        )
                         if not saw_payload:
                             raise RuntimeError("custom_endpoint_empty_response")
                         if not saw_finish:
@@ -541,6 +556,11 @@ class ClaudeProxyStreamMixin:
                     account=account,
                     thinking_params=thinking_params,
                     sampling_params=sampling_params,
+                )
+                logger.info(
+                    "[Claude Trace] stage=provider_start trace_id=%s "
+                    "route=pool_manager model=%s stream=true",
+                    trace_id, model_alias,
                 )
 
             # message_start is emitted before the pool is even pulled, so it is
@@ -1309,7 +1329,7 @@ class ClaudeProxyStreamMixin:
                         "[Claude Trace] stage=provider_response_complete trace_id=%s content_chars=%d "
                         "reasoning_chars=%d tool_calls=%d finish=%s text_block_started=%s "
                         "text_block_index=%s text_block_emitted_chars=%d",
-                        __import__("src.core.runtime.request_context", fromlist=["get_request_id"]).get_request_id(),
+                        trace_id,
                         emitted_text_chars, len("".join(accumulated_thought)),
                         len(tool_buffers), finish_reason, text_started,
                         text_index if text_started else None, output_chars,

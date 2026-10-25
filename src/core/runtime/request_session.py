@@ -47,6 +47,7 @@ class RequestSession:
     last_event_id: int = 0
     updated_at: float = field(default_factory=time.monotonic)
     events: list[tuple[int, bytes]] = field(default_factory=list)
+    event_counts: Dict[str, int] = field(default_factory=dict)
     subscribers: set[asyncio.Queue] = field(default_factory=set)
     task: Optional[asyncio.Task] = None
 
@@ -56,6 +57,7 @@ class RequestSession:
     async def publish(self, frame: bytes) -> None:
         event_name, block_index, block_type, text_chars = _frame_metadata(frame)
         self.last_event_id += 1
+        self.event_counts[event_name] = self.event_counts.get(event_name, 0) + 1
         frame = f"id: {self.request_id}:{self.last_event_id}\n".encode() + frame
         self.events.append((self.last_event_id, frame))
         del self.events[:-REPLAY_LIMIT]
@@ -143,15 +145,21 @@ class RequestSessionManager:
             async for frame in producer():
                 await session.publish(frame)
             session.state = "completed"
+            logger.info(
+                "[Claude Trace] stage=producer_end request_id=%s state=%s events=%d event_counts=%s",
+                session.request_id, session.state, session.last_event_id,
+                session.event_counts,
+            )
         except asyncio.CancelledError:
             session.state = "cancelled"
             raise
         except Exception:
             session.state = "failed"
             logger.exception(
-                "[RequestSession] producer failed request_id=%s published_events=%d",
+                "[Claude Trace] stage=producer_end request_id=%s state=failed published_events=%d event_counts=%s",
                 session.request_id,
                 session.last_event_id,
+                session.event_counts,
             )
         finally:
             session.updated_at = time.monotonic()

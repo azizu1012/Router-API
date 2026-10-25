@@ -1,5 +1,6 @@
 """Anthropic Messages and token-counting routes."""
 
+import asyncio
 import json
 import hashlib
 import uuid
@@ -9,7 +10,7 @@ from fastapi.responses import JSONResponse, StreamingResponse
 
 from src.core.config_n_logg import config
 from src.core.config_n_logg.logger import logger_api
-from src.core.runtime.request_session import request_sessions
+from src.core.runtime.request_session import request_sessions, _frame_metadata
 from src.core.runtime.request_context import get_request_id
 from src.api.claude_proxy import claude_proxy
 from src.api.claude_proxy.handler.anthropic_spec import estimate_input_tokens
@@ -149,8 +150,38 @@ async def anthropic_messages(
                 last_event_number if is_reconnect else 0, session.state,
                 session.last_event_id, request_fingerprint[:12],
             )
+
+            async def response_body():
+                yielded_frames = 0
+                yielded_bytes = 0
+                try:
+                    async for frame in session.stream(last_event_number if is_reconnect else 0):
+                        yielded_frames += 1
+                        yielded_bytes += len(frame)
+                        event_name, block_index, block_type, text_chars = _frame_metadata(frame)
+                        logger_api.info(
+                            "[Claude Trace] stage=response_body_yield trace_id=%s request_id=%s "
+                            "frame=%d event=%s block_index=%s block_type=%s text_chars=%d bytes=%d",
+                            trace_id, request_id, yielded_frames, event_name,
+                            block_index, block_type, text_chars, len(frame),
+                        )
+                        yield frame
+                except asyncio.CancelledError:
+                    logger_api.warning(
+                        "[Claude Trace] stage=response_body_cancelled trace_id=%s request_id=%s "
+                        "frames=%d bytes=%d",
+                        trace_id, request_id, yielded_frames, yielded_bytes,
+                    )
+                    raise
+                finally:
+                    logger_api.info(
+                        "[Claude Trace] stage=response_body_end trace_id=%s request_id=%s "
+                        "frames=%d bytes=%d session_state=%s published_events=%d event_counts=%s",
+                        trace_id, request_id, yielded_frames, yielded_bytes,
+                        session.state, session.last_event_id, session.event_counts,
+                    )
             return StreamingResponse(
-                session.stream(last_event_number if is_reconnect else 0),
+                response_body(),
                 media_type="text/event-stream",
                 headers=response_headers,
             )
