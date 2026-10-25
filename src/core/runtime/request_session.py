@@ -85,6 +85,15 @@ class RequestSessionManager:
             session.updated_at = time.monotonic()
             for queue in tuple(session.subscribers):
                 await queue.put(None)
+            # The manager only reuses sessions while their producer is still
+            # running. A completed session is never selected for reconnect by
+            # get_or_start(); retaining it here only pins its replay frames and
+            # task for the lifetime of the process. Active stream consumers
+            # hold their own reference, so removing the registry entry does not
+            # affect frames they are still draining.
+            async with self._lock:
+                if self._sessions.get(session.request_id) is session:
+                    self._sessions.pop(session.request_id, None)
 
 
 request_sessions = RequestSessionManager()
