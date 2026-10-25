@@ -10,7 +10,10 @@ from src.backend.keys.status import (
     query_key_transitions_db,
     query_endpoint_transitions_db,
     flush_pending_writes,
+    atomic_reserve_key,
+    atomic_release_key,
 )
+from src.backend._db import _LOCK, conn as _db_conn
 from src.core.providers import _custom_endpoint_manager as endpoint_manager
 
 
@@ -84,6 +87,26 @@ def test_key_transition_recording_and_query(temp_db):
     assert "Secret" not in row["key_suffix"]  # Secret is not leaked!
     assert row["reason"] == "rate_limit"
     assert row["metadata"].get("path") == "test_path"
+
+
+def test_key_status_hot_writes_are_coalesced_and_preserve_counters(temp_db):
+    key = f"coalesce-{uuid.uuid4().hex}"
+    for _ in range(100):
+        atomic_reserve_key(key)
+    for _ in range(99):
+        atomic_release_key(key)
+    flush_pending_writes()
+
+    with _LOCK:
+        db = _db_conn()
+        try:
+            row = db.execute(
+                "SELECT usage, active_requests FROM key_status WHERE key = ?", (key,)
+            ).fetchone()
+        finally:
+            db.close()
+    assert row["usage"] == 100
+    assert row["active_requests"] == 1
 
 
 def test_endpoint_transition_recording_and_query(temp_db):

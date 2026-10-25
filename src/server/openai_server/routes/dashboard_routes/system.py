@@ -12,7 +12,7 @@ from src.core.config_n_logg import config
 from src.core.limits import account_limiter
 from src.core.accounts import account_manager
 from src.backend.accounts.manager import find_account_by_name, list_accounts_db
-from src.backend.keys.status import get_key_status_db, db_load_active_penalties
+from src.backend.keys.status import db_load_active_penalties
 from src.backend.endpoints.manager import list_endpoints_db
 from src.core.observability.usage_logger import get_stats, get_top_keys
 from ..app_init import app
@@ -49,17 +49,19 @@ async def dashboard_accounts(request: Request):
 @app.get("/dashboard/keys")
 async def dashboard_keys(request: Request):
     payload = _require_admin(request)
-    raw = await asyncio.to_thread(get_key_status_db)
-    from src.core.limits.gemini.limiter import _key_usage, _usage_lock
+    from src.core.router import router
+    # The router's status is the live state used for key selection. Read a
+    # shallow snapshot under its short lock; dashboard traffic must not wait on
+    # SQLite's shared key-status lock or enqueue reads behind key writes.
+    with router._key_lock:
+        raw = {key: dict(status) for key, status in router._key_status.items()}
+    from src.core.limits.gemini.limiter import get_key_usage_snapshot
+    usage_snapshot = get_key_usage_snapshot()
     now = time.time()
     keys = []
     for k, v in raw.items():
         display_name = (k[:6] + "****" + k[-4:]) if len(k) > 10 else "****"
-        today_calls = 0
-        with _usage_lock:
-            usage_entry = _key_usage.get(k)
-            if usage_entry:
-                today_calls = usage_entry.get("today", 0)
+        today_calls = usage_snapshot.get(k, {}).get("today", 0)
         keys.append({
             "key": k,
             "display": display_name,

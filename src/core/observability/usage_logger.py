@@ -1,4 +1,5 @@
 import asyncio
+import time
 from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any, Dict, List
@@ -14,6 +15,9 @@ _DB = str(Path(__file__).resolve().parents[3] / "usage_logs.db")
 _queue: asyncio.Queue = asyncio.Queue()
 _flush_task: asyncio.Task | None = None
 _DB_BUSY_TIMEOUT_MS = 1000
+_recent_requests_cache: List[Dict[str, Any]] = []
+_recent_requests_cache_at = 0.0
+_recent_requests_cache_lock = asyncio.Lock()
 
 
 async def _configure_db(db: aiosqlite.Connection, *, writer: bool = False) -> None:
@@ -218,6 +222,21 @@ async def get_top_keys(days: int = 30, limit: int = 5) -> List[Dict[str, Any]]:
 
 
 async def get_recent_requests(limit: int = 20) -> List[Dict[str, Any]]:
+    global _recent_requests_cache, _recent_requests_cache_at
+    now = time.monotonic()
+    if now - _recent_requests_cache_at < 10.0:
+        return _recent_requests_cache[:max(0, limit)]
+    async with _recent_requests_cache_lock:
+        now = time.monotonic()
+        if now - _recent_requests_cache_at < 10.0:
+            return _recent_requests_cache[:max(0, limit)]
+        result = await _load_recent_requests(limit)
+        _recent_requests_cache = result
+        _recent_requests_cache_at = time.monotonic()
+        return result[:max(0, limit)]
+
+
+async def _load_recent_requests(limit: int) -> List[Dict[str, Any]]:
     try:
         async with aiosqlite.connect(_DB) as db:
             await _configure_db(db)

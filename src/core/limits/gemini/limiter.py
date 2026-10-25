@@ -401,6 +401,15 @@ def _save_key_usage() -> None:
     update_key_usage_batch_db(usage_copy)
 
 
+def get_key_usage_snapshot() -> Dict[str, Dict[str, Any]]:
+    """Return a shallow immutable-by-convention snapshot for dashboard reads."""
+    with _usage_lock:
+        return {
+            key: {"today": int(value.get("today", 0) or 0)}
+            for key, value in _key_usage.items()
+        }
+
+
 def record_key_usage(key: str, actual_model_id: Optional[str] = None, tokens_used: int = 0) -> None:
     """
     Records the usage of an API key for a specific model.
@@ -417,7 +426,7 @@ def record_key_usage(key: str, actual_model_id: Optional[str] = None, tokens_use
     if today != _usage_date:
         _load_key_usage()
 
-    should_save = False
+    usage_snapshot = None
     with _usage_lock:
         entry = _key_usage.setdefault(key, {"total": 0, "today": 0, "date": str(today), "per_model": {}})
         per_model = entry.setdefault("per_model", {})
@@ -431,11 +440,14 @@ def record_key_usage(key: str, actual_model_id: Optional[str] = None, tokens_use
             m_usage["today"] += 1
             m_usage["total"] += 1
 
-        if entry["today"] % 3 == 0:
-            should_save = True
+        # Persist the latest value periodically; the status writer coalesces
+        # snapshots by key, so request bursts cannot build an unbounded Future
+        # queue or duplicate whole-table payloads.
+        if entry["today"] % 10 == 0:
+            usage_snapshot = {key: dict(value) for key, value in _key_usage.items()}
 
-    if should_save:
-        _save_key_usage()
+    if usage_snapshot is not None:
+        update_key_usage_batch_db(usage_snapshot)
 
 
 def get_key_priority(key: str, actual_model_id: Optional[str] = None) -> int:
