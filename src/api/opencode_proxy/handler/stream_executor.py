@@ -232,6 +232,8 @@ async def execute_stream(
             delta = chunk.choices[0].delta if chunk.choices else None
             content = _get_content(delta)
             reasoning = _get_reasoning(delta)
+            if body.get("_router_compaction_request") and not content and reasoning:
+                content, reasoning = reasoning, ""
             fr = chunk.choices[0].finish_reason if chunk.choices else None
 
             if reasoning and include_thoughts:
@@ -378,6 +380,8 @@ async def execute_stream(
         # so spec-compliant clients don't crash with
         # "Response stream ended without a finish reason."
         logger.info("[OpenCode Stream] %s closed before the first chunk", model_alias)
+        if body.get("_router_compaction_request"):
+            raise RuntimeError("compaction_empty_summary")
         yield _openai_sse(model_name, finish_reason="stop", chunk_id=chunk_id)
         yield b"data: [DONE]\n\n"
         return
@@ -455,6 +459,12 @@ async def execute_stream(
                 stream_finish_reason = fr
                 stream_finished = True
 
+            if body.get("_router_compaction_request"):
+                if not content and reasoning:
+                    content, reasoning = reasoning, ""
+                if tool_calls:
+                    raise RuntimeError("compaction_provider_returned_tool_calls")
+
             if reasoning:
                 reasoning_received = True
                 async for c in _yield_reasoning(reasoning):
@@ -485,6 +495,9 @@ async def execute_stream(
         if flushed:
             async for c in _yield_text(flushed):
                 yield c
+
+        if body.get("_router_compaction_request") and not out_len:
+            raise RuntimeError("compaction_empty_summary")
 
         incomplete_tool_call = False
         for idx in sorted(tool_buffers):

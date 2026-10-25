@@ -58,6 +58,8 @@ async def build_response(
         text = _extract_text(choice)
         msg = choice.message
         thinking = getattr(msg, "reasoning_content", "") or getattr(msg, "thinking", "") or ""
+        if body.get("_router_compaction_request") and not text.strip() and thinking:
+            text, thinking = thinking, ""
         ts = getattr(msg, "thought_signature", None)
         raw_tcs = getattr(msg, "tool_calls", None) or []
         # Upstream reasons are not OpenAI reasons; an unmapped value here makes
@@ -91,6 +93,9 @@ async def build_response(
                     "arguments": args,
                 },
             })
+
+    if body.get("_router_compaction_request") and not text.strip():
+        raise RuntimeError("compaction_empty_summary")
 
     out_tokens = 0
     usage = getattr(resp, "usage", None)

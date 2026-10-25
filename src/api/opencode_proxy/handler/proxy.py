@@ -299,8 +299,6 @@ class OpenCodeProxy:
         from src.logical_HQ_translator.compression.rtk import compress_messages
         compress_messages(messages, enabled=True)
 
-        from src.core.runtime.compaction_detect import strip_tools_for_compaction
-        strip_tools_for_compaction(body, messages, tools, is_claude_or_opencode=is_opencode)
         # Same Tier-2 valve as the Claude path: shrink oldest tool output when
         # slightly over the per-key TPM budget. Oversized requests still fail
         # fast inside PoolManager's hard guard so the client compacts and retries.
@@ -309,6 +307,8 @@ class OpenCodeProxy:
         )
 
         messages, tools = self._inject_websearch_tool(body, messages, tools, account)
+        from src.core.runtime.compaction_detect import strip_tools_for_compaction
+        strip_tools_for_compaction(body, messages, tools, is_claude_or_opencode=is_opencode)
 
         thinking_config = _resolve_thinking_config(body, model_alias)
         thinking_params = {
@@ -384,13 +384,13 @@ class OpenCodeProxy:
         from src.logical_HQ_translator.compression.rtk import compress_messages
         compress_messages(messages, enabled=True)
 
-        from src.core.runtime.compaction_detect import strip_tools_for_compaction
-        strip_tools_for_compaction(body, messages, tools, is_claude_or_opencode=is_opencode)
         messages = trim_old_tool_results_softly(
             messages, max_output_tokens=int(body.get("max_tokens", 4096) or 4096)
         )
 
         messages, tools = self._inject_websearch_tool(body, messages, tools, account)
+        from src.core.runtime.compaction_detect import strip_tools_for_compaction
+        strip_tools_for_compaction(body, messages, tools, is_claude_or_opencode=is_opencode)
 
         async for chunk in execute_stream(
             body=body,

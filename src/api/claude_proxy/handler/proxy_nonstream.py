@@ -128,6 +128,8 @@ class ClaudeProxyNonstreamMixin:
             
         from src.core.runtime.compaction_detect import strip_tools_for_compaction
         strip_tools_for_compaction(body, openai_messages, openai_tools, is_claude_or_opencode=True)
+        from src.core.runtime.compaction_detect import is_compaction_request
+        is_compaction = is_compaction_request(openai_messages)
 
         model_alias = router.resolve_model_alias(body.get("model", "")) or config.DEFAULT_MODEL_ALIAS
         openai_messages = trim_old_tool_results_softly(
@@ -254,6 +256,13 @@ class ClaudeProxyNonstreamMixin:
             msg = getattr(choice, "message", None) if choice else None
             text = getattr(msg, "content", "") if msg else ""
             thought = getattr(msg, "reasoning_content", None) if msg else None
+            if is_compaction and not text and thought:
+                # Some providers put their entire summary in the reasoning
+                # field. Claude Code's compaction endpoint expects summary text
+                # in the assistant content field; otherwise it reports an empty
+                # summarization despite a successful provider completion.
+                text = thought
+                thought = None
             tsig = None
             if msg:
                 if isinstance(msg, dict):
@@ -261,6 +270,9 @@ class ClaudeProxyNonstreamMixin:
                 else:
                     tsig = getattr(msg, "thought_signature", None)
             finish_reason = getattr(choice, "finish_reason", "stop") if choice else "stop"
+
+            if is_compaction and not str(text or "").strip():
+                raise RuntimeError("compaction_empty_summary")
 
             # A provider may echo the internal hosted-search payload instead of
             # synthesizing an answer. Treat that as an empty synthesis so it

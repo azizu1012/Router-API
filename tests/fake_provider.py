@@ -62,7 +62,7 @@ __all__ = [
     "sse_frame", "text_chunk", "timeout_error", "tool_call_chunk",
     "json_scenario", "malformed_scenario", "rate_limit_scenario",
     "retry_then_success_scenario", "sse_scenario", "server_error_scenario",
-    "stream_scenario", "text_scenario", "timeout_scenario", "tool_call_scenario",
+    "stream_scenario", "text_scenario", "reasoning_scenario", "timeout_scenario", "tool_call_scenario",
     "drain", "run",
 ]
 
@@ -379,8 +379,9 @@ def malformed_error(body: Optional[str] = None) -> MalformedResponse:
 class TextTurn:
     """A non-stream turn whose assistant message is `text`."""
 
-    def __init__(self, text: str = DEFAULT_TEXT) -> None:
+    def __init__(self, text: str = DEFAULT_TEXT, *, reasoning_content: Optional[str] = None) -> None:
         self.text = text
+        self.reasoning_content = reasoning_content
 
 
 class JsonTurn:
@@ -716,7 +717,8 @@ class FakeProvider:
                                 prompt_tokens=self.input_tokens,
                                 completion_tokens=self.output_tokens,
                                 finish_reason=getattr(turn, "finish_reason", "stop"))
-        return FakeResponse(FakeMessage(getattr(turn, "text", "") or ""),
+        return FakeResponse(FakeMessage(getattr(turn, "text", "") or "",
+                                        reasoning_content=getattr(turn, "reasoning_content", None)),
                             prompt_tokens=self.input_tokens,
                             completion_tokens=self.output_tokens)
 
@@ -886,6 +888,11 @@ def _genai_chunk_dict(chunk: Any, output_tokens: int) -> Dict[str, Any]:
 def text_scenario(text: str = DEFAULT_TEXT, **kwargs: Any) -> FakeProvider:
     """One non-stream text answer. The baseline every other scenario extends."""
     return FakeProvider(TextTurn(text), **kwargs)
+
+
+def reasoning_scenario(text: str, **kwargs: Any) -> FakeProvider:
+    """One non-stream answer with text only in reasoning_content."""
+    return FakeProvider(TextTurn("", reasoning_content=text), **kwargs)
 
 
 def json_scenario(payload: Any, **kwargs: Any) -> FakeProvider:

@@ -200,6 +200,8 @@ class ClaudeProxyStreamMixin:
             
         from src.core.runtime.compaction_detect import strip_tools_for_compaction
         strip_tools_for_compaction(body, openai_messages, openai_tools, is_claude_or_opencode=True)
+        from src.core.runtime.compaction_detect import is_compaction_request
+        is_compaction = is_compaction_request(openai_messages)
 
         model_alias = router.resolve_model_alias(body.get("model", "")) or config.DEFAULT_MODEL_ALIAS
         openai_messages = trim_old_tool_results_softly(
@@ -252,6 +254,7 @@ class ClaudeProxyStreamMixin:
                 recursion_depth=0,
                 start_block_index=0,
                 sampling_params=sampling_params,
+                is_compaction=is_compaction,
                 emit_message_start=False,
             ):
                 yield chunk
@@ -290,6 +293,7 @@ class ClaudeProxyStreamMixin:
         search_limits: Optional[Dict[str, Any]] = None,
         server_tool_calls: Optional[List[Dict[str, Any]]] = None,
         synthesis_retry: bool = False,
+        is_compaction: bool = False,
     ) -> AsyncIterator[bytes]:
         # Shared across the recursion so `max_uses` counts every search in the
         # turn, not one per level, and so the final usage reports the total.
@@ -524,6 +528,11 @@ class ClaudeProxyStreamMixin:
                     provider_finish_seen = True
                 content = getattr(delta, "content", None)
                 reasoning = getattr(delta, "reasoning_content", None) or getattr(delta, "thought", None)
+                if is_compaction and not content and reasoning:
+                    # Compaction clients consume a summary as assistant text.
+                    # Providers that return it only in reasoning otherwise look
+                    # successful upstream but empty to Claude Code.
+                    content, reasoning = reasoning, None
                 tool_calls = getattr(delta, "tool_calls", None)
                 if tool_calls is None and hasattr(delta, "get"):
                     tool_calls = delta.get("tool_calls")
@@ -953,6 +962,7 @@ class ClaudeProxyStreamMixin:
                     emit_message_start=False,
                     search_limits=search_limits,
                     server_tool_calls=server_tool_calls,
+                    is_compaction=is_compaction,
                 )
                 async for chunk in iter_with_keepalive(recursive_stream, KEEPALIVE_INTERVAL):
                     if chunk is _KEEPALIVE:
@@ -1132,6 +1142,7 @@ class ClaudeProxyStreamMixin:
                             search_limits=search_limits,
                             server_tool_calls=server_tool_calls,
                             synthesis_retry=True,
+                            is_compaction=is_compaction,
                         )
                         async for chunk in iter_with_keepalive(retry_stream, KEEPALIVE_INTERVAL):
                             if chunk is _KEEPALIVE:
@@ -1167,6 +1178,9 @@ class ClaudeProxyStreamMixin:
                 # failure, not a valid assistant response.
                 if custom_ep and not provider_finish_seen:
                     raise RuntimeError("custom_endpoint_stream_ended_without_finish_reason")
+
+                if is_compaction and not "".join(accumulated_text).strip():
+                    raise RuntimeError("compaction_empty_summary")
 
                 output_tokens = max(provider_output_tokens,
                                     max(1, output_chars // 4) + len(tool_buffers) * 50)

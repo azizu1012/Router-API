@@ -597,6 +597,33 @@ class TestTheAnthropicForm:
             {"type": "text", "text": "Paris is the capital of France."}]
         assert message["stop_reason"] == "end_turn"
 
+    def test_compaction_summary_in_reasoning_is_returned_as_text(self, monkeypatch):
+        fp.reasoning_scenario("Summary of the conversation.").install(monkeypatch)
+        from src.api.claude_proxy import claude_proxy
+
+        body = {
+            "model": "gemini-flash",
+            "messages": [{"role": "user", "content": "Write a summary of this conversation."}],
+        }
+        message = run(claude_proxy.create_message(body))
+        assert message["content"] == [{"type": "text", "text": "Summary of the conversation."}]
+
+    def test_compaction_variants_strip_tools(self):
+        from src.core.runtime.compaction_detect import is_compaction_request, strip_tools_for_compaction
+        for prompt in (
+            "Summarize this conversation for the next turn.",
+            "Conversation compaction: preserve decisions and facts.",
+            "Compact the conversation now.",
+        ):
+            messages = [{"role": "user", "content": prompt}]
+            assert is_compaction_request(messages)
+            body = {"tool_choice": "auto"}
+            tools = [{"type": "function", "function": {"name": "Write"}}]
+            strip_tools_for_compaction(body, messages, tools, is_claude_or_opencode=True)
+            assert tools == []
+            assert "tool_choice" not in body
+            assert body["_router_compaction_request"] is True
+
     def test_the_body_is_the_anthropic_dialect(self, monkeypatch):
         fp.text_scenario("Paris.").install(monkeypatch)
 
