@@ -15,6 +15,12 @@ def anthropic_to_openai_message(data: Dict[str, Any]) -> Dict[str, Any]:
         btype = block.get("type")
         if btype == "text":
             text_parts.append(str(block.get("text") or ""))
+        elif btype == "thinking":
+            # Compaction summaries from Anthropic-compatible endpoints can be
+            # returned as thinking-only. Preserve it as assistant text in the
+            # OpenAI bridge; the Claude-facing adapter decides when to expose
+            # it as summary text.
+            text_parts.append(str(block.get("thinking") or ""))
         elif btype == "tool_use":
             tool_calls.append({
                 "id": block.get("id") or "",

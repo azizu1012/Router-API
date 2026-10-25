@@ -201,7 +201,15 @@ class ClaudeProxyStreamMixin:
         from src.core.runtime.compaction_detect import strip_tools_for_compaction
         strip_tools_for_compaction(body, openai_messages, openai_tools, is_claude_or_opencode=True)
         from src.core.runtime.compaction_detect import is_compaction_request
-        is_compaction = is_compaction_request(openai_messages)
+        is_compaction = (
+            bool(body.get("_router_compaction_request"))
+            or is_compaction_request(body.get("messages") or [])
+            or is_compaction_request(openai_messages)
+        )
+        logger.info(
+            "[Claude Stream] compaction_detected=%s explicit_marker=%s",
+            is_compaction, bool(body.get("_router_compaction_request")),
+        )
 
         model_alias = router.resolve_model_alias(body.get("model", "")) or config.DEFAULT_MODEL_ALIAS
         openai_messages = trim_old_tool_results_softly(
@@ -1179,6 +1187,40 @@ class ClaudeProxyStreamMixin:
                 if custom_ep and not provider_finish_seen:
                     raise RuntimeError("custom_endpoint_stream_ended_without_finish_reason")
 
+                # Claude Code's reactive compact accepts only an assistant
+                # text block. Some providers stream the whole summary as
+                # thinking/reasoning and never produce content deltas; usage
+                # still reports thousands of output tokens, but Claude Code
+                # then raises "no assistant message in summarization response".
+                # Materialize the accumulated reasoning as text before the
+                # terminal events so the response has a real assistant block.
+                if is_compaction and not "".join(accumulated_text).strip() and "".join(accumulated_thought).strip():
+                    summary_text = "".join(accumulated_thought).strip()
+                    yield _sse("content_block_start", {
+                        "type": "content_block_start",
+                        "index": next_block_idx,
+                        "content_block": {"type": "text", "text": ""},
+                    })
+                    yield _sse("content_block_delta", {
+                        "type": "content_block_delta",
+                        "index": next_block_idx,
+                        "delta": {"type": "text_delta", "text": summary_text},
+                    })
+                    yield _sse("content_block_stop", {
+                        "type": "content_block_stop",
+                        "index": next_block_idx,
+                    })
+                    accumulated_text.append(summary_text)
+                    text_started = True
+                    next_block_idx += 1
+
+                if is_compaction:
+                    logger.info(
+                        "[Claude Stream] compaction response content_chars=%d "
+                        "reasoning_chars=%d tool_calls=%d finish=%s",
+                        len("".join(accumulated_text)), len("".join(accumulated_thought)),
+                        len(tool_buffers), finish_reason,
+                    )
                 if is_compaction and not "".join(accumulated_text).strip():
                     raise RuntimeError("compaction_empty_summary")
 

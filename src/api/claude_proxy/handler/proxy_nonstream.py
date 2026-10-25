@@ -72,6 +72,21 @@ def _tool_call_was_cut_off(resp: Any) -> bool:
     return False
 
 
+def _assistant_text(value: Any) -> str:
+    """Normalize OpenAI/Anthropic text content to Claude's string field."""
+    if isinstance(value, str):
+        return value
+    if isinstance(value, list):
+        parts = []
+        for block in value:
+            if isinstance(block, dict):
+                text = block.get("text")
+                if text:
+                    parts.append(str(text))
+        return "".join(parts)
+    return str(value or "")
+
+
 class ClaudeProxyNonstreamMixin:
     """
     `ClaudeProxyNonstreamMixin` cung cấp logic để xử lý các yêu cầu hoàn thành chat không streaming
@@ -128,8 +143,18 @@ class ClaudeProxyNonstreamMixin:
             
         from src.core.runtime.compaction_detect import strip_tools_for_compaction
         strip_tools_for_compaction(body, openai_messages, openai_tools, is_claude_or_opencode=True)
+        # Reuse the detector's explicit marker as well as prompt detection. The
+        # marker is set before provider conversion and survives even if a
+        # converter changes the final user message representation.
         from src.core.runtime.compaction_detect import is_compaction_request
-        is_compaction = is_compaction_request(openai_messages)
+        # Detect before conversion too: Claude Code compaction turns can end in
+        # blocks that the OpenAI converter intentionally omits (for example
+        # thinking-only assistant blocks), hiding the original summary prompt.
+        is_compaction = (
+            bool(body.get("_router_compaction_request"))
+            or is_compaction_request(body.get("messages") or [])
+            or is_compaction_request(openai_messages)
+        )
 
         model_alias = router.resolve_model_alias(body.get("model", "")) or config.DEFAULT_MODEL_ALIAS
         openai_messages = trim_old_tool_results_softly(
@@ -255,11 +280,19 @@ class ClaudeProxyNonstreamMixin:
             choice = resp.choices[0] if getattr(resp, "choices", None) else None
             msg = getattr(choice, "message", None) if choice else None
             if isinstance(msg, dict):
-                text = msg.get("content", "") or ""
-                thought = msg.get("reasoning_content")
+                text = _assistant_text(msg.get("content", ""))
+                thought = (
+                    msg.get("reasoning_content")
+                    or msg.get("reasoning")
+                    or msg.get("thought")
+                )
             else:
-                text = getattr(msg, "content", "") if msg else ""
-                thought = getattr(msg, "reasoning_content", None) if msg else None
+                text = _assistant_text(getattr(msg, "content", "") if msg else "")
+                thought = (
+                    getattr(msg, "reasoning_content", None)
+                    or getattr(msg, "reasoning", None)
+                    or getattr(msg, "thought", None)
+                ) if msg else None
             if is_compaction and not text and thought:
                 # Some providers put their entire summary in the reasoning
                 # field. Claude Code's compaction endpoint expects summary text
@@ -274,6 +307,16 @@ class ClaudeProxyNonstreamMixin:
                 else:
                     tsig = getattr(msg, "thought_signature", None)
             finish_reason = getattr(choice, "finish_reason", "stop") if choice else "stop"
+
+            if is_compaction:
+                logger.info(
+                    "[Claude NonStream] compaction response shape=%s content_chars=%d "
+                    "reasoning_chars=%d tool_calls=%d finish=%s",
+                    type(msg).__name__ if msg is not None else "none",
+                    len(text or ""), len(thought or ""),
+                    len((msg.get("tool_calls") if isinstance(msg, dict) else getattr(msg, "tool_calls", None)) or []),
+                    finish_reason,
+                )
 
             if is_compaction and not str(text or "").strip():
                 raise RuntimeError("compaction_empty_summary")

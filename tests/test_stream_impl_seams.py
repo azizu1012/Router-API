@@ -228,6 +228,28 @@ class TestTextBlock:
         events, _ = Harness([Chunk(Delta(content="hi"), finish_reason="stop")]).run()
         assert names(events)[-1] == "message_stop", names(events)
 
+    def test_compaction_reasoning_only_stream_emits_assistant_text_block(self):
+        body = {
+            "model": "gemini-flash",
+            "messages": [{
+                "role": "user",
+                "content": "Write a summary of this conversation.",
+            }],
+        }
+        events, _ = Harness(
+            [Chunk(Delta(reasoning="Compacted summary from reasoning."), finish_reason="stop")],
+            body=body,
+        ).run()
+
+        text_starts = [
+            data for event, data in events
+            if event == "content_block_start"
+            and data["content_block"].get("type") == "text"
+        ]
+        assert text_starts, events
+        assert text_of(events) == "Compacted summary from reasoning."
+        assert names(events)[-2:] == ["message_delta", "message_stop"]
+
     def test_custom_endpoint_empty_stream_is_not_reported_as_end_turn(self):
         """A clean upstream EOF must not make Claude Code think the task finished."""
         from src.api.claude_proxy import claude_proxy

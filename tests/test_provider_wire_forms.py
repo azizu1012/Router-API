@@ -640,6 +640,62 @@ class TestTheAnthropicForm:
         message = run(claude_proxy.create_message(body))
         assert message["content"] == [{"type": "text", "text": "Summary from reasoning."}]
 
+    def test_compaction_summary_in_anthropic_text_block_is_returned_as_text(self, monkeypatch):
+        from types import SimpleNamespace
+
+        from src.api.claude_proxy import claude_proxy
+
+        async def call_nonstream(**kwargs):
+            return {
+                "response": SimpleNamespace(
+                    choices=[SimpleNamespace(
+                        message={
+                            "role": "assistant",
+                            "content": [{"type": "text", "text": "Compacted summary block."}],
+                            "tool_calls": [],
+                        },
+                        finish_reason="stop",
+                    )],
+                    usage={"completion_tokens": 8},
+                ),
+                "api_key": "fake",
+                "model_id": "gemini-flash",
+            }
+
+        monkeypatch.setattr("src.api.claude_proxy.handler.proxy_nonstream.pool_manager.call_nonstream", call_nonstream)
+        body = {
+            "model": "gemini-flash",
+            "messages": [{"role": "user", "content": "Write a summary of this conversation."}],
+        }
+        message = run(claude_proxy.create_message(body))
+        assert message["content"] == [{"type": "text", "text": "Compacted summary block."}]
+
+    def test_compaction_summary_in_reasoning_alias_is_returned_as_text(self, monkeypatch):
+        from types import SimpleNamespace
+
+        from src.api.claude_proxy import claude_proxy
+
+        async def call_nonstream(**kwargs):
+            return {
+                "response": SimpleNamespace(
+                    choices=[SimpleNamespace(
+                        message=SimpleNamespace(content="", reasoning="Compacted via reasoning alias."),
+                        finish_reason="stop",
+                    )],
+                    usage={"completion_tokens": 8},
+                ),
+                "api_key": "fake",
+                "model_id": "gemini-flash",
+            }
+
+        monkeypatch.setattr("src.api.claude_proxy.handler.proxy_nonstream.pool_manager.call_nonstream", call_nonstream)
+        body = {
+            "model": "gemini-flash",
+            "messages": [{"role": "user", "content": "Write a summary of this conversation."}],
+        }
+        message = run(claude_proxy.create_message(body))
+        assert message["content"] == [{"type": "text", "text": "Compacted via reasoning alias."}]
+
     def test_compaction_variants_strip_tools(self):
         from src.core.runtime.compaction_detect import is_compaction_request, strip_tools_for_compaction
         for prompt in (
@@ -655,6 +711,17 @@ class TestTheAnthropicForm:
             assert tools == []
             assert "tool_choice" not in body
             assert body["_router_compaction_request"] is True
+
+    def test_anthropic_thinking_block_survives_nonstream_bridge(self):
+        from src.core.providers.anthropic_wire.response import anthropic_to_openai_message
+
+        converted = anthropic_to_openai_message({
+            "id": "msg_compact",
+            "model": "gemini-flash",
+            "stop_reason": "end_turn",
+            "content": [{"type": "thinking", "thinking": "Compacted summary."}],
+        })
+        assert converted["choices"][0]["message"]["content"] == "Compacted summary."
 
     def test_the_body_is_the_anthropic_dialect(self, monkeypatch):
         fp.text_scenario("Paris.").install(monkeypatch)
