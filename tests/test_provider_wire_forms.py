@@ -608,6 +608,38 @@ class TestTheAnthropicForm:
         message = run(claude_proxy.create_message(body))
         assert message["content"] == [{"type": "text", "text": "Summary of the conversation."}]
 
+    def test_compaction_summary_in_dict_message_is_returned_as_text(self, monkeypatch):
+        """Provider adapters may return dict-shaped messages instead of SDK objects."""
+        from types import SimpleNamespace
+
+        from src.api.claude_proxy import claude_proxy
+
+        async def call_nonstream(**kwargs):
+            return {
+                "response": SimpleNamespace(
+                    choices=[SimpleNamespace(
+                        message={
+                            "role": "assistant",
+                            "content": "",
+                            "reasoning_content": "Summary from reasoning.",
+                            "tool_calls": [],
+                        },
+                        finish_reason="stop",
+                    )],
+                    usage={"completion_tokens": 10},
+                ),
+                "api_key": "fake",
+                "model_id": "gemini-flash",
+            }
+
+        monkeypatch.setattr("src.api.claude_proxy.handler.proxy_nonstream.pool_manager.call_nonstream", call_nonstream)
+        body = {
+            "model": "gemini-flash",
+            "messages": [{"role": "user", "content": "Write a summary of this conversation."}],
+        }
+        message = run(claude_proxy.create_message(body))
+        assert message["content"] == [{"type": "text", "text": "Summary from reasoning."}]
+
     def test_compaction_variants_strip_tools(self):
         from src.core.runtime.compaction_detect import is_compaction_request, strip_tools_for_compaction
         for prompt in (

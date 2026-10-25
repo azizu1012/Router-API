@@ -254,8 +254,12 @@ class ClaudeProxyNonstreamMixin:
 
             choice = resp.choices[0] if getattr(resp, "choices", None) else None
             msg = getattr(choice, "message", None) if choice else None
-            text = getattr(msg, "content", "") if msg else ""
-            thought = getattr(msg, "reasoning_content", None) if msg else None
+            if isinstance(msg, dict):
+                text = msg.get("content", "") or ""
+                thought = msg.get("reasoning_content")
+            else:
+                text = getattr(msg, "content", "") if msg else ""
+                thought = getattr(msg, "reasoning_content", None) if msg else None
             if is_compaction and not text and thought:
                 # Some providers put their entire summary in the reasoning
                 # field. Claude Code's compaction endpoint expects summary text
