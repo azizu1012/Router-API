@@ -790,17 +790,19 @@ class TestWebSearchInterception:
                        "input_schema": {"type": "object"}}],
         }
 
-    def _two_turn_stream(self, turn):
+    def _two_turn_stream(self, turn, first_turn=None):
         """Yields the search tool call on turn 1, plain text on turn 2."""
         calls = {"n": 0}
 
         async def fake_call_stream(**kwargs):
             calls["n"] += 1
             if calls["n"] == 1:
-                yield item(Chunk(Delta(tool_calls=[{
+                first = first_turn or [Chunk(Delta(tool_calls=[{
                     "index": 0, "id": "w1",
                     "function": {"name": "WebSearch", "arguments": '{"query": "rust"}'},
-                }])))
+                }]))]
+                for c in first:
+                    yield item(c)
             else:
                 for c in turn:
                     yield item(c)
@@ -865,6 +867,40 @@ class TestWebSearchInterception:
     def test_the_answer_after_the_search_reaches_the_client(self):
         events, _, _ = self._run_with_search("results")
         assert "the answer" in text_of(events), text_of(events)
+
+    def test_provisional_text_before_hosted_search_is_not_emitted_as_a_second_answer(self):
+        """Discard a complete-looking pre-tool answer; emit only post-search synthesis."""
+        from src.api.claude_proxy import claude_proxy
+
+        initial = [
+            Chunk(Delta(content="provisional answer ending with a follow-up?")),
+            Chunk(Delta(tool_calls=[{"index": 0, "id": "w1",
+                                    "function": {"name": "WebSearch",
+                                                 "arguments": '{"query": "rust"}'}}])),
+        ]
+        fake_call_stream, _ = self._two_turn_stream(
+            [Chunk(Delta(content="final answer after search"))], first_turn=initial
+        )
+
+        async def fake_search(*args, **kwargs):
+            return "search evidence", []
+
+        async def fake_log_usage(*args, **kwargs):
+            pass
+
+        with patch("src.api.claude_proxy.handler.proxy_stream.pool_manager.call_stream",
+                   fake_call_stream), \
+             patch("src.tools.search.orchestration.manager.execute_hybrid_search", fake_search), \
+             patch("src.api.claude_proxy.handler.proxy_stream.log_usage",
+                   fake_log_usage, create=True):
+            async def collect():
+                return [c async for c in claude_proxy.stream_message(self._tools_body())]
+
+            events = parse_sse(asyncio.run(collect()))
+
+        rendered = text_of(events)
+        assert "final answer after search" in rendered, rendered
+        assert "provisional answer" not in rendered, rendered
 
     def test_only_one_message_start_is_emitted_across_the_recursion(self):
         """The second pass runs at recursion_depth 1, which must not reopen the message."""

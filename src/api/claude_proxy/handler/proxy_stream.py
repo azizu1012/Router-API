@@ -323,6 +323,20 @@ class ClaudeProxyStreamMixin:
             # identified and discarded.
             deferred_search_text: List[str] = []
             buffering_search_echo = bool(server_tool_calls)
+            # A model may emit a complete-sounding answer before it emits the
+            # hosted-search tool call in the same provider turn. That text is
+            # provisional: forwarding it creates one visible answer block,
+            # followed by a second synthesis answer after the search. Hold text
+            # only when this request can invoke a router-hosted search, then
+            # commit it if the turn finishes without such a tool call.
+            has_hosted_search_tool = router_hosted_tools_enabled() and any(
+                (tool.get("function", {}).get("name") if tool.get("type") == "function"
+                 else tool.get("name") or tool.get("type"))
+                in ("web_search", "WebSearch", "web_fetch", "WebFetch",
+                    "web_search_20250305", "web_search_2025_08_26")
+                for tool in (openai_tools or [])
+            )
+            deferred_tool_text: List[str] = []
             extractor = XMLThinkingExtractor()
             normalizer = StreamingTextNormalizer()
             used_api_key = ""
@@ -577,6 +591,9 @@ class ClaudeProxyStreamMixin:
                                 })
                                 yield _sse("content_block_stop", {"type": "content_block_stop", "index": thinking_index})
                         elif ev_type == "text":
+                            if has_hosted_search_tool:
+                                deferred_tool_text.append(ev_val)
+                                continue
                             if buffering_search_echo:
                                 deferred_search_text.append(ev_val)
                                 joined_prefix = "".join(deferred_search_text).lstrip()
@@ -670,6 +687,9 @@ class ClaudeProxyStreamMixin:
                         })
                     output_chars += len(ev_val)
                 elif ev_type == "text":
+                    if has_hosted_search_tool:
+                        deferred_tool_text.append(ev_val)
+                        continue
                     if buffering_search_echo:
                         deferred_search_text.append(ev_val)
                         continue
@@ -771,6 +791,39 @@ class ClaudeProxyStreamMixin:
                     if name in ("web_search", "WebSearch", "web_fetch", "WebFetch"):
                         intercepted_tool_idx = idx
                         break
+
+            # Only publish the provider's text after we know this turn did not
+            # hand control to hosted search. If it did, discard the provisional
+            # pre-tool answer and let the synthesis turn produce the one answer
+            # the client should see.
+            if deferred_tool_text and intercepted_tool_idx is None:
+                for buffered_chunk in deferred_tool_text:
+                    accumulated_text.append(buffered_chunk)
+                    if not text_started:
+                        text_started = True
+                        text_index = start_block_index + 1 if thinking_started else start_block_index
+                        if thinking_started and not thinking_stopped:
+                            thinking_stopped = True
+                            yield _sse("content_block_delta", {
+                                "type": "content_block_delta",
+                                "index": thinking_index,
+                                "delta": {"type": "signature_delta", "signature": thinking_signature("".join(accumulated_thought))},
+                            })
+                            yield _sse("content_block_stop", {"type": "content_block_stop", "index": thinking_index})
+                        yield _sse("content_block_start", {
+                            "type": "content_block_start",
+                            "index": text_index,
+                            "content_block": {"type": "text", "text": ""},
+                        })
+                    norm_val = normalizer.feed(buffered_chunk)
+                    if norm_val:
+                        yield _sse("content_block_delta", {
+                            "type": "content_block_delta",
+                            "index": text_index,
+                            "delta": {"type": "text_delta", "text": norm_val},
+                        })
+                        output_chars += len(norm_val)
+                deferred_tool_text.clear()
 
             if intercepted_tool_idx is not None:
                 buf = tool_buffers[intercepted_tool_idx]
