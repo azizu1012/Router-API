@@ -329,7 +329,7 @@ class ClaudeProxyStreamMixin:
             # followed by a second synthesis answer after the search. Hold text
             # only when this request can invoke a router-hosted search, then
             # commit it if the turn finishes without such a tool call.
-            has_hosted_search_tool = router_hosted_tools_enabled() and any(
+            has_hosted_search_tool = not server_tool_calls and router_hosted_tools_enabled() and any(
                 (tool.get("function", {}).get("name") if tool.get("type") == "function"
                  else tool.get("name") or tool.get("type"))
                 in ("web_search", "WebSearch", "web_fetch", "WebFetch",

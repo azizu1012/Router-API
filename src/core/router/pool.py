@@ -34,6 +34,11 @@ class ModelPool:
         self.max_retry_seconds = max(1, int(pool_config.get("max_retry_seconds", 30)))
         self.acquire_poll_interval = max(0.01, float(pool_config.get("acquire_poll_interval", 0.05)))
         self.acquire_deadline = max(1, int(pool_config.get("acquire_deadline", 15)))
+        # Bound requests that can wait for this pool. Rejected requests do not
+        # retain their bodies, provider streams, or HTTP connections in a queue.
+        self.max_waiters = max(0, int(pool_config.get("max_waiters", 32)))
+        self._waiting_requests = 0
+        self._waiting_lock = asyncio.Lock()
         self._custom_members: Set[str] = custom_endpoint_members or set()
         self._gemini_members: Set[str] = {m for m in self.members if m not in self._custom_members}
         self._locks: Dict[str, asyncio.Lock] = {m: asyncio.Lock() for m in self.members}
@@ -112,4 +117,18 @@ class ModelPool:
         lock = self._locks.get(member)
         if lock is not None and lock.locked():
             lock.release()
+
+    async def admit_request(self) -> bool:
+        """Register bounded pool demand; return False when no waiter slot exists."""
+        async with self._waiting_lock:
+            if self._waiting_requests >= self.max_waiters:
+                return False
+            self._waiting_requests += 1
+            return True
+
+    async def release_request(self) -> None:
+        """Release a pool demand slot after request completion or cancellation."""
+        async with self._waiting_lock:
+            if self._waiting_requests:
+                self._waiting_requests -= 1
 

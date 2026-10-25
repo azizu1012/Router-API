@@ -4,7 +4,7 @@ import os
 import time
 import random
 import uuid
-from typing import Any, Dict, Optional
+from typing import Any, Dict, Optional, Set
 
 from src.core.config.api_config import (
     AVAILABLE_MODELS,
@@ -320,7 +320,8 @@ class KeyResolverMixin:
         account: Optional[Dict[str, Any]] = None,
         estimated_tokens: int = 0,
         retry_attempt: int = 0,
-        exclude_models: Optional[list] = None
+        exclude_models: Optional[list] = None,
+        exclude_keys: Optional[Set[str]] = None,
     ) -> Optional[Dict[str, Any]]:
         """
         Reserves an API key for a given model and request, applying all eligibility checks.
@@ -366,6 +367,7 @@ class KeyResolverMixin:
             # --- BƯỚC 2: PHÂN QUYỀN TRUY CẬP TIER ---
             allowed_tiers = self._get_allowed_tiers(account)
             concrete_model_id = model_id or self.get_model_id(model_alias)
+            excluded_keys = exclude_keys or set()
 
             pool_cfg = MODEL_POOLS.get(model_alias) if not model_id else None
             if pool_cfg:
@@ -386,6 +388,8 @@ class KeyResolverMixin:
                         now = time.time()
                         candidates = []
                         for k, s in self._key_status.items():
+                            if k in excluded_keys:
+                                continue
                             if self._is_key_eligible(
                                 key=k,
                                 status=s,

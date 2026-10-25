@@ -109,6 +109,18 @@ class TestInit:
 
 class TestAcquireRelease:
     @pytest.mark.anyio
+    async def test_request_admission_is_bounded_and_released(self):
+        pool = ModelPool(
+            {"members": ["only"], "swap_failures": 1, "max_retry_seconds": 1, "max_waiters": 1}
+        )
+        assert await pool.admit_request() is True
+        assert await pool.admit_request() is False
+        await pool.release_request()
+        assert await pool.admit_request() is True
+        await pool.release_request()
+        assert pool._waiting_requests == 0
+
+    @pytest.mark.anyio
     async def test_returns_a_member(self):
         pool = make_pool()
         m = await _acquire(pool)

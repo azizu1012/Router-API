@@ -142,6 +142,19 @@ async def _close_async_stream(stream: Any) -> None:
         pass
 
 
+async def _admit_pool_request(pool: Any) -> bool:
+    admit = getattr(pool, "admit_request", None)
+    if admit is None:
+        return True
+    return await admit()
+
+
+async def _release_pool_request(pool: Any) -> None:
+    release = getattr(pool, "release_request", None)
+    if release is not None:
+        await release()
+
+
 @asynccontextmanager
 async def _stream_budget(first_chunk_deadline: Optional[float]):
     """Arm the pre-commit budget, or yield ``None`` when the caller has none."""
@@ -317,18 +330,22 @@ class PoolManager:
         request_id = (request_id or "").strip() or get_request_id() or uuid.uuid4().hex
         pool = router.resolve_pool(model_alias)
         if pool:
+            if not await _admit_pool_request(pool):
+                raise RuntimeError("pool_overloaded")
             # --- POOL MODE (concurrent worker pool) ---
             # Shared pool: each member handles 1 request at a time.
             # Local tracking per request: exhausted_members, consecutive_transient, start_time.
             exhausted_members: Set[str] = set()
+            failed_keys: Set[str] = set()
             consecutive_transient = 0
             start_time = time.monotonic()
-            member: str
-            member = await _acquire_pool_member(pool, pool.max_retry_seconds)
-            has_active_slot = True
+            member: Optional[str] = None
+            has_active_slot = False
             pool_try = -1
 
             try:
+                member = await _acquire_pool_member(pool, pool.max_retry_seconds)
+                has_active_slot = True
                 while time.monotonic() - start_time < pool.max_retry_seconds:
                     if member in exhausted_members:
                         remaining_budget = pool.max_retry_seconds - (time.monotonic() - start_time)
@@ -363,6 +380,7 @@ class PoolManager:
                                 attempt=pool_try, thinking_params=thinking_params,
                                 member_override=member, sampling_params=sampling_params,
                                 request_id=request_id,
+                                exclude_keys=failed_keys,
                             ),
                             timeout=max(0.01, min(member_timeout, remaining)),
                         )
@@ -390,6 +408,8 @@ class PoolManager:
                             model_id_val = e.model_id
                             reservation = e.reservation or {}
                             e = e.original_error
+                        if api_key_val:
+                            failed_keys.add(api_key_val)
                         member_used = reservation.get("model_alias", member) if reservation else member
                         is_custom = reservation.get("provider") == "custom"
                         if is_custom:
@@ -450,7 +470,9 @@ class PoolManager:
                                 cooldown = config.KEY_INVALID_COOLDOWN_SECONDS if reason in ("invalid_key", "permission_denied") else config.KEY_429_COOLDOWN_SECONDS
                                 router.record_attempt_failure(key=api_key_val, model_id=model_id_val, reason=reason, duration=cooldown, metadata={"path": "pool_nonstream", "attempt": pool_try, "member": member, "request_id": request_id})
                                 apply_error_penalty(api_key_val, reason, model_id_val)
-                            # ponytail: if key is invalid, rotate to next available key without retiring member
+                            # The member is a model, not a key. Keep it available
+                            # so _resolve_model can select a different key after
+                            # the failed key has been frozen.
                             if reason in ("invalid_key", "permission_denied"):
                                 continue
                             _retire_member(pool, exhausted_members, member)
@@ -461,9 +483,11 @@ class PoolManager:
                 if has_active_slot and member:
                     pool.release(member)
                     has_active_slot = False
+                await _release_pool_request(pool)
         else:
             # --- STANDALONE MODE ---
             # Directly calls the model without pool rotation.
+            failed_keys: Set[str] = set()
             for attempt in range(config.MAX_RETRIES):
                 api_key_val = None
                 model_id_val = None
@@ -474,6 +498,7 @@ class PoolManager:
                         account, extra_body, pool_mode=False, is_stream=False, attempt=attempt,
                         thinking_params=thinking_params, sampling_params=sampling_params,
                         request_id=request_id,
+                        exclude_keys=failed_keys,
                     )
                     is_custom = reservation.get("provider") == "custom"
                     if is_custom:
@@ -496,6 +521,8 @@ class PoolManager:
                         model_id_val = e.model_id
                         reservation = e.reservation or {}
                         e = e.original_error
+                    if api_key_val:
+                        failed_keys.add(api_key_val)
                     is_custom = reservation.get("provider") == "custom"
                     if is_custom:
                         logger.warning("[PoolManager] Standalone custom endpoint error (attempt %d): %s", attempt, e)
@@ -566,17 +593,21 @@ class PoolManager:
         request_id = (request_id or "").strip() or get_request_id() or uuid.uuid4().hex
         pool = router.resolve_pool(model_alias)
         if pool:
+            if not await _admit_pool_request(pool):
+                raise RuntimeError("pool_overloaded")
             # --- POOL STREAM MODE (concurrent worker pool) ---
             exhausted_members: Set[str] = set()
+            failed_keys: Set[str] = set()
             consecutive_transient = 0
             start_time = time.monotonic()
-            member: str
-            member = await _acquire_pool_member(pool, pool.max_retry_seconds)
-            has_active_slot = True
+            member: Optional[str] = None
+            has_active_slot = False
             committed = False
             pool_try = -1
 
             try:
+                member = await _acquire_pool_member(pool, pool.max_retry_seconds)
+                has_active_slot = True
                 while time.monotonic() - start_time < pool.max_retry_seconds:
                     if member in exhausted_members:
                         remaining_budget = pool.max_retry_seconds - (time.monotonic() - start_time)
@@ -600,6 +631,7 @@ class PoolManager:
                         model_alias_val, model_id_val, api_key_val, model_full_val, reservation = await _resolve_model(
                             {"model": model_alias}, model_alias, account=account, estimated_tokens=estimated_tokens,
                             retry_attempt=pool_try, pool_mode=True, member_override=member,
+                            exclude_keys=failed_keys,
                         )
 
                         is_custom = reservation.get("provider") == "custom"
@@ -694,6 +726,8 @@ class PoolManager:
                         if committed:
                             logger.error("[PoolManager] Stream interrupted after committing: %s", e)
                             raise
+                        if api_key_val:
+                            failed_keys.add(api_key_val)
 
                         member_used = reservation.get("model_alias", member) if reservation else member
                         is_custom = reservation.get("provider") == "custom"
@@ -755,7 +789,9 @@ class PoolManager:
                                 cooldown = config.KEY_INVALID_COOLDOWN_SECONDS if reason in ("invalid_key", "permission_denied") else config.KEY_429_COOLDOWN_SECONDS
                                 router.record_attempt_failure(key=api_key_val, model_id=model_id_val, reason=reason, duration=cooldown, metadata={"path": "pool_stream", "attempt": pool_try, "member": member, "request_id": request_id})
                                 apply_error_penalty(api_key_val, reason, model_id_val)
-                            # ponytail: if key is invalid, rotate to next available key without retiring member
+                            # This member can still serve the request with a
+                            # different key; key eligibility is updated by the
+                            # failure transition above.
                             if reason in ("invalid_key", "permission_denied"):
                                 continue
                             _retire_member(pool, exhausted_members, member)
@@ -772,9 +808,11 @@ class PoolManager:
                 if has_active_slot and member:
                     pool.release(member)
                     has_active_slot = False
+                await _release_pool_request(pool)
         else:
             # --- CHẾ ĐỘ ĐƠN LẺ STREAM (STANDALONE STREAM MODE) ---
             committed = False
+            failed_keys: Set[str] = set()
             for attempt in range(config.MAX_RETRIES):
                 api_key_val = None
                 model_id_val = None
@@ -787,7 +825,7 @@ class PoolManager:
                     estimated_tokens = len(str(messages)) // 4 + max_output
                     model_alias_val, model_id_val, api_key_val, model_full_val, reservation = await _resolve_model(
                         {"model": model_alias}, model_alias, account=account, estimated_tokens=estimated_tokens,
-                        retry_attempt=attempt, pool_mode=False
+                        retry_attempt=attempt, pool_mode=False, exclude_keys=failed_keys
                     )
 
                     is_custom = reservation.get("provider") == "custom"
@@ -858,6 +896,8 @@ class PoolManager:
                     if committed:
                         logger.error("[PoolManager] Standalone stream interrupted after committing: %s", e)
                         raise
+                    if api_key_val:
+                        failed_keys.add(api_key_val)
                     reason = _classify_error(e)
                     logger.warning("[PoolManager] Standalone stream attempt %d failed: %s", attempt, e)
 
@@ -922,6 +962,7 @@ class PoolManager:
         member_override: Optional[str] = None,
         sampling_params: Optional[Dict[str, Any]] = None,
         request_id: Optional[str] = None,
+        exclude_keys: Optional[Set[str]] = None,
     ) -> Tuple[Any, str, str, int, dict]:
         """
         Internal helper method to resolve the optimal API key and model, check quotas,
@@ -958,6 +999,7 @@ class PoolManager:
         model_alias_val, model_id_val, api_key_val, model_full_val, reservation = await _resolve_model(
             {"model": model_alias}, model_alias, account=account, estimated_tokens=estimated_tokens,
             retry_attempt=attempt, pool_mode=pool_mode, member_override=member_override,
+            exclude_keys=exclude_keys,
         )
 
         is_custom = reservation.get("provider") == "custom"

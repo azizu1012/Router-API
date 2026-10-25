@@ -1,7 +1,7 @@
 import asyncio
 import random
 import time
-from typing import Any, Dict, Optional, Tuple
+from typing import Any, Dict, Optional, Set, Tuple
 
 # pyright: reportAttributeAccessIssue=false
 
@@ -31,7 +31,7 @@ def _retry_delay(attempt: int) -> float:
     jitter = random.uniform(-base * 0.2, base * 0.2)
     return max(0.5, base + jitter)
 
-async def _resolve_model(body: Dict[str, Any], pool_alias_override: Optional[str] = None, account: Optional[Dict[str, Any]] = None, estimated_tokens: int = 0, retry_attempt: int = 0, pool_mode: bool = False, member_override: Optional[str] = None) -> Tuple[str, str, str, str, Dict[str, Any]]:
+async def _resolve_model(body: Dict[str, Any], pool_alias_override: Optional[str] = None, account: Optional[Dict[str, Any]] = None, estimated_tokens: int = 0, retry_attempt: int = 0, pool_mode: bool = False, member_override: Optional[str] = None, exclude_keys: Optional[Set[str]] = None) -> Tuple[str, str, str, str, Dict[str, Any]]:
     """Resolve model alias and acquire an available Gemini API key.
 
     Resolves target model alias (using account-specific alias if provided) and
@@ -219,7 +219,7 @@ async def _resolve_model(body: Dict[str, Any], pool_alias_override: Optional[str
     attempt = 0
     while True:
         if not router.is_global_cooldown_active():
-            reservation = router.reserve_key(target_alias, target_mid, account=account, estimated_tokens=estimated_tokens, retry_attempt=retry_attempt)
+            reservation = router.reserve_key(target_alias, target_mid, account=account, estimated_tokens=estimated_tokens, retry_attempt=retry_attempt, exclude_keys=exclude_keys)
             if reservation:
                 actual_model_id = reservation["model_id"]
                 api_key = reservation["key"]

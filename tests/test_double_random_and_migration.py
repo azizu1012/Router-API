@@ -11,6 +11,25 @@ from src.logical_HQ_translator.model.resolver import _resolve_model
 
 
 class TestDoubleRandomJitterAndSizing:
+    def test_reserve_key_excludes_keys_failed_by_the_current_request(self):
+        candidates = [
+            ("key_1", {"active_requests": 0, "consecutive_failures": 0}, "gemini-3.6-flash"),
+            ("key_2", {"active_requests": 0, "consecutive_failures": 0}, "gemini-3.6-flash"),
+        ]
+        with patch("src.core.router.core.key_resolver.is_model_enabled", return_value=True), \
+             patch.object(router, "_get_allowed_tiers", return_value={"tier1", "tier2"}), \
+             patch.object(router, "get_model_id", return_value="gemini-3.6-flash"), \
+             patch.object(router, "_get_model_limits", return_value=(100, 100000)), \
+             patch.object(router, "_key_status", {"key_1": {"usage": 0, "active_requests": 0}, "key_2": {"usage": 0, "active_requests": 0}}), \
+             patch.object(router, "_is_key_eligible", return_value=True), \
+             patch.object(router, "_select_key_double_random", return_value=("key_2", "gemini-3.6-flash")), \
+             patch("src.core.router.core.key_resolver.atomic_reserve_key"), \
+             patch("src.core.router.core.key_resolver.record_key_model_usage"), \
+             patch.object(router, "register_reservation"):
+            result = router.reserve_key("gemini-flash", model_id="gemini-3.6-flash", exclude_keys={"key_1"})
+        assert result is not None
+        assert result["key"] == "key_2"
+
     def test_double_random_selects_both_keys_when_two_candidates(self):
         """When 2 healthy candidates exist, both must be eligible for selection."""
         candidates = [
