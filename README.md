@@ -256,6 +256,8 @@ Everything is env-driven; `.env.example` is the reference. The keys that matter 
 | `MODEL_CONTEXT_LENGTH` | `185000` | Safe context ceiling reported to clients (Flash/Lite 250k TPM protection) |
 | `GEMMA_CONTEXT_LENGTH` | `14000` | Safe context ceiling for Gemma 4 (16k TPM protection) |
 
+`/v1/models` also publishes `physical_context` for native pools (flash 1M) so clients can set the right compaction threshold without mistaking it for the safe routing ceiling. Custom-endpoint models publish the window their upstream `/models` advertises (`context_length`, `inputTokenLimit`, or nested `capabilities.contextWindow`), parsed on refresh; when the upstream advertises nothing the safe 200k fallback stays.
+
 > Keys share a project quota in practice — adding more keys to one project does not multiply throughput. The per-model RPM values reflect that.
 
 ---

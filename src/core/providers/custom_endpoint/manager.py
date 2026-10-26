@@ -32,6 +32,41 @@ _DEFAULT_PATH = str(Path(__file__).resolve().parents[3] / "custom_endpoints.json
 _CACHE_TTL = 5.0
 
 
+def _upstream_context_window(entry: Dict[str, Any]) -> int:
+    """Extract a usable context window from one upstream /models entry.
+
+    Aggregators disagree on the field name but agree on the semantics:
+    OpenRouter publishes ``context_length``, Gemini publishes
+    ``inputTokenLimit``, and the sibling 9router fork publishes the same
+    snake_case top-level fields this router already emits. Read all of them
+    so a refresh keeps whatever the provider advertises instead of the 200k
+    fallback. Non-positive or unparsable values mean "unknown".
+    """
+    if not isinstance(entry, dict):
+        return 0
+    candidates = (
+        entry.get("context_length"),
+        entry.get("context_window"),
+        entry.get("max_input_tokens"),
+        entry.get("inputTokenLimit"),
+        entry.get("max_context_length"),
+    )
+    nested = entry.get("capabilities")
+    if isinstance(nested, dict):
+        candidates += (nested.get("contextWindow"), nested.get("context_length"))
+    limits = entry.get("limits")
+    if isinstance(limits, dict):
+        candidates += (limits.get("context_length"), limits.get("context_window"))
+    for raw in candidates:
+        try:
+            value = int(raw)
+        except (TypeError, ValueError):
+            continue
+        if value > 0:
+            return value
+    return 0
+
+
 class CustomEndpointManager:
     _cache: Optional[Dict[str, Dict[str, Any]]] = None
     _account_map: Optional[Dict[str, List[str]]] = None
@@ -485,18 +520,27 @@ class CustomEndpointManager:
             raw_models = data
 
         free_models = []
+        model_contexts: dict = {}
         for m in raw_models:
+            if not isinstance(m, dict):
+                continue
             mid = m.get("id") or m.get("name") or ""
             mid = str(mid).strip()
             if not mid:
                 continue
+            ctx = _upstream_context_window(m)
+            if ctx:
+                model_contexts[mid] = ctx
             if ":free" in mid.lower() or "free" in m.get("name", "").lower():
                 free_models.append(mid)
             elif not any(x in mid.lower() for x in ["paid", "premium"]):
                 free_models.append(mid)
 
+        endpoint_default = max(model_contexts.values()) if model_contexts else 0
         update_endpoint_db(name, base_url=result["base"],
                            models=sorted(set(free_models)),
+                           model_contexts=model_contexts,
+                           context_length=endpoint_default,
                            updated_at=datetime.now(timezone.utc).isoformat())
         self._invalidate_cache()
         return sorted(set(free_models))

@@ -168,12 +168,33 @@ def sanitize_custom_endpoint_payload(
         payload.pop("reasoning", None)
         if "output_config" not in payload and effort in ("low", "medium", "high", "max"):
             payload["output_config"] = {"effort": effort}
+        # Same dangling-choice 400 on this dialect: a forced tool_choice with
+        # no tools to choose from fails validation before the model runs.
+        if not payload.get("tools") and "tool_choice" in payload:
+            choice = payload.get("tool_choice")
+            keep = False
+            if isinstance(choice, dict):
+                keep = choice.get("type") == "auto"
+            elif choice == "auto":
+                keep = True
+            if not keep:
+                payload.pop("tool_choice", None)
         return
-
     # OpenAI-compatible endpoints reject fields they do not declare.
     payload.pop("thinking", None)
     payload.pop("output_config", None)
 
+    # An interrupt can strip the tools list (converter drops stale tool
+    # definitions) while the client's tool_choice rides along in extra_body.
+    # A forced/named choice with no tools to choose from is a 400 on every
+    # strict upstream (OpenAI, 9router, Muse). Keep plain "auto" — it is a
+    # no-op without tools — and drop anything that names a tool.
+    if not payload.get("tools") and "tool_choice" in payload:
+        choice = payload.get("tool_choice")
+        keep = choice == "auto" or (isinstance(choice, dict) and choice.get("tool_choice") == "auto")
+        if not keep:
+            payload.pop("tool_choice", None)
+            payload.pop("parallel_tool_calls", None)
     if payload.get("reasoning_effort") is not None:
         normalized = normalize_reasoning_effort(payload.get("reasoning_effort"))
         if normalized is None:

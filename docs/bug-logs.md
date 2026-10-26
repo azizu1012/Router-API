@@ -2128,3 +2128,21 @@ tests/test_responses_mapping.py chi gui string va input_text, khong co case imag
 
 ### Ket qua
 tests/test_responses_opencat.py (8) + test_responses_mapping.py (37) + test_responses_conformance.py (42) + test_hosted_search_shape.py (93) + test_response_format.py (20) + test_finish_reason/test_server_runtime_bugfixes/test_layering (52) - tat ca xanh.
+
+---
+
+## Bài học: context window custom endpoint + 400 khi Claude Code chen tin nhắn (2026-10-26)
+
+### Triệu chứng (gộp 3 việc tưởng riêng lẻ)
+1. 9router báo muse 1.3 tận 1M context nhưng router chỉ pass 200k → client đặt sai ngưỡng compact.
+2. `gemini-flash` chạy qua 9router vẫn báo 185k dù nhớ đã set 1M.
+3. Chạy task bằng Claude Code qua custom endpoint, nhắn chen vào giữa chừng → `API Error: 400 Custom endpoint error (400): The request contains invalid parameters. Check the request body...`.
+
+### Root cause
+1. **DB chưa từng có chỗ lưu context.** Bảng `custom_endpoints` không có cột context → `get_model_safe_context_length` luôn rớt về fallback 200k cứng. Fix: thêm `context_length` + `model_contexts` (per-model), parse từ upstream lúc `fetch_models`.
+2. **185k là safe ceiling cố ý, không phải bug.** `MODEL_CONTEXT_LENGTH=185000` bảo vệ 250k TPM; `physical_context=1048576` đã có trong registry nhưng chưa expose. Fix: giữ nguyên `context_length` safe, expose thêm `physical_context` để client đặt ngưỡng compact — không nhầm trần safe với trần vật lý.
+3. **Interrupt xé cặp tool_calls/tool-result.** History thành `assistant(tool_calls A) → user(chen) → tool(A-result)`. Guard cũ `_drop_orphaned_tool_results` thấy result không kề call → xử sai, upstream strict (OpenAI adjacency rule, Anthropic alternating roles) 400 cả turn. Fix hai lớp: `_reorder_interrupted_tool_results` kéo late result về cạnh call trước khi guard chạy; `sanitize_custom_endpoint_payload` drop `tool_choice` treo khi tools đã bị strip.
+
+### Hai bài học giữ lại cho lần sau
+1. **Schema change phải sửa cả INSERT lẫn UPDATE.** Lần này suýt chỉ sửa UPDATE: `add_endpoint_db` và `add_member_endpoint_db` có câu INSERT liệt kê cột tường minh — thêm cột mà quên INSERT là endpoint mới tạo thiếu cột, lỗi chỉ nổ lúc runtime. Checklist: registry (`_SCHEMA_COLUMN_REGISTRY`) → CREATE TABLE → bootstrap (`_BOOTSTRAP_DDL`, test `test_schema_bootstrap` bắt drift) → INSERT (mọi hàm add) → UPDATE allowlist + SET → row parser. Test `test_schema_bootstrap` chỉ bắt drift bootstrap-vs-schema, không bắt thiếu cột ở INSERT — phải tự soát.
+2. **Mỗi provider đặt tên field context khác nhau — gom vào một parser.** OpenRouter: `context_length`. Gemini: `inputTokenLimit`. 9router fork: snake_case top-level (`context_length`, `max_completion_tokens`) + nested `capabilities.contextWindow`. Client chỉ đọc top-level, thiếu là đoán bừa từ tên model (372k đọc thành 1.05M rồi không bao giờ tới ngưỡng compact). Giữ `_upstream_context_window` làm single choke point: thêm provider mới = thêm field name vào đó, không rải lookup khắp nơi. Key của `model_contexts` normalize (str/lower/strip) ngay lúc save và lúc read (`_normalize_model_contexts`) để lookup khớp 100%, khỏi phụ thuộc bên đọc thử nhiều spelling.

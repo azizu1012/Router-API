@@ -31,6 +31,12 @@ def _model_entry(m: Dict[str, Any]) -> Dict[str, Any]:
     cl = m.get("context_length")
     if cl:
         entry["max_input_tokens"] = cl
+    try:
+        phys = int(m.get("physical_context") or 0)
+    except (TypeError, ValueError):
+        phys = 0
+    if phys > 0:
+        entry["physical_context"] = phys
     entry["max_tokens"] = config.MAX_OUTPUT_TOKENS
     return entry
 
@@ -82,6 +88,7 @@ def _models_payload(account: Dict[str, Any] | None = None) -> Dict[str, Any]:
                 if (model, ep["name"]) in aliased_models:
                     continue
                 if not any(e["id"] == model for e in entries):
+                    ctx = _safe_ctx(model, ep['name'])
                     entries.append({
                         "id": model,
                         "object": "model",
@@ -94,8 +101,8 @@ def _models_payload(account: Dict[str, Any] | None = None) -> Dict[str, Any]:
                         "lifecycle": "active",
                         "max_tokens": config.MAX_OUTPUT_TOKENS,
                         "_custom_endpoint": ep["name"],
-                        "context_length": _safe_ctx(model, ep['name']),
-                        "max_input_tokens": _safe_ctx(model, ep['name']),
+                        "context_length": ctx,
+                        "max_input_tokens": ctx,
                     })
 
     return {

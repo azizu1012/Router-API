@@ -31,6 +31,8 @@ _SCHEMA_COLUMN_REGISTRY = {
         "rpm": "INTEGER DEFAULT 0",
         "timeout": "INTEGER DEFAULT 0",
         "pool_assignments": "TEXT DEFAULT '{}'",
+        "model_contexts": "TEXT DEFAULT '{}'",
+        "context_length": "INTEGER DEFAULT 0",
         "updated_at": "TEXT",
     },
     "endpoint_transitions": {
@@ -157,6 +159,8 @@ def init_config_tables() -> None:
                     rpm INTEGER DEFAULT 0,
                     timeout INTEGER DEFAULT 0,
                     pool_assignments TEXT DEFAULT '{}',
+                    model_contexts TEXT DEFAULT '{}',
+                    context_length INTEGER DEFAULT 0,
                     updated_at TEXT
                 );
                 -- Member-owned endpoint lookup (endpoints.py: get_endpoint_by_account_db,

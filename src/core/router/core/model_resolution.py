@@ -30,6 +30,13 @@ class ModelResolutionMixin:
             cl = cfg.get("context_length")
             if cl:
                 m["context_length"] = cl
+            phys = cfg.get("physical_context")
+            if phys:
+                try:
+                    if int(phys) > 0:
+                        m["physical_context"] = int(phys)
+                except (TypeError, ValueError):
+                    pass
             models.append(m)
 
         # Include custom endpoint models (operator endpoints only; member-owned endpoints are attached per-account)
@@ -41,15 +48,22 @@ class ModelResolutionMixin:
                 if ep.get("account_id"):
                     continue
                 for mid in (ep.get("enabled_models") or ep.get("models") or []):
-                    if not any(m["id"] == mid for m in models):
-                        models.append({
-                            "id": mid,
-                            "object": "model",
-                            "created": 0,
-                            "owned_by": ep.get("name", "custom"),
-                            "root": mid,
-                            "display": f"{mid} ({ep.get('name', 'custom')})",
-                        })
+                    contexts = ep.get("model_contexts") or {}
+                    cl = contexts.get(str(mid or "").strip().lower()) or ep.get("context_length") or 0
+                    entry = {
+                        "id": mid,
+                        "object": "model",
+                        "created": 0,
+                        "owned_by": ep.get("name", "custom"),
+                        "root": mid,
+                        "display": f"{mid} ({ep.get('name', 'custom')})",
+                    }
+                    try:
+                        if cl and int(cl) > 0:
+                            entry["context_length"] = int(cl)
+                    except (TypeError, ValueError):
+                        pass
+                    models.append(entry)
         except Exception as e:
             # Dropping this silently makes every custom endpoint model disappear
             # from /v1/models, and the client's next call for one fails with an

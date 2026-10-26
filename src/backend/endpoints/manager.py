@@ -5,6 +5,29 @@ from typing import Any, Dict, List, Optional
 from src.backend._db import _LOCK, conn as _conn
 
 
+def _normalize_model_contexts(raw: Any) -> Dict[str, int]:
+    """Normalize per-model context windows to lowercase-stripped keys.
+
+    Lookups happen by model id, which arrives in mixed case from clients
+    (``Muse-1.3`` vs ``muse-1.3``). Normalizing once at the boundary —
+    both when reading a row and when saving one — means readers do a
+    single dict hit instead of trying spellings.
+    """
+    if isinstance(raw, str):
+        try:
+            raw = json.loads(raw or "{}")
+        except Exception:
+            return {}
+    if not isinstance(raw, dict):
+        return {}
+    normalized: Dict[str, int] = {}
+    for k, v in raw.items():
+        key = str(k or "").strip().lower()
+        if key and key not in normalized and _positive_int(v):
+            normalized[key] = int(v)
+    return normalized
+
+
 def _endpoint_row(r) -> Dict[str, Any]:
     d = dict(r)
     d["models"] = json.loads(d.get("models") or "[]")
@@ -19,6 +42,11 @@ def _endpoint_row(r) -> Dict[str, Any]:
     d["rpm"] = int(d.get("rpm") or 0) if str(d.get("rpm") or 0).lstrip("-").isdigit() else 0
     d["timeout"] = int(d.get("timeout") or 0) if str(d.get("timeout") or 0).lstrip("-").isdigit() else 0
     d["pool_assignments"] = json.loads(d.get("pool_assignments") or "{}")
+    d["model_contexts"] = _normalize_model_contexts(d.get("model_contexts"))
+    try:
+        d["context_length"] = int(d.get("context_length") or 0)
+    except (TypeError, ValueError):
+        d["context_length"] = 0
     return d
 
 
@@ -75,6 +103,8 @@ def add_endpoint_db(name: str, base_url: str, auth_key: str, rpm: int = 0, timeo
         "timeout": int(timeout or 0) if str(timeout or 0).lstrip("-").isdigit() else 0,
         "fallback": False,
         "pool_assignments": {},
+        "model_contexts": {},
+        "context_length": 0,
         "updated_at": datetime.now(timezone.utc).isoformat(),
     }
     with _LOCK:
@@ -82,10 +112,10 @@ def add_endpoint_db(name: str, base_url: str, auth_key: str, rpm: int = 0, timeo
         try:
             c.execute(
                 """INSERT INTO custom_endpoints
-                   (name, base_url, auth_key, enabled, models, disabled_models, enabled_models, account_id, account_key_id, rpm, timeout, fallback, pool_assignments, updated_at)
-                   VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                   (name, base_url, auth_key, enabled, models, disabled_models, enabled_models, account_id, account_key_id, rpm, timeout, fallback, pool_assignments, model_contexts, context_length, updated_at)
+                   VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
                 (ep["name"], ep["base_url"], ep["auth_key"],
-                 1, "[]", "[]", "[]", "", "", ep["rpm"], ep["timeout"], 0, "{}", ep["updated_at"]),
+                 1, "[]", "[]", "[]", "", "", ep["rpm"], ep["timeout"], 0, "{}", "{}", 0, ep["updated_at"]),
             )
             c.commit()
         finally:
@@ -143,21 +173,34 @@ def disable_endpoint_db(name: str) -> Optional[Dict[str, Any]]:
     return ep
 
 
+def _positive_int(value: Any) -> bool:
+    """True when value parses to a positive int (a usable context window)."""
+    try:
+        return int(value) > 0
+    except (TypeError, ValueError):
+        return False
+
+
 def update_endpoint_db(name: str, **updates: Any) -> Optional[Dict[str, Any]]:
     ep = get_endpoint_db(name)
     if not ep:
         return None
-    allowed = {"base_url", "auth_key", "enabled", "models", "disabled_models", "enabled_models", "account_id", "account_key_id", "fallback", "pool_assignments", "api_format", "rpm", "timeout"}
+    allowed = {"base_url", "auth_key", "enabled", "models", "disabled_models", "enabled_models", "account_id", "account_key_id", "fallback", "pool_assignments", "api_format", "rpm", "timeout", "model_contexts", "context_length"}
     merged = {k: v for k, v in updates.items() if k in allowed}
     ep.update(merged)
     ep["rpm"] = int(ep.get("rpm") or 0) if str(ep.get("rpm") or 0).lstrip("-").isdigit() else 0
     ep["timeout"] = int(ep.get("timeout") or 0) if str(ep.get("timeout") or 0).lstrip("-").isdigit() else 0
+    ep["model_contexts"] = _normalize_model_contexts(ep.get("model_contexts"))
+    try:
+        ep["context_length"] = int(ep.get("context_length") or 0)
+    except (TypeError, ValueError):
+        ep["context_length"] = 0
     with _LOCK:
         c = _conn()
         try:
             c.execute(
                 """UPDATE custom_endpoints SET base_url=?, auth_key=?, enabled=?, models=?, disabled_models=?, enabled_models=?,
-                      account_id=?, account_key_id=?, rpm=?, timeout=?, fallback=?, pool_assignments=?, api_format=?, updated_at=? WHERE name=?""",
+                      account_id=?, account_key_id=?, rpm=?, timeout=?, fallback=?, pool_assignments=?, api_format=?, model_contexts=?, context_length=?, updated_at=? WHERE name=?""",
                 (ep["base_url"], ep["auth_key"],
                  1 if ep.get("enabled", True) else 0,
                  json.dumps(ep.get("models") or []),
@@ -170,6 +213,8 @@ def update_endpoint_db(name: str, **updates: Any) -> Optional[Dict[str, Any]]:
                  1 if ep.get("fallback", False) else 0,
                  json.dumps(ep.get("pool_assignments") or {}),
                  ep.get("api_format") or "openai",
+                 json.dumps(ep.get("model_contexts") or {}),
+                 int(ep.get("context_length") or 0),
                  datetime.now(timezone.utc).isoformat(), name),
             )
             c.commit()
@@ -271,6 +316,8 @@ def add_member_endpoint_db(
         "api_format": api_format,
         "fallback": False,
         "pool_assignments": {},
+        "model_contexts": {},
+        "context_length": 0,
         "updated_at": datetime.now(timezone.utc).isoformat(),
     }
     with _LOCK:
@@ -278,8 +325,8 @@ def add_member_endpoint_db(
         try:
             c.execute(
                 """INSERT INTO custom_endpoints
-                   (name, base_url, auth_key, enabled, models, disabled_models, enabled_models, account_id, account_key_id, fallback, api_format, pool_assignments, updated_at)
-                   VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                   (name, base_url, auth_key, enabled, models, disabled_models, enabled_models, account_id, account_key_id, fallback, api_format, pool_assignments, model_contexts, context_length, updated_at)
+                   VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
                 (
                     ep["name"],
                     ep["base_url"],
@@ -293,6 +340,8 @@ def add_member_endpoint_db(
                     0,
                     api_format,
                     "{}",
+                    "{}",
+                    0,
                     ep["updated_at"],
                 ),
             )

@@ -252,6 +252,8 @@ Tất cả đều qua env; `.env.example` là file tham chiếu. Các biến qua
 | `MODEL_CONTEXT_LENGTH` | `185000` | Trần context an toàn báo cho client (Flash/Lite bảo vệ 250k TPM) |
 | `GEMMA_CONTEXT_LENGTH` | `14000` | Trần context an toàn cho Gemma 4 (bảo vệ 16k TPM) |
 
+`/v1/models` còn trả `physical_context` cho pool native (flash 1M) để client đặt đúng ngưỡng compact mà không nhầm với trần safe. Model custom endpoint trả đúng window mà upstream `/models` quảng cáo (`context_length`, `inputTokenLimit`, hoặc `capabilities.contextWindow` lồng nhau), parse lúc refresh; upstream không quảng cáo gì thì giữ fallback 200k.
+
 > Thực tế các key dùng chung quota của một project — thêm nhiều key vào cùng project không nhân gấp throughput. Giá trị RPM trong config đã phản ánh điều đó.
 
 ---

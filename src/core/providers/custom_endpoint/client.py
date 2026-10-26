@@ -300,6 +300,58 @@ def _make_tool_call(tc: dict) -> Any:
     return obj
 
 
+def _reorder_interrupted_tool_results(
+    messages: List[Dict[str, Any]],
+) -> List[Dict[str, Any]]:
+    """Pull a late tool result back next to the assistant turn that asked for it.
+
+    Claude Code sends the client's interrupt as a plain user turn while the
+    previous assistant turn still owes a tool call, so the history arrives as
+    ``assistant(tool_calls A) → user("chen ngang") → tool(A-result)``. The
+    result is not orphaned — it answers a real call — but every validator in
+    this repo (and every strict upstream: OpenAI adjacency in codex#7275,
+    the parallel-calls rule in codex#8479, Anthropic's alternating roles)
+    reads "tool must immediately follow its assistant turn" and 400s the
+    request. Moving the result next to its call repairs the adjacency without
+    dropping anything; when no matching open call exists the message is left
+    where it is for the orphan guard below to judge.
+    """
+    if not messages:
+        return []
+    out: List[Dict[str, Any]] = []
+    owner_at: Dict[str, int] = {}
+    for msg in messages:
+        if not isinstance(msg, dict):
+            out.append(msg)
+            continue
+        role = str(msg.get("role") or "")
+        if role == "assistant" and msg.get("tool_calls"):
+            out.append(msg)
+            idx = len(out) - 1
+            for tc in msg.get("tool_calls") or []:
+                if isinstance(tc, dict):
+                    owner_at.setdefault(str(tc.get("id") or ""), idx)
+            continue
+        if role == "tool" or role.startswith("tool"):
+            cid = str(msg.get("tool_call_id") or "")
+            owner = owner_at.get(cid)
+            if owner is not None and owner < len(out) - 1:
+                insert_at = owner + 1
+                while insert_at < len(out) and str((out[insert_at] or {}).get("role") or "").startswith("tool"):
+                    insert_at += 1
+                out.insert(insert_at, msg)
+                for key, pos in list(owner_at.items()):
+                    if pos >= insert_at:
+                        owner_at[key] = pos + 1
+                logger.warning(
+                    "[CustomEndpoint] re-attached late tool_result "
+                    "(tool_call_id=%r) after its assistant turn", cid,
+                )
+                continue
+        out.append(msg)
+    return out
+
+
 def _drop_orphaned_tool_results(
     messages: Optional[List[Dict[str, Any]]],
 ) -> List[Dict[str, Any]]:
@@ -335,6 +387,8 @@ def _drop_orphaned_tool_results(
     """
     if not messages:
         return []
+
+    messages = _reorder_interrupted_tool_results(messages)
 
     # An empty id is a real id here. A tool_calls entry that carries no `id`
     # produces a tool_use with id "", and the tool message answering it carries

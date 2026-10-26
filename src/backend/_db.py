@@ -49,6 +49,8 @@ CREATE TABLE IF NOT EXISTS custom_endpoints (
     rpm INTEGER DEFAULT 0,
     timeout INTEGER DEFAULT 0,
     pool_assignments TEXT DEFAULT '{}',
+    model_contexts TEXT DEFAULT '{}',
+    context_length INTEGER DEFAULT 0,
     updated_at TEXT
 );
 """

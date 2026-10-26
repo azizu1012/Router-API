@@ -101,8 +101,22 @@ def get_model_safe_context_length(model_name: str, endpoint_name: Optional[str] 
         try:
             from src.backend.endpoints.manager import get_endpoint_db
             ep = get_endpoint_db(endpoint_name)
-            if ep and ep.get("context_length"):
-                return int(ep["context_length"])
+            if ep:
+                contexts = ep.get("model_contexts") or {}
+                # Keys are normalized (str/lower) at the save and read boundary,
+                # so one lookup hits regardless of the caller's casing.
+                per_model = contexts.get(str(model_name or "").strip().lower())
+                try:
+                    if per_model and int(per_model) > 0:
+                        return int(per_model)
+                except (TypeError, ValueError):
+                    pass
+                if ep.get("context_length"):
+                    try:
+                        if int(ep["context_length"]) > 0:
+                            return int(ep["context_length"])
+                    except (TypeError, ValueError):
+                        pass
         except Exception:
             pass
         return 200000  # Default standard custom endpoint context
