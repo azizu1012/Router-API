@@ -109,6 +109,12 @@ def _provider_context_fallback(model_name: str) -> int:
         return 1000000
     if "deepseek-v4" in m or "deepseek-r1" in m:
         return 128000
+    if "kimi" in m:
+        # Kimi flagship (k3/k3.1) advertises 1M; coding variants (k2/for-coding)
+        # ship 256k — advertise the smaller window so clients compact in time.
+        if "for-coding" in m or "k2" in m or "-code" in m:
+            return 262144
+        return 1048576
     if "glm" in m:
         return 128000
     if "grok" in m:

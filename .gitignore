@@ -115,6 +115,7 @@ tests/*
 !tests/test_state_transitions_and_reservations.py
 !tests/test_search_intercept_mixed_tools.py
 !tests/test_model_registry.py
+!tests/test_ninerouter_lessons.py
 
 # The provider kit and its socket guard are imported by conftest.py, which is
 # tracked. `tests/*` below re-excludes the directory, so without these lines

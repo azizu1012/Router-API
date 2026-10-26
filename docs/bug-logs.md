@@ -2269,3 +2269,26 @@ Edit thay thế nhầm khối `_tool_call_was_cut_off` → 2 test retry cũ vỡ
 
 ### Verify
 Full suite **1758 passed**.
+
+---
+
+## Học từ nine-router đợt 2026-10-27: chỉ lọt 1 cái (kimi-k3.1-pro) (2026-10-27)
+
+### Nguồn
+6 commit mới (`aca6f52b`, `3b2cfabd`, `5d797e57`, `0df77969` upgrade v0.5.111, `c717ef8f`, `2e7f9ed9` upgrade v0.5.109).
+
+### Soi từng cái, không dính 5/6
+- Version notice / baseline `runcrate`+TTS: infra riêng của họ.
+- Reject paused key ở `/v1/models`: `authenticate()` bên mình chỉ resolve từ `accounts WHERE enabled=1`, key disabled không resolve từ đầu.
+- Clamp `max_output_tokens >= 16` cho Meta: mình không có Responses API / Meta executor riêng.
+- Upgrade v0.5.109 (chatgpt-web/gemini-web/deepseek-web): browser-executor infra của họ.
+- 2/3 diff translator v0.5.111 đã có sẵn: tool_result `image_url` → `_to_anthropic_blocks()` (`common.py`); adaptive-thinking Haiku → `facade.py` pass thinking verbatim.
+
+### Port 1/3: `capabilities.js` thêm `kimi-k3.1-pro` (1M/128k)
+`alias.py::_provider_context_fallback` thêm nhánh `kimi`: flagship k3/k3.1 → 1048576, coding variants (k2/for-coding/-code) → 262144 (lấy số nhỏ cho compact kịp). Test `test_provider_fallback_kimi_family`.
+
+### Lỗ hổng phát hiện khi verify
+`tests/test_ninerouter_lessons.py` tồn tại ở local nhưng `tests/*` trong `.gitignore` nuốt mất — file chưa từng được track (`exists on disk, but not in HEAD`). Đã whitelist `!tests/test_ninerouter_lessons.py` — clone mới giờ mới chạy được test này.
+
+### Verify
+File lẻ **8 passed**; full suite **1759 passed**.
