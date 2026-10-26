@@ -1136,21 +1136,50 @@ class ClaudeProxyStreamMixin:
                                         "[Claude Stream] %s cut off at max_tokens=%s; "
                                         "recovering the call at %s",
                                         name, max_tokens, bigger)
-                                    recovered = await _recover_tool_call(
-                                        lambda b: pool_manager.call_stream(
-                                            model_alias=model_alias,
-                                            messages=openai_messages,
-                                            tools=openai_tools or None,
-                                            temperature=temperature,
-                                            max_tokens=b,
-                                            thinking_config=thinking_config,
-                                            account=account,
-                                            thinking_params=thinking_params,
-                                            sampling_params=sampling_params,
-                                        ),
-                                        bigger,
-                                        "".join(accumulated_text),
-                                    )
+                                    if custom_ep:
+                                        from src.core.providers.custom_endpoint.passthrough import (
+                                            call_custom_endpoint_passthrough as _recover_passthrough,
+                                        )
+                                        async def _recover_stream(b):
+                                            _, _gen = await _recover_passthrough(
+                                                endpoint=custom_ep,
+                                                model=body.get("model", ""),
+                                                messages=openai_messages,
+                                                stream=True,
+                                                temperature=temperature,
+                                                max_tokens=b,
+                                                tools=openai_tools or None,
+                                                extra_body=sampling_params,
+                                                tool_choice=tool_choice,
+                                            )
+                                            async for _chunk in _gen:
+                                                yield {
+                                                    "chunk": _chunk,
+                                                    "api_key": custom_ep["auth_key"],
+                                                    "model_id": body.get("model", ""),
+                                                    "input_tokens": 0,
+                                                }
+                                        recovered = await _recover_tool_call(
+                                            _recover_stream,
+                                            bigger,
+                                            "".join(accumulated_text),
+                                        )
+                                    else:
+                                        recovered = await _recover_tool_call(
+                                            lambda b: pool_manager.call_stream(
+                                                model_alias=model_alias,
+                                                messages=openai_messages,
+                                                tools=openai_tools or None,
+                                                temperature=temperature,
+                                                max_tokens=b,
+                                                thinking_config=thinking_config,
+                                                account=account,
+                                                thinking_params=thinking_params,
+                                                sampling_params=sampling_params,
+                                            ),
+                                            bigger,
+                                            "".join(accumulated_text),
+                                        )
                                     if recovered is not None:
                                         for r_idx in sorted(recovered):
                                             tool_buffers[r_idx] = recovered[r_idx]

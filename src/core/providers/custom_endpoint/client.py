@@ -261,6 +261,21 @@ class _DeltaChoice:
             self.delta.reasoning_content = delta["reasoning_content"]
         else:
             self.delta.reasoning_content = None
+        # Some OpenAI-compatible backends spell the same stream field
+        # ``thought`` or ``reasoning``. The Claude renderer reads
+        # reasoning_content/thought, so keep every spelling it checks —
+        # otherwise a thinking-only turn looks contentless and the wrapper
+        # below raises empty_response, swallowing the turn.
+        thought = delta.get("thought") or delta.get("reasoning")
+        self.delta.thought = thought if thought else None
+        if self.delta.reasoning_content is None and thought:
+            self.delta.reasoning_content = thought
+        tsig = delta.get("thought_signature")
+        self.delta.thought_signature = tsig if tsig else None
+        refusal = delta.get("refusal")
+        self.delta.refusal = refusal if refusal else None
+        if self.delta.content is None and refusal:
+            self.delta.content = refusal
         if delta.get("tool_calls"):
             self.delta.tool_calls = [_make_tool_call(tc) for tc in delta["tool_calls"]]
         else:
@@ -474,10 +489,325 @@ def _build_payload(
                 payload.pop("tools", None)
         else:
             payload["tool_choice"] = normalized_after
+    # Muse promotion must run BEFORE the generic sanitizer: it pops
+    # ``output_config``/``thinking`` for OpenAI dialects, which would erase
+    # the nested effort Muse needs promoted to top-level reasoning_effort.
+    if _is_muse_endpoint(endpoint_base, model):
+        _promote_muse_reasoning_effort(payload)
     # Last stop before serialisation: the endpoint must never receive a
     # client placeholder like "auto", nor a dialect field it does not declare.
     sanitize_custom_endpoint_payload(payload, api_format="openai")
+    if _is_muse_endpoint(endpoint_base, model):
+        _strip_muse_unsupported_fields(payload)
     return payload
+
+
+def _normalize_muse_content_blocks(
+    msg: Dict[str, Any], content: List[Any]
+) -> Any:
+    """Coerce a list content to the Chat Completions schema Muse validates.
+
+    The converter passes Anthropic image blocks (``{"type": "image", ...}``)
+    through untouched when the history contains them, and the wire schema
+    only accepts ``image_url`` objects on ``user`` messages — anything else
+    is ``invalid parameters`` 400. Text/refusal blocks survive per role;
+    images on non-user roles are dropped (the model already saw them).
+    """
+    role = msg.get("role")
+    normalized: List[Dict[str, Any]] = []
+    text_fallback: List[str] = []
+    for block in content:
+        if not isinstance(block, dict):
+            if isinstance(block, str) and block.strip():
+                text_fallback.append(block)
+            continue
+        block.pop("_cache_control", None)
+        btype = str(block.get("type") or "")
+        if btype == "text":
+            text = block.get("text", "")
+            if isinstance(text, str) and text:
+                normalized.append({"type": "text", "text": text})
+            continue
+        if btype == "refusal":
+            if role == "assistant" and block.get("refusal"):
+                normalized.append(
+                    {"type": "refusal", "refusal": str(block["refusal"])}
+                )
+            continue
+        if btype == "image_url":
+            if role != "user":
+                continue
+            url_obj = block.get("image_url")
+            url = url_obj.get("url") if isinstance(url_obj, dict) else None
+            if isinstance(url, str) and url:
+                item: Dict[str, Any] = {"type": "image_url", "image_url": {"url": url}}
+                detail = url_obj.get("detail") if isinstance(url_obj, dict) else None
+                if detail in ("auto", "low", "high"):
+                    item["image_url"]["detail"] = detail
+                normalized.append(item)
+            continue
+        if btype in ("image", "input_image"):
+            if role != "user":
+                continue
+            url = _muse_image_source_url(block)
+            if url:
+                normalized.append({"type": "image_url", "image_url": {"url": url}})
+            continue
+        if btype in ("file", "video_url", "input_audio"):
+            if role == "user":
+                normalized.append(block)
+            continue
+        # Unknown / Anthropic-only block (computer-use, search results echoed
+        # as content, etc.): surface its text if it carries any, else drop.
+        for key in ("text", "content", "output"):
+            val = block.get(key)
+            if isinstance(val, str) and val.strip():
+                text_fallback.append(val)
+                break
+    if not normalized and text_fallback:
+        return "\n".join(text_fallback)
+    if text_fallback:
+        if role != "user":
+            # Non-user roles accept only text/refusal parts; fold strays in.
+            normalized.insert(0, {"type": "text", "text": "\n".join(text_fallback)})
+        else:
+            normalized.append({"type": "text", "text": "\n".join(text_fallback)})
+    if not normalized:
+        return ""
+    return normalized
+
+
+def _muse_image_source_url(block: Dict[str, Any]) -> Optional[str]:
+    """Extract a Chat Completions ``url`` from an Anthropic image block."""
+    for key in ("image_url", "url", "source"):
+        val = block.get(key)
+        if isinstance(val, str) and val:
+            return val
+        if isinstance(val, dict):
+            for inner in ("url", "data", "file_id"):
+                cand = val.get(inner)
+                if isinstance(cand, str) and cand:
+                    if inner == "data":
+                        media = str(val.get("media_type") or "image/jpeg")
+                        return f"data:{media};base64,{cand}"
+                    return cand
+    return None
+
+
+def _promote_muse_reasoning_effort(payload: Dict[str, Any]) -> None:
+    """Promote nested effort spellings before the generic sanitizer runs.
+
+    ``sanitize_custom_endpoint_payload`` pops ``output_config``/``thinking``
+    for OpenAI dialects — which is correct for every other endpoint, but on
+    Muse it would erase the nested ``output_config.effort`` /
+    ``reasoning.effort`` / ``thinking`` the strip step below needs promoted
+    to top-level ``reasoning_effort``. Runs first so the value survives.
+    """
+    if payload.get("reasoning_effort") is not None:
+        return
+    output_config = payload.get("output_config")
+    if isinstance(output_config, dict):
+        nested = output_config.get("effort")
+        if isinstance(nested, str) and nested.strip():
+            payload["reasoning_effort"] = nested.strip()
+            return
+    reasoning = payload.get("reasoning")
+    if isinstance(reasoning, dict):
+        nested = reasoning.get("effort")
+        if isinstance(nested, str) and nested.strip():
+            payload["reasoning_effort"] = nested.strip()
+            return
+    thinking = payload.get("thinking")
+    if isinstance(thinking, dict):
+        from ...runtime.effort import _thinking_to_effort
+        mapped = _thinking_to_effort(thinking)
+        if mapped is not None:
+            payload["reasoning_effort"] = mapped
+
+
+def _strip_muse_unsupported_fields(payload: Dict[str, Any]) -> None:
+    """Drop fields Meta's Chat Completions endpoint rejects with 400.
+
+    Muse speaks a strict OpenAI subset (dev.meta.ai/docs):
+    - ``tool_choice`` supports only ``"auto"`` (handled above).
+    - ``stop``/``stop_sequences`` is not supported on reasoning models.
+    - No ``top_k`` parameter exists.
+    - ``reasoning_effort`` accepts minimal/low/medium/high/xhigh/max, but
+      ``"none"`` disables reasoning and returns 400 on Muse Spark/Wonder, and
+      our generic normalizer emits ``"max"`` where the contributor variant
+      expects ``"xhigh"``.
+    - ``reasoning`` / ``thinking`` / ``output_config`` are Responses-API or
+      Anthropic spellings; Chat Completions rejects them (a nested
+      ``reasoning.effort`` is promoted to top-level ``reasoning_effort``).
+    - History recycled from prior turns may carry ``reasoning_content``,
+      ``thought_signature`` and ``_cache_control`` markers that are not part
+      of the wire schema.
+    - Chat Completions accepts only ``function`` tools; anything else
+      (typed server tools, computer-use blocks) is dropped, names are capped
+      at 64 chars, and the list is capped at 128 like OpenAI — the failing
+      turn carried 133 and got a generic ``invalid parameters`` 400.
+    """
+    payload.pop("stop_sequences", None)
+    payload.pop("stop", None)
+    payload.pop("top_k", None)
+    payload.pop("thinking", None)
+    # ``output_config`` is Responses-API spelling, but tolerate a client that
+    # sent Anthropic ``{"output_config": {"effort": ...}}``: promote the effort
+    # to the Chat Completions top-level field, then drop the wrapper.
+    output_config = payload.get("output_config")
+    if isinstance(output_config, dict):
+        nested = output_config.get("effort")
+        if payload.get("reasoning_effort") is None and isinstance(nested, str) and nested.strip():
+            payload["reasoning_effort"] = nested.strip()
+    payload.pop("output_config", None)
+    reasoning = payload.get("reasoning")
+    if isinstance(reasoning, dict):
+        nested = reasoning.get("effort")
+        if payload.get("reasoning_effort") is None and isinstance(nested, str) and nested.strip():
+            payload["reasoning_effort"] = nested.strip()
+    # ``reasoning`` is never valid on Chat Completions: the effort lives
+    # top-level as ``reasoning_effort``. A leftover ``{"summary": ...}`` from
+    # the generic sanitizer would still fail the strict validator.
+    payload.pop("reasoning", None)
+    model = str(payload.get("model") or "")
+
+    effort = payload.get("reasoning_effort")
+    if isinstance(effort, str):
+        low = effort.strip().lower()
+        if low == "none":
+            # Muse Spark/Wonder return 400 for disabled reasoning; omitting
+            # lets the model apply its own default instead of failing the turn.
+            payload.pop("reasoning_effort", None)
+        elif low == "max" and "contributor" in (model or "").lower():
+            # "max" is valid on muse-spark-1.3 / muse-wonder-1.0 but not on
+            # the contributor variant — there it is a 400, xhigh is the ceiling.
+            payload["reasoning_effort"] = "xhigh"
+
+    # Muse Spark is a reasoning model: logprobs:true is a documented 400.
+    payload.pop("logprobs", None)
+    payload.pop("top_logprobs", None)
+    # ``parallel_tool_calls`` and ``response_format`` ARE documented on
+    # Chat Completions (ParallelToolCalls boolean; ResponseFormatText /
+    # JsonSchema / JsonObject), so they pass through untouched.
+
+    # "temperature or top_p, not both" — keep the explicit temperature and
+    # drop top_p so a defaulted 0.7 + a client top_p cannot combine.
+    if payload.get("temperature") is not None and payload.get("top_p") is not None:
+        payload.pop("top_p", None)
+
+    _strip_muse_tools(payload)
+
+    for msg in payload.get("messages") or []:
+        if not isinstance(msg, dict):
+            continue
+        # Per Chat Completions schemas, request assistant messages DO accept
+        # ``reasoning_content`` and ``reasoning`` — keep them, drop only the
+        # non-schema spellings (thought / thought_signature / _cache_control).
+        msg.pop("thought_signature", None)
+        msg.pop("thought", None)
+        # Schema allows refusal on request-assistant messages, but replaying a
+        # prior refusal carries no signal for the next turn — drop it.
+        msg.pop("refusal", None)
+        if msg.get("role") != "assistant":
+            # tool_calls exist only on assistant messages per the schema; a
+            # stray copy on another role 400s the whole turn.
+            msg.pop("tool_calls", None)
+        if msg.get("role") == "tool":
+            # Chat Completions tool messages carry only role/content/
+            # tool_call_id — the OpenAI `name` field is invalid parameters.
+            msg.pop("name", None)
+            cid = msg.get("tool_call_id")
+            if isinstance(cid, str) and len(cid) > 64:
+                msg["tool_call_id"] = cid[:64]
+        for tc in msg.get("tool_calls") or []:
+            if not isinstance(tc, dict):
+                continue
+            tid = tc.get("id")
+            if isinstance(tid, str) and len(tid) > 64:
+                tc["id"] = tid[:64]
+            fn = tc.get("function")
+            if isinstance(fn, dict) and isinstance(fn.get("name"), str):
+                cleaned = _sanitize_muse_tool_name(fn.get("name"))
+                # History may carry a pre-sanitize name that Muse would 400
+                # on replay; fall back to truncation if charset yields empty.
+                fn["name"] = cleaned or fn["name"][:64]
+        content = msg.get("content")
+        if isinstance(content, list):
+            msg["content"] = _normalize_muse_content_blocks(msg, content)
+
+
+def _sanitize_muse_tool_name(name: Any) -> str:
+    """Coerce a tool name to Muse's FunctionObject charset.
+
+    Docs (Chat Completions schemas): ``name`` may contain letters, digits,
+    underscores, dashes, and at most one dot. Anything else is
+    ``invalid parameters`` 400. Mirrors ``sanitize_function_name`` but keeps
+    the single-dot allowance instead of the Gemini ``.:`` set.
+    """
+    text = str(name or "").strip()
+    if not text:
+        return ""
+    # Keep the first dot, drop the rest; replace everything else illegal.
+    first_dot = text.find(".")
+    if first_dot >= 0:
+        head = re.sub(r"[^a-zA-Z0-9_-]", "_", text[:first_dot])
+        tail = re.sub(r"[^a-zA-Z0-9_-]", "_", text[first_dot + 1 :].replace(".", "_"))
+        text = f"{head}.{tail}"
+    else:
+        text = re.sub(r"[^a-zA-Z0-9_-]", "_", text)
+    text = text.strip("._-")
+    if not text:
+        return ""
+    if not re.match(r"^[a-zA-Z0-9]", text):
+        text = "f" + text
+    return text[:64]
+
+
+def _strip_muse_tools(payload: Dict[str, Any]) -> None:
+    """Keep only strict function tools Muse accepts, capped like OpenAI.
+
+    Chat Completions accepts only ``{"type": "function", "function": {...}}``
+    tools; Anthropic-typed server tools and computer-use blocks are 400s.
+    Names follow the FunctionObject charset (letters/digits/``_``/``-`` plus
+    at most one dot) capped at 64 chars, and the list is capped at 128 like
+    OpenAI — the failing turn carried 133 with the app's own WebSearch tool
+    present, and Meta answers that with a generic ``invalid parameters``.
+    Drops extras from the tail so explicitly-injected tools (front) survive,
+    and dedupes by sanitized name keeping the first definition.
+    """
+    tools = payload.get("tools")
+    if not isinstance(tools, list):
+        return
+    kept: List[Dict[str, Any]] = []
+    seen: set = set()
+    for tool in tools:
+        if not isinstance(tool, dict):
+            continue
+        if tool.get("type", "function") != "function":
+            continue
+        fn = tool.get("function")
+        if not isinstance(fn, dict):
+            continue
+        name = _sanitize_muse_tool_name(fn.get("name"))
+        if not name:
+            continue
+        if name in seen:
+            continue
+        seen.add(name)
+        fn = dict(fn, name=name)
+        # Muse validates FunctionParameters as a JSON Schema object; an
+        # empty/missing parameters from Gemini-sanitized tools is a 400.
+        params = fn.get("parameters")
+        if not isinstance(params, dict) or not params:
+            fn["parameters"] = {"type": "object", "properties": {}}
+        kept.append({"type": "function", "function": fn})
+        if len(kept) >= 128:
+            break
+    if kept:
+        payload["tools"] = kept
+    else:
+        payload.pop("tools", None)
+        payload.pop("tool_choice", None)
 
 
 def anthropic_messages_url(api_base: str) -> str:
@@ -563,6 +893,17 @@ def _openai_namespace(data: Dict[str, Any], fallback_model: str) -> Any:
         msg.content = msg_dict.get("content", "") or ""
         msg.role = msg_dict.get("role", "assistant")
         msg.reasoning_content = msg_dict.get("reasoning_content")
+        # Same spelling coverage as _DeltaChoice: a thinking/refusal-only
+        # message must not look contentless to the Claude renderer.
+        thought = msg_dict.get("thought") or msg_dict.get("reasoning")
+        msg.thought = thought if thought else None
+        if msg.reasoning_content is None and thought:
+            msg.reasoning_content = thought
+        msg.thought_signature = msg_dict.get("thought_signature")
+        refusal = msg_dict.get("refusal")
+        msg.refusal = refusal if refusal else None
+        if not msg.content and refusal:
+            msg.content = refusal
         tool_calls = []
         for tc in msg_dict.get("tool_calls", []) or []:
             tc_obj = types.SimpleNamespace()
@@ -620,41 +961,7 @@ async def call_custom_nonstream(
         async with response:
             data = await response.json()
 
-    resp = types.SimpleNamespace()
-    resp.id = data.get("id", f"chatcmpl-{id(data)}")
-    resp.object = data.get("object", "chat.completion")
-    resp.created = data.get("created", 0)
-    resp.model = data.get("model", model)
-    resp.usage = data.get("usage")
-
-    choices = []
-    for c in data.get("choices", []):
-        msg_dict = c.get("message", {})
-        msg = types.SimpleNamespace()
-        msg.content = msg_dict.get("content", "") or ""
-        msg.role = msg_dict.get("role", "assistant")
-        msg.reasoning_content = msg_dict.get("reasoning_content")
-        raw_tcs = msg_dict.get("tool_calls", []) or []
-        msg.tool_calls = []
-        for tc in raw_tcs:
-            tc_obj = types.SimpleNamespace()
-            tc_obj.id = tc.get("id", "")
-            tc_obj.type = tc.get("type", "function")
-            tc_obj.function = types.SimpleNamespace()
-            tc_obj.function.name = tc.get("function", {}).get("name", "")
-            tc_obj.function.arguments = tc.get("function", {}).get("arguments", "")
-            msg.tool_calls.append(tc_obj)
-        if not msg.tool_calls:
-            msg.tool_calls = None
-
-        choice = types.SimpleNamespace()
-        choice.message = msg
-        choice.finish_reason = c.get("finish_reason", "stop")
-        choice.index = c.get("index", 0)
-        choices.append(choice)
-
-    resp.choices = choices
-    return resp
+    return _openai_namespace(data, model)
 
 
 class CustomEndpointStreamGen:
@@ -910,6 +1217,19 @@ class CustomEndpointStreamGen:
                 delta["content"] = c_delta["content"]
             if c_delta.get("reasoning_content"):
                 delta["reasoning_content"] = c_delta["reasoning_content"]
+            # Keep every spelling _DeltaChoice understands — a thinking-only
+            # or refusal-only turn otherwise looks contentless downstream and
+            # the passthrough wrapper raises empty_response, swallowing it.
+            thought = c_delta.get("thought") or c_delta.get("reasoning")
+            if thought:
+                delta["thought"] = thought
+                if "reasoning_content" not in delta:
+                    delta["reasoning_content"] = thought
+            if c_delta.get("thought_signature"):
+                delta["thought_signature"] = c_delta["thought_signature"]
+            if c_delta.get("refusal") and not delta.get("content"):
+                delta["content"] = c_delta["refusal"]
+                delta["refusal"] = c_delta["refusal"]
             if c_delta.get("tool_calls"):
                 tcs = []
                 for tc in c_delta["tool_calls"]:

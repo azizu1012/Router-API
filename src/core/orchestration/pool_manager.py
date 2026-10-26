@@ -42,12 +42,14 @@ def _chunk_has_payload(chunk: Any) -> bool:
         if not delta:
             continue
         if isinstance(delta, dict):
-            if delta.get("content") or delta.get("reasoning_content") or delta.get("tool_calls"):
+            if delta.get("content") or delta.get("reasoning_content") or delta.get("thought") or delta.get("reasoning") or delta.get("refusal") or delta.get("tool_calls"):
                 return True
         elif (
             getattr(delta, "content", None)
             or getattr(delta, "reasoning_content", None)
             or getattr(delta, "thought", None)
+            or getattr(delta, "reasoning", None)
+            or getattr(delta, "refusal", None)
             or getattr(delta, "tool_calls", None)
         ):
             return True
