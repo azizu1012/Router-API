@@ -36,13 +36,45 @@ from .anthropic_spec import (
     SEARCH_SYNTHESIS_FALLBACK,
     is_raw_search_context,
 )
+def _text_was_cut_off(resp: Any) -> bool:
+    """Whether the response is a length-cut blank with reasoning to show for it.
+
+    9router issue #3010: a reasoning model can burn its whole budget on
+    chain-of-thought and return finish_reason ``length`` with empty content
+    but non-empty reasoning/thinking. Retrying once at double budget gives
+    the model room to emit the answer; a still-blank retry is genuinely
+    empty and is returned as-is.
+    """
+    choices = getattr(resp, "choices", None) or []
+    if not choices:
+        return False
+    choice = choices[0]
+    if getattr(choice, "finish_reason", None) != "length":
+        return False
+    msg = getattr(choice, "message", None)
+    if msg is None:
+        return False
+    if isinstance(msg, dict):
+        content = _assistant_text(msg.get("content", ""))
+        reasoning = msg.get("reasoning_content") or msg.get("reasoning") or msg.get("thought")
+    else:
+        content = _assistant_text(getattr(msg, "content", "") or "")
+        reasoning = (getattr(msg, "reasoning_content", None)
+                     or getattr(msg, "reasoning", None)
+                     or getattr(msg, "thought", None))
+    if (content or "").strip():
+        return False
+    if isinstance(reasoning, str):
+        return bool(reasoning.strip())
+    return bool(reasoning)
+
+
 def _tool_call_was_cut_off(resp: Any) -> bool:
     """Whether the response's last tool call has arguments that are not JSON.
 
     Anthropic is explicit that a stream can stop at ``max_tokens`` midway
     through a parameter and that the accumulated input is not guaranteed to be
     valid JSON — there is no buffering or validation to guarantee it, so this is
-    a normal outcome rather than a malformed one.
 
     Only a *non-empty* argument string that fails to parse counts. An empty one
     is a tool that genuinely takes no parameters, and the caller handles that
@@ -257,6 +289,19 @@ class ClaudeProxyNonstreamMixin:
 
         while recursion_depth < 5:
             result = await _call_provider(max_tokens)
+            if _text_was_cut_off(result["response"]):
+                # Same prescription as tool_use above (9router issue #3010
+                # pattern): finish=length with empty text but non-empty
+                # reasoning means the model burned its budget on thought.
+                # One retry at double budget turns a blank response into
+                # a real one; still blank after that is genuinely empty.
+                bigger = min(max_tokens * 2, config.MAX_OUTPUT_TOKENS)
+                if bigger > max_tokens:
+                    logger.warning(
+                        "[Claude NonStream] text cut off by max_tokens=%s, "
+                        "retrying at %s", max_tokens, bigger)
+                    max_tokens = bigger
+                    result = await _call_provider(max_tokens)
             if _tool_call_was_cut_off(result["response"]):
                 # Anthropic's prescription for a response cut off mid tool_use is
                 # to "retry the request with a higher max_tokens value to get the
@@ -269,7 +314,6 @@ class ClaudeProxyNonstreamMixin:
                         "retrying at %s", max_tokens, bigger)
                     max_tokens = bigger
                     result = await _call_provider(max_tokens)
-
             resp = result["response"]
             used_model_id = result.get("model_id", "") or model_alias
             usage = getattr(resp, "usage", None) or {}
@@ -590,6 +634,15 @@ class ClaudeProxyNonstreamMixin:
             usage["server_tool_use"] = {"web_search_requests": ran_search,
                                         "web_fetch_requests": ran_fetch}
 
+        # One line per request: enough to trace blank responses (text=0,
+        # tools=0) without per-frame spam.
+        logger.info(
+            "[Claude NonStream] done model=%r text_chars=%d thought_chars=%d "
+            "tool_calls=%d server_tools=%d finish=%s stop=%s out_tokens=%s",
+            body.get("model"), len(text or ""), len(thought or ""),
+            len(raw_tool_calls or []), len(server_tool_calls),
+            finish_reason, stop_reason, output_tokens,
+        )
         # Persist usage so Claude Code traffic shows up in the dashboard.
         try:
             await log_usage(

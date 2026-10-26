@@ -1138,6 +1138,26 @@ class CustomEndpointStreamGen:
         if self._session:
             await self._session.close()
             self._session = None
+    async def aclose(self) -> None:
+        """Close the SSE parser and the underlying HTTP session.
+
+        Callers already call ``aclose`` when the downstream client disconnects
+        (keepalive wrapper, proxy finally blocks). Without this method the
+        ``aiohttp.ClientSession`` + response stayed open on every interrupted
+        stream — e.g. Claude Code chen tin nhan giua task — leaking sockets
+        and buffers until restart.
+        """
+        try:
+            gen = self._sse_gen
+            if gen is not None:
+                close = getattr(gen, "aclose", None)
+                if close is not None:
+                    try:
+                        await close()
+                    except Exception:
+                        pass
+        finally:
+            await self._cleanup()
 
     # SSE data-line parsing lives in src/core/runtime/sse_format.py as
     # ``sse_data`` so every parser in the repo shares one spelling.

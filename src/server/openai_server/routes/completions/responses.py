@@ -51,8 +51,10 @@ async def responses(
     authorization: str | None = Header(default=None),
     x_api_key: str | None = Header(default=None),
 ):
-    auth = _resolve_auth(authorization, x_api_key)
-    account = _check_auth(auth)
+    account = getattr(request.state, "auth_account", None)
+    if account is None:
+        auth = _resolve_auth(authorization, x_api_key)
+        account = _check_auth(auth)
     body = await request.json()
 
     from src.api.opencode_proxy.handler.responses_mapping import (

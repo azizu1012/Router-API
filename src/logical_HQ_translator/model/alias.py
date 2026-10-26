@@ -93,6 +93,31 @@ def get_original_model_name(alias_info: Optional[Dict[str, Any]]) -> Optional[st
     return alias_info.get("alias_name")
 
 
+def _provider_context_fallback(model_name: str) -> int:
+    """Guess context from the model id when upstream advertises nothing.
+
+    Learned from 9router (issue #3010 pattern): aggregators often omit the
+    window, but the id names the family. A family guess beats the 200k flat
+    fallback — it sets the right compact threshold instead of a wrong one.
+    """
+    m = (model_name or "").strip().lower()
+    if not m:
+        return 0
+    if "muse" in m:
+        return 1000000
+    if "gpt-5" in m or "gpt-6" in m:
+        return 1000000
+    if "deepseek-v4" in m or "deepseek-r1" in m:
+        return 128000
+    if "glm" in m:
+        return 128000
+    if "grok" in m:
+        return 256000
+    if "llama" in m or "qwen" in m or "mistral" in m or "mixtral" in m:
+        return 128000
+    return 0
+
+
 def get_model_safe_context_length(model_name: str, endpoint_name: Optional[str] = None) -> int:
     """Returns the safe client-facing context length for a given model or custom endpoint."""
     from src.core.config.api_config import AVAILABLE_MODELS, MODEL_CONTEXT_LENGTH, GEMMA_CONTEXT_LENGTH
@@ -117,6 +142,9 @@ def get_model_safe_context_length(model_name: str, endpoint_name: Optional[str] 
                             return int(ep["context_length"])
                     except (TypeError, ValueError):
                         pass
+                guessed = _provider_context_fallback(model_name)
+                if guessed > 0:
+                    return guessed
         except Exception:
             pass
         return 200000  # Default standard custom endpoint context

@@ -98,6 +98,12 @@ def _flush_key_db_writes() -> None:
                                 "UPDATE key_status SET last_transition_id=?, last_transition_at=?, last_transition_json=? WHERE key=?",
                                 (transition_id, created_at, metadata, key),
                             )
+                        # Cap audit tables: dashboard only reads the latest ~500
+                        # rows per query, but nothing ever deleted. Keep 5000.
+                        c.execute(
+                            "DELETE FROM key_transitions WHERE id NOT IN "
+                            "(SELECT id FROM key_transitions ORDER BY id DESC LIMIT 5000)"
+                        )
                         for pkey, penalty in penalties.items():
                             c.execute(
                                 """INSERT OR REPLACE INTO key_penalties

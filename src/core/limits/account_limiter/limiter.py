@@ -128,8 +128,18 @@ class AccountRateLimiter:
     def estimate_text_tokens(text: str) -> int:
         if not text:
             return 1
-        ascii_chars = sum(1 for ch in text if ord(ch) < 128)
-        non_ascii_chars = len(text) - ascii_chars
+        # Old code looped per-char with ord() — 12ms per 200KB body, called
+        # twice per request (account limit + key limit). len() is O(1);
+        # non-ASCII ratio sampled from the first 4KB is plenty for a budget.
+        n = len(text)
+        if n <= 4096:
+            ascii_chars = sum(1 for ch in text if ord(ch) < 128)
+            non_ascii_chars = n - ascii_chars
+        else:
+            sample = text[:4096]
+            ascii_sample = sum(1 for ch in sample if ord(ch) < 128)
+            non_ascii_chars = int(n * (len(sample) - ascii_sample) / len(sample))
+            ascii_chars = n - non_ascii_chars
         return max(1, int((ascii_chars / 3.6) + (non_ascii_chars / 1.6) + 0.999999))
 
     def estimate_messages_tokens(self, messages: list[dict[str, Any]], max_output_tokens: int) -> int:

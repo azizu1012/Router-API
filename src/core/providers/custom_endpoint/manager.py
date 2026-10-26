@@ -120,6 +120,12 @@ class CustomEndpointManager:
                     (req_id, name, state,
                      int(payload.get("failures", 0)), float(payload.get("frozen_until", 0)),
                      json.dumps(payload, default=str), time.time(), transition_id))
+                # Same cap as key_transitions: dashboard queries are LIMITed,
+                # nothing ever deleted before this.
+                c.execute(
+                    "DELETE FROM endpoint_transitions WHERE id NOT IN "
+                    "(SELECT id FROM endpoint_transitions ORDER BY id DESC LIMIT 5000)"
+                )
                 c.commit()
                 c.close()
         except Exception as exc:

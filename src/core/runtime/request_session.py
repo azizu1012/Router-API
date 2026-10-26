@@ -9,6 +9,7 @@ from typing import AsyncIterator, Callable, Dict, Optional
 
 SESSION_TTL = 900.0
 REPLAY_LIMIT = 500
+REPLAY_BYTES = 5 * 1024 * 1024
 logger = logging.getLogger(__name__)
 
 
@@ -47,6 +48,7 @@ class RequestSession:
     last_event_id: int = 0
     updated_at: float = field(default_factory=time.monotonic)
     events: list[tuple[int, bytes]] = field(default_factory=list)
+    replay_bytes: int = 0
     event_counts: Dict[str, int] = field(default_factory=dict)
     subscribers: set[asyncio.Queue] = field(default_factory=set)
     task: Optional[asyncio.Task] = None
@@ -60,9 +62,15 @@ class RequestSession:
         self.event_counts[event_name] = self.event_counts.get(event_name, 0) + 1
         frame = f"id: {self.request_id}:{self.last_event_id}\n".encode() + frame
         self.events.append((self.last_event_id, frame))
-        del self.events[:-REPLAY_LIMIT]
+        self.replay_bytes += len(frame)
+        # Old code only trimmed by frame count: one reasoning-heavy session
+        # could still pin hundreds of MB. Trim by bytes too.
+        while (len(self.events) > REPLAY_LIMIT
+               or self.replay_bytes > REPLAY_BYTES) and len(self.events) > 1:
+            _, old = self.events.pop(0)
+            self.replay_bytes -= len(old)
         self.updated_at = time.monotonic()
-        logger.info(
+        logger.debug(
             "[Claude Trace] stage=publish request_id=%s event_id=%d event=%s "
             "block_index=%s block_type=%s text_chars=%d frame_bytes=%d subscribers=%d",
             self.request_id, self.last_event_id, event_name, block_index,
@@ -86,7 +94,7 @@ class RequestSession:
                 if event_id > sent:
                     sent = event_id
                     event_name, block_index, block_type, text_chars = _frame_metadata(frame)
-                    logger.info(
+                    logger.debug(
                         "[Claude Trace] stage=client_yield request_id=%s event_id=%d "
                         "event=%s block_index=%s block_type=%s text_chars=%d "
                         "frame_bytes=%d source=replay",
@@ -102,7 +110,7 @@ class RequestSession:
                 if event_id > sent:
                     sent = event_id
                     event_name, block_index, block_type, text_chars = _frame_metadata(frame)
-                    logger.info(
+                    logger.debug(
                         "[Claude Trace] stage=client_yield request_id=%s event_id=%d "
                         "event=%s block_index=%s block_type=%s text_chars=%d "
                         "frame_bytes=%d source=live",

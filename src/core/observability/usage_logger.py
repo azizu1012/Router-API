@@ -12,13 +12,13 @@ from src.core.config_n_logg.logger import logger_system as logger
 # directories below it (`src/core/observability`).
 _DB = str(Path(__file__).resolve().parents[3] / "usage_logs.db")
 
-_queue: asyncio.Queue = asyncio.Queue()
+_queue: asyncio.Queue = asyncio.Queue(maxsize=10000)
+_DROPPED_USAGE = 0
 _flush_task: asyncio.Task | None = None
 _DB_BUSY_TIMEOUT_MS = 1000
 _recent_requests_cache: List[Dict[str, Any]] = []
 _recent_requests_cache_at = 0.0
 _recent_requests_cache_lock = asyncio.Lock()
-
 
 async def _configure_db(db: aiosqlite.Connection, *, writer: bool = False) -> None:
     """Keep dashboard reads from contending with the periodic usage batch."""
@@ -66,7 +66,7 @@ async def log_usage(
 ) -> None:
     from src.core.config.api_config import resolve_model_alias
     resolved = resolve_model_alias(model_alias)
-    await _queue.put((
+    item = (
         datetime.now().isoformat(),
         resolved,
         key_prefix or "unknown",
@@ -76,7 +76,17 @@ async def log_usage(
         auth_key_prefix or "",
         cache_creation_tokens or 0,
         cache_read_tokens or 0,
-    ))
+    )
+    # Never block the request path on usage accounting. An unbounded queue
+    # used to pile every request in RAM when the DB writer stalled — the
+    # drop counter below makes the loss visible on the dashboard instead.
+    global _DROPPED_USAGE
+    try:
+        _queue.put_nowait(item)
+    except asyncio.QueueFull:
+        _DROPPED_USAGE += 1
+        if _DROPPED_USAGE == 1 or _DROPPED_USAGE % 1000 == 0:
+            logger.warning("[UsageLogger] queue full, dropped %d usage rows", _DROPPED_USAGE)
 
 
 async def _flush_loop(interval: float = 5.0) -> None:
@@ -100,10 +110,11 @@ async def _flush_loop(interval: float = 5.0) -> None:
                 await db.execute("DELETE FROM usage_logs WHERE timestamp < ?", (cutoff,))
                 await db.commit()
         except Exception as e:
-            logger.error("[UsageLogger] Flush error: %s", e)
-            # Re-queue on failure to avoid losing usage data.
-            for item in batch:
-                await _queue.put(item)
+            # Drop the batch, do not re-queue: the old code pushed every row
+            # back and retried forever, so one stuck DB doubled RAM every 5s
+            # until the machine fell over. Usage history is expendable;
+            # the process staying alive is not.
+            logger.error("[UsageLogger] Flush error, dropped %d rows: %s", len(batch), e)
 
 
 def start_flush_loop(interval: float = 5.0) -> None:

@@ -25,8 +25,10 @@ async def anthropic_messages(
     authorization: str | None = Header(default=None),
     x_api_key: str | None = Header(default=None),
 ):
-    auth = _resolve_auth(authorization, x_api_key)
-    account = _check_auth(auth)
+    account = getattr(request.state, "auth_account", None)
+    if account is None:
+        auth = _resolve_auth(authorization, x_api_key)
+        account = _check_auth(auth)
     body = await request.json()
     if not body.get("messages"):
         return JSONResponse(
@@ -159,7 +161,7 @@ async def anthropic_messages(
                         yielded_frames += 1
                         yielded_bytes += len(frame)
                         event_name, block_index, block_type, text_chars = _frame_metadata(frame)
-                        logger_api.info(
+                        logger_api.debug(
                             "[Claude Trace] stage=response_body_yield trace_id=%s request_id=%s "
                             "frame=%d event=%s block_index=%s block_type=%s text_chars=%d bytes=%d",
                             trace_id, request_id, yielded_frames, event_name,

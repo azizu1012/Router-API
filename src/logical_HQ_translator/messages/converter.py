@@ -489,6 +489,13 @@ def _convert_messages(body: Dict[str, Any]) -> Tuple[List[Dict[str, Any]], List[
                     if tool_calls:
                         ast_msg["tool_calls"] = tool_calls
                     openai_messages.append(ast_msg)
+                elif isinstance(content, list) and content:
+                    # Same drop as the user branch: a thinking-only history
+                    # turn vanished, shifting tool_result pairing. Keep it.
+                    openai_messages.append({
+                        "role": "assistant",
+                        "content": "[Assistant turn contained only reasoning blocks]",
+                    })
                 # A Claude assistant turn can contain server_tool_use and its
                 # result in the same content array. Emit the assistant first so
                 # OpenAI-compatible providers see the preceding tool call.
@@ -505,6 +512,18 @@ def _convert_messages(body: Dict[str, Any]) -> Tuple[List[Dict[str, Any]], List[
                     combined = "\n".join(text_parts).strip()
                     if combined:
                         openai_messages.append({"role": "user", "content": combined})
+                    elif (isinstance(content, list) and content
+                            and not pending_tool_messages):
+                        # A user turn with only thinking/redacted blocks (Claudef
+                        # Cowork Read-file turns): dropping it sent an empty
+                        # prompt and the provider returned empty text with HTTP
+                        # 200, so the client showed nothing. Keep a marker.
+                        # Skipped when the turn already produced tool messages
+                        # — the turn is not empty then.
+                        openai_messages.append({
+                            "role": "user",
+                            "content": "[User turn contained only reasoning blocks, no visible text]",
+                        })
                 openai_messages.extend(pending_tool_messages)
 
     if not openai_messages:

@@ -2169,3 +2169,103 @@ tests/test_responses_opencat.py (8) + test_responses_mapping.py (37) + test_resp
 ### Bài học
 - Mọi sync từ upstream (refresh/fetch) phải merge, không overwrite — upstream là nguồn không tin cậy được (partial list, rename, hiccup). Quy tắc: chỉ ghi đè cái parse được, giữ lại cái cũ còn lại.
 - `/v1/models` là hợp của nhiều nguồn (native alias + operator endpoints + per-account). Mỗi nguồn append phải check trùng id với nguồn ưu tiên cao hơn, nếu không entry nghèo context sẽ shadow entry giàu context.
+
+---
+
+## Bài học: RAM phình hàng chục GB, crash cả Win (2026-10-26)
+
+### Triệu chứng
+Server chạy càng lâu RAM càng to, tới hàng chục GB, phải restart. Nặng thì crash luôn Win. Lag lan cả in/out/web khi mớ key free cạn quota — nhưng đó là hệ quả của retry chứ không phải root cause RAM.
+
+### Root cause (5 ổ vô hạn, không chỗ nào tự giải phóng)
+1. `key_transitions` (34k) + `endpoint_transitions` (35k) rows, **không chỗ nào DELETE**. Ghi mỗi request/freeze, dashboard chỉ đọc LIMIT 500. `usage.db` 36MB và vẫn to mãi.
+2. `CustomEndpointStreamGen` không có `aclose()` — chỉ `_cleanup` private. Client ngắt giữa stream (chen tin nhắn giữa task) → `aiohttp.ClientSession` + response treo, socket + buffer không đóng.
+3. `usage_logger._queue = asyncio.Queue()` không giới hạn + flush hỏng thì **re-queue toàn bộ batch** và retry mãi — DB kẹt 1 phát là RAM tăng mỗi 5s.
+4. `web_search_cache` + `deep_read_cache` là dict thường, không giới hạn số entry, chỉ hết hạn khi đọc đúng key đó. Query lạ nhiều là phình mãi.
+5. `failed_search_cooldowns` dict thường, không dọn entry hết hạn.
+
+### Fix
+- Transition tables: prune về 5000 rows mới trong cùng commit ghi (`status.py` flush + `manager.py` `_record_transition`). DB thật prune trực tiếp: 36MB → 5.4MB.
+- `CustomEndpointStreamGen.aclose()`: đóng SSE parser + session, khớp với `aclose` callers đã gọi (keepalive wrapper, proxy finally).
+- Usage queue: `maxsize=10000` + `put_nowait`, full thì drop + đếm `_DROPPED_USAGE` (log mỗi 1000 rows) thay vì block request. Flush hỏng thì drop batch + log, không re-queue.
+- Search caches: cap 500 entry mới nhất (FIFO). Cooldowns: dọn entry hết hạn mỗi lần check.
+- Session replay (`request_session.py`): trước chỉ trim theo frame count (500), thêm byte-cap 5MB — 1 session reasoning nặng vẫn pin hàng trăm MB.
+
+### Cái đã soi và loại (không phải leak)
+`request_sessions` tự pop sau khi xong; `ToolNameCache` LRU 5000; `ClientPool` LRU theo max_clients; `LogWatcher` deque maxlen 10000; `TokenRateLimiter._states` theo key_id cố định; `_recent_requests_cache` chỉ 20 rows.
+
+### Checklist cho sau này
+Mỗi dict/list/queue/table mới thêm vào mà sống theo số request → phải có cap + chỗ dọn: queue thì `maxsize` + drop policy; table thì prune trong cùng commit; cache thì cap entry + TTL sweep; session/stream thì `aclose`/pop khi xong + huỷ. Test hồi quy: `tests/test_ram_leak_guards.py` (8 tests).
+
+### Verify
+`test_ram_leak_guards` (8) + suite liên quan 71 passed. Full suite chạy sau.
+
+---
+
+## Audit hiệu năng đường nóng (2026-10-26, sau fix RAM)
+
+### Kết quả benchmark (số liệu thật, không đoán)
+- `estimate_text_tokens` body 200KB: 245ms → 5ms (47x) sau khi bỏ loop `ord()` per-char, sample 4KB cho input lớn. Input ≤4KB giữ nguyên exact.
+- `_refresh_cache` cold: 9ms → 3ms sau khi bỏ N+1 (`find_account_by_name` mỗi token).
+- `resolve_model_alias` 1.0ms/call (gồm 0.7ms `resolve_alias_db` 2 query DB), `reserve_key` 0.7ms/call — chấp nhận được, không đụng.
+- `str(messages)` 200KB chỉ 0.5ms — tin đồn "serialize ăn thời gian" là sai.
+
+### Fix
+1. `estimate_text_tokens` (`account_limiter/limiter.py`): sample-based, input nhỏ exact như cũ. Gọi 2 lần/request (account limit + key limit) nên 12ms × 2 = 24ms/request biến mất.
+2. `_refresh_cache` (`account_manager.py`): index `by_name` 1 pass, bỏ N+1 query.
+3. 4 route nóng (`chat/anthropic/responses/legacy`): dùng lại `request.state.auth_account` middleware đã resolve, thay vì `authenticate` lần 2 (DB lookup + `get_key_db` 1.7ms).
+
+### Cái đã soi và LOẠI (có số liệu, không phải đoán)
+- `reserve_key` double loop keys × members: 0.7ms — rẻ, giữ nguyên.
+- `get_model_id`/`list_endpoints`: cache 5s TTL, 0.0ms — không đụng.
+- `str(messages)` estimate: 0.5ms — không đụng.
+- Retry loops khi cạn quota: đúng là giữ request lâu (POOL_RETRY_SECONDS 120s, MAX_RETRIES 5, `_retry_delay` 0.5s–60s) nhưng đó là hành vi đúng — fail fast ở đây sẽ biến 429 thành lỗi client. Lag lan cả server khi key free cạn là do client retry storm + hàng đợi pool đầy, không phải CPU/RAM. Muốn giảm cảm nhận lag: giảm `POOL_RETRY_SECONDS` hoặc tăng key, không phải sửa code.
+- Stream disconnect: `aclose` đã đủ ở mọi tầng sau fix RAM (keepalive wrapper + proxy finally + `CustomEndpointStreamGen.aclose` mới). Session replay đã byte-cap.
+
+### Test hồi quy
+`tests/test_perf_guards.py` (4 tests): estimate nhanh + exact với input nhỏ, cache 1 pass không N+1, 4 route reuse middleware auth.
+
+### Verify
+Full suite **1747 passed**.
+
+---
+
+## Bug: Claudef Cowork Read file trắng trơn, log vẫn 200 "thành công" (2026-10-26)
+
+### Triệu chứng
+Claudef Cowork gọi Read file qua đường gemini key pool (flash/lite): server log HTTP 200, usage có tokens, nhưng client không hiện chữ nào. Chỉ xảy ra với turn Read file (non-stream flash-lite, msgs=1 tools=0); chat thường vẫn ra chữ.
+
+### Root cause
+`_convert_messages` (`converter.py`): user turn chỉ có `thinking`/`redacted_thinking` blocks → dòng `continue` bỏ hết → `text_parts` rỗng → `combined` rỗng → **cả message user bị drop im lặng**, request tới Gemini thành prompt rỗng → trả text rỗng với HTTP 200. Log "thành công" vì status 200 + usage có tokens, nhưng content rỗng.
+Reproduce: user content `[thinking + redacted_thinking]` → output `[{'role':'user','content':'Continue.'}]` (sai hẳn prompt).
+
+### Fix
+- User turn list-blocks nhưng không text và không sinh tool messages → giữ marker `[User turn contained only reasoning blocks, no visible text]` thay vì drop.
+- Assistant turn thinking-only tương tự → marker riêng (tránh lệch pairing hội thoại).
+- Điều kiện `not pending_tool_messages`: turn đã có tool_result thì không phải turn rỗng, không nhét marker thừa (test cũ `test_conversion_normal_and_truncated` bắt được: 4 msgs, không phải 5).
+
+### Test hồi quy
+`tests/test_thinking_only_turns.py` (4 tests): user thinking-only giữ lại, assistant thinking-only giữ pairing, turn thường untouched, tool_result vẫn emit kèm thinking turn.
+
+### Verify
+Full suite **1751 passed**.
+
+---
+
+## Học từ nine-router: reasoning-only + provider context fallback (2026-10-26)
+
+### Nguồn
+Repo `D:/AI_Projects/nine-router`: `src/app/api/models/test/ping.js` (issue #3010) — reasoning model đốt hết budget vào chain-of-thought, trả `finish=length + content rỗng + có reasoning`. Họ soft-pass ở ping.
+
+### Mang về 2 cái
+1. **Retry text length-cut ở NonStream** (`proxy_nonstream.py`): `_text_was_cut_off` — `finish=length + text rỗng + reasoning có nội dung` → retry 1 lần budget gấp đôi (giống `_tool_call_was_cut_off` có sẵn). Retry vẫn trắng thì trả rỗng thật. Không có reasoning thì không retry (tránh loop vô ích).
+2. **Fallback context theo provider id** (`alias.py::_provider_context_fallback`): upstream không quảng cáo window → đoán theo family (muse/gpt-5-6 → 1M, grok → 256k, deepseek/glm/llama/qwen/mistral → 128k) thay vì 200k cứng. Ưu tiên: per-model parse > endpoint default > family guess > 200k.
+
+### Test hồi quy
+`tests/test_ninerouter_lessons.py` (7 tests): fallback đúng family, unknown về 0, length+reasoning thì retry, stop/length-có-text/length-rỗng-không-reasoning thì không.
+
+### Sự cố khi port (tự gây, đã fix)
+Edit thay thế nhầm khối `_tool_call_was_cut_off` → 2 test retry cũ vỡ; khôi phục khối rồi nhưng rớt 3 dòng (`resp`/`used_model_id`/`usage` + `output_tokens` extract) → 2 test usage vỡ (0 thay vì 512). Bài học: khối retry và khối gán sau nó là 1 đơn vị — sửa phải giữ nguyên cả đơn vị, chạy test retry + usage ngay sau mỗi edit.
+
+### Verify
+Full suite **1758 passed**.

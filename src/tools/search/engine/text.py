@@ -453,6 +453,10 @@ class SearchUtilsMixin(SearchDataMixin):
         return item.get("text", "")
 
     def _set_deep_read_cache(self, url: str, text: str, ttl_seconds: int = 7200):
+        # Same unbounded growth as web_search_cache before the cap above.
+        if url not in self.deep_read_cache and len(self.deep_read_cache) >= 500:
+            oldest = next(iter(self.deep_read_cache))
+            del self.deep_read_cache[oldest]
         self.deep_read_cache[url] = {
             "text": text,
             "timestamp": datetime.now(),

@@ -91,7 +91,7 @@ class ClaudeResponseSendTraceMiddleware:
                     except (ValueError, TypeError):
                         pass
                     event_counts[event_name] = event_counts.get(event_name, 0) + 1
-                    logger.info(
+                    logger.debug(
                         "[Claude Trace] stage=asgi_send trace_id=%s frame=%d event=%s "
                         "block_index=%s block_type=%s text_chars=%d bytes=%d more_body=%s",
                         request_id, frame_count, event_name, block_index, block_type,

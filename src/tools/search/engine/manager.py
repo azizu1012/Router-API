@@ -69,6 +69,11 @@ class AdvancedSearchManager(SearchEvidenceMixin, DuckDuckGoProviderMixin, Search
     def set_web_search_cache(self, key: str, text: str, time_sensitive: bool = False, ttl_seconds: Optional[int] = None):
         if ttl_seconds is None:
             ttl_seconds = self.search_time_sensitive_cache_ttl_seconds if time_sensitive else self.search_general_cache_ttl_seconds
+        # Unbounded before this: every distinct query key piled text forever,
+        # only evicted on re-read of the same key. Cap at 500 newest.
+        if key not in self.web_search_cache and len(self.web_search_cache) >= 500:
+            oldest = next(iter(self.web_search_cache))
+            del self.web_search_cache[oldest]
         self.web_search_cache[key] = {
             "text": text,
             "timestamp": datetime.now(),
@@ -254,6 +259,10 @@ class AdvancedSearchManager(SearchEvidenceMixin, DuckDuckGoProviderMixin, Search
 
         if not force_fallback and not time_sensitive and self.search_failed_query_cooldown_seconds > 0:
             async with self.cache_lock:
+                now = time.time()
+                # Dict never shrank: every failed query left an entry forever.
+                for k in [k for k, exp in self.failed_search_cooldowns.items() if exp <= now]:
+                    del self.failed_search_cooldowns[k]
                 cooldown_until = self.failed_search_cooldowns.get(normalized_key, 0)
             if cooldown_until > time.time():
                 self.logger.info(f"Search cooldown active for key={normalized_key[:80]}")

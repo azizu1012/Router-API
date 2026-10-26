@@ -53,12 +53,18 @@ class AccountManager:
             with self._cache_lock:
                 if now - self._cache_ts > self._cache_ttl:
                     cache: Dict[str, Dict[str, Any]] = {}
+                    # Old code called find_account_by_name() per token (N+1
+                    # queries + N dict scans). One pass, index by name.
+                    by_name: Dict[str, Dict[str, Any]] = {}
                     for acc in _list_accounts(include_disabled=False):
                         legacy = acc.get("auth_key")
                         if legacy:
                             cache[legacy] = acc
+                        name = acc.get("name")
+                        if name:
+                            by_name[str(name)] = acc
                     for key in _all_keys_db():
-                        acc = find_account_by_name(key["name"])
+                        acc = by_name.get(key["name"])
                         if acc and acc.get("enabled"):
                             cache[compose_token(key["name"], key["token_code"])] = {
                                 **acc,
