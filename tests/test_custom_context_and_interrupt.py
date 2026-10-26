@@ -174,3 +174,149 @@ class TestEndpointContextPersistence:
         found = [m for m in router.list_models() if m["id"] == "muse-1.3"]
         assert found, "custom model must appear in list_models"
         assert found[0].get("context_length") == 1_000_000
+
+
+class TestRefreshMergesStaleContexts:
+    """Refresh must not silently drop contexts the upstream stops advertising.
+
+    Real-world trigger (found by operator on live traffic): an upstream
+    hiccup returns a partial model list, or renames a model. A blind
+    overwrite would wipe the stored window for the missing model and the
+    client would silently fall back to 200k. Merge keeps the old value
+    until the upstream advertises a new one.
+    """
+
+    def test_missing_model_keeps_old_context(self, temp_db, monkeypatch):
+        import asyncio
+
+        from src.backend.endpoints.manager import (
+            add_endpoint_db,
+            get_endpoint_db,
+            update_endpoint_db,
+        )
+        from src.core.providers.custom_endpoint.manager import (
+            _custom_endpoint_manager,
+        )
+
+        add_endpoint_db("merge-ep", "http://merge.local", "k")
+        update_endpoint_db(
+            "merge-ep",
+            models=["muse-1.3", "tiny"],
+            enabled_models=["muse-1.3", "tiny"],
+            model_contexts={"muse-1.3": 1_000_000, "tiny": 8_000},
+            context_length=1_000_000,
+        )
+
+        async def fake_fetch(base, key):
+            return {
+                "base": "http://merge.local",
+                "data": {"data": [{"id": "tiny", "context_length": 8_000}]},
+            }
+
+        monkeypatch.setattr(
+            _custom_endpoint_manager, "_try_fetch_models", fake_fetch
+        )
+        monkeypatch.setattr(
+            _custom_endpoint_manager, "_probe_chat_endpoint",
+            lambda *a, **k: asyncio.Future(),
+        )
+        # _probe_chat_endpoint is awaited; make it return True.
+        async def fake_probe(*a, **k):
+            return True
+
+        monkeypatch.setattr(
+            _custom_endpoint_manager, "_probe_chat_endpoint", fake_probe
+        )
+
+        asyncio.run(_custom_endpoint_manager.fetch_models("merge-ep"))
+
+        ep = get_endpoint_db("merge-ep")
+        assert ep is not None
+        # muse-1.3 vanished from upstream but its window must survive.
+        assert ep["model_contexts"].get("muse-1.3") == 1_000_000
+        assert ep["model_contexts"].get("tiny") == 8_000
+        # Default still reflects the surviving max, not zero.
+        assert ep["context_length"] == 1_000_000
+
+    def test_empty_upstream_keeps_previous_default(self, temp_db, monkeypatch):
+        import asyncio
+
+        from src.backend.endpoints.manager import (
+            add_endpoint_db,
+            get_endpoint_db,
+            update_endpoint_db,
+        )
+        from src.core.providers.custom_endpoint.manager import (
+            _custom_endpoint_manager,
+        )
+
+        add_endpoint_db("empty-ep", "http://empty.local", "k")
+        update_endpoint_db(
+            "empty-ep",
+            models=["muse-1.3"],
+            enabled_models=["muse-1.3"],
+            model_contexts={"muse-1.3": 1_000_000},
+            context_length=1_000_000,
+        )
+
+        async def fake_fetch(base, key):
+            return {"base": "http://empty.local", "data": {"data": []}}
+
+        async def fake_probe(*a, **k):
+            return True
+
+        monkeypatch.setattr(
+            _custom_endpoint_manager, "_try_fetch_models", fake_fetch
+        )
+        monkeypatch.setattr(
+            _custom_endpoint_manager, "_probe_chat_endpoint", fake_probe
+        )
+
+        asyncio.run(_custom_endpoint_manager.fetch_models("empty-ep"))
+
+        ep = get_endpoint_db("empty-ep")
+        assert ep is not None
+        assert ep["model_contexts"].get("muse-1.3") == 1_000_000
+        assert ep["context_length"] == 1_000_000
+
+
+class TestNativeWinsOverCustomShadow:
+    """A custom endpoint re-advertising a native id must not shadow it.
+
+    Real-world trigger (found by operator on live traffic): an endpoint
+    lists a model with the same id as a native alias (e.g. "flash").
+    Appending it would shadow the native entry's context with an empty
+    one on /v1/models.
+    """
+
+    def test_native_entry_not_shadowed(self, temp_db):
+        from src.backend.endpoints.manager import (
+            add_endpoint_db,
+            update_endpoint_db,
+        )
+        from src.core.providers import _custom_endpoint_manager
+        from src.core.router import router
+
+        native_ids = {m["id"] for m in router.list_models()}
+        assert native_ids, "need at least one native model for this test"
+        victim = sorted(native_ids)[0]
+        native_ctx = next(
+            m.get("context_length") for m in router.list_models()
+            if m["id"] == victim
+        )
+
+        add_endpoint_db("shadow-ep", "http://shadow.local", "k")
+        update_endpoint_db(
+            "shadow-ep",
+            models=[victim],
+            enabled_models=[victim],
+        )
+        _custom_endpoint_manager._invalidate_cache()
+
+        matches = [m for m in router.list_models() if m["id"] == victim]
+        assert len(matches) == 1, (
+            f"custom endpoint must not duplicate native id {victim!r}"
+        )
+        assert matches[0].get("owned_by") == "router_api"
+        if native_ctx:
+            assert matches[0].get("context_length") == native_ctx

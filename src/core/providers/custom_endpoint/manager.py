@@ -530,16 +530,29 @@ class CustomEndpointManager:
                 continue
             ctx = _upstream_context_window(m)
             if ctx:
-                model_contexts[mid] = ctx
+                model_contexts[str(mid).strip().lower()] = ctx
             if ":free" in mid.lower() or "free" in m.get("name", "").lower():
                 free_models.append(mid)
             elif not any(x in mid.lower() for x in ["paid", "premium"]):
                 free_models.append(mid)
 
-        endpoint_default = max(model_contexts.values()) if model_contexts else 0
+        prev_contexts = ep.get("model_contexts") or {}
+        if not isinstance(prev_contexts, dict):
+            prev_contexts = {}
+        merged_contexts = dict(prev_contexts)
+        for mid, ctx in model_contexts.items():
+            merged_contexts[str(mid).strip().lower()] = ctx
+        try:
+            prev_default = int(ep.get("context_length") or 0)
+        except (TypeError, ValueError):
+            prev_default = 0
+        if merged_contexts:
+            endpoint_default = max(merged_contexts.values())
+        else:
+            endpoint_default = prev_default
         update_endpoint_db(name, base_url=result["base"],
                            models=sorted(set(free_models)),
-                           model_contexts=model_contexts,
+                           model_contexts=merged_contexts,
                            context_length=endpoint_default,
                            updated_at=datetime.now(timezone.utc).isoformat())
         self._invalidate_cache()

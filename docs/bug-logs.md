@@ -2146,3 +2146,26 @@ tests/test_responses_opencat.py (8) + test_responses_mapping.py (37) + test_resp
 ### Hai bài học giữ lại cho lần sau
 1. **Schema change phải sửa cả INSERT lẫn UPDATE.** Lần này suýt chỉ sửa UPDATE: `add_endpoint_db` và `add_member_endpoint_db` có câu INSERT liệt kê cột tường minh — thêm cột mà quên INSERT là endpoint mới tạo thiếu cột, lỗi chỉ nổ lúc runtime. Checklist: registry (`_SCHEMA_COLUMN_REGISTRY`) → CREATE TABLE → bootstrap (`_BOOTSTRAP_DDL`, test `test_schema_bootstrap` bắt drift) → INSERT (mọi hàm add) → UPDATE allowlist + SET → row parser. Test `test_schema_bootstrap` chỉ bắt drift bootstrap-vs-schema, không bắt thiếu cột ở INSERT — phải tự soát.
 2. **Mỗi provider đặt tên field context khác nhau — gom vào một parser.** OpenRouter: `context_length`. Gemini: `inputTokenLimit`. 9router fork: snake_case top-level (`context_length`, `max_completion_tokens`) + nested `capabilities.contextWindow`. Client chỉ đọc top-level, thiếu là đoán bừa từ tên model (372k đọc thành 1.05M rồi không bao giờ tới ngưỡng compact). Giữ `_upstream_context_window` làm single choke point: thêm provider mới = thêm field name vào đó, không rải lookup khắp nơi. Key của `model_contexts` normalize (str/lower/strip) ngay lúc save và lúc read (`_normalize_model_contexts`) để lookup khớp 100%, khỏi phụ thuộc bên đọc thử nhiều spelling.
+
+---
+
+## Bug ẩn: refresh endpoint xóa context cũ + custom endpoint shadow native id (2026-10-26, phát hiện bởi operator trên traffic thật)
+
+### Triệu chứng
+1. Sau một lần bấm Refresh endpoint (hoặc `fetch_models` chạy nền), context window của model bỗng rớt về 200k dù trước đó hiện đúng (vd muse-1.3 1M). Không có lỗi, không có log — mất âm thầm.
+2. Một custom endpoint liệt kê model trùng id với native alias (vd `flash`) → entry trên `/v1/models` mất context (entry custom không context đè entry native).
+
+### Root cause
+1. `fetch_models` ghi đè `model_contexts` bằng dict mới parse từ upstream. Upstream hiccup trả list thiếu, hoặc rename model → context của model vắng mặt bị xóa luôn. `endpoint_default = max(...)` trên dict rỗng/new-partial cũng lệch hoặc về 0.
+2. `model_resolution.list_models` append entry custom mà không check trùng native id. Entry custom không có `context_length` → shadow entry native có context đầy đủ (client thấy model nhưng sai window).
+
+### Fix
+- `src/core/providers/custom_endpoint/manager.py` (`fetch_models`): merge với `prev_contexts` cũ — chỉ ghi đè key nào parse được, giữ key cũ còn lại; khi upstream trả rỗng thì giữ `prev_default` thay vì về 0.
+- `src/core/router/core/model_resolution.py` (`list_models`): native alias wins — `continue` bỏ qua custom model trùng id native (anti-hijack, unreachable anyway); khi upstream không advertise window thì fallback qua `get_model_safe_context_length` như nhánh per-account thay vì emit None.
+
+### Test hồi quy
+`tests/test_custom_context_and_interrupt.py`: `TestRefreshMergesStaleContexts` (2 tests: model vắng mặt giữ context cũ + default giữ max cũ; upstream rỗng giữ nguyên) và `TestNativeWinsOverCustomShadow` (1 test: native id không bị duplicate, owned_by vẫn router_api, context giữ nguyên).
+
+### Bài học
+- Mọi sync từ upstream (refresh/fetch) phải merge, không overwrite — upstream là nguồn không tin cậy được (partial list, rename, hiccup). Quy tắc: chỉ ghi đè cái parse được, giữ lại cái cũ còn lại.
+- `/v1/models` là hợp của nhiều nguồn (native alias + operator endpoints + per-account). Mỗi nguồn append phải check trùng id với nguồn ưu tiên cao hơn, nếu không entry nghèo context sẽ shadow entry giàu context.

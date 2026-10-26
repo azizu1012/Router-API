@@ -48,8 +48,24 @@ class ModelResolutionMixin:
                 if ep.get("account_id"):
                     continue
                 for mid in (ep.get("enabled_models") or ep.get("models") or []):
+                    if any(m["id"] == mid for m in models):
+                        # Native alias wins: a custom endpoint re-advertising a
+                        # native id is unreachable anyway (anti-hijack), and
+                        # appending it would shadow the native entry's context
+                        # with an empty one.
+                        continue
                     contexts = ep.get("model_contexts") or {}
                     cl = contexts.get(str(mid or "").strip().lower()) or ep.get("context_length") or 0
+                    if not cl:
+                        # Upstream advertised no window: fall back the same way
+                        # the per-account branch does instead of emitting None.
+                        try:
+                            from src.logical_HQ_translator.model.alias import (
+                                get_model_safe_context_length as _safe_ctx,
+                            )
+                            cl = _safe_ctx(mid, ep.get("name"))
+                        except Exception:
+                            cl = 0
                     entry = {
                         "id": mid,
                         "object": "model",
