@@ -128,6 +128,7 @@ tests/*
 scripts/*
 !scripts/scan_secrets.py
 !scripts/scan_security.py
+!scripts/HOW_TO_UPDATE_ORIGIN_FROM_UPSTREAM.md
 
 # ─── Dev utilities ───
 clean_cache.bat
