@@ -43,11 +43,8 @@ By area (biggest first): `tests/unit` 37, `src/app` 17, `open-sse/providers` 16,
 
 What is uniquely yours (keep on every upgrade):
 
-- **Deleted, keep deleted**: `.github/workflows/gitbook-pages.yml`,
-  `open-sse/providers/registry/runcrate.js`, `open-sse/services/opencodeTlsClient.js`,
-  `open-sse/handlers/{embeddingProviders,ttsProviders}/ollamaLocal.js`,
-  plus dropped tests (`claude-haiku-adaptive-thinking`, `commandcode-kimi-k3-1-pro`,
-  `deepseek-v41-flash-upstream-id`, `ollama-local-*`, `tool-result-image-url`, ...).
+- **Ban chu y xoa (1 file, giu nguyen)**: `.github/workflows/gitbook-pages.yml` — fork tu xoa o `ffa70ed8` vi ly do bao mat (bo gitbook deploy workflow, doc Windsurf Firebase key tu env). Nang cap sau van giu xoa, tru khi muon deploy gitbook tro lai.
+- **Con lai KHONG phai do fork xoa** — do la file upstream MOI THEM sau lan port cuoi (v0.5.109 -> v0.5.111) nen fork chua tung co: `open-sse/providers/registry/runcrate.js` (provider Runcrate moi), `open-sse/services/opencodeTlsClient.js`, `open-sse/handlers/{embeddingProviders,ttsProviders}/ollamaLocal.js` (Ollama local embedding/TTS), va cac test moi (`ollama-local-*`, `tool-result-image-url`, ...). Khi upgrade, tu quyet dinh lay file nao (vd muon Ollama local thi lay, khong thi bo qua) — khong phai "giu xoa".
 - **Added, keep**: `scripts/prune-standalone-runtime-state.mjs`,
   `scripts/verify-key-gate.mjs`, `scripts/verify-limits.mjs`,
   `scripts/win-eperm-fix.js`, `src/lib/db/migrations/002-api-key-limits.js`,
