@@ -78,32 +78,58 @@ class ClientPool:
 
     # ── API throttling / pacing ──────────────────────────────────
 
-    async def throttle(self, api_key: str, last_used: float) -> None:
-        """Apply global + per-key jittered interval before the next API call."""
-        sleep_duration = 0.0
-        async with self._throttle_lock:
-            now = time.time()
-            global_interval = max(0.2, config.GEMINI_API_GLOBAL_INTERVAL)
-            jitter = random.uniform(-global_interval * 0.4, global_interval * 0.4)
-            target_global = max(0.2, global_interval + jitter)
-            # Cap the scheduled delay to at most target_global from now so a burst
-            # of requests or retries does not create an unbounded multi-minute queue.
-            scheduled_time = max(now, min(now + target_global, self._last_api_time + target_global))
-            sleep_duration = scheduled_time - now
-            self._last_api_time = scheduled_time
+    async def throttle(self, api_key: str, last_used: float = 0.0) -> None:
+        """Apply global + per-key jittered interval before the next API call.
 
-        if sleep_duration > 0:
+        Uses atomic timeline reservation inside self._throttle_lock:
+        - Layer 1 (Global Pacing): Enforces a minimum interval between any API dispatches.
+        - Layer 2 (Per-Key Pacing): Enforces a minimum interval between calls on the SAME API key.
+        Prevents race conditions when concurrent requests pick the same key, ensuring calls
+        never exceed safe 1-second burst limits.
+        """
+        sleep_duration = 0.0
+
+        async with self._throttle_lock:
+            current_time = time.time()
+
+            # 1. Global pacing with jitter
+            global_interval = max(0.05, config.GEMINI_API_GLOBAL_INTERVAL)
+            global_jitter = random.uniform(-global_interval * 0.3, global_interval * 0.3)
+            target_global = max(0.05, global_interval + global_jitter)
+
+            base_global = max(current_time, self._last_api_time)
+            scheduled_global = base_global + target_global
+            self._last_api_time = scheduled_global
+
+            # 2. Per-key pacing with jitter (atomic reservation)
+            key_interval = max(0.1, config.GEMINI_API_KEY_INTERVAL)
+            key_jitter = random.uniform(-key_interval * 0.25, key_interval * 0.25)
+            target_key = max(0.1, key_interval + key_jitter)
+
+            key_prev = max(self._key_last_used.get(api_key, 0.0), last_used)
+            base_key = max(current_time, key_prev)
+            scheduled_key = base_key + target_key
+            self._key_last_used[api_key] = scheduled_key
+
+            # Dispatch time is the maximum of the earliest slot required by global vs key pacing
+            target_dispatch = max(scheduled_global - target_global, scheduled_key - target_key)
+
+            # Cap maximum pacing queue to 5.0s to prevent unbounded debt accumulation
+            MAX_PACING_QUEUE = 5.0
+            if target_dispatch - current_time > MAX_PACING_QUEUE:
+                target_dispatch = current_time + MAX_PACING_QUEUE + random.uniform(0.02, 0.1)
+                self._last_api_time = target_dispatch
+                self._key_last_used[api_key] = target_dispatch
+
+            sleep_duration = max(0.0, target_dispatch - current_time)
+
+        if sleep_duration > 0.001:
             await asyncio.sleep(sleep_duration)
 
-        now = time.time()
-        key_interval = max(0.3, config.GEMINI_API_KEY_INTERVAL)
-        key_jitter = random.uniform(-key_interval * 0.3, key_interval * 0.3)
-        target_key = max(0.3, key_interval + key_jitter)
-        if now - last_used < target_key:
-            await asyncio.sleep(target_key - (now - last_used))
-
     def record_key_usage(self, api_key: str) -> None:
-        self._key_last_used[api_key] = time.time()
+        now = time.time()
+        if now > self._key_last_used.get(api_key, 0.0):
+            self._key_last_used[api_key] = now
 
     def get_key_last_used(self, api_key: str) -> float:
         return self._key_last_used.get(api_key, 0.0)
