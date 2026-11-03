@@ -33,12 +33,19 @@ def _get_int(name: str, default: int, min_v=None, max_v=None) -> int:
     return value
 
 
+_NON_KEY_ENV_NAMES = {
+    "GEMINI_API_KEY_INTERVAL",
+}
+
+
 def _load_gemini_keys() -> List[str]:
     seen: set[str] = set()
     keys: List[str] = []
     env_names = sorted(
         name for name in os.environ
-        if name.upper().startswith("GEMINI_API_KEY_") and "TOMTAT" not in name.upper()
+        if name.upper().startswith("GEMINI_API_KEY_")
+        and name.upper() not in _NON_KEY_ENV_NAMES
+        and "TOMTAT" not in name.upper()
     )
     for name in env_names:
         val = (os.getenv(name) or "").strip()

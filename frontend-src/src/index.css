@@ -119,29 +119,32 @@
   box-shadow: 0 16px 40px 0 rgba(255, 77, 109, 0.05);
 }
 
-/* Interactive Card Modifier */
+/* Interactive Card Modifier (Fluid & Grounded) */
 .glass-card-interactive {
   cursor: pointer;
+  transition: transform 0.3s cubic-bezier(0.16, 1, 0.3, 1), border-color 0.3s ease, box-shadow 0.3s ease;
 }
 .glass-card-interactive:hover {
   border-color: rgba(99, 102, 241, 0.35) !important;
-  box-shadow: 0 24px 60px -15px rgba(99, 102, 241, 0.22) !important;
-  transform: translateY(-4px) scale(1.015) !important;
+  box-shadow: 0 16px 36px -10px rgba(0, 0, 0, 0.35), 0 0 0 1px rgba(99, 102, 241, 0.2) !important;
+  transform: translateY(-2px) !important;
 }
 .glass-card-interactive:active {
-  transform: translateY(-1px) scale(0.99) !important;
+  transform: translateY(0px) scale(0.995) !important;
+  box-shadow: 0 8px 20px -6px rgba(0, 0, 0, 0.25) !important;
 }
 
 [data-theme="light"] .glass-card-interactive:hover {
-  border-color: rgba(79, 70, 229, 0.3) !important;
-  box-shadow: 0 24px 60px -15px rgba(79, 70, 229, 0.12) !important;
+  border-color: rgba(79, 70, 229, 0.25) !important;
+  box-shadow: 0 16px 36px -10px rgba(79, 70, 229, 0.08), 0 0 0 1px rgba(79, 70, 229, 0.15) !important;
+  transform: translateY(-2px) !important;
 }
 
 [data-theme="valentine"] .glass-card-interactive:hover {
-  border-color: rgba(255, 77, 109, 0.45) !important;
-  box-shadow: 0 24px 60px -15px rgba(255, 77, 109, 0.18) !important;
+  border-color: rgba(255, 77, 109, 0.35) !important;
+  box-shadow: 0 16px 36px -10px rgba(255, 77, 109, 0.12), 0 0 0 1px rgba(255, 77, 109, 0.2) !important;
+  transform: translateY(-2px) !important;
 }
-
 /* ─── Shake error animation ─── */
 .animate-shake {
   animation: shake 0.4s ease-in-out;
@@ -313,4 +316,24 @@
 .cascade-9 { animation-delay: 675ms !important; }
 .cascade-10 { animation-delay: 750ms !important; }
 
+
+/* ─── Living Breathing Pulse & Motion Utilities ─── */
+@keyframes breathingGlow {
+  0%, 100% {
+    transform: scale(1);
+    opacity: 0.9;
+  }
+  50% {
+    transform: scale(1.2);
+    opacity: 0.5;
+  }
+}
+
+.animate-breathing {
+  animation: breathingGlow 3s cubic-bezier(0.4, 0, 0.6, 1) infinite;
+}
+
+.tabular-nums {
+  font-variant-numeric: tabular-nums;
+}
 

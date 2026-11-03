@@ -234,6 +234,19 @@ export default function CanvasParticles() {
     window.addEventListener('spawn-custom-particles', handleSpawnParticles);
     window.addEventListener('trigger-back-event', handleBackEvent);
 
+    // Interactive organic pointer state
+    const mouse = { x: -1000, y: -1000, tx: -1000, ty: -1000, active: false };
+    const handleMouseMove = (e) => {
+      mouse.tx = e.clientX;
+      mouse.ty = e.clientY;
+      mouse.active = true;
+    };
+    const handleMouseLeave = () => {
+      mouse.active = false;
+    };
+    window.addEventListener('mousemove', handleMouseMove, { passive: true });
+    document.addEventListener('mouseleave', handleMouseLeave);
+
     let sunClicks = 0;
     let moonClicks = 0;
     const handleWindowClick = (e) => {
@@ -353,6 +366,15 @@ export default function CanvasParticles() {
     function draw() {
       time += 0.015;
       ctx.clearRect(0, 0, W, H);
+      // Smoothly interpolate pointer with spring ease
+      if (mouse.active) {
+        mouse.x += (mouse.tx - mouse.x) * 0.12;
+        mouse.y += (mouse.ty - mouse.y) * 0.12;
+      } else {
+        mouse.x += (-1000 - mouse.x) * 0.05;
+        mouse.y += (-1000 - mouse.y) * 0.05;
+      }
+
       
       const activeTheme = document.documentElement.getAttribute('data-theme') || 'dark';
 
@@ -590,22 +612,55 @@ export default function CanvasParticles() {
         ctx.fill();
         ctx.restore();
 
+        // Ambient starlight cursor aura
+        if (mouse.active && mouse.x > 0 && mouse.y > 0) {
+          const cursorGlow = ctx.createRadialGradient(mouse.x, mouse.y, 0, mouse.x, mouse.y, 130);
+          cursorGlow.addColorStop(0, 'rgba(129, 140, 248, 0.08)');
+          cursorGlow.addColorStop(0.6, 'rgba(99, 102, 241, 0.02)');
+          cursorGlow.addColorStop(1, 'rgba(99, 102, 241, 0)');
+          ctx.fillStyle = cursorGlow;
+          ctx.beginPath();
+          ctx.arc(mouse.x, mouse.y, 130, 0, Math.PI * 2);
+          ctx.fill();
+        }
+
         stars.forEach(s => {
           s.phase += s.speed;
           const alpha = 0.15 + 0.8 * Math.abs(Math.sin(s.phase));
           
+          let drawX = s.x;
+          let drawY = s.y;
+          if (mouse.active) {
+            const dx = s.x - mouse.x;
+            const dy = s.y - mouse.y;
+            const dist = Math.hypot(dx, dy);
+            if (dist < 110 && dist > 0) {
+              const force = 1 - dist / 110;
+              drawX += (dx / dist) * force * 14;
+              drawY += (dy / dist) * force * 14;
+
+              // Delicate constellation thread
+              ctx.beginPath();
+              ctx.moveTo(drawX, drawY);
+              ctx.lineTo(mouse.x, mouse.y);
+              ctx.strokeStyle = `rgba(165, 180, 252, ${force * 0.3})`;
+              ctx.lineWidth = 0.75;
+              ctx.stroke();
+            }
+          }
+          
           ctx.fillStyle = `rgba(255, 255, 255, ${alpha})`;
           if (s.isCross && alpha > 0.45) {
             ctx.beginPath();
-            ctx.moveTo(s.x, s.y - s.r * 2.8);
-            ctx.quadraticCurveTo(s.x, s.y, s.x + s.r * 2.8, s.y);
-            ctx.quadraticCurveTo(s.x, s.y, s.x, s.y + s.r * 2.8);
-            ctx.quadraticCurveTo(s.x, s.y, s.x - s.r * 2.8, s.y);
-            ctx.quadraticCurveTo(s.x, s.y, s.x, s.y - s.r * 2.8);
+            ctx.moveTo(drawX, drawY - s.r * 2.8);
+            ctx.quadraticCurveTo(drawX, drawY, drawX + s.r * 2.8, drawY);
+            ctx.quadraticCurveTo(drawX, drawY, drawX, drawY + s.r * 2.8);
+            ctx.quadraticCurveTo(drawX, drawY, drawX - s.r * 2.8, drawY);
+            ctx.quadraticCurveTo(drawX, drawY, drawX, drawY - s.r * 2.8);
             ctx.fill();
           } else {
             ctx.beginPath();
-            ctx.arc(s.x, s.y, s.r, 0, Math.PI * 2);
+            ctx.arc(drawX, drawY, s.r, 0, Math.PI * 2);
             ctx.fill();
           }
         });
@@ -718,6 +773,8 @@ export default function CanvasParticles() {
       window.removeEventListener('spawn-custom-particles', handleSpawnParticles);
       window.removeEventListener('trigger-back-event', handleBackEvent);
       window.removeEventListener('click', handleWindowClick);
+      window.removeEventListener('mousemove', handleMouseMove);
+      document.removeEventListener('mouseleave', handleMouseLeave);
       cancelAnimationFrame(animationFrameId);
     };
   }, []);

@@ -217,12 +217,13 @@ def test_resolve_combo_target_load_balance():
 # 4. Database CRUD & Schema Auto-Migration for Combo Aliases
 # ---------------------------------------------------------------------------
 
-def test_alias_db_combo_persistence():
+def test_alias_db_combo_persistence(temp_db):
     from src.backend.models.aliases import (
         add_alias_db,
         get_alias_by_id_db,
         resolve_alias_db,
         update_alias_db,
+        delete_alias_db,
     )
     import uuid
 
@@ -242,30 +243,33 @@ def test_alias_db_combo_persistence():
         label="Test combo alias",
     )
     assert bool(alias_id)
+    try:
 
-    record = get_alias_by_id_db(alias_id)
-    assert record is not None
-    assert record["alias_name"] == alias_name
-    assert record["strategy"] == "waterfall"
-    assert record["targets"] == json.dumps(targets)
-    assert record["context_length"] == 0
+        record = get_alias_by_id_db(alias_id)
+        assert record is not None
+        assert record["alias_name"] == alias_name
+        assert record["strategy"] == "waterfall"
+        assert record["targets"] == json.dumps(targets)
+        assert record["context_length"] == 0
 
-    # Resolving alias should return targets and computed context length
-    resolved = resolve_alias_db(account_id="acc-test-123", alias_name=alias_name)
-    assert resolved is not None
-    assert resolved["target_model"] == "gemini-flash"
-    assert resolved["targets"] == json.dumps(targets)
-    assert resolved["strategy"] == "waterfall"
+        # Resolving alias should return targets and computed context length
+        resolved = resolve_alias_db(account_id="acc-test-123", alias_name=alias_name)
+        assert resolved is not None
+        assert resolved["target_model"] == "gemini-flash"
+        assert resolved["targets"] == json.dumps(targets)
+        assert resolved["strategy"] == "waterfall"
 
-    # Update alias
-    update_alias_db(
-        alias_id=alias_id,
-        strategy="load_balance",
-        context_length=32000,
-    )
-    updated = get_alias_by_id_db(alias_id)
-    assert updated["strategy"] == "load_balance"
-    assert updated["context_length"] == 32000
+        # Update alias
+        update_alias_db(
+            alias_id=alias_id,
+            strategy="load_balance",
+            context_length=32000,
+        )
+        updated = get_alias_by_id_db(alias_id)
+        assert updated["strategy"] == "load_balance"
+        assert updated["context_length"] == 32000
+    finally:
+        delete_alias_db(alias_id)
 
 
 # ---------------------------------------------------------------------------

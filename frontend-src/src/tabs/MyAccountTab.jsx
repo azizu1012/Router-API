@@ -192,8 +192,8 @@ export default function MyAccountTab() {
         <div className="space-y-2 text-xs">
           <Card.Row label={t('lbl_pool_rpd', lang)} value={fmt(poolData.rpd_left)} color={colorClass} />
           <Card.Row label={t('lbl_pool_1h', lang)} value={fmt(poolData.tokens_1h_left)} color="text-success" />
-          <Card.Row label={t('lbl_pool_12h', lang)} value={fmt(poolData.tokens_12h_left)} color="text-warning" />
-          <Card.Row label={t('lbl_pool_24h', lang)} value={fmt(poolData.tokens_24h_left)} color="text-primary" />
+          <Card.Row label={t('lbl_pool_reset_time', lang)} value={resetCountdown} color="text-warning font-mono" />
+          <Card.Row label={t('lbl_pool_24h', lang)} value={fmt(poolData.tokens_24h_left)} color="text-primary font-bold" />
         </div>
       </Card>
     );

@@ -315,15 +315,15 @@ export default function OverviewTab() {
             key={i}
             onClick={card.onClick}
             onDoubleClick={card.onDoubleClick}
-            className={`card glass-card flex items-center gap-3 p-4 rounded-2xl border border-base-content/5 transition-all duration-300 hover:scale-[1.03] active:scale-[0.97] cursor-pointer hover:border-primary/20 hover:bg-base-200/35 animate-fade-in-up ${card.delay}`}
+            className={`glass-card glass-card-interactive flex items-center gap-3.5 p-4 rounded-2xl border border-base-content/8 shadow-[inset_0_1px_0_0_rgba(255,255,255,0.06)] hover:bg-base-200/40 select-none animate-fade-in-up ${card.delay}`}
           >
             <div className={`w-10 h-10 rounded-xl flex items-center justify-center border shadow-sm shrink-0 ${card.colorClass}`}>
               {card.icon}
             </div>
             <div className="flex-1 min-w-0">
-              <span className="text-[10px] font-bold text-base-content/45 uppercase tracking-wider block truncate">{card.title}</span>
-              <span className="text-lg font-black tracking-tight text-base-content mt-0.5 block leading-none truncate">{card.value}</span>
-              <span className="text-[9px] font-bold text-base-content/40 flex items-center gap-1 mt-1">
+              <span className="text-[10px] font-bold text-base-content/50 uppercase tracking-wider block truncate">{card.title}</span>
+              <span className="text-lg font-bold tracking-tight text-base-content mt-1 block leading-none truncate tabular-nums">{card.value}</span>
+              <span className="text-[9px] font-medium text-base-content/40 flex items-center gap-1.5 mt-1.5">
                 <span className={`w-1.5 h-1.5 rounded-full shrink-0 ${card.dotColor} animate-pulse`}></span>
                 <span className="truncate">{card.subtext}</span>
               </span>

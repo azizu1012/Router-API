@@ -1,10 +1,10 @@
 const variants = {
-  primary: 'bg-primary text-primary-content hover:brightness-110 shadow-lg shadow-primary/25 border border-primary/30',
-  secondary: 'bg-base-200/70 text-base-content hover:bg-base-300/70 border border-base-content/10',
-  ghost: 'text-base-content/70 hover:bg-base-content/5 hover:text-base-content border border-transparent',
-  outline: 'border border-base-content/20 text-base-content/80 hover:border-primary/40 hover:text-primary bg-transparent',
-  danger: 'bg-error/15 text-error hover:bg-error/25 border border-error/20',
-  success: 'bg-success/15 text-success hover:bg-success/25 border border-success/20',
+  primary: 'bg-primary text-primary-content border border-primary/40 shadow-[inset_0_1px_0_0_rgba(255,255,255,0.28),0_4px_12px_rgba(99,102,241,0.25)] hover:shadow-[inset_0_1px_0_0_rgba(255,255,255,0.36),0_6px_18px_rgba(99,102,241,0.35)] hover:brightness-105 active:translate-y-[1px] active:shadow-[inset_0_1px_0_0_rgba(255,255,255,0.15),0_2px_4px_rgba(99,102,241,0.2)]',
+  secondary: 'bg-base-200/80 text-base-content border border-base-content/10 shadow-[inset_0_1px_0_0_rgba(255,255,255,0.06)] hover:bg-base-300/80 hover:border-base-content/20 active:translate-y-[1px]',
+  ghost: 'text-base-content/75 hover:bg-base-content/6 hover:text-base-content border border-transparent active:translate-y-[1px]',
+  outline: 'border border-base-content/15 text-base-content/85 shadow-[inset_0_1px_0_0_rgba(255,255,255,0.04)] hover:border-primary/40 hover:text-primary hover:bg-primary/5 active:translate-y-[1px]',
+  danger: 'bg-error/15 text-error border border-error/25 shadow-[inset_0_1px_0_0_rgba(255,255,255,0.06)] hover:bg-error/25 active:translate-y-[1px]',
+  success: 'bg-success/15 text-success border border-success/25 shadow-[inset_0_1px_0_0_rgba(255,255,255,0.06)] hover:bg-success/25 active:translate-y-[1px]',
 };
 
 const sizes = {
@@ -26,7 +26,7 @@ export default function Button({
 }) {
   return (
     <button
-      className={`btn inline-flex items-center justify-center font-bold transition-all duration-150 ease-out active:scale-[0.97] disabled:opacity-50 disabled:cursor-not-allowed disabled:active:scale-100 ${variants[variant] || variants.primary} ${sizes[size] || sizes.sm} ${className}`}
+      className={`btn inline-flex items-center justify-center font-semibold transition-all duration-200 ease-[cubic-bezier(0.16,1,0.3,1)] active:scale-[0.98] select-none disabled:opacity-50 disabled:cursor-not-allowed disabled:active:scale-100 disabled:active:translate-y-0 ${variants[variant] || variants.primary} ${sizes[size] || sizes.sm} ${className}`}
       disabled={disabled || loading}
       {...props}
     >

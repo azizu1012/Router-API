@@ -22,8 +22,13 @@ export default function Badge({
   className = '',
 }) {
   return (
-    <span className={`inline-flex items-center gap-1 font-extrabold uppercase rounded-full ${variants[variant] || variants.ghost} ${sizes[size] || sizes.xs} ${className}`}>
-      {dot && <span className="w-1.5 h-1.5 rounded-full bg-current" />}
+    <span className={`inline-flex items-center gap-1.5 font-bold tracking-wider uppercase rounded-full ${variants[variant] || variants.ghost} ${sizes[size] || sizes.xs} ${className}`}>
+      {dot && (
+        <span className="relative flex h-1.5 w-1.5">
+          <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-current opacity-60" />
+          <span className="relative inline-flex rounded-full h-1.5 w-1.5 bg-current" />
+        </span>
+      )}
       {Icon && <Icon className="w-3 h-3" />}
       {children}
     </span>
@@ -32,7 +37,7 @@ export default function Badge({
 
 Badge.Status = function StatusBadge({ active, children, ...props }) {
   return (
-    <Badge variant={active ? 'success' : 'ghost'} size="sm" dot={!active} {...props}>
+    <Badge variant={active ? 'success' : 'ghost'} size="sm" dot={Boolean(active)} {...props}>
       {children || (active ? 'Active' : 'Inactive')}
     </Badge>
   );

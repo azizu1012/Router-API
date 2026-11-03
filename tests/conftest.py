@@ -41,7 +41,8 @@ import network_guard          # noqa: E402
 REAL_DB = 'usage.db'
 
 TABLES = ('accounts', 'account_keys', 'account_credentials', 'invite_codes',
-          'custom_endpoints', 'model_config', 'key_status', 'key_penalties')
+          'custom_endpoints', 'model_config', 'key_status', 'key_penalties',
+          'model_aliases')
 
 
 def _row_counts(path):

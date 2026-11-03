@@ -5,7 +5,8 @@ import CanvasParticles from './components/CanvasParticles';
 import ThemeLanguageSelector from './components/ThemeLanguageSelector';
 import {
   LayoutDashboard, Key, Users, PieChart, Network,
-  AlertTriangle, ShieldCheck, User, BarChart3, LogOut, Lock, Eye, EyeOff, Settings, Terminal, Layers, BookOpen, Sparkles
+  AlertTriangle, ShieldCheck, User, BarChart3, LogOut, Lock, Eye, EyeOff, Settings, Terminal, Layers, BookOpen, Sparkles,
+  ChevronRight, Cpu, Activity
 } from 'lucide-react';
 import LogHistoryModal from './components/LogHistoryModal';
 
@@ -316,191 +317,177 @@ export default function App() {
       </div>
     );
   }
-
   const isAdmin = user?.tier === 'admin';
+
+  const navSections = [
+    {
+      group: 'Operations',
+      adminOnly: true,
+      items: [
+        { id: 'ov', label: t('nav_ov', lang), icon: LayoutDashboard },
+        { id: 'ks', label: t('nav_ks', lang), icon: Key },
+        { id: 'ac', label: t('nav_ac', lang), icon: Users },
+      ]
+    },
+    {
+      group: 'Routing & Models',
+      adminOnly: false,
+      items: [
+        { id: 'md', label: t('nav_md', lang) || 'Model Pools', icon: Layers, adminOnly: true },
+        { id: 'ma', label: 'Model Aliases', icon: Sparkles },
+        { id: 'cm', label: 'Combo Models', icon: Network },
+        { id: 'ep', label: t('nav_ep', lang), icon: Cpu, adminOnly: true },
+      ]
+    },
+    {
+      group: 'Observability',
+      adminOnly: true,
+      items: [
+        { id: 'us', label: t('nav_us', lang), icon: PieChart },
+        { id: 'pe', label: t('nav_pe', lang), icon: AlertTriangle },
+        { id: 'mu', label: t('nav_mu', lang), icon: ShieldCheck },
+      ]
+    },
+    {
+      group: 'Workspace & System',
+      adminOnly: false,
+      items: [
+        { id: 'myacc', label: t('nav_myacc', lang), icon: User },
+        { id: 'myuse', label: t('nav_myuse', lang), icon: BarChart3 },
+        { id: 'st', label: t('nav_st', lang) || 'Cấu hình Hệ thống', icon: Settings, adminOnly: true },
+        { id: 'help', label: t('nav_help', lang) || 'API Reference', icon: BookOpen, adminOnly: true },
+      ]
+    }
+  ];
+
+  const currentTabItem = navSections
+    .flatMap(s => s.items)
+    .find(it => it.id === activeTab) || { label: 'Dashboard', icon: LayoutDashboard };
+  const CurrentIcon = currentTabItem.icon;
 
   // 4. Render Main Dashboard Shell
   return (
     <div className="relative h-screen w-full flex flex-col overflow-hidden">
       <CanvasParticles />
       
-      {/* Header */}
-      <header className="h-16 flex items-center justify-between px-3 sm:px-6 border-b border-base-content/5 glass-nav z-30 fixed top-0 w-full">
-        <div onClick={handleStatusClick} className="flex items-center gap-2 sm:gap-3 cursor-pointer select-none group">
-          <div className="w-2.5 h-2.5 rounded-full bg-emerald-500 animate-pulse group-hover:scale-125 transition-transform"></div>
-          <span className="font-extrabold text-xs sm:text-sm tracking-tight group-hover:text-primary transition-colors">{t('header_title', lang)}</span>
-          {loading && <span className="loading loading-ring loading-xs text-indigo-400"></span>}
+      {/* Framework Top Header */}
+      <header className="h-14 flex items-center justify-between px-3 sm:px-6 border-b border-base-content/8 glass-nav z-30 fixed top-0 w-full select-none">
+        {/* Left: Brand + Breadcrumbs */}
+        <div className="flex items-center gap-3">
+          <div onClick={handleStatusClick} className="flex items-center gap-2 cursor-pointer group">
+            <div className="relative flex items-center justify-center w-8 h-8 rounded-xl bg-primary/10 border border-primary/25 shadow-sm group-hover:scale-105 transition-transform duration-200">
+              <Activity className="w-4 h-4 text-primary" />
+              <span className="w-1.5 h-1.5 rounded-full bg-emerald-500 absolute -top-0.5 -right-0.5 animate-breathing ring-2 ring-base-100" />
+            </div>
+            <span className="font-extrabold text-xs sm:text-sm tracking-tight text-base-content group-hover:text-primary transition-colors">
+              {t('header_title', lang)}
+            </span>
+          </div>
+
+          <div className="hidden sm:flex items-center gap-2 text-xs text-base-content/40 pl-2 border-l border-base-content/10">
+            <ChevronRight className="w-3.5 h-3.5 opacity-60" />
+            <span className="font-semibold text-base-content/80 flex items-center gap-1.5">
+              <CurrentIcon className="w-3.5 h-3.5 text-primary" />
+              {currentTabItem.label}
+            </span>
+            {loading && <span className="loading loading-ring loading-xs text-primary ml-1" />}
+          </div>
         </div>
         
-        <div className="flex items-center gap-2 sm:gap-4 lg:gap-6">
+        {/* Right: Quick Action, Eggs, Theme & Lang */}
+        <div className="flex items-center gap-2 sm:gap-3">
+          <button
+            onClick={() => setShowLogsModal(true)}
+            className="btn btn-xs h-7 px-2.5 rounded-lg font-medium gap-1.5 border border-base-content/10 hover:border-emerald-500/30 hover:bg-emerald-500/10 text-base-content/80 hover:text-emerald-400 transition-all active:scale-95"
+            title="Open Live Log Stream"
+          >
+            <Terminal className="w-3.5 h-3.5 text-emerald-400" />
+            <span className="hidden md:inline text-[11px]">Live Logs</span>
+          </button>
+
           <button 
             onClick={() => setShowEggsModal(true)}
-            className="btn btn-xs btn-outline hover:bg-amber-500/10 border-amber-500/25 text-amber-500 gap-1 rounded-full font-bold transition-all hover:scale-105 active:scale-95 px-2"
-            title="Click to view easter eggs tracker"
+            className="btn btn-xs h-7 px-2.5 rounded-lg border border-amber-500/20 bg-amber-500/5 hover:bg-amber-500/15 text-amber-500 gap-1 text-[11px] font-bold transition-all active:scale-95"
+            title="Easter Eggs Tracker"
           >
             <span>🎯 <span className="hidden sm:inline">Eggs:</span> {foundEggs.length}/9</span>
           </button>
+          
           <ThemeLanguageSelector />
-          
-          <div onClick={handleSakuraClick} className="flex items-center gap-1.5 sm:gap-2 cursor-pointer select-none hover:scale-105 transition-all">
-            <div className="w-7 h-7 sm:w-8 sm:h-8 rounded-full bg-indigo-500/20 text-indigo-400 font-bold flex items-center justify-center text-xs uppercase border border-indigo-500/30">
-              {user?.name?.substring(0, 2).toUpperCase()}
-            </div>
-            <div className="hidden md:flex flex-col text-left">
-              <span className="text-xs font-bold text-base-content/90 leading-tight">{user?.name}</span>
-              <span className={`badge badge-xs text-[9px] font-extrabold uppercase mt-0.5 ${
-                user?.tier === 'admin' ? 'badge-primary' : user?.tier === 'premium' ? 'badge-accent' : 'badge-ghost'
-              }`}>
-                {user?.tier}
-              </span>
-            </div>
-          </div>
-          
-          <button 
-            onClick={logout}
-            className="btn btn-ghost btn-sm text-error/85 hover:text-error hover:bg-error/10 gap-1 normal-case font-bold px-2"
-          >
-            <LogOut className="w-4 h-4" />
-            <span className="hidden sm:inline">{t('logout_btn', lang)}</span>
-          </button>
         </div>
       </header>
 
       {/* Main Body */}
-      <div className="flex flex-col lg:flex-row flex-1 pt-16 h-[calc(100vh-4rem)] overflow-hidden">
-        {/* Sidebar */}
-        <aside className="w-full lg:w-64 glass-nav flex flex-row lg:flex-col p-2 lg:p-4 gap-1 z-20 overflow-x-auto lg:overflow-y-auto h-auto lg:h-full shrink-0 border-b lg:border-b-0 lg:border-r border-base-content/5">
-          {/* Admin Navigation */}
-          {isAdmin && (
-            <>
-              <button 
-                onClick={() => setActiveTab('ov')} 
-                className={`btn btn-xs lg:btn-sm btn-ghost justify-start gap-2 lg:gap-3 normal-case font-medium w-auto lg:w-full text-left rounded-xl shrink-0 whitespace-nowrap ${activeTab === 'ov' ? 'bg-primary/15 text-primary font-bold border border-primary/20' : 'text-base-content/75'}`}
-              >
-                <LayoutDashboard className="w-4 h-4" />
-                <span>{t('nav_ov', lang)}</span>
-              </button>
-              
-              <button 
-                onClick={() => setActiveTab('ks')} 
-                className={`btn btn-xs lg:btn-sm btn-ghost justify-start gap-2 lg:gap-3 normal-case font-medium w-auto lg:w-full text-left rounded-xl shrink-0 whitespace-nowrap ${activeTab === 'ks' ? 'bg-primary/15 text-primary font-bold border border-primary/20' : 'text-base-content/75'}`}
-              >
-                <Key className="w-4 h-4" />
-                <span>{t('nav_ks', lang)}</span>
-              </button>
-              
-              <button 
-                onClick={() => setActiveTab('ac')} 
-                className={`btn btn-xs lg:btn-sm btn-ghost justify-start gap-2 lg:gap-3 normal-case font-medium w-auto lg:w-full text-left rounded-xl shrink-0 whitespace-nowrap ${activeTab === 'ac' ? 'bg-primary/15 text-primary font-bold border border-primary/20' : 'text-base-content/75'}`}
-              >
-                <Users className="w-4 h-4" />
-                <span>{t('nav_ac', lang)}</span>
-              </button>
-              
-              <div className="divider hidden lg:flex opacity-20 my-2"></div>
-              
-              <button 
-                onClick={() => setActiveTab('us')} 
-                className={`btn btn-xs lg:btn-sm btn-ghost justify-start gap-2 lg:gap-3 normal-case font-medium w-auto lg:w-full text-left rounded-xl shrink-0 whitespace-nowrap ${activeTab === 'us' ? 'bg-primary/15 text-primary font-bold border border-primary/20' : 'text-base-content/75'}`}
-              >
-                <PieChart className="w-4 h-4" />
-                <span>{t('nav_us', lang)}</span>
-              </button>
-              
-              <button 
-                onClick={() => setActiveTab('ep')} 
-                className={`btn btn-xs lg:btn-sm btn-ghost justify-start gap-2 lg:gap-3 normal-case font-medium w-auto lg:w-full text-left rounded-xl shrink-0 whitespace-nowrap ${activeTab === 'ep' ? 'bg-primary/15 text-primary font-bold border border-primary/20' : 'text-base-content/75'}`}
-              >
-                <Network className="w-4 h-4" />
-                <span>{t('nav_ep', lang)}</span>
-              </button>
-              
-              <button 
-                onClick={() => setActiveTab('pe')} 
-                className={`btn btn-xs lg:btn-sm btn-ghost justify-start gap-2 lg:gap-3 normal-case font-medium w-auto lg:w-full text-left rounded-xl shrink-0 whitespace-nowrap ${activeTab === 'pe' ? 'bg-primary/15 text-primary font-bold border border-primary/20' : 'text-base-content/75'}`}
-              >
-                <AlertTriangle className="w-4 h-4" />
-                <span>{t('nav_pe', lang)}</span>
-              </button>
-              
-              <button 
-                onClick={() => setActiveTab('mu')} 
-                className={`btn btn-xs lg:btn-sm btn-ghost justify-start gap-2 lg:gap-3 normal-case font-medium w-auto lg:w-full text-left rounded-xl shrink-0 whitespace-nowrap ${activeTab === 'mu' ? 'bg-primary/15 text-primary font-bold border border-primary/20' : 'text-base-content/75'}`}
-              >
-                <ShieldCheck className="w-4 h-4" />
-                <span>{t('nav_mu', lang)}</span>
-              </button>
+      <div className="flex flex-col lg:flex-row flex-1 pt-14 h-[calc(100vh-3.5rem)] overflow-hidden">
+        {/* Modern Framed Sidebar */}
+        <aside className="w-full lg:w-64 glass-nav flex flex-row lg:flex-col justify-between p-2 lg:p-3 z-20 overflow-x-auto lg:overflow-y-auto h-auto lg:h-full shrink-0 border-b lg:border-b-0 lg:border-r border-base-content/8">
+          {/* Navigation Groups */}
+          <div className="flex flex-row lg:flex-col gap-1 w-full shrink-0">
+            {navSections.map((section, sIdx) => {
+              const visibleItems = section.items.filter(it => !it.adminOnly || isAdmin);
+              if (section.adminOnly && !isAdmin) return null;
+              if (visibleItems.length === 0) return null;
+
+              return (
+                <div key={sIdx} className="flex flex-row lg:flex-col shrink-0 gap-0.5">
+                  <div className="hidden lg:block text-[10px] font-bold uppercase tracking-wider text-base-content/40 px-3 pt-3 pb-1">
+                    {section.group}
+                  </div>
+                  {visibleItems.map(item => {
+                    const Icon = item.icon;
+                    const isActive = activeTab === item.id;
+
+                    return (
+                      <button
+                        key={item.id}
+                        onClick={() => setActiveTab(item.id)}
+                        className={`relative flex items-center gap-2.5 px-3 py-1.5 lg:py-2 rounded-xl text-xs font-semibold transition-all duration-200 select-none text-left shrink-0 whitespace-nowrap ${
+                          isActive
+                            ? 'bg-primary/12 text-primary shadow-[inset_0_1px_0_0_rgba(255,255,255,0.08)] font-bold before:hidden lg:before:block before:absolute before:left-0 before:top-2 before:bottom-2 before:w-1 before:bg-primary before:rounded-r-full'
+                            : 'text-base-content/70 hover:text-base-content hover:bg-base-content/5 active:scale-[0.98]'
+                        }`}
+                      >
+                        <Icon className={`w-4 h-4 shrink-0 transition-transform duration-200 ${isActive ? 'text-primary scale-105' : 'text-base-content/60'}`} />
+                        <span>{item.label}</span>
+                      </button>
+                    );
+                  })}
+                </div>
+              );
+            })}
+          </div>
+
+          {/* Bottom Profile Dock (Linear / Vercel style) */}
+          <div className="hidden lg:flex flex-col gap-2 pt-3 mt-3 border-t border-base-content/8 shrink-0">
+            <div className="flex items-center justify-between p-2 rounded-xl bg-base-content/[0.03] border border-base-content/5">
+              <div onClick={handleSakuraClick} className="flex items-center gap-2.5 cursor-pointer min-w-0 flex-1 group">
+                <div className="w-8 h-8 rounded-lg bg-primary/15 text-primary font-bold flex items-center justify-center text-xs uppercase border border-primary/25 shadow-sm group-hover:scale-105 transition-transform shrink-0">
+                  {user?.name?.substring(0, 2).toUpperCase() || 'US'}
+                </div>
+                <div className="flex flex-col min-w-0 text-left">
+                  <span className="text-xs font-bold text-base-content/90 truncate leading-tight group-hover:text-primary transition-colors">
+                    {user?.name || 'Anonymous'}
+                  </span>
+                  <div className="flex items-center gap-1.5 mt-0.5">
+                    <span className={`badge badge-xs text-[9px] font-extrabold uppercase px-1.5 ${
+                      user?.tier === 'admin' ? 'badge-primary' : user?.tier === 'premium' ? 'badge-accent' : 'badge-ghost'
+                    }`}>
+                      {user?.tier || 'free'}
+                    </span>
+                  </div>
+                </div>
+              </div>
 
               <button
-                onClick={() => setActiveTab('md')}
-                className={`btn btn-xs lg:btn-sm btn-ghost justify-start gap-2 lg:gap-3 normal-case font-medium w-auto lg:w-full text-left rounded-xl shrink-0 whitespace-nowrap ${activeTab === 'md' ? 'bg-primary/15 text-primary font-bold border border-primary/20' : 'text-base-content/75'}`}
+                onClick={logout}
+                className="btn btn-ghost btn-xs btn-square text-base-content/50 hover:text-error hover:bg-error/10 transition-colors shrink-0"
+                title={t('logout_btn', lang) || 'Logout'}
               >
-                <Layers className="w-4 h-4" />
-                <span>{t('nav_md', lang)}</span>
+                <LogOut className="w-3.5 h-3.5" />
               </button>
-
-              <button
-                onClick={() => setActiveTab('st')}
-                className={`btn btn-xs lg:btn-sm btn-ghost justify-start gap-2 lg:gap-3 normal-case font-medium w-auto lg:w-full text-left rounded-xl shrink-0 whitespace-nowrap ${activeTab === 'st' ? 'bg-primary/15 text-primary font-bold border border-primary/20' : 'text-base-content/75'}`}
-              >
-                <Settings className="w-4 h-4" />
-                <span>{t('nav_st', lang) || 'Cấu hình Hệ thống'}</span>
-              </button>
-
-              <button
-                onClick={() => setActiveTab('help')}
-                className={`btn btn-xs lg:btn-sm btn-ghost justify-start gap-2 lg:gap-3 normal-case font-medium w-auto lg:w-full text-left rounded-xl shrink-0 whitespace-nowrap ${activeTab === 'help' ? 'bg-primary/15 text-primary font-bold border border-primary/20' : 'text-base-content/75'}`}
-              >
-                <BookOpen className="w-4 h-4" />
-                <span>{t('nav_help', lang) || 'API Reference'}</span>
-              </button>
-
-              <div className="divider hidden lg:flex opacity-20 my-2"></div>
-            </>
-          )}
-
-          {/* User Navigation (Available for both admin and users) */}
-          <button
-            onClick={() => setActiveTab('ma')}
-            className={`btn btn-xs lg:btn-sm btn-ghost justify-start gap-2 lg:gap-3 normal-case font-medium w-auto lg:w-full text-left rounded-xl shrink-0 whitespace-nowrap ${activeTab === 'ma' ? 'bg-primary/15 text-primary font-bold border border-primary/20' : 'text-base-content/75'}`}
-          >
-            <Sparkles className="w-4 h-4 text-primary" />
-            <span>Model Aliases</span>
-          </button>
-
-          <button
-            onClick={() => setActiveTab('cm')}
-            className={`btn btn-xs lg:btn-sm btn-ghost justify-start gap-2 lg:gap-3 normal-case font-medium w-auto lg:w-full text-left rounded-xl shrink-0 whitespace-nowrap ${activeTab === 'cm' ? 'bg-primary/15 text-primary font-bold border border-primary/20' : 'text-base-content/75'}`}
-          >
-            <Layers className="w-4 h-4 text-accent" />
-            <span>Combo Model Mix</span>
-          </button>
-
-          <button
-            onClick={() => setActiveTab('myacc')}
-            className={`btn btn-xs lg:btn-sm btn-ghost justify-start gap-2 lg:gap-3 normal-case font-medium w-auto lg:w-full text-left rounded-xl shrink-0 whitespace-nowrap ${activeTab === 'myacc' ? 'bg-primary/15 text-primary font-bold border border-primary/20' : 'text-base-content/75'}`}
-          >
-            <User className="w-4 h-4" />
-            <span>{t('nav_myacc', lang)}</span>
-          </button>
-          
-          <button 
-            onClick={() => setActiveTab('myuse')} 
-            className={`btn btn-xs lg:btn-sm btn-ghost justify-start gap-2 lg:gap-3 normal-case font-medium w-auto lg:w-full text-left rounded-xl shrink-0 whitespace-nowrap ${activeTab === 'myuse' ? 'bg-primary/15 text-primary font-bold border border-primary/20' : 'text-base-content/75'}`}
-          >
-            <BarChart3 className="w-4 h-4" />
-            <span>{t('nav_myuse', lang)}</span>
-          </button>
-
-          <button
-            onClick={() => setShowLogsModal(true)}
-            className="btn btn-xs lg:btn-sm btn-ghost justify-start gap-2 lg:gap-3 normal-case font-medium w-auto lg:w-full text-left rounded-xl text-base-content/75 hover:bg-primary/15 hover:text-primary transition-all duration-200 shrink-0 whitespace-nowrap"
-          >
-            <Terminal className="w-4 h-4 text-green-400" />
-            <span>Log Stream (Live)</span>
-          </button>
+            </div>
+          </div>
         </aside>
-
         {/* Content Area */}
         <main className="flex-1 p-4 lg:p-8 overflow-y-auto z-10 w-full min-w-0 max-w-full relative">
           
