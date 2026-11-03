@@ -174,7 +174,7 @@ class RouterApiConfig:
     # Opening a provider stream has its own bound.  The general request timeout
     # may be large for non-streaming generations, but a hung stream-open must
     # yield back to PoolManager so it can rotate the member.
-    STREAM_OPEN_TIMEOUT_SECONDS: int = _get_int("ROUTER_API_STREAM_OPEN_TIMEOUT_SEC", 180, 5, 1800)
+    STREAM_OPEN_TIMEOUT_SECONDS: int = _get_int("ROUTER_API_STREAM_OPEN_TIMEOUT_SEC", 450, 5, 1800)
     MAX_OUTPUT_TOKENS: int = _get_int("ROUTER_API_MAX_OUTPUT_TOKENS", 65536, 128, 1000000)
     MAX_RETRIES: int = _get_int("ROUTER_API_MAX_RETRIES", 5, 1, 20)
 

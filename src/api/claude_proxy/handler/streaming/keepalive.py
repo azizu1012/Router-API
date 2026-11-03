@@ -23,7 +23,7 @@ _POLL_TIMEOUT = 1.0
 # models (e.g. DeepSeek R1, Claude 3.7 Thinking, Gemma 4, Gemini thinking) and
 # multi-key retry rotations, so 900s (15 minutes) ensures deep reasoning tasks
 # never suffer premature timeout while keeping sockets alive via periodic pings.
-STREAM_STALL_TIMEOUT = float(os.getenv("STREAM_STALL_TIMEOUT", "900.0"))
+STREAM_STALL_TIMEOUT = float(os.getenv("STREAM_STALL_TIMEOUT", "2250.0"))
 
 
 class StreamStalled(asyncio.TimeoutError):
