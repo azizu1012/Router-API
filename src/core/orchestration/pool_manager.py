@@ -353,11 +353,46 @@ class PoolManager:
                         remaining_budget = pool.max_retry_seconds - (time.monotonic() - start_time)
                         if remaining_budget <= 0:
                             break
-                        member = await _acquire_pool_member(
-                            pool,
-                            max(0.01, remaining_budget),
-                            skip=exhausted_members,
-                        )
+                        candidates = getattr(pool, "members", [])
+                        if candidates and all(m in exhausted_members for m in candidates):
+                            if remaining_budget > 1.5:
+                                cooldown = min(2.0, remaining_budget / 2)
+                                logger.warning(
+                                    "[PoolManager] All %d pool members %s exhausted in current cycle; recycling after %.1fs (remaining budget: %.1fs)...",
+                                    len(candidates), candidates, cooldown, remaining_budget,
+                                )
+                                await asyncio.sleep(cooldown)
+                                exhausted_members.clear()
+                                failed_keys.clear()
+                            else:
+                                break
+                        try:
+                            member = await _acquire_pool_member(
+                                pool,
+                                max(0.01, pool.max_retry_seconds - (time.monotonic() - start_time)),
+                                skip=exhausted_members,
+                            )
+                        except TimeoutError as te:
+                            if "exhausted/skipped" in str(te):
+                                remaining_budget = pool.max_retry_seconds - (time.monotonic() - start_time)
+                                if remaining_budget > 1.5:
+                                    cooldown = min(2.0, remaining_budget / 2)
+                                    logger.warning(
+                                        "[PoolManager] All pool members exhausted/skipped; recycling pool after %.1fs cooldown...",
+                                        cooldown,
+                                    )
+                                    await asyncio.sleep(cooldown)
+                                    exhausted_members.clear()
+                                    failed_keys.clear()
+                                    member = await _acquire_pool_member(
+                                        pool,
+                                        max(0.01, pool.max_retry_seconds - (time.monotonic() - start_time)),
+                                        skip=exhausted_members,
+                                    )
+                                else:
+                                    raise
+                            else:
+                                raise
                         has_active_slot = True
 
                     pool_try += 1
@@ -422,6 +457,8 @@ class PoolManager:
                             )
                             _retire_member(pool, exhausted_members, member)
                             has_active_slot = False
+                            consecutive_transient = 0
+                            failed_keys.clear()
                             continue
 
                         reason = _classify_error(e)
@@ -447,23 +484,20 @@ class PoolManager:
                             if not is_custom and reason in ("unavailable", "server_error"):
                                 router.update_model_health(member_used, success=False, reason=reason)
 
-                            if not reservation:
-                                logger.warning("[PoolManager] Transient error %s on member %s (%s: %s), no key/project available - swapping...", reason, member_used, type(e).__name__, e)
+                            consecutive_transient += 1
+                            swap_threshold = config.POOL_SWAP_FAILURES
+                            if consecutive_transient >= swap_threshold:
+                                logger.warning("[PoolManager] Transient error %s on member %s (%s: %s), swapping member after %d attempts...", reason, member_used, type(e).__name__, e, consecutive_transient)
                                 _retire_member(pool, exhausted_members, member)
                                 has_active_slot = False
                                 consecutive_transient = 0
+                                failed_keys.clear()
                             else:
-                                consecutive_transient += 1
-                                swap_threshold = 1 if reason == "unavailable" else config.POOL_SWAP_FAILURES
-                                if consecutive_transient >= swap_threshold:
-                                    logger.warning("[PoolManager] Transient error %s on member %s (%s: %s), swapping member...", reason, member_used, type(e).__name__, e)
-                                    _retire_member(pool, exhausted_members, member)
-                                    has_active_slot = False
-                                    consecutive_transient = 0
-                                else:
-                                    delay = _retry_delay(consecutive_transient)
-                                    logger.warning("[PoolManager] Transient error %s on member %s (%s: %s), retrying with Timing Jitter in %.2fs (attempt %d)", reason, member_used, type(e).__name__, e, delay, consecutive_transient)
-                                    await asyncio.sleep(delay)
+                                if not reservation:
+                                    failed_keys.clear()
+                                delay = _retry_delay(consecutive_transient)
+                                logger.warning("[PoolManager] Transient error %s on member %s (%s: %s), retrying with Timing Jitter in %.2fs (attempt %d/%d)", reason, member_used, type(e).__name__, e, delay, consecutive_transient, swap_threshold)
+                                await asyncio.sleep(delay)
                             continue
                         else:
                             consecutive_transient = 0
@@ -479,6 +513,7 @@ class PoolManager:
                                 continue
                             _retire_member(pool, exhausted_members, member)
                             has_active_slot = False
+                            failed_keys.clear()
 
                 raise RuntimeError("Pool max_retry_seconds exhausted")
             finally:
@@ -615,11 +650,46 @@ class PoolManager:
                         remaining_budget = pool.max_retry_seconds - (time.monotonic() - start_time)
                         if remaining_budget <= 0:
                             break
-                        member = await _acquire_pool_member(
-                            pool,
-                            max(0.01, remaining_budget),
-                            skip=exhausted_members,
-                        )
+                        candidates = getattr(pool, "members", [])
+                        if candidates and all(m in exhausted_members for m in candidates):
+                            if remaining_budget > 1.5:
+                                cooldown = min(2.0, remaining_budget / 2)
+                                logger.warning(
+                                    "[PoolManager] All %d pool members %s exhausted in current stream cycle; recycling after %.1fs (remaining budget: %.1fs)...",
+                                    len(candidates), candidates, cooldown, remaining_budget,
+                                )
+                                await asyncio.sleep(cooldown)
+                                exhausted_members.clear()
+                                failed_keys.clear()
+                            else:
+                                break
+                        try:
+                            member = await _acquire_pool_member(
+                                pool,
+                                max(0.01, pool.max_retry_seconds - (time.monotonic() - start_time)),
+                                skip=exhausted_members,
+                            )
+                        except TimeoutError as te:
+                            if "exhausted/skipped" in str(te):
+                                remaining_budget = pool.max_retry_seconds - (time.monotonic() - start_time)
+                                if remaining_budget > 1.5:
+                                    cooldown = min(2.0, remaining_budget / 2)
+                                    logger.warning(
+                                        "[PoolManager] All pool members exhausted/skipped in stream; recycling pool after %.1fs cooldown...",
+                                        cooldown,
+                                    )
+                                    await asyncio.sleep(cooldown)
+                                    exhausted_members.clear()
+                                    failed_keys.clear()
+                                    member = await _acquire_pool_member(
+                                        pool,
+                                        max(0.01, pool.max_retry_seconds - (time.monotonic() - start_time)),
+                                        skip=exhausted_members,
+                                    )
+                                else:
+                                    raise
+                            else:
+                                raise
                         has_active_slot = True
 
                     pool_try += 1
@@ -741,6 +811,8 @@ class PoolManager:
                             )
                             _retire_member(pool, exhausted_members, member)
                             has_active_slot = False
+                            consecutive_transient = 0
+                            failed_keys.clear()
                             continue
 
                         reason = _classify_error(e)
@@ -766,23 +838,20 @@ class PoolManager:
                             if not is_custom and reason in ("unavailable", "server_error"):
                                 router.update_model_health(member_used, success=False, reason=reason)
 
-                            if not reservation:
-                                logger.warning("[PoolManager] Transient stream error %s on member %s (%s: %s), no key/project available - swapping...", reason, member_used, type(e).__name__, e)
+                            consecutive_transient += 1
+                            swap_threshold = config.POOL_SWAP_FAILURES
+                            if consecutive_transient >= swap_threshold:
+                                logger.warning("[PoolManager] Transient stream error %s on member %s (%s: %s), swapping member after %d attempts...", reason, member_used, type(e).__name__, e, consecutive_transient)
                                 _retire_member(pool, exhausted_members, member)
                                 has_active_slot = False
                                 consecutive_transient = 0
+                                failed_keys.clear()
                             else:
-                                consecutive_transient += 1
-                                swap_threshold = 1 if reason == "unavailable" else config.POOL_SWAP_FAILURES
-                                if consecutive_transient >= swap_threshold:
-                                    logger.warning("[PoolManager] Transient stream error %s on member %s (%s: %s), swapping member...", reason, member_used, type(e).__name__, e)
-                                    _retire_member(pool, exhausted_members, member)
-                                    has_active_slot = False
-                                    consecutive_transient = 0
-                                else:
-                                    delay = _retry_delay(consecutive_transient)
-                                    logger.warning("[PoolManager] Transient stream error %s on member %s (%s: %s), retrying with Timing Jitter in %.2fs (attempt %d)", reason, member_used, type(e).__name__, e, delay, consecutive_transient)
-                                    await asyncio.sleep(delay)
+                                if not reservation:
+                                    failed_keys.clear()
+                                delay = _retry_delay(consecutive_transient)
+                                logger.warning("[PoolManager] Transient stream error %s on member %s (%s: %s), retrying with Timing Jitter in %.2fs (attempt %d/%d)", reason, member_used, type(e).__name__, e, delay, consecutive_transient, swap_threshold)
+                                await asyncio.sleep(delay)
                             continue
                         else:
                             consecutive_transient = 0
@@ -798,6 +867,7 @@ class PoolManager:
                                 continue
                             _retire_member(pool, exhausted_members, member)
                             has_active_slot = False
+                            failed_keys.clear()
                     finally:
                         if gen is not None:
                             await _close_async_stream(gen)

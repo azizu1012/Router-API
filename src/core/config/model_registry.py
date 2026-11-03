@@ -257,8 +257,8 @@ def build_model_pools() -> Dict[str, Dict[str, Any]]:
         pools[spec["alias"]] = {
             "pool_name": spec["alias"],
             "members": members,
-            "swap_failures": int(os.getenv("POOL_SWAP_FAILURES", "5")),
-            "max_attempts": int(os.getenv("POOL_MAX_ATTEMPTS", "15")),
+            "swap_failures": int(os.getenv("POOL_SWAP_FAILURES", "12")),
+            "max_attempts": int(os.getenv("POOL_MAX_ATTEMPTS", "60")),
             "max_retry_seconds": int(os.getenv("POOL_MAX_RETRY_SECONDS", "300")),
             "acquire_deadline": int(os.getenv("POOL_ACQUIRE_DEADLINE", "180")),
         }

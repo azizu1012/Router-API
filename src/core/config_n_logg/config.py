@@ -210,8 +210,8 @@ class RouterApiConfig:
     CLIENT_BURST_RPM: int = _get_int("CLIENT_BURST_RPM", 10, 1, 120)
 
     # Pool (model merge)
-    POOL_SWAP_FAILURES: int = _get_int("POOL_SWAP_FAILURES", 5, 1, 15)
-    POOL_MAX_ATTEMPTS: int = _get_int("POOL_MAX_ATTEMPTS", 13, 1, 30)
+    POOL_SWAP_FAILURES: int = _get_int("POOL_SWAP_FAILURES", 12, 1, 50)
+    POOL_MAX_ATTEMPTS: int = _get_int("POOL_MAX_ATTEMPTS", 60, 1, 200)
     # A dead provider must not hold a pool slot for minutes while the client
     # waits. Override for unusually slow providers when needed.
     POOL_RETRY_SECONDS: int = _get_int("POOL_RETRY_SECONDS", 120, 10, 1800)

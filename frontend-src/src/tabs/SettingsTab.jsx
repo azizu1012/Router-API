@@ -156,7 +156,7 @@ export default function SettingsTab() {
               <input 
                 type="range" 
                 min="1" 
-                max="10" 
+                max="30" 
                 value={settings.POOL_SWAP_FAILURES} 
                 onChange={(e) => handleChange('POOL_SWAP_FAILURES', e.target.value)}
                 className="range range-xs range-secondary" 
@@ -172,7 +172,7 @@ export default function SettingsTab() {
               <input 
                 type="range" 
                 min="5" 
-                max="30" 
+                max="120" 
                 value={settings.POOL_MAX_ATTEMPTS} 
                 onChange={(e) => handleChange('POOL_MAX_ATTEMPTS', e.target.value)}
                 className="range range-xs range-secondary" 
