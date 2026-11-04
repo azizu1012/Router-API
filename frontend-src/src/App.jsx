@@ -29,7 +29,7 @@ import ComboModelsTab from './tabs/ComboModelsTab';
 export default function App() {
   const { 
     token, user, activeTab, setActiveTab, lang, login, register, logout, loading,
-    foundEggs, unlockEgg, toast
+    foundEggs, unlockEgg, toast, eggShakeId
   } = useApp();
 
   const [devToolsOpen, setDevToolsOpen] = useState(false);
@@ -42,23 +42,32 @@ export default function App() {
   const [isLoggingIn, setIsLoggingIn] = useState(false);
 
   const [showEggsModal, setShowEggsModal] = useState(false);
-  const [statusClicks, setStatusClicks] = useState(0);
-  const [showClicker, setShowClicker] = useState(false);
-  const [clickerScore, setClickerScore] = useState(0);
-  const [sakuraClicks, setSakuraClicks] = useState(0);
   const [showLogsModal, setShowLogsModal] = useState(false);
 
   // 1. Konami Code Listener & custom egg-unlocked listener
   useEffect(() => {
     let input = [];
-    const target = ['arrowup', 'arrowup', 'arrowdown', 'arrowdown', 'arrowleft', 'arrowright', 'arrowleft', 'arrowright', 'b', 'a'];
-    
+    // Use e.code so the B/A keys are matched even when a Vietnamese input
+    // method is active (e.key would be swallowed/transformed there).
+    // Arrow keys map to ArrowUp/Down/Left/Right; B/A map to KeyB/KeyA.
+    const target = ['ArrowUp', 'ArrowUp', 'ArrowDown', 'ArrowDown', 'ArrowLeft', 'ArrowRight', 'ArrowLeft', 'ArrowRight', 'KeyB', 'KeyA'];
+    const mapping = {
+      ArrowUp: 'arrowup', ArrowDown: 'arrowdown',
+      ArrowLeft: 'arrowleft', ArrowRight: 'arrowright',
+      KeyB: 'b', KeyA: 'a',
+    };
+
     const handleKeyDown = (e) => {
-      const key = e.key.toLowerCase();
-      input.push(key);
+      const token = mapping[e.code];
+      if (!token) {
+        // Wrong key pressed — reset the sequence so it doesn't accumulate noise.
+        input = [];
+        return;
+      }
+      input.push(token);
       if (input.length > 10) input.shift();
-      
-      if (input.join(',') === target.join(',')) {
+
+      if (input.length === 10 && input.join(',') === target.map(t => mapping[t]).join(',')) {
         unlockEgg('konami');
         window.dispatchEvent(new CustomEvent('trigger-back-event', { detail: { name: 'disco' } }));
         const main = document.getElementById('root') || document.body;
@@ -69,6 +78,7 @@ export default function App() {
             main.style.transform = 'none';
           }, 1500);
         }
+        input = [];
       }
     };
     
@@ -87,42 +97,12 @@ export default function App() {
     };
   }, [unlockEgg]);
 
-  const handleSakuraClick = () => {
-    const activeTheme = document.documentElement.getAttribute('data-theme') || 'dark';
-    if (activeTheme === 'valentine') {
-      setSakuraClicks(prev => {
-        const next = prev + 1;
-        if (next >= 5) {
-          window.dispatchEvent(new CustomEvent('trigger-back-event', { detail: { name: 'blizzard' } }));
-          unlockEgg('blizzard');
-          return 0;
-        }
-        return next;
-      });
-    }
-  };
-
-  const handleStatusClick = () => {
-    setStatusClicks(prev => {
-      const next = prev + 1;
-      if (next >= 3) {
-        setShowClicker(true);
-        return 0;
-      }
-      return next;
-    });
-  };
-
   const eggsList = [
     { id: 'konami', name: 'Konami Code Disco Party 🕺', hint: 'Cheat code of the retro gaming era: Up, Up, Down, Down, Left, Right...' },
     { id: 'savings', name: 'Saved vs Claude Cash Shower 💸', hint: 'Click the Savings KPI card to shower the screen in cash.' },
     { id: 'sun', name: 'Sun Solar Flare Super-Spin ☀️', hint: 'Click the Golden Sun 5 times in Light theme.' },
     { id: 'moon', name: 'Meteor Storm Summoner ☄️', hint: 'Click the Crescent Moon 5 times in Dark theme.' },
-    { id: 'blizzard', name: 'Cherry Blossom Windstorm 🌸', hint: 'Click the Valentine Sakura badge/tabs 5 times in Sakura mode.' },
-    { id: 'matrix', name: 'Hacker Matrix Search Console 📟', hint: 'Search accounts/keys for access credentials like "admin", "root", "hacker".' },
-    { id: 'gemini', name: 'Gemini Golden Sparkles 🌟', hint: 'Search accounts/keys for a specific modern AI model family name.' },
     { id: 'claude', name: "Claude's Crying Disgrace 😢", hint: 'Double-click the Savings card to flip it and make Claude cry.' },
-    { id: 'clicker', name: 'Status Dot Clicker Mini-game 🎮', hint: 'Click the pulsing green online status indicator at the top left 3 times.' },
   ];
 
   // 1. DevTools Warning Guard
@@ -374,7 +354,7 @@ export default function App() {
       <header className="h-14 flex items-center justify-between px-3 sm:px-6 border-b border-base-content/8 glass-nav z-30 fixed top-0 w-full select-none">
         {/* Left: Brand + Breadcrumbs */}
         <div className="flex items-center gap-3">
-          <div onClick={handleStatusClick} className="flex items-center gap-2 cursor-pointer group">
+          <div className="flex items-center gap-2 cursor-pointer group">
             <div className="relative flex items-center justify-center w-8 h-8 rounded-xl bg-primary/10 border border-primary/25 shadow-sm group-hover:scale-105 transition-transform duration-200">
               <Activity className="w-4 h-4 text-primary" />
               <span className="w-1.5 h-1.5 rounded-full bg-emerald-500 absolute -top-0.5 -right-0.5 animate-breathing ring-2 ring-base-100" />
@@ -460,7 +440,7 @@ export default function App() {
           {/* Bottom Profile Dock (Linear / Vercel style) */}
           <div className="hidden lg:flex flex-col gap-2 pt-3 mt-3 border-t border-base-content/8 shrink-0">
             <div className="flex items-center justify-between p-2 rounded-xl bg-base-content/[0.03] border border-base-content/5">
-              <div onClick={handleSakuraClick} className="flex items-center gap-2.5 cursor-pointer min-w-0 flex-1 group">
+              <div className="flex items-center gap-2.5 cursor-pointer min-w-0 flex-1 group">
                 <div className="w-8 h-8 rounded-lg bg-primary/15 text-primary font-bold flex items-center justify-center text-xs uppercase border border-primary/25 shadow-sm group-hover:scale-105 transition-transform shrink-0">
                   {user?.name?.substring(0, 2).toUpperCase() || 'US'}
                 </div>
@@ -542,7 +522,7 @@ export default function App() {
             </button>
             <h2 className="text-lg font-black text-amber-500 mb-2 flex items-center gap-2">
               <span>🎯 Easter Egg Tracker</span>
-              <span className="badge badge-amber badge-sm font-bold">{foundEggs.length} / 9 Found</span>
+              <span className="badge badge-amber badge-sm font-bold">{foundEggs.length} / 5 Found</span>
             </h2>
             <p className="text-xs text-base-content/75 mb-6">Discover secrets hidden throughout the Cockpit dashboard to unlock all trophies.</p>
             
@@ -551,6 +531,8 @@ export default function App() {
                 const isFound = foundEggs.includes(egg.id);
                 return (
                   <div key={egg.id} className={`p-3 rounded-xl border flex items-center gap-3 transition-all duration-300 ${
+                    eggShakeId === egg.id ? 'egg-shake border-amber-500/60' : ''
+                  } ${
                     isFound 
                       ? 'bg-emerald-500/10 border-emerald-500/25 text-emerald-400 font-semibold' 
                       : 'bg-base-200/40 border-base-content/5 text-base-content/50'
@@ -568,47 +550,6 @@ export default function App() {
                 );
               })}
             </div>
-          </div>
-        </div>
-      )}
-
-      {/* 🎮 Status Clicker Game */}
-      {showClicker && (
-        <div className="fixed bottom-20 left-6 z-[90] w-72 glass-card border border-indigo-500/35 p-6 rounded-2xl shadow-2xl animate-fade-in-up">
-          <div className="flex justify-between items-center mb-4">
-            <span className="font-extrabold text-sm text-indigo-400">🪙 Token Clicker Arcade</span>
-            <button 
-              onClick={() => setShowClicker(false)} 
-              className="btn btn-ghost btn-xs btn-circle text-base-content/60"
-            >
-              ✕
-            </button>
-          </div>
-          <p className="text-xs text-base-content/70 mb-4">Click the giant token to mine virtual tokens. Reach score 10 to unlock the secret!</p>
-          <div className="flex flex-col items-center gap-4">
-            <button 
-              onClick={(e) => {
-                setClickerScore(prev => {
-                  const next = prev + 1;
-                  if (next === 10) {
-                    unlockEgg('clicker');
-                  }
-                  return next;
-                });
-                window.dispatchEvent(new CustomEvent('spawn-custom-particles', {
-                  detail: { type: 'sparkles', x: e.clientX, y: e.clientY }
-                }));
-              }}
-              className="w-20 h-20 rounded-full bg-gradient-to-tr from-yellow-400 to-amber-600 hover:from-yellow-350 hover:to-amber-550 flex items-center justify-center text-4xl shadow-lg hover:scale-110 active:scale-95 transition-all duration-200 border-2 border-white/20 select-none cursor-pointer"
-            >
-              🪙
-            </button>
-            <div className="text-sm font-bold">
-              Score: <span className="text-amber-500 text-lg">{clickerScore}</span> / 10
-            </div>
-            {clickerScore >= 10 && (
-              <div className="text-xs text-emerald-400 font-extrabold animate-pulse">🎉 Target Reached! Egg Unlocked!</div>
-            )}
           </div>
         </div>
       )}

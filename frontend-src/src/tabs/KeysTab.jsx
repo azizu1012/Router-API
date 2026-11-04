@@ -43,19 +43,6 @@ export default function KeysTab() {
   const isGeminiSearch = search.toLowerCase().trim() === 'gemini';
   const isHackerSearch = ['admin', 'root', 'hacker'].includes(search.toLowerCase().trim());
 
-  useEffect(() => {
-    if (isGeminiSearch) {
-      window.dispatchEvent(new CustomEvent('spawn-custom-particles', { detail: { type: 'sparkles' } }));
-      window.dispatchEvent(new CustomEvent('egg-unlocked-event', { detail: { id: 'gemini' } }));
-    }
-  }, [search, isGeminiSearch]);
-
-  useEffect(() => {
-    if (isHackerSearch) {
-      window.dispatchEvent(new CustomEvent('egg-unlocked-event', { detail: { id: 'matrix' } }));
-    }
-  }, [search, isHackerSearch]);
-
   if (!tabData.ks) {
     return <Loading message={t('loading', lang)} />;
   }

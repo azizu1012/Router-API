@@ -11,6 +11,23 @@
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&family=JetBrains+Mono:wght@400;500;600;700&display=swap" rel="stylesheet">
+    <style>
+      @keyframes egg-shake {
+        0%, 100% { transform: translateX(0) rotate(0deg); }
+        10% { transform: translateX(-6px) rotate(-2deg); }
+        30% { transform: translateX(6px) rotate(2deg); }
+        50% { transform: translateX(-4px) rotate(-1deg); }
+        70% { transform: translateX(4px) rotate(1deg); }
+        90% { transform: translateX(-2px); }
+      }
+      @keyframes egg-pop {
+        0% { transform: scale(0.5); opacity: 0; }
+        60% { transform: scale(1.15); opacity: 1; }
+        100% { transform: scale(1); opacity: 1; }
+      }
+      .egg-shake { animation: egg-shake 0.6s ease-in-out; }
+      .egg-pop { animation: egg-pop 0.4s ease-out; }
+    </style>
   </head>
   <body>
     <div id="root"></div>

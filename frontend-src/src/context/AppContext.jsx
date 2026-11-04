@@ -64,6 +64,8 @@ export function AppProvider({ children }) {
     }
   });
   const [toast, setToast] = useState(null);
+  const [eggShakeId, setEggShakeId] = useState(null);
+  const eggShakeTimer = useRef(null);
 
   // Tab-specific data stores
   const [tabData, setTabData] = useState({
@@ -94,15 +96,16 @@ export function AppProvider({ children }) {
       savings: 'Saved vs Claude Cash Shower 💸',
       sun: 'Sun Solar Flare super spin ☀️',
       moon: 'Meteor Storm summoner ☄️',
-      blizzard: 'Cherry Blossom windstorm 🌸',
-      matrix: 'Hacker matrix search console 📟',
-      gemini: 'Gemini golden sparkles 🌟',
-      claude: "Claude's hidden crying face 😢",
-      clicker: 'Status dot clicker mini-game 🎮'
+      claude: "Claude's hidden crying face 😢"
     };
 
+    // Brief shake feedback so the player knows the input landed.
+    setEggShakeId(eggId);
+    if (eggShakeTimer.current) clearTimeout(eggShakeTimer.current);
+    eggShakeTimer.current = setTimeout(() => setEggShakeId(null), 700);
+
     const eggName = eggsMap[eggId] || eggId;
-    setToast({ message: `🎉 Unlocked Egg: ${eggName} (${newEggs.length}/9)!`, type: 'egg' });
+    setToast({ message: `🎉 Unlocked Egg: ${eggName} (${newEggs.length}/5)!`, type: 'egg' });
     setTimeout(() => setToast(null), 4000);
 
     // Dispatch custom window event
@@ -368,7 +371,7 @@ export function AppProvider({ children }) {
   return (
     <AppContext.Provider value={{
       token, user, activeTab, theme, lang, tabData, loading,
-      foundEggs, unlockEgg, toast, wsHook, fontSize, setFontSize,
+      foundEggs, unlockEgg, toast, wsHook, fontSize, setFontSize, eggShakeId,
       setActiveTab, setTheme, changeLanguage, login, register, logout, refreshTab: () => fetchTabData(activeTab, false)
     }}>
       {children}

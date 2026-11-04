@@ -201,9 +201,7 @@ export default function CanvasParticles() {
 
     const handleBackEvent = (e) => {
       const { name } = e.detail || {};
-      if (name === 'blizzard') {
-        blizzardExpiry = Date.now() + 8000; // 8s blossom windstorm
-      } else if (name === 'meteor-shower') {
+      if (name === 'meteor-shower') {
         // Spawn waves of meteors
         for (let i = 0; i < 40; i++) {
           shootingStars.push({

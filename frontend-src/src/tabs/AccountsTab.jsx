@@ -76,17 +76,6 @@ export default function AccountsTab() {
   const needle = search.toLowerCase().trim();
   const isGeminiSearch = needle === 'gemini';
   const isHackerSearch = ['admin', 'root', 'hacker'].includes(needle);
-  useEffect(() => {
-    if (isGeminiSearch) {
-      window.dispatchEvent(new CustomEvent('spawn-custom-particles', { detail: { type: 'sparkles' } }));
-      window.dispatchEvent(new CustomEvent('egg-unlocked-event', { detail: { id: 'gemini' } }));
-    }
-  }, [search, isGeminiSearch]);
-  useEffect(() => {
-    if (isHackerSearch) {
-      window.dispatchEvent(new CustomEvent('egg-unlocked-event', { detail: { id: 'matrix' } }));
-    }
-  }, [search, isHackerSearch]);
 
   const sortedAccounts = useMemo(() => {
     const filtered = accounts.filter(a => {
