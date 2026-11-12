@@ -127,7 +127,12 @@ async def chat_completions(
 
                                     last_item = time.monotonic()
                                     pending = asyncio.ensure_future(it.__anext__())
-                                    c_dict = getattr(chunk, "raw", chunk if isinstance(chunk, dict) else {})
+                                    # ``NativeChunk`` has no ``.raw`` attribute.
+                                    # Serialize through its OpenAI wire dict, or
+                                    # the chunk's content is lost and the client
+                                    # receives empty frames (empty stop).
+                                    to_dict = getattr(chunk, "to_dict", None)
+                                    c_dict = to_dict() if callable(to_dict) else (chunk if isinstance(chunk, dict) else {})
                                     if original_model_name and isinstance(c_dict, dict):
                                         c_dict["model"] = original_model_name
                                     yield f"data: {json.dumps(c_dict, ensure_ascii=False)}\n\n".encode("utf-8")

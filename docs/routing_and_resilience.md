@@ -484,3 +484,9 @@ Một số custom endpoint upstream (ví dụ endpoint `sỹ-raspi`) chạy **ba
 ### 17.5. Hạn Chế Đã Biết
 - Retry reasoning-only **chỉ áp dụng cho non-stream** (`call_custom_nonstream`). Với stream, floor budget (17.2) là cơ chế chính; nếu vẫn chỉ có reasoning, pool manager sẽ coi là `empty_stream_response`/`stream_ended_without_finish_reason` và xoay member/retry theo cơ chế có sẵn.
 
+### 17.6. Stream Alias Không Được Nuốt Content (NativeChunk.to_dict)
+- `CustomEndpointStreamGen.__anext__` trả về `NativeChunk` **object** (không phải dict, không có `.raw`).
+- Trước đây `_custom_safe_stream` (chat.py) dùng `getattr(chunk, "raw", chunk if isinstance(chunk, dict) else {})` → với NativeChunk nó ra `{}` → mọi chunk bị lọc thành `{"model": ...}` rỗng → client nhận **empty stop** dù upstream trả content đầy đủ.
+- Đã thêm `NativeChunk.to_dict()` — nguồn duy nhất serialize wire shape (id/object/created/model/choices/delta/finish_reason/usage). `_custom_safe_stream` giờ gọi `to_dict()`.
+- Verify: stream qua alias `sỹ-raspi` trả content đầy đủ, fin với `finish_reason:"stop"`.
+

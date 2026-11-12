@@ -300,6 +300,55 @@ class NativeChunk:
             self.choices = [_make_choice(delta, fr)]
         self.usage: Optional[dict] = delta_dict.get("usage")
 
+    def to_dict(self) -> Dict[str, Any]:
+        """Serialize back to an OpenAI chat.completion.chunk dict.
+
+        ``CustomEndpointStreamGen.__anext__`` yields ``NativeChunk`` objects,
+        not raw dicts, so stream wrappers must not assume a ``.raw`` attribute
+        exists (it does not). This is the single source of truth for the wire
+        shape, mirroring what ``_build_payload``/the parser accepted upstream.
+        """
+        out: Dict[str, Any] = {
+            "id": self.id or f"chatcmpl-{uuid.uuid4().hex}",
+            "object": self.object or "chat.completion.chunk",
+            "created": self.created or 0,
+            "model": self.model,
+            "choices": [],
+        }
+        for choice in self.choices:
+            delta: Dict[str, Any] = {}
+            d = getattr(choice, "delta", None)
+            if d is not None:
+                if getattr(d, "content", None):
+                    delta["content"] = d.content
+                if getattr(d, "reasoning_content", None):
+                    delta["reasoning_content"] = d.reasoning_content
+                if getattr(d, "thought", None):
+                    delta.setdefault("reasoning_content", d.thought)
+                if getattr(d, "tool_calls", None):
+                    tcs = []
+                    for tc in d.tool_calls:
+                        fn = getattr(tc, "function", None)
+                        tcs.append({
+                            "id": getattr(tc, "id", ""),
+                            "type": getattr(tc, "type", "function"),
+                            "function": {
+                                "name": getattr(fn, "name", "") if fn else "",
+                                "arguments": getattr(fn, "arguments", "") or "" if fn else "",
+                            },
+                        })
+                    delta["tool_calls"] = tcs
+                if getattr(d, "refusal", None):
+                    delta.setdefault("content", d.refusal)
+            out["choices"].append({
+                "index": getattr(choice, "index", 0),
+                "delta": delta,
+                "finish_reason": getattr(choice, "finish_reason", None),
+            })
+        if self.usage:
+            out["usage"] = self.usage
+        return out
+
 
 class _DeltaChoice:
     def __init__(self, delta: dict, finish_reason: Optional[str] = None):
