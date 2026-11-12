@@ -70,6 +70,57 @@ _OUTPUT_LIMIT_FLOOR = 4096
 _OUTPUT_LIMIT_MAX_RETRIES = 4
 _OUTPUT_BUDGET_KEYS = ("max_tokens", "max_completion_tokens")
 
+# ── Reasoning-gated budget floor ─────────────────────────────────────────
+#
+# Some OpenAI-compatible backends (Mercury/``mrt1_v1``-class reasoning engines,
+# e.g. the ``sỹ-raspi`` Raspberry Pi upstream) spend a fixed chunk of the
+# *output* budget on chain-of-thought before they begin emitting visible
+# content. If a client asks for a small ``max_tokens``, the whole budget is
+# consumed by reasoning and the response comes back with ``content: null`` and
+# ``finish_reason: "length"`` — a "successful" but contentless turn. Raising a
+# too-small budget to a floor gives the model room to surface content. This is
+# safe for every endpoint: max_tokens is an upper bound, so a higher value only
+# permits longer (not wrong) output.
+_REASONING_MIN_MAX_TOKENS = 1024
+
+def _floor_reasoning_budget(payload: Dict[str, Any]) -> None:
+    """Raise a below-threshold output budget so reasoning-gated backends can
+    emit visible content after their mandatory chain-of-thought spend."""
+    for key in _OUTPUT_BUDGET_KEYS:
+        try:
+            current = int(payload[key])
+        except (TypeError, ValueError, KeyError):
+            continue
+        if current < _REASONING_MIN_MAX_TOKENS:
+            payload[key] = _REASONING_MIN_MAX_TOKENS
+
+
+# ── Reasoning-only response retry ────────────────────────────────────────
+#
+# A Mercury-class backend answers 200 with ``content: null`` and a non-null
+# ``reasoning_content`` when its output budget was spent entirely on
+# chain-of-thought (finish "length"). That is a *successful* transport turn
+# with no usable client text, so we bump the budget and retry once instead of
+# returning an empty answer. Bounded: a genuinely refused/empty turn (no
+# reasoning at all, or still empty after the bump) surfaces as-is.
+_REASONING_RETRY_MAX = 1
+
+def _reasoning_only_response(data: Dict[str, Any]) -> bool:
+    """True when every choice produced reasoning but no visible content."""
+    choices = data.get("choices") or []
+    if not choices:
+        return False
+    for c in choices:
+        msg = (c.get("message") or {})
+        content = msg.get("content")
+        if isinstance(content, str) and content.strip():
+            return False
+        if not (msg.get("reasoning_content") or msg.get("thought")
+                or msg.get("reasoning") or msg.get("reasoning_details")):
+            # No content AND no reasoning → not a budget starvation case.
+            return False
+    return True
+
 _OUTPUT_LIMIT_PATTERN = re.compile(
     r"exceeded\s+the\s+output\s+limit"
     r"|output[\s_]+limit[\s_]+(?:exceeded|reached|hit)"
@@ -529,6 +580,9 @@ def _build_payload(
         payload["tools"] = tools
     if extra_body:
         payload.update(extra_body)
+    # Never let a reasoning-gated backend starve itself of output tokens.
+    # Runs after extra_body merge so a smuggled budget is floored too.
+    _floor_reasoning_budget(payload)
     # Sampling params / extra_body may carry the same field; normalize after
     # the merge so Muse cannot receive the unsupported OpenAI
     # "required"/forced-tool form. Re-read the MERGED value — the original
@@ -1010,10 +1064,37 @@ async def call_custom_nonstream(
                              extra_body, tool_choice, parallel_tool_calls, response_format,
                              api_base)
 
-    async with aiohttp.ClientSession(headers=headers) as session:
-        response = await _post_with_output_limit_retry(session, url, payload)
-        async with response:
-            data = await response.json()
+    reasoning_retries = 0
+    while True:
+        async with aiohttp.ClientSession(headers=headers) as session:
+            response = await _post_with_output_limit_retry(session, url, payload)
+            async with response:
+                data = await response.json()
+
+        # Reasoning-gated backends can return 200 with only reasoning and no
+        # visible content when the budget was eaten by chain-of-thought. Bump
+        # the budget and retry once so the client gets real text.
+        if reasoning_retries < _REASONING_RETRY_MAX and _reasoning_only_response(data):
+            bumped = False
+            for key in _OUTPUT_BUDGET_KEYS:
+                try:
+                    current = int(payload[key])
+                except (TypeError, ValueError, KeyError):
+                    continue
+                # Already bumped by the floor or caller — nothing more to gain.
+                if current >= _REASONING_MIN_MAX_TOKENS * 2:
+                    continue
+                payload[key] = max(current * 2, _REASONING_MIN_MAX_TOKENS)
+                bumped = True
+            if bumped:
+                reasoning_retries += 1
+                logger.info(
+                    "[CustomEndpoint] reasoning-only turn (%s) with budget %s; "
+                    "retrying with doubled budget for %s",
+                    model, payload, url,
+                )
+                continue
+        break
 
     return _openai_namespace(data, model)
 

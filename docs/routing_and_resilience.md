@@ -448,3 +448,37 @@ Trước đây, khi một tài khoản đăng ký custom endpoint mà không c�
   `{"choices": [{"index": 0, "delta": {"content": f"\n\n[Error: {e}]"}, "finish_reason": "stop"}]}`
   giúp người dùng và client nắm bắt chính xác nguyên nhân kỹ thuật để xử lý.
 
+---
+
+## 17. Reasoning-Gated Backend (Mercury / `mrt1_v1`) — Hành Vi & Xử Lý
+
+Một số custom endpoint upstream (ví dụ endpoint `sỹ-raspi`) chạy **backend reasoning-gated dòng Mercury** (`model` trả về là `mercury-3`, `reasoning_details[].format = "mercury-v1"`, `"type": "reasoning.encrypted"`). Backend này có hành vi đặc biệt mà router phải hiểu để không trả về output rỗng:
+
+### 17.1. Toàn Bộ Budget Output Bị Reasoning Nuốt Trước Khi Có Nội Dung
+- Mercury **luôn** tiêu thụ một lượng token cố định (≈380 token trong test thực tế) cho chain-of-thought **trước khi** bắt đầu sinh `content` hiển thị.
+- Nếu client đặt `max_tokens` nhỏ hơn ngưỡng reasoning đó, response vẫn là HTTP 200 nhưng có:
+  - `message.content = null`
+  - `message.reasoning_details = [...]` (chỉ có reasoning encrypted)
+  - `finish_reason = "length"`
+- Kết quả: giống như "request thành công nhưng không có text", không phải lỗi transport.
+
+### 17.2. Mặc Định Dự Phòng Budget (`_REASONING_MIN_MAX_TOKENS = 1024`)
+- Trong `src/core/providers/custom_endpoint/client.py`, hàm `_floor_reasoning_budget()` được gọi sau khi merge `extra_body` trong `_build_payload()`.
+- Mọi `max_tokens` / `max_completion_tokens` < 1024 đều được nâng lên 1024 trước khi gửi lên upstream.
+- An toàn cho mọi endpoint vì `max_tokens` chỉ là cận trên — nâng giá trị chỉ cho phép output dài hơn, không làm sai nội dung.
+- Áp dụng cho cả 2 đường: non-stream (`call_custom_nonstream`) và stream (`CustomEndpointStreamGen`) vì cùng dùng `_build_payload`.
+
+### 17.3. Retry Khi Response Chỉ Có Reasoning (`_reasoning_only_response`)
+- Vẫn có thể xảy ra trường hợp response 200 chỉ có reasoning mà không có content (kể cả sau floor, khi reasoning rất dài hoặc bị cắt giữa chừng).
+- Hàm `_reasoning_only_response(data)` phát hiện: mọi choice đều có reasoning (`reasoning_content`, `thought`, `reasoning` hoặc `reasoning_details`) nhưng **không có** `content` non-empty.
+- Trong `call_custom_nonstream`, nếu gặp case này (và chưa retry đủ `_REASONING_RETRY_MAX = 1`), router **nhân đôi** budget (`max(current * 2, 1024)`) và gọi lại một lần.
+- Giới hạn 1 lần retry để tránh loop vô hạn; nếu vẫn rỗng sau đó, trả về nguyên trạng để error/empty handling phía trên xử lý.
+
+### 17.4. Prompt Bị Chặn (Moderation) — Khác Với Reasoning-Only
+- Đây là **hai hiện tượng khác nhau**:
+  - **Reasoning-only** → HTTP 200, có `reasoning_details`, không `content`, `finish_reason="length"`. Xử lý bằng floor + retry (mục 17.2/17.3).
+  - **Prompt bị chặn kiểm duyệt** → HTTP 400 `{"error": {"message": "Upstream rejected the request"}}` ngay lập tức, không qua reasoning. Đây là firewall phía upstream, router **không** tự ý retry (sẽ trả lỗi rõ ràng về client).
+
+### 17.5. Hạn Chế Đã Biết
+- Retry reasoning-only **chỉ áp dụng cho non-stream** (`call_custom_nonstream`). Với stream, floor budget (17.2) là cơ chế chính; nếu vẫn chỉ có reasoning, pool manager sẽ coi là `empty_stream_response`/`stream_ended_without_finish_reason` và xoay member/retry theo cơ chế có sẵn.
+
