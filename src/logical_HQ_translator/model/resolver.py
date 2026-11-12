@@ -106,16 +106,27 @@ async def _resolve_model(body: Dict[str, Any], pool_alias_override: Optional[str
         is_native_model = (
             model_alias in AVAILABLE_MODELS
             or model_alias in MODEL_POOLS
-            or "gemini" in model_alias.lower()
-            or "gemma" in model_alias.lower()
-            or "flash" in model_alias.lower()
         )
 
         if not is_native_model and retry_attempt == 0:
-            for ep in endpoint_manager.get_endpoints_for_account(account):
+            # Candidate endpoints: account-assigned first, then global operator
+            # endpoints (account_id == ''). Pairing is explicit against each
+            # endpoint's enabled model list — no name/substring heuristics, so
+            # a model like ``deepseek-v4.1-flash`` is never mistaken for native
+            # Gemini just because its id contains "flash".
+            account_eps = endpoint_manager.get_endpoints_for_account(account)
+            global_eps = [
+                ep for ep in endpoint_manager.list_endpoints()
+                if not ep.get("account_id")
+            ]
+            seen_eps: Set[str] = set()
+            for ep in account_eps + global_eps:
+                ep_name = ep.get("name", "")
+                if not ep_name or ep_name in seen_eps:
+                    continue
+                seen_eps.add(ep_name)
                 if not ep.get("enabled", True):
                     continue
-                ep_name = ep.get("name", "")
                 if endpoint_manager.is_endpoint_frozen(ep_name):
                     logger.warning("[AccountEndpoint] %s is frozen (circuit breaker), skipping", ep_name)
                     continue

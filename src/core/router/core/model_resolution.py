@@ -125,6 +125,21 @@ class ModelResolutionMixin:
                 pass
 
         raw_lower = raw.lower()
+        # Exact catalog match wins over any substring heuristic — a custom
+        # endpoint model (e.g. ``deepseek-v4.1-flash``) must never be remapped
+        # to a native alias just because its id contains "gemma"/"flash".
+        if raw_lower in AVAILABLE_MODELS:
+            return raw_lower
+        for alias, cfg in AVAILABLE_MODELS.items():
+            if raw_lower == cfg.get("model_id"):
+                return alias
+        # Custom endpoint model list (exact membership, no heuristics).
+        from src.core.providers import _custom_endpoint_manager
+        for ep in _custom_endpoint_manager.list_endpoints():
+            if raw in ep.get("models", []) or raw_lower in [m.lower() for m in ep.get("models", [])]:
+                return raw
+
+        # Heuristic fallbacks only now, after exact matches were exhausted.
         if "gemma" in raw_lower:
             if any(k in raw_lower for k in ("27b", "26b", "27", "26")):
                 return "gemma-4-26b"
@@ -132,21 +147,11 @@ class ModelResolutionMixin:
                 return "gemma-4-31b"
             return "gemma-4-26b"
 
-        if raw_lower in AVAILABLE_MODELS:
-            return raw_lower
-        for alias, cfg in AVAILABLE_MODELS.items():
-            if raw_lower == cfg.get("model_id"):
-                return alias
-        from src.core.providers import _custom_endpoint_manager
-        for ep in _custom_endpoint_manager.list_endpoints():
-            if raw in ep.get("models", []) or raw_lower in [m.lower() for m in ep.get("models", [])]:
-                return raw
-
         if "haiku" in raw_lower:
             return "gemini-flash-lite"
         if "sonnet" in raw_lower or "opus" in raw_lower:
             return "gemini-flash"
-            
+
         return self.current_model
 
     def get_model_id(self, alias: str) -> str:

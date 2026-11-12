@@ -93,12 +93,6 @@ async def resolve_custom_endpoint_for_request(
         or req_norm in AVAILABLE_MODELS
         or resolved_norm in MODEL_POOLS
         or resolved_norm in AVAILABLE_MODELS
-        or "flash" in req_norm
-        or "gemini" in req_norm
-        or "gemma" in req_norm
-        or "flash" in resolved_norm
-        or "gemini" in resolved_norm
-        or "gemma" in resolved_norm
     ):
         return None
 

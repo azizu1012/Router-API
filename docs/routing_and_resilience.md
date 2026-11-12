@@ -434,13 +434,15 @@ Trước đây, khi một tài khoản đăng ký custom endpoint mà không c�
 
 **Quy Tắc Định Tuyến Bất Biến (Strict Rule):**
 1. **Ưu Tiên Tuyệt Đối Cho Model Native:**
-   - Mọi model thuộc diện Native (`is_native_model`: chứa `gemma`, `gemini`, `flash`, hoặc nằm trong `AVAILABLE_MODELS` / `MODEL_POOLS`) **KHÔNG BAO GIỜ** bị rơi vào luồng override mặc định của Custom Endpoint ở cấp tài khoản.
-   - `resolve_custom_endpoint_for_request()` sẽ lập tức trả về `None` khi nhận diện model là Native.
+   - Mọi model thuộc diện Native (`is_native_model`: nằm trong `AVAILABLE_MODELS` / `MODEL_POOLS`) **KHÔNG BAO GIỜ** bị rơi vào luồng override mặc định của Custom Endpoint ở cấp tài khoản.
+   - Trước đây `is_native_model` còn dùng substring heuristic (`"gemma"` / `"gemini"` / `"flash"` trong tên model), khiến một model custom như `deepseek-v4.1-flash` bị nhầm là native và hút vào Gemini pool (404 NOT_FOUND). **Đã thay bằng khớp metadata chính xác** — chỉ `AVAILABLE_MODELS`/`MODEL_POOLS` + khớp model list của từng endpoint.
+   - `resolve_custom_endpoint_for_request()` sẽ lập tức trả về `None` khi nhận diện model là Native (theo catalog, không theo substring).
 2. **Khớp Model Rõ Ràng (Explicit Model Matching):**
-   - Step 1 của `_resolve_model()` chỉ được phép chuyển hướng request sang Custom Endpoint của tài khoản khi và chỉ khi:
+   - Step 1 của `_resolve_model()` chỉ được phép chuyển hướng request sang Custom Endpoint khi và chỉ khi:
      - Model yêu cầu là một model tùy chỉnh ngoài (không phải Native).
      - **VÀ** model đó thực sự khớp với danh sách model mà endpoint hỗ trợ (`_match_endpoint_model(model_alias, candidates)`).
-   - Nghiêm cấm hành vi lấy phần tử đầu tiên `[0]` để ép model tùy tiện.
+   - Candidate endpoints: **account-assigned trước, sau đó global operator endpoints** (`account_id == ''` — ví dụ `sỹ-raspi`). Điều này cho phép endpoint dùng chung không cần gán account vẫn khớp đúng model.
+   - Nghiêm cấm hành vi lấy phần tử đầu tiên `[0]` để ép model tùy tiện, và nghiêm cấm heuristic substring theo tên model.
 
 ### 16.3. Minh Bạch Lỗi Khi Streaming (No Silent Empty Stream)
 - Khi gặp sự cố kết nối hoặc lỗi upstream trong quá trình streaming tại `chat.py` hoặc `opencode_routes.py`, hệ thống không bao giờ được phát ra một chunk rỗng `{"delta": {}, "finish_reason": "stop"}` làm client tưởng lầm request thành công trong 1s nhưng nhận về output trống.
