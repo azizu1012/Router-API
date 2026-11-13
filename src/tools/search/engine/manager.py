@@ -260,9 +260,12 @@ class AdvancedSearchManager(SearchEvidenceMixin, DuckDuckGoProviderMixin, Search
         if not force_fallback and not time_sensitive and self.search_failed_query_cooldown_seconds > 0:
             async with self.cache_lock:
                 now = time.time()
-                # Dict never shrank: every failed query left an entry forever.
-                for k in [k for k, exp in self.failed_search_cooldowns.items() if exp <= now]:
-                    del self.failed_search_cooldowns[k]
+                # Evict expired entries only when the dict has grown beyond a
+                # small threshold, so we avoid a full scan on every request. The
+                # key we actually care about is always checked regardless.
+                if len(self.failed_search_cooldowns) > 128:
+                    for k in [k for k, exp in self.failed_search_cooldowns.items() if exp <= now]:
+                        del self.failed_search_cooldowns[k]
                 cooldown_until = self.failed_search_cooldowns.get(normalized_key, 0)
             if cooldown_until > time.time():
                 self.logger.info(f"Search cooldown active for key={normalized_key[:80]}")

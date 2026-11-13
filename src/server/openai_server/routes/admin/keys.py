@@ -1,4 +1,5 @@
 """Admin key-management endpoints."""
+import asyncio
 import json
 from fastapi import Request, HTTPException
 
@@ -47,10 +48,10 @@ async def admin_add_key(request: Request):
     if not api_key:
         raise HTTPException(status_code=400, detail="api_key is required")
 
-    append_key_to_env(api_key)
+    await asyncio.to_thread(append_key_to_env, api_key)
 
     from src.core.config_n_logg import reload_config
-    new_keys = reload_config()
+    new_keys = await asyncio.to_thread(reload_config)
     from src.backend.keys.status import register_keys_in_db
     register_keys_in_db(new_keys)
     from src.core.router import router
@@ -70,29 +71,34 @@ async def admin_delete_key(request: Request):
     if not target_key:
         raise HTTPException(status_code=400, detail="key is required")
 
-    target_key = normalize_key_name(target_key)
-    success = remove_key_from_env(target_key)
+    target_key = await asyncio.to_thread(normalize_key_name, target_key)
+    success = await asyncio.to_thread(remove_key_from_env, target_key)
 
     from src.backend._db import _LOCK, conn as _conn
-    db_exists = False
-    with _LOCK:
-        c = _conn()
-        try:
-            row = c.execute("SELECT 1 FROM key_status WHERE key = ?", (target_key,)).fetchone()
-            if row:
-                db_exists = True
-                c.execute("DELETE FROM key_status WHERE key = ?", (target_key,))
-                c.commit()
-        except Exception:
-            pass
-        finally:
-            c.close()
+
+    def _delete_key_db() -> bool:
+        db_exists = False
+        with _LOCK:
+            c = _conn()
+            try:
+                row = c.execute("SELECT 1 FROM key_status WHERE key = ?", (target_key,)).fetchone()
+                if row:
+                    db_exists = True
+                    c.execute("DELETE FROM key_status WHERE key = ?", (target_key,))
+                    c.commit()
+            except Exception:
+                pass
+            finally:
+                c.close()
+        return db_exists
+
+    db_exists = await asyncio.to_thread(_delete_key_db)
 
     if not success and not db_exists:
         raise HTTPException(status_code=404, detail="Key not found or could not delete")
 
     from src.core.config_n_logg import reload_config
-    new_keys = reload_config()
+    new_keys = await asyncio.to_thread(reload_config)
     from src.backend.keys.status import register_keys_in_db
     register_keys_in_db(new_keys)
     from src.core.router import router
@@ -113,29 +119,33 @@ async def admin_pool_key(request: Request):
     if not target_key:
         raise HTTPException(status_code=400, detail="key is required")
 
-    target_key = normalize_key_name(target_key)
+    target_key = await asyncio.to_thread(normalize_key_name, target_key)
 
     from src.backend._db import _LOCK, conn as _conn
-    with _LOCK:
-        c = _conn()
-        try:
-            row = c.execute("SELECT data FROM key_status WHERE key = ?", (target_key,)).fetchone()
-            current_data = {}
-            if row and row["data"]:
-                try:
-                    current_data = json.loads(row["data"])
-                except Exception:
-                    pass
-            if pool_name == "all":
-                current_data.pop("allowed_pools", None)
-            else:
-                current_data["allowed_pools"] = [pool_name]
-            c.execute("UPDATE key_status SET data = ? WHERE key = ?", (json.dumps(current_data), target_key))
-            c.commit()
-        except Exception as e:
-            raise HTTPException(status_code=500, detail=f"Database save failed: {e}")
-        finally:
-            c.close()
+
+    def _set_pool() -> None:
+        with _LOCK:
+            c = _conn()
+            try:
+                row = c.execute("SELECT data FROM key_status WHERE key = ?", (target_key,)).fetchone()
+                current_data = {}
+                if row and row["data"]:
+                    try:
+                        current_data = json.loads(row["data"])
+                    except Exception:
+                        pass
+                if pool_name == "all":
+                    current_data.pop("allowed_pools", None)
+                else:
+                    current_data["allowed_pools"] = [pool_name]
+                c.execute("UPDATE key_status SET data = ? WHERE key = ?", (json.dumps(current_data), target_key))
+                c.commit()
+            except Exception as e:
+                raise HTTPException(status_code=500, detail=f"Database save failed: {e}")
+            finally:
+                c.close()
+
+    await asyncio.to_thread(_set_pool)
 
     from src.core.router import router
     router.refresh_keys()
@@ -159,18 +169,22 @@ async def admin_toggle_key(request: Request):
     if not target_key:
         raise HTTPException(status_code=400, detail="key is required")
 
-    target_key = normalize_key_name(target_key)
+    target_key = await asyncio.to_thread(normalize_key_name, target_key)
 
     from src.backend._db import _LOCK, conn as _conn
-    with _LOCK:
-        c = _conn()
-        try:
-            c.execute("UPDATE key_status SET enabled = ? WHERE key = ?", (1 if enabled else 0, target_key))
-            c.commit()
-        except Exception as e:
-            raise HTTPException(status_code=500, detail=f"Database update failed: {e}")
-        finally:
-            c.close()
+
+    def _set_enabled() -> None:
+        with _LOCK:
+            c = _conn()
+            try:
+                c.execute("UPDATE key_status SET enabled = ? WHERE key = ?", (1 if enabled else 0, target_key))
+                c.commit()
+            except Exception as e:
+                raise HTTPException(status_code=500, detail=f"Database update failed: {e}")
+            finally:
+                c.close()
+
+    await asyncio.to_thread(_set_enabled)
 
     from src.core.router import router
     router.refresh_keys()
@@ -189,24 +203,28 @@ async def admin_reset_key(request: Request):
     if not target_key:
         raise HTTPException(status_code=400, detail="key is required")
 
-    target_key = normalize_key_name(target_key)
+    target_key = await asyncio.to_thread(normalize_key_name, target_key)
 
     from src.backend._db import _LOCK, conn as _conn
-    with _LOCK:
-        c = _conn()
-        try:
-            c.execute(
-                """UPDATE key_status 
-                   SET consecutive_failures = 0, frozen_until = 0.0, enabled = 1, active_requests = 0 
-                   WHERE key = ?""",
-                (target_key,)
-            )
-            c.execute("DELETE FROM key_penalties WHERE api_key = ?", (target_key,))
-            c.commit()
-        except Exception as e:
-            raise HTTPException(status_code=500, detail=f"Database update failed: {e}")
-        finally:
-            c.close()
+
+    def _reset_key() -> None:
+        with _LOCK:
+            c = _conn()
+            try:
+                c.execute(
+                    """UPDATE key_status 
+                       SET consecutive_failures = 0, frozen_until = 0.0, enabled = 1, active_requests = 0 
+                       WHERE key = ?""",
+                    (target_key,)
+                )
+                c.execute("DELETE FROM key_penalties WHERE api_key = ?", (target_key,))
+                c.commit()
+            except Exception as e:
+                raise HTTPException(status_code=500, detail=f"Database update failed: {e}")
+            finally:
+                c.close()
+
+    await asyncio.to_thread(_reset_key)
 
     from src.core.router import router
     router.refresh_keys()

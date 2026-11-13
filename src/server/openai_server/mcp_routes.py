@@ -279,9 +279,12 @@ _session_tasks: list = []
 
 
 async def stop_mcp_session() -> None:
-    for task in _session_tasks:
-        task.cancel()
+    tasks = list(_session_tasks)
     _session_tasks.clear()
+    for task in tasks:
+        task.cancel()
+    if tasks:
+        await asyncio.gather(*tasks, return_exceptions=True)
     _proxy.target = None
 
 

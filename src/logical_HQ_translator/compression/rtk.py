@@ -42,6 +42,23 @@ SEARCH_LIST_HEADER_RE = re.compile(r'^Result of search in \'.*\' \(total \d+ fil
 LS_DATE_RE = re.compile(r'\s+(Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)\s+\d{1,2}\s+(\d{4}|\d{2}:\d{2})\s+')
 RE_CARGO_ERR_CONT = re.compile(r'^\s*(-->|\||\d+\s*\||=)')
 
+# Precompiled patterns for filter_build_output's per-line classification, so a
+# new line does not recompile the same regexes.
+RE_NPM_ERROR = re.compile(r'^npm (ERR!|error)', re.IGNORECASE)
+RE_YARN_ERROR = re.compile(r'^yarn error', re.IGNORECASE)
+RE_NPM_WARN_DEPRECATED = re.compile(r'^npm warn deprecated', re.IGNORECASE)
+RE_NPM_WARN = re.compile(r'^npm warn', re.IGNORECASE)
+RE_YARN_WARN = re.compile(r'^yarn warn', re.IGNORECASE)
+RE_ERROR_PREFIX = re.compile(r'^error(\[|:)', re.IGNORECASE)
+RE_WARNING_PREFIX = re.compile(r'^warning(\[|:)', re.IGNORECASE)
+RE_COMPILING = re.compile(r'^\s*Compiling\s+\S+', re.IGNORECASE)
+RE_DOWNLOADING = re.compile(r'^\s*Downloading\s+\S+', re.IGNORECASE)
+RE_FETCHING = re.compile(r'^Fetching\s+', re.IGNORECASE)
+RE_PKG_COUNT = re.compile(r'^(added|removed|changed|audited|installed)\s+\d+\s+package', re.IGNORECASE)
+RE_FINISHED = re.compile(r'^\s*Finished\s+', re.IGNORECASE)
+RE_NUM_COUNT = re.compile(r'^\d+\s+(vulnerabilities|packages?|warnings?|errors?)', re.IGNORECASE)
+RE_SUCCESSFULLY = re.compile(r'^Successfully (installed|built)', re.IGNORECASE)
+
 
 def filter_git_diff(diff: str, max_lines=500) -> str:
     result = []
@@ -347,23 +364,23 @@ def filter_build_output(input_str: str) -> str:
         if not trimmed:
             continue
 
-        if re.match(r'^npm (ERR!|error)', trimmed, re.IGNORECASE) or re.match(r'^yarn error', trimmed, re.IGNORECASE):
+        if RE_NPM_ERROR.match(trimmed) or RE_YARN_ERROR.match(trimmed):
             errors.append(line)
             continue
 
-        if re.match(r'^npm warn deprecated', trimmed, re.IGNORECASE):
+        if RE_NPM_WARN_DEPRECATED.match(trimmed):
             deprecations.append(line)
             continue
-        if re.match(r'^npm warn', trimmed, re.IGNORECASE) or re.match(r'^yarn warn', trimmed, re.IGNORECASE):
+        if RE_NPM_WARN.match(trimmed) or RE_YARN_WARN.match(trimmed):
             warnings.append(line)
             continue
 
-        if re.match(r'^error(\[|:)', trimmed, re.IGNORECASE) or trimmed.startswith("error -->"):
+        if RE_ERROR_PREFIX.match(trimmed) or trimmed.startswith("error -->"):
             errors.append(line)
             in_cargo_error = True
             continue
 
-        if re.match(r'^warning(\[|:)', trimmed, re.IGNORECASE) or trimmed.startswith("warning -->"):
+        if RE_WARNING_PREFIX.match(trimmed) or trimmed.startswith("warning -->"):
             warnings.append(line)
             in_cargo_error = True
             continue
@@ -380,19 +397,19 @@ def filter_build_output(input_str: str) -> str:
             warnings.append(line)
             continue
 
-        if re.match(r'^\s*Compiling\s+\S+', trimmed, re.IGNORECASE):
+        if RE_COMPILING.match(trimmed):
             compiling_count += 1
             continue
-        if re.match(r'^\s*Downloading\s+\S+', trimmed, re.IGNORECASE) or re.match(r'^Fetching\s+', trimmed, re.IGNORECASE):
+        if RE_DOWNLOADING.match(trimmed) or RE_FETCHING.match(trimmed):
             downloading_count += 1
             continue
 
         if (
-            re.match(r'^(added|removed|changed|audited|installed)\s+\d+\s+package', trimmed, re.IGNORECASE) or
-            re.match(r'^\s*Finished\s+', trimmed, re.IGNORECASE) or
+            RE_PKG_COUNT.match(trimmed) or
+            RE_FINISHED.match(trimmed) or
             trimmed.upper().startswith("BUILD SUCCESS") or
-            re.match(r'^\d+\s+(vulnerabilities|packages?|warnings?|errors?)', trimmed, re.IGNORECASE) or
-            re.match(r'^Successfully (installed|built)', trimmed, re.IGNORECASE) or
+            RE_NUM_COUNT.match(trimmed) or
+            RE_SUCCESSFULLY.match(trimmed) or
             trimmed.startswith("To address ") or
             trimmed.startswith("Run `npm ") or
             "packages are looking for funding" in trimmed

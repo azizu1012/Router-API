@@ -468,19 +468,23 @@ async def _watch_env_file():
                 if mtime > last_mtime:
                     logger.info("[EnvWatch] .env file change detected! Reloading keys & models...")
                     last_mtime = mtime
-                    from dotenv import load_dotenv
-                    load_dotenv(ENV_PATH, override=True)
-                    new_keys = reload_config()
-                    register_keys_in_db(new_keys)
-                    _set_tiers()
-                    router.refresh_keys()
-                    api_manager.refresh_pool_size()
-                    clear_rate_limiters()
 
-                    from src.core.config.api_config import reload_model_config
-                    reload_model_config()
-                    from src.backend.models.config import sync_env_to_db
-                    sync_env_to_db()
+                    def _reload_env():
+                        from dotenv import load_dotenv
+                        load_dotenv(ENV_PATH, override=True)
+                        new_keys = reload_config()
+                        register_keys_in_db(new_keys)
+                        _set_tiers()
+                        router.refresh_keys()
+                        api_manager.refresh_pool_size()
+                        clear_rate_limiters()
+
+                        from src.core.config.api_config import reload_model_config
+                        reload_model_config()
+                        from src.backend.models.config import sync_env_to_db
+                        sync_env_to_db()
+
+                    await asyncio.to_thread(_reload_env)
 
                     logger.info("[EnvWatch] Keys and models successfully reloaded and synced to DB!")
         except asyncio.CancelledError:
@@ -532,6 +536,14 @@ async def lifespan(app: FastAPI):
     if tasks:
         await asyncio.gather(*tasks, return_exceptions=True)
     _background_tasks.clear()
+
+    # Tear the MCP host session down and cancel its long-lived `_hold_open`
+    # task; otherwise it stays alive past shutdown and pins the event loop.
+    try:
+        from src.server.openai_server import mcp_routes
+        await mcp_routes.stop_mcp_session()
+    except Exception as mcp_err:
+        logger.warning("[Shutdown] Failed to stop MCP session: %s", mcp_err)
 
     try:
         from src.backend.keys.status import flush_pending_writes

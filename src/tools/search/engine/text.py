@@ -37,7 +37,7 @@ class SearchUtilsMixin(SearchDataMixin):
         except Exception:
             return BeautifulSoup(html_text, "html.parser")
 
-    def _extract_page_metadata(self, html_text: str) -> Dict[str, Any]:
+    def _extract_page_metadata(self, html_text: str, soup=None) -> Dict[str, Any]:
         """Extract verified published date and author from HTML meta/json-ld/time tags."""
         result: Dict[str, Any] = {
             "published_date": None,
@@ -46,11 +46,12 @@ class SearchUtilsMixin(SearchDataMixin):
             "author": "",
             "has_verified_date": False,
         }
-        if not html_text:
+        if not html_text and soup is None:
             return result
 
         try:
-            soup = self._parse_soup(html_text)
+            if soup is None:
+                soup = self._parse_soup(html_text)
             raw_date = None
 
             # 1. Meta tags
@@ -120,8 +121,9 @@ class SearchUtilsMixin(SearchDataMixin):
 
         return result
 
-    def _extract_main_text(self, html_text: str) -> str:
-        soup = self._parse_soup(html_text)
+    def _extract_main_text(self, html_text: str, soup=None) -> str:
+        if soup is None:
+            soup = self._parse_soup(html_text)
 
         # Loại bỏ các thẻ không cần thiết
         for tag in soup(["script", "style", "noscript", "svg", "form", "button", "header", "footer", "nav", "aside", "iframe"]):

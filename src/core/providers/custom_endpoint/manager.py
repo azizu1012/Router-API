@@ -1,4 +1,6 @@
 import asyncio
+import concurrent.futures
+import threading
 import time
 from datetime import datetime, timezone
 from pathlib import Path
@@ -30,6 +32,74 @@ from src.backend.endpoints.manager import (
 # Keep the optional JSON fallback at the repository root after provider refactors.
 _DEFAULT_PATH = str(Path(__file__).resolve().parents[3] / "custom_endpoints.json")
 _CACHE_TTL = 5.0
+
+_TRANSITION_EXECUTOR = concurrent.futures.ThreadPoolExecutor(max_workers=1)
+_pending_transitions_lock = threading.Lock()
+_pending_transitions: List[tuple] = []
+_transition_flush_scheduled = False
+
+
+def _flush_endpoint_transitions() -> None:
+    """Coalesce endpoint-transition INSERTs and the 5000-row cap off the event loop.
+
+    Runs on a worker thread so the sync sqlite3 work never blocks the async
+    pool stream generators. Mirrors the key-transition flush in
+    ``src/backend/keys/status.py``.
+    """
+    global _transition_flush_scheduled, _pending_transitions
+    while True:
+        with _pending_transitions_lock:
+            batch = _pending_transitions
+            _pending_transitions = []
+        if not batch:
+            break
+        try:
+            with _LOCK:
+                c = _conn()
+                try:
+                    c.executemany(
+                        """INSERT OR IGNORE INTO endpoint_transitions
+                           (request_id, endpoint, state, failures, frozen_until, metadata, created_at, transition_id)
+                           VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
+                        batch,
+                    )
+                    # Same cap as key_transitions: dashboard queries are LIMITed,
+                    # nothing ever deleted before this.
+                    c.execute(
+                        "DELETE FROM endpoint_transitions WHERE id NOT IN "
+                        "(SELECT id FROM endpoint_transitions ORDER BY id DESC LIMIT 5000)"
+                    )
+                    c.commit()
+                finally:
+                    c.close()
+        except Exception as exc:
+            logger.warning("[EndpointTransition] persistence failed: %s", exc)
+    with _pending_transitions_lock:
+        has_pending = bool(_pending_transitions)
+    if has_pending:
+        # More transitions arrived during the flush; hand off to another pass
+        # without clearing the scheduled flag.
+        try:
+            _TRANSITION_EXECUTOR.submit(_flush_endpoint_transitions)
+        except Exception:
+            with _pending_transitions_lock:
+                _transition_flush_scheduled = False
+    else:
+        with _pending_transitions_lock:
+            _transition_flush_scheduled = False
+
+
+def _schedule_transition_flush() -> None:
+    global _transition_flush_scheduled
+    with _pending_transitions_lock:
+        if _transition_flush_scheduled:
+            return
+        _transition_flush_scheduled = True
+    try:
+        _TRANSITION_EXECUTOR.submit(_flush_endpoint_transitions)
+    except Exception:
+        with _pending_transitions_lock:
+            _transition_flush_scheduled = False
 
 
 def _upstream_context_window(entry: Dict[str, Any]) -> int:
@@ -105,31 +175,26 @@ class CustomEndpointManager:
         return bool(entry and time.time() < entry.get("frozen_until", 0.0))
 
     def _record_transition(self, name: str, state: str, metadata: Optional[Dict[str, Any]] = None) -> None:
+        """Queue an endpoint transition for async (off-loop) persistence.
+
+        The sqlite3 INSERT plus the 5000-row table-scan DELETE are offloaded to
+        a single worker thread so the event loop is never blocked on disk I/O
+        from the hot custom-endpoint success/failure paths.
+        """
         transition_id = uuid.uuid4().hex
         payload = dict(metadata or {})
         from src.core.runtime.request_context import get_request_id
         req_id = (payload.get("request_id") or "").strip() or get_request_id() or uuid.uuid4().hex
         payload["request_id"] = req_id
         payload.update({"endpoint": name, "state": state, "transition_id": transition_id})
-        try:
-            with _LOCK:
-                c = _conn()
-                c.execute("""INSERT OR IGNORE INTO endpoint_transitions
-                    (request_id, endpoint, state, failures, frozen_until, metadata, created_at, transition_id)
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
-                    (req_id, name, state,
-                     int(payload.get("failures", 0)), float(payload.get("frozen_until", 0)),
-                     json.dumps(payload, default=str), time.time(), transition_id))
-                # Same cap as key_transitions: dashboard queries are LIMITed,
-                # nothing ever deleted before this.
-                c.execute(
-                    "DELETE FROM endpoint_transitions WHERE id NOT IN "
-                    "(SELECT id FROM endpoint_transitions ORDER BY id DESC LIMIT 5000)"
-                )
-                c.commit()
-                c.close()
-        except Exception as exc:
-            logger.warning("[EndpointTransition] persistence failed endpoint=%s: %s", name, exc)
+        row = (
+            req_id, name, state,
+            int(payload.get("failures", 0)), float(payload.get("frozen_until", 0)),
+            json.dumps(payload, default=str), time.time(), transition_id,
+        )
+        with _pending_transitions_lock:
+            _pending_transitions.append(row)
+        _schedule_transition_flush()
 
     def mark_endpoint_success(self, name: str, metadata: Optional[Dict[str, Any]] = None) -> None:
         self._circuit_breaker.pop(name, None)

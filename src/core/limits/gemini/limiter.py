@@ -225,7 +225,18 @@ def check_key_model_limits(api_key: str, model_id: str, estimated_tokens: int, r
             reqs.popleft()
         while toks and now - toks[0][0] >= 60:
             toks.popleft()
-            
+
+        # Evict entries that have fully aged out of the 60s window so the
+        # dict does not grow without bound across many key-model pairs.
+        if not reqs:
+            _key_model_requests.pop(k_m, None)
+        if not toks:
+            _key_model_tokens.pop(k_m, None)
+
+        # Evicted entries count as zero usage in this window.
+        reqs = _key_model_requests.get(k_m) or deque()
+        toks = _key_model_tokens.get(k_m) or deque()
+
         if len(reqs) >= rpm_limit:
             return False
             
@@ -375,20 +386,24 @@ def apply_error_penalty(key: str, reason: str, actual_model_id: Optional[str] = 
 def _load_key_usage() -> None:
     global _key_usage, _usage_date
     _usage_date = _today_pacific()
+    today_str = str(_usage_date)
     try:
         saved = get_key_usage_db()
         with _usage_lock:
             _key_usage = {}
             for k, v in saved.items():
-                if isinstance(v, dict):
-                    entry = dict(v)
-                    if entry.get("date") != str(_usage_date):
-                        entry["today"] = 0
-                        entry["date"] = str(_usage_date)
-                        for m_entry in entry.get("per_model", {}).values():
-                            if isinstance(m_entry, dict):
-                                m_entry["today"] = 0
-                    _key_usage[k] = entry
+                if not isinstance(v, dict):
+                    continue
+                entry = dict(v)
+                # Drop keys whose per-key data fully aged out. A key unused
+                # since a previous Pacific day has a stale `date`; its RPD
+                # counter is reset anyway, so retaining it only pins memory
+                # for the life of the process. It is recreated with today's
+                # date on its next use. Keys active today are kept, so
+                # in-window rate-limit accounting is unchanged.
+                if entry.get("date") != today_str:
+                    continue
+                _key_usage[k] = entry
     except Exception as exc:
         logger.warning("Failed to load key usage: %s", exc)
         with _usage_lock:

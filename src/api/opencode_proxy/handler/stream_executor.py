@@ -31,7 +31,10 @@ from src.api.claude_proxy.handler.streaming.keepalive import (
 # stream_executor used to inline its own copy of these three rules (fragments
 # concatenate, '{}' placeholder is replaced, repeated fragment ignored) and the
 # copies had already diverged in their id handling.
-from src.api.claude_proxy.handler.streaming.tool_calls import buffer_tool_calls
+from src.api.claude_proxy.handler.streaming.tool_calls import (
+    buffer_tool_calls,
+    get_tool_args,
+)
 from src.core.observability.usage_logger import log_usage
 from src.core.providers.finish_reason import normalize_finish_reason
 from src.logical_HQ_translator import (
@@ -354,19 +357,27 @@ async def execute_stream(
     t0_wait = asyncio.get_event_loop().time()
     ping_count = 0
     yield b": keepalive-init\n\n"
-    while not fetch_task.done():
-        try:
-            await asyncio.wait_for(asyncio.shield(fetch_task), timeout=2.5)
-            break
-        except asyncio.TimeoutError:
-            ping_count += 1
-            if ping_count % 5 == 1:
-                logger.info(
-                    "[OpenCode Stream Keepalive] Waiting for %s (elapsed=%.1fs)",
-                    model_alias, asyncio.get_event_loop().time() - t0_wait
-                )
-            yield b": keepalive\n\n"
-            yield _openai_sse(model_name, chunk_id=chunk_id)
+    try:
+        while not fetch_task.done():
+            try:
+                await asyncio.wait_for(asyncio.shield(fetch_task), timeout=2.5)
+                break
+            except asyncio.TimeoutError:
+                ping_count += 1
+                if ping_count % 5 == 1:
+                    logger.info(
+                        "[OpenCode Stream Keepalive] Waiting for %s (elapsed=%.1fs)",
+                        model_alias, asyncio.get_event_loop().time() - t0_wait
+                    )
+                yield b": keepalive\n\n"
+                yield _openai_sse(model_name, chunk_id=chunk_id)
+    finally:
+        # If the keepalive yield loop exits early — client disconnect
+        # (GeneratorExit at a yield) or an exception — the producer task is
+        # still waiting on the upstream and would otherwise pin the session
+        # forever. Cancel it so the hung upstream is not awaited indefinitely.
+        if not fetch_task.done():
+            fetch_task.cancel()
 
     try:
         gen, first_item = await fetch_task
@@ -502,7 +513,8 @@ async def execute_stream(
         incomplete_tool_call = False
         for idx in sorted(tool_buffers):
             buf = tool_buffers[idx]
-            if buf["args"] and not _arguments_are_valid_json(buf["args"]):
+            args = get_tool_args(buf)
+            if args and not _arguments_are_valid_json(args):
                 logger.warning(
                     "[OpenCode Stream] dropping %s (id=%s): arguments are not valid "
                     "JSON, the provider stopped mid-call", buf["name"], buf["id"])
@@ -511,7 +523,7 @@ async def execute_stream(
             has_tool_calls = True
             yield _openai_sse(model_name, tool_calls=[{
                 "id": buf["id"], "type": buf.get("type", "function"),
-                "index": idx, "name": buf["name"], "arguments": buf["args"],
+                "index": idx, "name": buf["name"], "arguments": args,
             }], thought_signature=ts, chunk_id=chunk_id)
 
         if not stream_finished:
