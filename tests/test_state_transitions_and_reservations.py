@@ -15,6 +15,7 @@ from src.backend.keys.status import (
 )
 from src.backend._db import _LOCK, conn as _db_conn
 from src.core.providers import _custom_endpoint_manager as endpoint_manager
+from src.core.providers.custom_endpoint.manager import flush_endpoint_transitions
 
 
 def test_request_context_propagation():
@@ -118,6 +119,7 @@ def test_endpoint_transition_recording_and_query(temp_db):
         ep_name,
         metadata={"request_id": req_id, "reason": "502 Bad Gateway", "attempt": 0},
     )
+    flush_endpoint_transitions()
 
     rows = query_endpoint_transitions_db(request_id=req_id, endpoint=ep_name)
     assert len(rows) >= 1
@@ -127,6 +129,7 @@ def test_endpoint_transition_recording_and_query(temp_db):
 
     # Success marks healthy
     endpoint_manager.mark_endpoint_success(ep_name, metadata={"request_id": req_id})
+    flush_endpoint_transitions()
     rows_after = query_endpoint_transitions_db(endpoint=ep_name)
     assert len(rows_after) >= 2
     assert rows_after[0]["state"] == "healthy"
