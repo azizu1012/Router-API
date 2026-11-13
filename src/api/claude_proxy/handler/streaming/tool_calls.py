@@ -5,6 +5,35 @@ import uuid
 from typing import Any, Dict, Optional
 
 
+class _ToolArgsBuffer(dict):
+    """A dict whose ``args`` key lazily joins accumulated fragments.
+
+    Fragments are stored in ``args_fragments``; reading ``args`` joins them
+    exactly once, so appending N fragments costs O(N) total instead of O(N²)
+    repeated string concatenation. Callers that read ``buf["args"]`` (or use
+    :func:`get_tool_args`) always see the fully-assembled string.
+    """
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+
+    def _assembly(self) -> str:
+        frags = dict.get(self, "args_fragments")
+        if frags is not None:
+            return "".join(frags)
+        return dict.get(self, "args", "")
+
+    def __getitem__(self, key):
+        if key == "args":
+            return self._assembly()
+        return dict.__getitem__(self, key)
+
+    def get(self, key, default=None):
+        if key == "args":
+            return self._assembly()
+        return dict.get(self, key, default)
+
+
 def buffer_tool_calls(
     delta: Any,
     tool_buffers: Dict[int, Dict[str, Any]],
@@ -101,11 +130,9 @@ def buffer_tool_calls(
                 if fn_name
                 else f"toolu_{uuid.uuid4().hex}"
             )
-            tool_buffers[buf_idx] = {
-                "id": tc_id,
-                "name": fn_name,
-                "args": "",
-            }
+            tool_buffers[buf_idx] = _ToolArgsBuffer(
+                id=tc_id, name=fn_name, args=""
+            )
         elif fn_name:
             tool_buffers[buf_idx]["name"] = fn_name
 
@@ -128,11 +155,30 @@ def buffer_tool_calls(
             #
             # The repeat is not hypothetical: a provider that re-sends the whole
             # tool_call alongside finish_reason turned one call into two.
-            current = tool_buffers[buf_idx]["args"]
-            if current == args_str:
+            #
+            # Fragments are accumulated in a list and joined lazily on read.
+            entry = tool_buffers[buf_idx]
+            frags = entry.setdefault("args_fragments", [])
+            total_len = entry.get("_args_total_len", 0)
+            if frags == ["{}"]:
+                # placeholder: replace, don't concatenate
+                frags[0] = args_str
+                entry["_args_total_len"] = len(args_str)
                 continue
-            if current == "{}":
-                tool_buffers[buf_idx]["args"] = args_str
-            else:
-                tool_buffers[buf_idx]["args"] = current + args_str
+            if len(frags) == 1 and frags[0] == args_str:
+                # repeat of a sole fragment: ignore it
+                continue
+            if len(frags) > 1 and len(args_str) == total_len and "".join(frags) == args_str:
+                # full re-send of everything accumulated so far: ignore it
+                continue
+            frags.append(args_str)
+            entry["_args_total_len"] = total_len + len(args_str)
 
+
+def get_tool_args(buf) -> str:
+    """Return the fully-assembled tool-call arguments for ``buf``.
+
+    Fragments are stored as a list and joined lazily by the buffer; callers use
+    this helper (or read ``buf["args"]``) to get the complete argument string.
+    """
+    return buf.get("args") or ""

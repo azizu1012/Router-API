@@ -7,6 +7,10 @@ from typing import Dict, List, Optional, Set
 from src.tools.search.engine.text import SearchUtilsMixin
 from src.tools.search.languages.registry import detect_query_languages, iter_language_topic_keywords
 
+# Consensus rerank is O(n²) over the result set; on large sets we sample a
+# fixed number of peer records per record to keep it O(n·K).
+_CONSENSUS_MAX_RECORDS = 64
+
 
 class SearchRankingMixin(SearchUtilsMixin):
 
@@ -89,6 +93,12 @@ class SearchRankingMixin(SearchUtilsMixin):
             return 0.0
 
     def _dynamic_reputation_score(self, topic: str, query: str, record: Dict[str, str]) -> float:
+        # Memoize per record: the same record is scored, quality-checked, and
+        # formatted across a pipeline run, so this is computed once and reused.
+        cache = record.setdefault("_rep_score_cache", {})
+        key = (topic, query)
+        if key in cache:
+            return cache[key]
         domain = (record.get("domain") or "").strip().lower()
         title = record.get("title") or ""
         snippet = record.get("snippet") or ""
@@ -135,6 +145,7 @@ class SearchRankingMixin(SearchUtilsMixin):
         if title_match:
             score += 0.35
 
+        cache[key] = score
         return score
 
     def _is_quality_record(self, topic: str, query: str, record: Dict[str, str]) -> bool:
@@ -264,7 +275,14 @@ class SearchRankingMixin(SearchUtilsMixin):
         score += self._domain_authority_score(domain, profile)
         score += self._information_density_score(full_text)
 
-        pub_date = record.get("published_date") or self._extract_date(snippet[:40]) or self._extract_date(title[:40])
+        # Parse the published date at most once per record and cache it so the
+        # coupled-freshness and any later consumers don't re-run dateparser.
+        pub_date = record.get("published_date")
+        if pub_date is None and "_parsed_pub_date" not in record:
+            pub_date = self._extract_date(snippet[:40]) or self._extract_date(title[:40])
+            record["_parsed_pub_date"] = pub_date
+        elif pub_date is None:
+            pub_date = record.get("_parsed_pub_date")
         score += self._calculate_coupled_freshness(query, full_text, pub_date, self._is_time_sensitive_query(query))
 
         if any(token for token in re.findall(r"\w+", query.lower()) if len(token) > 3 and token in f"{title} {snippet}"):
@@ -290,13 +308,30 @@ class SearchRankingMixin(SearchUtilsMixin):
             tokens = set(self._normalize_query_tokens(text))
             record_tokens.append(tokens)
 
-        consensus_scores = [0.0] * len(records)
-        for i in range(len(records)):
-            for j in range(len(records)):
-                if i != j:
-                    overlap = len(record_tokens[i].intersection(record_tokens[j]))
-                    if overlap > 3:
-                        consensus_scores[i] += min(1.0, overlap * 0.1)
+        n = len(records)
+        consensus_scores = [0.0] * n
+        if n <= _CONSENSUS_MAX_RECORDS:
+            # Small result sets: exact pairwise consensus (O(n²)).
+            for i in range(n):
+                ti = record_tokens[i]
+                for j in range(n):
+                    if i != j:
+                        overlap = len(ti.intersection(record_tokens[j]))
+                        if overlap > 3:
+                            consensus_scores[i] += min(1.0, overlap * 0.1)
+        else:
+            # Large result sets: bound the consensus scan to a fixed-size sample
+            # per record so this stays O(n·K) instead of O(n²), without
+            # materially changing relative boosts on realistic result sizes.
+            step = max(1, n // _CONSENSUS_MAX_RECORDS)
+            sample = list(range(0, n, step))[:_CONSENSUS_MAX_RECORDS]
+            for i in range(n):
+                ti = record_tokens[i]
+                for j in sample:
+                    if i != j:
+                        overlap = len(ti.intersection(record_tokens[j]))
+                        if overlap > 3:
+                            consensus_scores[i] += min(1.0, overlap * 0.1)
 
         domain_counts = {}
         reranked = []

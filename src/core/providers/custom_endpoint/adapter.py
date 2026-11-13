@@ -374,3 +374,8 @@ async def stream_custom_as_genai(
     except Exception as e:
         error_payload = {"error": {"message": str(e), "type": "stream_error"}}
         yield ("data: " + json.dumps(error_payload, ensure_ascii=False) + "\n\n").encode("utf-8")
+    finally:
+        # Always release the underlying HTTP session/response, whether the
+        # stream completed, raised, or was aborted by a client disconnect —
+        # otherwise the aiohttp session leaks for the lifetime of the process.
+        await gen.aclose()

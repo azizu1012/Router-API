@@ -276,10 +276,22 @@ async def check_custom_pool_rate(model_id: str, endpoint_name: Optional[str] = N
     now = time.time()
     window = now - 60
     async with _custom_pool_lock:
-        _custom_pool_usage[key] = [t for t in _custom_pool_usage[key] if t > window]
-        if len(_custom_pool_usage[key]) >= limit:
+        # A key whose timestamps are all outside the sliding window has fully
+        # aged out of RPM accounting: dropping it cannot change in-window
+        # decisions, only stop the dict from growing per distinct endpoint.
+        current = _custom_pool_usage[key]
+        kept = [t for t in current if t > window]
+        if not kept:
+            # Fully aged out — remove the key entirely rather than leave an
+            # empty list pinned forever.
+            _custom_pool_usage.pop(key, None)
+            kept = []
+        else:
+            _custom_pool_usage[key] = kept
+        if len(kept) >= limit:
             return False
-        _custom_pool_usage[key].append(now)
+        kept.append(now)
+        _custom_pool_usage[key] = kept
     return True
 
 
@@ -1403,6 +1415,10 @@ class CustomEndpointStreamGen:
                         "model=%s error=%s",
                         self._api_base, self._model, str(err)[:300],
                     )
+                    # The upstream abandoned this turn; the aiohttp session and
+                    # response must be released before surfacing, exactly as the
+                    # timeout/EOF paths above do.
+                    await self._cleanup()
                     raise RuntimeError(f"custom_endpoint_upstream_error: {err}")
                 usage_only = raw_chunk.get("usage")
                 if usage_only and not any(

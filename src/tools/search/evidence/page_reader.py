@@ -45,8 +45,11 @@ class SearchEvidenceMixin:
                 return "", {}
             if not response.encoding:
                 response.encoding = response.apparent_encoding or "utf-8"
-            meta = self._extract_page_metadata(response.text)
-            parsed = self._extract_main_text(response.text)
+            # Parse the HTML once and reuse the tree for both metadata and main
+            # text extraction instead of parsing the same document twice.
+            soup = self._parse_soup(response.text)
+            meta = self._extract_page_metadata(response.text, soup=soup)
+            parsed = self._extract_main_text(response.text, soup=soup)
             if len(parsed) < 120:
                 return "", meta
             return parsed[:self.deep_read_max_chars].strip(), meta

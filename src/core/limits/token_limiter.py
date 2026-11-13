@@ -27,7 +27,7 @@ from src.backend.keys.accounts import DEFAULT_MAX_CONCURRENCY, DEFAULT_MIN_INTER
 
 
 class _TokenState:
-    __slots__ = ("in_flight", "req_ts", "tok_events", "rpd_count", "rpd_date", "last_start")
+    __slots__ = ("in_flight", "req_ts", "tok_events", "rpd_count", "rpd_date", "last_start", "last_used")
 
     def __init__(self) -> None:
         self.in_flight = 0
@@ -36,19 +36,45 @@ class _TokenState:
         self.rpd_count = 0
         self.rpd_date = ""
         self.last_start = 0.0
+        self.last_used = 0.0
+
+# Idle TTL for stale per-token states. States are only evicted when they hold
+# no in-flight request and no live 60s-window traffic, so rate-limit semantics
+# for any active token are untouched.
+_STATE_IDLE_TTL = 600.0
+_EVICT_SWEEP_INTERVAL = 60.0
 
 
 class TokenRateLimiter:
     def __init__(self) -> None:
         self._states: Dict[str, _TokenState] = {}
         self._lock = asyncio.Lock()
+        self._last_evict_ts = 0.0
 
     def _state(self, key_id: str) -> _TokenState:
         st = self._states.get(key_id)
         if st is None:
             st = _TokenState()
             self._states[key_id] = st
+        st.last_used = time.monotonic()
         return st
+
+    def _evict_inactive(self, now: float) -> None:
+        """Drop states idle beyond the TTL with no in-flight request and no live
+        60s-window traffic. Swept at most once per interval to bound cost."""
+        if now - self._last_evict_ts < _EVICT_SWEEP_INTERVAL:
+            return
+        self._last_evict_ts = now
+        stale = [
+            kid for kid, st in self._states.items()
+            if st.in_flight == 0
+            and not st.req_ts
+            and not st.tok_events
+            and st.rpd_count == 0
+            and (now - st.last_used) > _STATE_IDLE_TTL
+        ]
+        for kid in stale:
+            self._states.pop(kid, None)
 
     @staticmethod
     def _int(row: Optional[Dict[str, Any]], field: str, default: int) -> int:
@@ -91,6 +117,7 @@ class TokenRateLimiter:
         today = time.strftime("%Y-%m-%d")
 
         async with self._lock:
+            self._evict_inactive(time.monotonic())
             st = self._state(key_id)
             now = time.monotonic()
 

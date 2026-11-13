@@ -490,3 +490,50 @@ Một số custom endpoint upstream (ví dụ endpoint `sỹ-raspi`) chạy **ba
 - Đã thêm `NativeChunk.to_dict()` — nguồn duy nhất serialize wire shape (id/object/created/model/choices/delta/finish_reason/usage). `_custom_safe_stream` giờ gọi `to_dict()`.
 - Verify: stream qua alias `sỹ-raspi` trả content đầy đủ, fin với `finish_reason:"stop"`.
 
+---
+
+## 18. Tối Ưu Hiệu Năng & Xử Lý Leak (Performance/Resource Audit Fixes)
+
+Audit 6-lens spot ra các leak tài nguyên và chi phí hot-path; hai batch fix đã xử lý. **Không có thay đổi hành vi wire/API** — đây đều là tối ưu nội bộ (off-loop I/O, eviction, cancellaton, incremental join, memoization).
+
+### 18.1. Leak Socket / Client Session (Custom Endpoint)
+- `CustomEndpointStreamGen.__anext__` (client.py): nhánh **upstream error frame** giờ gọi `self._cleanup()` trước khi raise `RuntimeError` — khớp với nhánh timeout/EOF, không còn để `aiohttp.ClientSession` + response mở.
+- `stream_custom_as_genai` (adapter.py): thêm `finally: await gen.aclose()` — giải phóng session khi stream hoàn tất, raise, hoặc bị client disconnect giữa chừng.
+
+### 18.2. Blocking I/O Ra Khỏi Event Loop
+- `_record_transition` (custom_endpoint/manager.py): ghi `endpoint_transitions` (INSERT + DELETE giữ cap 5000 dòng) chuyển sang single-worker `ThreadPoolExecutor` coalesced flush, mirror `src/backend/keys/status.py`. Không còn block async pool stream generators.
+- Admin handlers (`admin/keys.py`, `admin/models.py`, `admin/settings.py`): sqlite3 sync + `.env` file I/O (append/remove/update env, `reload_config`, `load_dotenv`) chuyển vào `asyncio.to_thread` trong `async def` handlers.
+- `_watch_env_file` (app_init.py): reload config cũng qua `asyncio.to_thread`.
+
+### 18.3. Eviction Bộ Nhớ Không Giới Hạn
+- `GeminiRateLimiter` (limiter.py): `_key_model_requests`/`_key_model_tokens` — evict entry dict khi deque aging hết cửa sổ 60s; `_key_usage` drop key khi `date` cũ hơn hôm nay. Semantics trong cửa sổ active không đổi.
+- `check_custom_pool_rate` (client.py): xóa key khỏi `_custom_pool_usage` khi mọi timestamp ra ngoài 60s.
+- `TokenRateLimiter` (token_limiter.py): thêm `last_used` + lazy `_evict_inactive` (TTL 600s, sweep ≤1/60s) — chỉ evict state không có in-flight, window rỗng và RPD hôm nay = 0.
+
+### 18.4. Task Leak / Cancellation
+- `RequestSession` (request_session.py): `_reap_stale()` trong `get_or_start()` cancel và drop session khi producer im lặng quá `SESSION_TTL` (upstream hang).
+- `stream_executor.py`: `fetch_task` TTFB được wrap `try/finally` — cancel khi vòng keepalive yield thoát sớm (client disconnect/exception).
+- `mcp_routes.py` + `app_init.py`: `stop_mcp_session()` giờ cancel + gather `_hold_open` tasks, và được gọi trong `lifespan` shutdown.
+
+### 18.5. Streaming: Bỏ Re-Join Toàn Bộ (C1/C2/C3/C6)
+- `proxy_stream.py`: thêm mirror `_text_joined`, `_thought_joined`, `_deferred_search_joined` cập nhật incrementally. Mọi `"".join(accumulated_thought)` trong `thinking_signature` (6 điểm) và text/deferred joins giờ tái dùng mirror — bỏ re-join O(tổng buffer) mỗi ranh giới block và O(n²) `''.join` per-chunk của `deferred_search_text`.
+
+### 18.6. Tool-Call Args: Bỏ O(n²) (C4)
+- `tool_calls.py`: `_ToolArgsBuffer` (subclass dict) lưu fragment trong `args_fragments` và lazy-join khi đọc `["args"]` qua `get_tool_args(buf)`. Append N fragments = O(N), giữ nguyên rule placeholder-replace và repeat-ignore. Cập nhật mọi consumer (`proxy_stream.py`, `stream_executor.py`).
+
+### 18.7. Truncation: Bỏ Deepcopy + Re-Serialize (C5)
+- `truncation.py` `trim_old_tool_results_softly`: theo dõi size serialized incrementally qua delta độ dài từng message thay vì deepcopy toàn history + `len(str(items))` mỗi vòng lặp.
+
+### 18.8. Search: Memoize & Parse-Once (S1/S2/S3/S4)
+- `ranking.py`: `_dynamic_reputation_score` **memoize per record** (key = topic/query) tái dùng qua `_score_record`, `_is_quality_record`, `_format_final_search_result`; `dateparser.parse` chạy tối đa 1 lần/record (`_parsed_pub_date`). Consensus rerank bounded bởi `_CONSENSUS_MAX_RECORDS=64` trên tập lớn.
+- `page_reader.py` + `text.py`: parse HTML một lần thành `BeautifulSoup` tree, tái dùng cho cả `_extract_page_metadata` lẫn `_extract_main_text`.
+- `engine/manager.py`: full-scan `failed_search_cooldowns` mỗi request thay bằng eviction khi dict vượt 128 entry.
+
+### 18.9. Precompile Regex (S5/S6)
+- `rtk.py`: các `re.match` phân loại per-line được precompile module-level.
+- `converter.py`: ~15 `re.sub` của `_clean_system_prompt` precompile thành `_SYSTEM_PROMPT_SUBS` / `_SYSTEM_PROMPT_EMPTY_TOOLS`.
+
+### Test
+- `tests/test_layering.py` pass (không vi phạm tầng; không `# noqa`/`__future__`).
+- Các test hẹp theo file đều pass: stream seam, tool-call assembly parity, truncation, rtk filters, search engine, hosted search, request_session, mcp_server, dashboard_tokens, custom_endpoint stream/circuit.
+

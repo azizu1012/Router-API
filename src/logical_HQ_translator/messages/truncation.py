@@ -190,15 +190,22 @@ def trim_old_tool_results_softly(
 
     trimmed = copy.deepcopy(messages)
     marker = "[older tool output trimmed; client context remains authoritative]"
+    # Track the serialized size incrementally instead of re-serializing the
+    # whole history on every loop iteration (O(T·M) -> O(T+M)). Replacing one
+    # message's content only changes that message's serialized length, so we
+    # fold the per-message delta into the running total.
+    serialized = len(str(trimmed))
     for message in trimmed:
         if str(message.get("role") or "") != "tool":
             continue
         content = message.get("content")
+        old_len = len(str(message))
         if isinstance(content, str) and len(content) > len(marker):
             message["content"] = marker
         elif isinstance(content, list):
             message["content"] = [{"type": "text", "text": marker}]
-        if size(trimmed) <= budget:
+        serialized += len(str(message)) - old_len
+        if serialized // 4 <= budget:
             return trimmed
-    return trimmed if size(trimmed) <= budget else messages
+    return trimmed if serialized // 4 <= budget else messages
 

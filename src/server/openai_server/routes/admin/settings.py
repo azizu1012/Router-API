@@ -1,4 +1,6 @@
 """Admin system-settings endpoints."""
+import asyncio
+
 from fastapi import Request, HTTPException
 from ..app_init import app
 from ..auth_session import _require_admin
@@ -49,16 +51,17 @@ async def admin_update_settings(request: Request):
         "CLIENT_BURST_RPM": "CLIENT_BURST_RPM",
     }
 
-    # Update the env vars
-    for env_key in keys_map.keys():
-        if env_key in body:
-            val = str(body[env_key]).strip()
-            if val:
-                update_env_var(env_key, val)
+    # Update the env vars + reload config off the event loop
+    def _write_settings() -> None:
+        for env_key in keys_map.keys():
+            if env_key in body:
+                val = str(body[env_key]).strip()
+                if val:
+                    update_env_var(env_key, val)
+        from src.core.config_n_logg import reload_config
+        reload_config()
 
-    # Reload config
-    from src.core.config_n_logg import reload_config
-    reload_config()
+    await asyncio.to_thread(_write_settings)
 
     return {"status": "success"}
 

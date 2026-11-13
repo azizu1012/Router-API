@@ -127,12 +127,31 @@ class RequestSessionManager:
         self._sessions: Dict[str, RequestSession] = {}
         self._lock = asyncio.Lock()
 
+    def _reap_stale(self) -> None:
+        """Cancel and drop sessions whose producer has gone silent.
+
+        A producer waiting on a hung upstream never publishes, so the session's
+        ``updated_at`` stops advancing and it goes stale after ``SESSION_TTL``.
+        Without this, that producer task and its registrar stay pinned for the
+        life of the process even though no client can resume the session. We
+        cancel the task so the hung upstream isn't waited on forever, and drop
+        the registry entry so the memory is reclaimed.
+        """
+        for sid, session in list(self._sessions.items()):
+            if session.alive():
+                continue
+            if session.task and not session.task.done():
+                session.task.cancel()
+            if self._sessions.get(sid) is session:
+                self._sessions.pop(sid, None)
+
     async def get_or_start(
         self, request_id: str, producer: Callable[[], AsyncIterator[bytes]],
         request_fingerprint: str = "",
         resume_after: Optional[int] = None,
     ) -> tuple[RequestSession, bool]:
         async with self._lock:
+            self._reap_stale()
             current = self._sessions.get(request_id)
             if (resume_after is not None
                     and current and current.request_fingerprint == request_fingerprint

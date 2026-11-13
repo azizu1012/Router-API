@@ -25,6 +25,30 @@ SERVER_SEARCH_TOOL_TYPES = {
 # Anthropic tool_use.id pattern: ^[a-zA-Z0-9_-]+$
 _TOOL_ID_PATTERN = re.compile(r"^[a-zA-Z0-9_-]+$")
 
+# Precompiled substitutions for _clean_system_prompt, so each request does not
+# recompile ~15 regexes on every system-prompt cleanup.
+_SYSTEM_PROMPT_SUBS = (
+    (re.compile(r'claude-sonnet-4-20250514'), 'gemini-flash'),
+    (re.compile(r'claude[- ]sonnet[- ]4(?:[\-\.][\d]+)?', re.IGNORECASE), 'gemini-flash'),
+    (re.compile(r'claude[- ]opus[- ]4(?:[\-\.][\d]+)?', re.IGNORECASE), 'gemini-flash'),
+    (re.compile(r'claude[- ]haiku[- ]4(?:[\-\.][\d]+)?', re.IGNORECASE), 'gemini-flash-lite'),
+    (re.compile(r'(?<![a-zA-Z])Sonnet 4(?:\.[\d]+)?'), 'Gemini Flash'),
+    (re.compile(r'(?<![a-zA-Z])Opus 4(?:\.[\d]+)?'), 'Gemini Flash'),
+    (re.compile(r'(?<![a-zA-Z])Haiku 4(?:\.[\d]+)?'), 'Gemini Flash Lite'),
+    (re.compile(r'Claude 4(?:\.[X\d])?'), 'Gemini'),
+    (re.compile(r'the most recent Claude model family'), 'the available model'),
+    (re.compile(r'(?i)claude (code|models?)'), r'Gemini \1'),
+    (re.compile(r'(?i)(x-)?anthropic'), 'google'),
+    (re.compile(r'(?i)Anthropic\'s'), 'Google\'s'),
+    (re.compile(r'cc_version=[\w.]+;?\s*'), ''),
+    (re.compile(r'cc_entrypoint=\w+;?\s*'), ''),
+    (re.compile(r'cch=\w+;?\s*'), ''),
+    (re.compile(r'(?i)antigravity'), 'Gemini'),
+)
+_SYSTEM_PROMPT_EMPTY_TOOLS = re.compile(
+    r"The tools you have access to have changed\. You now have access to the following tools:\s*(\n\s*)*You can use these tools to perform tasks in parallel\. Please use them responsibly\.",
+)
+
 
 def sanitize_tool_id(tool_id: str) -> str:
     """Sanitize tool ID to match Anthropic's [a-zA-Z0-9_-] pattern."""
@@ -212,22 +236,8 @@ def _tool_call_names(tool_calls: List[Dict[str, Any]]) -> str:
     return ",".join(names) if names else "-"
 
 def _clean_system_prompt(text: str) -> str:
-    text = re.sub(r'claude-sonnet-4-20250514', 'gemini-flash', text)
-    text = re.sub(r'claude[- ]sonnet[- ]4(?:[\-\.][\d]+)?', 'gemini-flash', text, flags=re.IGNORECASE)
-    text = re.sub(r'claude[- ]opus[- ]4(?:[\-\.][\d]+)?', 'gemini-flash', text, flags=re.IGNORECASE)
-    text = re.sub(r'claude[- ]haiku[- ]4(?:[\-\.][\d]+)?', 'gemini-flash-lite', text, flags=re.IGNORECASE)
-    text = re.sub(r'(?<![a-zA-Z])Sonnet 4(?:\.[\d]+)?', 'Gemini Flash', text)
-    text = re.sub(r'(?<![a-zA-Z])Opus 4(?:\.[\d]+)?', 'Gemini Flash', text)
-    text = re.sub(r'(?<![a-zA-Z])Haiku 4(?:\.[\d]+)?', 'Gemini Flash Lite', text)
-    text = re.sub(r'Claude 4(?:\.[X\d])?', 'Gemini', text)
-    text = re.sub(r'the most recent Claude model family', 'the available model', text)
-    text = re.sub(r'(?i)claude (code|models?)', r'Gemini \1', text)
-    text = re.sub(r'(?i)(x-)?anthropic', 'google', text)
-    text = re.sub(r'(?i)Anthropic\'s', 'Google\'s', text)
-    text = re.sub(r'cc_version=[\w.]+;?\s*', '', text)
-    text = re.sub(r'cc_entrypoint=\w+;?\s*', '', text)
-    text = re.sub(r'cch=\w+;?\s*', '', text)
-    text = re.sub(r'(?i)antigravity', 'Gemini', text)
+    for pattern, replacement in _SYSTEM_PROMPT_SUBS:
+        text = pattern.sub(replacement, text)
 
     # Strip scientific/unused tools from system prompt lists
     lines = text.split("\n")
@@ -245,11 +255,7 @@ def _clean_system_prompt(text: str) -> str:
     text = "\n".join(cleaned_lines)
 
     # Clean up empty tool-list headers and footers
-    text = re.sub(
-        r"The tools you have access to have changed\. You now have access to the following tools:\s*(\n\s*)*You can use these tools to perform tasks in parallel\. Please use them responsibly\.",
-        "",
-        text
-    )
+    text = _SYSTEM_PROMPT_EMPTY_TOOLS.sub("", text)
 
     # Inject agent task delegation guidelines to avoid main-session context bloat
     steering = (
