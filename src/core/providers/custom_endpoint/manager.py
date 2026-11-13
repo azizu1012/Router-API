@@ -102,6 +102,14 @@ def _schedule_transition_flush() -> None:
             _transition_flush_scheduled = False
 
 
+def flush_endpoint_transitions() -> None:
+    """Flush pending endpoint transitions synchronously.
+
+    Mirrors ``flush_pending_writes`` for key transitions: used by tests (and
+    any caller that needs a read-your-writes guarantee immediately after
+    ``mark_endpoint_*``) to drain the coalesced worker before querying.
+    """
+    _flush_endpoint_transitions()
 def _upstream_context_window(entry: Dict[str, Any]) -> int:
     """Extract a usable context window from one upstream /models entry.
 
