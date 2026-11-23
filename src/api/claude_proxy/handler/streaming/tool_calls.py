@@ -17,11 +17,18 @@ class _ToolArgsBuffer(dict):
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
 
-    def _assembly(self) -> str:
+    def _assembly(self, default=None) -> str:
         frags = dict.get(self, "args_fragments")
         if frags is not None:
-            return "".join(frags)
-        return dict.get(self, "args", "")
+            # Cache the join; appending a fragment invalidates it (see
+            # `buffer_tool_calls`), so the repeated reads in one emit path
+            # pay for one join instead of one per call.
+            cached = dict.get(self, "_args_cache")
+            if cached is None:
+                cached = "".join(frags)
+                dict.__setitem__(self, "_args_cache", cached)
+            return cached
+        return dict.get(self, "args", default)
 
     def __getitem__(self, key):
         if key == "args":
@@ -30,7 +37,7 @@ class _ToolArgsBuffer(dict):
 
     def get(self, key, default=None):
         if key == "args":
-            return self._assembly()
+            return self._assembly(default)
         return dict.get(self, key, default)
 
 
@@ -164,15 +171,32 @@ def buffer_tool_calls(
                 # placeholder: replace, don't concatenate
                 frags[0] = args_str
                 entry["_args_total_len"] = len(args_str)
+                entry["_args_cache"] = None
                 continue
             if len(frags) == 1 and frags[0] == args_str:
                 # repeat of a sole fragment: ignore it
                 continue
-            if len(frags) > 1 and len(args_str) == total_len and "".join(frags) == args_str:
+            if len(frags) > 1 and len(args_str) == total_len and _fragments_match(frags, args_str):
                 # full re-send of everything accumulated so far: ignore it
                 continue
             frags.append(args_str)
             entry["_args_total_len"] = total_len + len(args_str)
+            entry["_args_cache"] = None
+
+
+def _fragments_match(frags: list, args_str: str) -> bool:
+    """True when ``frags`` concatenate to exactly ``args_str``.
+
+    Compared fragment by fragment with ``str.startswith`` so a full re-send
+    costs no large join/allocation; the caller has already checked that the
+    lengths agree.
+    """
+    pos = 0
+    for frag in frags:
+        if not args_str.startswith(frag, pos):
+            return False
+        pos += len(frag)
+    return pos == len(args_str)
 
 
 def get_tool_args(buf) -> str:

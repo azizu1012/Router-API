@@ -419,36 +419,43 @@ class ClaudeProxyStreamMixin:
             accumulated_text = []
             accumulated_thought = []
             accumulated_thought_signature = []
-            # Mirrors of the lists above, updated incrementally so joins happen
-            # O(1) amortized instead of re-joining the whole buffer repeatedly.
-            _text_joined = ""
-            _thought_joined = ""
+            # Joined only at the handful of sites that need the whole string.
+            # Mirroring the lists with `+=` per delta copied the entire
+            # response on every chunk — O(N^2) over a long answer.
+            def _text_value() -> str:
+                return "".join(accumulated_text)
+
+            def _thought_value() -> str:
+                return "".join(accumulated_thought)
+
             # Once a hosted search has run, buffer the next model text until
             # the turn ends. This prevents a provider from streaming its raw
             # `[Web Search Results ...]` payload to the client before it can be
             # identified and discarded.
             deferred_search_text: List[str] = []
-            _deferred_search_joined = ""
+            _ECHO_RAW_PREFIX = "[Web Search Results"
+            # Bounded head of the buffered text, so the echo check does not
+            # re-join (and re-scan) the whole buffer on every delta.
+            _ECHO_HEAD_MAX = 128
+            _deferred_head = ""
 
             def _append_text(val: str) -> None:
-                nonlocal _text_joined
                 accumulated_text.append(val)
-                _text_joined += val
 
             def _append_thought(val: str) -> None:
-                nonlocal _thought_joined
                 accumulated_thought.append(val)
-                _thought_joined += val
 
             def _append_deferred_search(val: str) -> None:
-                nonlocal _deferred_search_joined
+                nonlocal _deferred_head
                 deferred_search_text.append(val)
-                _deferred_search_joined += val
+                _deferred_head += val
+                if len(_deferred_head) > _ECHO_HEAD_MAX * 2:
+                    _deferred_head = _deferred_head.lstrip()[:_ECHO_HEAD_MAX]
 
             def _clear_deferred_search() -> None:
-                nonlocal _deferred_search_joined
+                nonlocal _deferred_head
                 deferred_search_text.clear()
-                _deferred_search_joined = ""
+                _deferred_head = ""
 
             buffering_search_echo = bool(server_tool_calls)
             # A model may emit a complete-sounding answer before it emits the
@@ -740,7 +747,7 @@ class ClaudeProxyStreamMixin:
                                 yield _sse("content_block_delta", {
                                     "type": "content_block_delta",
                                     "index": thinking_index,
-                                    "delta": {"type": "signature_delta", "signature": thinking_signature(_thought_joined)},
+                                    "delta": {"type": "signature_delta", "signature": thinking_signature(_thought_value())},
                                 })
                                 yield _sse("content_block_stop", {"type": "content_block_stop", "index": thinking_index})
                         elif ev_type == "text":
@@ -749,9 +756,8 @@ class ClaudeProxyStreamMixin:
                                 continue
                             if buffering_search_echo:
                                 _append_deferred_search(ev_val)
-                                joined_prefix = _deferred_search_joined.lstrip()
-                                raw_prefix = "[Web Search Results"
-                                if len(joined_prefix) > 0 and not raw_prefix.startswith(joined_prefix[:len(raw_prefix)]):
+                                joined_prefix = _deferred_head.lstrip()
+                                if len(joined_prefix) > 0 and not _ECHO_RAW_PREFIX.startswith(joined_prefix[:len(_ECHO_RAW_PREFIX)]):
                                     buffering_search_echo = False
                                     for buffered_chunk in deferred_search_text:
                                         _append_text(buffered_chunk)
@@ -763,7 +769,7 @@ class ClaudeProxyStreamMixin:
                                                 yield _sse("content_block_delta", {
                                                     "type": "content_block_delta",
                                                     "index": thinking_index,
-                                                    "delta": {"type": "signature_delta", "signature": thinking_signature(_thought_joined)},
+                                                    "delta": {"type": "signature_delta", "signature": thinking_signature(_thought_value())},
                                                 })
                                                 yield _sse("content_block_stop", {"type": "content_block_stop", "index": thinking_index})
                                             yield _sse("content_block_start", {
@@ -790,7 +796,7 @@ class ClaudeProxyStreamMixin:
                                     yield _sse("content_block_delta", {
                                         "type": "content_block_delta",
                                         "index": thinking_index,
-                                        "delta": {"type": "signature_delta", "signature": thinking_signature(_thought_joined)},
+                                        "delta": {"type": "signature_delta", "signature": thinking_signature(_thought_value())},
                                     })
                                     yield _sse("content_block_stop", {"type": "content_block_stop", "index": thinking_index})
                                 yield _sse("content_block_start", {
@@ -855,7 +861,7 @@ class ClaudeProxyStreamMixin:
                             yield _sse("content_block_delta", {
                                 "type": "content_block_delta",
                                 "index": thinking_index,
-                                "delta": {"type": "signature_delta", "signature": thinking_signature(_thought_joined)},
+                                "delta": {"type": "signature_delta", "signature": thinking_signature(_thought_value())},
                             })
                             yield _sse("content_block_stop", {"type": "content_block_stop", "index": thinking_index})
                         yield _sse("content_block_start", {
@@ -888,12 +894,12 @@ class ClaudeProxyStreamMixin:
                 yield _sse("content_block_delta", {
                     "type": "content_block_delta",
                     "index": thinking_index,
-                    "delta": {"type": "signature_delta", "signature": thinking_signature(_thought_joined)},
+                    "delta": {"type": "signature_delta", "signature": thinking_signature(_thought_value())},
                 })
                 yield _sse("content_block_stop", {"type": "content_block_stop", "index": thinking_index})
 
             if server_tool_calls and deferred_search_text:
-                candidate = _deferred_search_joined
+                candidate = "".join(deferred_search_text)
                 if is_raw_search_context(candidate):
                     logger.warning("[Claude Stream] Provider echoed raw search context")
                     _clear_deferred_search()
@@ -960,7 +966,7 @@ class ClaudeProxyStreamMixin:
                             yield _sse("content_block_delta", {
                                 "type": "content_block_delta",
                                 "index": thinking_index,
-                                "delta": {"type": "signature_delta", "signature": thinking_signature(_thought_joined)},
+                                "delta": {"type": "signature_delta", "signature": thinking_signature(_thought_value())},
                             })
                             yield _sse("content_block_stop", {"type": "content_block_stop", "index": thinking_index})
                         yield _sse("content_block_start", {
@@ -1021,9 +1027,9 @@ class ClaudeProxyStreamMixin:
                     "type": "content_block_stop", "index": next_block_idx})
                 next_block_idx += 1
 
-                thought = _thought_joined
+                thought = _thought_value()
                 tsig_str = "".join(accumulated_thought_signature)
-                text = _text_joined
+                text = _text_value()
                 ast_text = text
                 if thought:
                     ast_text = f"<thinking>\n{thought}\n</thinking>\n{ast_text}" if ast_text else f"<thinking>\n{thought}\n</thinking>"
@@ -1136,8 +1142,9 @@ class ClaudeProxyStreamMixin:
                             )
                             name = resolved
                             buf["name"] = name
+                        args_str = get_tool_args(buf)
                         logger.info("[ToolCallEmit]   idx=%d id=%s name=%s args_len=%d args_preview=%s",
-                                    tc_idx, buf["id"], name, len(get_tool_args(buf)), get_tool_args(buf)[:120])
+                                    tc_idx, buf["id"], name, len(args_str), args_str[:120])
                         # A provider that stops mid-arguments — max_tokens, a
                         # dropped connection, a proxy that closed early — still
                         # ends the stream cleanly, so the buffer holds half an
@@ -1148,9 +1155,9 @@ class ClaudeProxyStreamMixin:
                         # search and Agent/Task arms) already parse defensively;
                         # this one did not, and it is the arm every client tool
                         # goes through.
-                        if get_tool_args(buf):
+                        if args_str:
                             try:
-                                json.loads(get_tool_args(buf))
+                                json.loads(args_str)
                             except Exception as exc:
                                 logger.warning(
                                     "[ToolCallEmit] dropping %s (idx=%d id=%s): arguments are "
@@ -1189,7 +1196,7 @@ class ClaudeProxyStreamMixin:
                                         recovered = await _recover_tool_call(
                                             _recover_stream,
                                             bigger,
-                                            _text_joined,
+                                            _text_value(),
                                         )
                                     else:
                                         recovered = await _recover_tool_call(
@@ -1205,7 +1212,7 @@ class ClaudeProxyStreamMixin:
                                                 sampling_params=sampling_params,
                                             ),
                                             bigger,
-                                            _text_joined,
+                                            _text_value(),
                                         )
                                     if recovered is not None:
                                         for r_idx in sorted(recovered):
@@ -1230,13 +1237,14 @@ class ClaudeProxyStreamMixin:
                                                 "name": name, "input": {},
                                             },
                                         })
-                                        if get_tool_args(buf):
+                                        recovered_args = get_tool_args(buf)
+                                        if recovered_args:
                                             yield _sse("content_block_delta", {
                                                 "type": "content_block_delta",
                                                 "index": next_block_idx - 1,
                                                 "delta": {
                                                     "type": "input_json_delta",
-                                                    "partial_json": get_tool_args(buf),
+                                                    "partial_json": recovered_args,
                                                 },
                                             })
                                         yield _sse("content_block_stop", {
@@ -1249,11 +1257,13 @@ class ClaudeProxyStreamMixin:
                                     dropped_incomplete_tool = True
                                 continue
                         if name in ("Agent", "Task"):
+                            # `args_str` already holds this buffer's assembled
+                            # arguments and parsed as valid JSON above.
                             try:
-                                parsed_args = json.loads(get_tool_args(buf)) if get_tool_args(buf) else {}
-                                prompt_str = parsed_args.get("prompt", "") or get_tool_args(buf)
+                                parsed_args = json.loads(args_str) if args_str else {}
+                                prompt_str = parsed_args.get("prompt", "") or args_str
                             except Exception:
-                                prompt_str = get_tool_args(buf)
+                                prompt_str = args_str
                             yield _sse("content_block_start", {
                                 "type": "content_block_start", "index": next_block_idx,
                                 "content_block": {
@@ -1279,10 +1289,10 @@ class ClaudeProxyStreamMixin:
                                 "type": "content_block_start", "index": next_block_idx,
                                 "content_block": {"type": "tool_use", "id": buf["id"], "name": name, "input": {}},
                             })
-                            if get_tool_args(buf):
+                            if args_str:
                                 yield _sse("content_block_delta", {
                                     "type": "content_block_delta", "index": next_block_idx,
-                                    "delta": {"type": "input_json_delta", "partial_json": get_tool_args(buf)},
+                                    "delta": {"type": "input_json_delta", "partial_json": args_str},
                                 })
                             yield _sse("content_block_stop", {"type": "content_block_stop", "index": next_block_idx})
                         emitted_tool_blocks += 1
@@ -1359,8 +1369,8 @@ class ClaudeProxyStreamMixin:
                 # then raises "no assistant message in summarization response".
                 # Materialize the accumulated reasoning as text before the
                 # terminal events so the response has a real assistant block.
-                if not _text_joined.strip() and _thought_joined.strip():
-                    summary_text = _thought_joined.strip()
+                if not _text_value().strip() and _thought_value().strip():
+                    summary_text = _thought_value().strip()
                     yield _sse("content_block_start", {
                         "type": "content_block_start",
                         "index": next_block_idx,
@@ -1380,17 +1390,17 @@ class ClaudeProxyStreamMixin:
                     next_block_idx += 1
 
                 if is_compaction:
-                    emitted_text_chars = len(_text_joined)
+                    emitted_text_chars = len(_text_value())
                     logger.info(
                         "[Claude Trace] stage=provider_response_complete trace_id=%s content_chars=%d "
                         "reasoning_chars=%d tool_calls=%d finish=%s text_block_started=%s "
                         "text_block_index=%s text_block_emitted_chars=%d",
                         trace_id,
-                        emitted_text_chars, len(_thought_joined),
+                        emitted_text_chars, len(_thought_value()),
                         len(tool_buffers), finish_reason, text_started,
                         text_index if text_started else None, output_chars,
                     )
-                if is_compaction and not _text_joined.strip():
+                if is_compaction and not _text_value().strip():
                     raise RuntimeError("compaction_empty_summary")
 
                 output_tokens = max(provider_output_tokens,
@@ -1404,7 +1414,7 @@ class ClaudeProxyStreamMixin:
                     has_tool_calls=bool(tool_buffers) and emitted_tool_blocks > 0,
                     incomplete_tool_call=dropped_incomplete_tool,
                     stop_sequences=stop_sequences,
-                    emitted_text=_text_joined,
+                    emitted_text=_text_value(),
                 )
                 client_input_tokens = estimate_input_tokens(body)
                 final_usage = compute_usage(body, client_input_tokens, output_tokens)

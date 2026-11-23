@@ -2,7 +2,7 @@
 
 import re
 from datetime import datetime
-from typing import Dict, List, Optional, Set
+from typing import Any, Dict, List, Optional, Set
 
 from src.tools.search.engine.text import SearchUtilsMixin
 from src.tools.search.languages.registry import detect_query_languages, iter_language_topic_keywords
@@ -11,8 +11,43 @@ from src.tools.search.languages.registry import detect_query_languages, iter_lan
 # fixed number of peer records per record to keep it O(n·K).
 _CONSENSUS_MAX_RECORDS = 64
 
+# Per-record memo entries are capped like the other search caches, so a long
+# process cannot accumulate one slot per result ever seen.
+_RECORD_MEMO_MAX = 1024
+
 
 class SearchRankingMixin(SearchUtilsMixin):
+
+    def _reset_record_memos(self) -> None:
+        """Drop per-record memos from the previous search run.
+
+        A memo is only useful while one run scores, quality-checks and formats
+        the same records. Holding them across runs would pin those records
+        (and their evidence text) in memory for no benefit.
+        """
+        self._record_memos = {}
+
+    def _record_cache(self, bucket: str, record: Dict[str, Any]) -> Dict[Any, Any]:
+        """Return a memo dict scoped to one record object.
+
+        Records are plain ``Dict[str, str]`` handed across provider, ranking and
+        formatting boundaries, so caches must not be injected into them: a tuple
+        key or a ``datetime`` value breaks any JSON serialization of a record and
+        contradicts the annotation. Keying on ``id(record)`` keeps the exact
+        per-object lifetime of the old inline cache; the record is stored beside
+        its memo so its id cannot be recycled while the entry is live.
+        """
+        memos = getattr(self, "_record_memos", None)
+        if memos is None:
+            memos = {}
+            self._record_memos = memos
+        slot = memos.get(id(record))
+        if slot is None or slot[0] is not record:
+            if len(memos) >= _RECORD_MEMO_MAX:
+                memos.pop(next(iter(memos)), None)
+            slot = (record, {"rep": {}, "date": {}})
+            memos[id(record)] = slot
+        return slot[1][bucket]
 
     def _classify_topic(self, query: str) -> str:
         """Pick the topic whose keyword list best matches `query`.
@@ -92,10 +127,11 @@ class SearchRankingMixin(SearchUtilsMixin):
             self.logger.warning(f"Error calculating time decay penalty: {e}")
             return 0.0
 
-    def _dynamic_reputation_score(self, topic: str, query: str, record: Dict[str, str]) -> float:
+    def _dynamic_reputation_score(self, topic: str, query: str, record: Dict[str, Any]) -> float:
         # Memoize per record: the same record is scored, quality-checked, and
         # formatted across a pipeline run, so this is computed once and reused.
-        cache = record.setdefault("_rep_score_cache", {})
+        # The memo lives beside the record, never inside it (see _record_cache).
+        cache = self._record_cache("rep", record)
         key = (topic, query)
         if key in cache:
             return cache[key]
@@ -148,7 +184,7 @@ class SearchRankingMixin(SearchUtilsMixin):
         cache[key] = score
         return score
 
-    def _is_quality_record(self, topic: str, query: str, record: Dict[str, str]) -> bool:
+    def _is_quality_record(self, topic: str, query: str, record: Dict[str, Any]) -> bool:
         _ = topic
         dynamic_score = self._dynamic_reputation_score(topic, query, record)
 
@@ -263,7 +299,7 @@ class SearchRankingMixin(SearchUtilsMixin):
 
         return round(best_coupled_score, 3)
 
-    def _score_record(self, topic: str, query: str, record: Dict[str, str]) -> float:
+    def _score_record(self, topic: str, query: str, record: Dict[str, Any]) -> float:
         profile = self._detect_query_profile(query)
         domain = (record.get("domain") or "").strip().lower()
         title = (record.get("title") or "").lower()
@@ -277,12 +313,16 @@ class SearchRankingMixin(SearchUtilsMixin):
 
         # Parse the published date at most once per record and cache it so the
         # coupled-freshness and any later consumers don't re-run dateparser.
+        # The parsed datetime lives in the record's side memo, not in the record:
+        # records are typed Dict[str, str] and may be serialized as-is.
         pub_date = record.get("published_date")
-        if pub_date is None and "_parsed_pub_date" not in record:
-            pub_date = self._extract_date(snippet[:40]) or self._extract_date(title[:40])
-            record["_parsed_pub_date"] = pub_date
-        elif pub_date is None:
-            pub_date = record.get("_parsed_pub_date")
+        if pub_date is None:
+            date_cache = self._record_cache("date", record)
+            if "parsed" in date_cache:
+                pub_date = date_cache["parsed"]
+            else:
+                pub_date = self._extract_date(snippet[:40]) or self._extract_date(title[:40])
+                date_cache["parsed"] = pub_date
         score += self._calculate_coupled_freshness(query, full_text, pub_date, self._is_time_sensitive_query(query))
 
         if any(token for token in re.findall(r"\w+", query.lower()) if len(token) > 3 and token in f"{title} {snippet}"):
@@ -297,7 +337,7 @@ class SearchRankingMixin(SearchUtilsMixin):
 
         return round(score, 3)
 
-    def _lightweight_rerank(self, topic: str, query: str, records: List[Dict[str, str]]) -> List[Dict[str, str]]:
+    def _lightweight_rerank(self, topic: str, query: str, records: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
         if not records:
             return []
 
@@ -354,7 +394,7 @@ class SearchRankingMixin(SearchUtilsMixin):
 
         return sorted(reranked, key=lambda x: float(x.get("score", "0")), reverse=True)
 
-    def _count_quality_sources(self, records: List[Dict[str, str]], topic: str, query: str = "") -> int:
+    def _count_quality_sources(self, records: List[Dict[str, Any]], topic: str, query: str = "") -> int:
         quality_domains = set()
         for rec in records:
             domain = rec.get("domain", "")
@@ -362,7 +402,7 @@ class SearchRankingMixin(SearchUtilsMixin):
                 quality_domains.add(self._organization_domain(domain) or domain)
         return len(quality_domains)
 
-    def _is_search_result_sufficient(self, records: List[Dict[str, str]], topic: str, query: str, required_sources: int, min_chars: int = 220) -> bool:
+    def _is_search_result_sufficient(self, records: List[Dict[str, Any]], topic: str, query: str, required_sources: int, min_chars: int = 220) -> bool:
         if not records:
             return False
 
@@ -371,11 +411,11 @@ class SearchRankingMixin(SearchUtilsMixin):
         total_chars = sum(len((x.get("snippet") or "").strip()) for x in top_window)
         return quality_count >= required_sources and total_chars >= min_chars
 
-    def _domain_diversify_records(self, records: List[Dict[str, str]], limit: int, enforce_diversity: bool) -> List[Dict[str, str]]:
+    def _domain_diversify_records(self, records: List[Dict[str, Any]], limit: int, enforce_diversity: bool) -> List[Dict[str, Any]]:
         if not enforce_diversity:
             return records[:limit]
 
-        diverse: List[Dict[str, str]] = []
+        diverse: List[Dict[str, Any]] = []
         used_domains: Set[str] = set()
 
         for rec in records:
@@ -402,7 +442,7 @@ class SearchRankingMixin(SearchUtilsMixin):
         self,
         topic: str,
         query: str,
-        ranked_records: List[Dict[str, str]],
+        ranked_records: List[Dict[str, Any]],
         required_sources: int,
         *,
         result_limit: Optional[int] = None,

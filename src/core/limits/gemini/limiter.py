@@ -395,14 +395,20 @@ def _load_key_usage() -> None:
                 if not isinstance(v, dict):
                     continue
                 entry = dict(v)
-                # Drop keys whose per-key data fully aged out. A key unused
-                # since a previous Pacific day has a stale `date`; its RPD
-                # counter is reset anyway, so retaining it only pins memory
-                # for the life of the process. It is recreated with today's
-                # date on its next use. Keys active today are kept, so
-                # in-window rate-limit accounting is unchanged.
+                # Roll a stale Pacific day over instead of dropping the key:
+                # `total` is a lifetime counter that feeds
+                # `get_usage_summary()["total_calls_all"]`, and dropping the
+                # entry made the next `record_key_usage` recreate it with
+                # `total=0`, overwriting the persisted row. Only the daily
+                # counters reset.
                 if entry.get("date") != today_str:
-                    continue
+                    entry["date"] = today_str
+                    entry["today"] = 0
+                    per_model = entry.get("per_model")
+                    if isinstance(per_model, dict):
+                        for model_entry in per_model.values():
+                            if isinstance(model_entry, dict):
+                                model_entry["today"] = 0
                 _key_usage[k] = entry
     except Exception as exc:
         logger.warning("Failed to load key usage: %s", exc)

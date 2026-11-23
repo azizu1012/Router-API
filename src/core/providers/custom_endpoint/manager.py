@@ -33,13 +33,28 @@ from src.backend.endpoints.manager import (
 _DEFAULT_PATH = str(Path(__file__).resolve().parents[3] / "custom_endpoints.json")
 _CACHE_TTL = 5.0
 
-_TRANSITION_EXECUTOR = concurrent.futures.ThreadPoolExecutor(max_workers=1)
+_TRANSITION_EXECUTOR: Optional[concurrent.futures.ThreadPoolExecutor] = None
+_transition_executor_lock = threading.Lock()
 _pending_transitions_lock = threading.Lock()
 _pending_transitions: List[tuple] = []
 _transition_flush_scheduled = False
 
 
-def _flush_endpoint_transitions() -> None:
+def _get_transition_executor() -> concurrent.futures.ThreadPoolExecutor:
+    """Return the coalescing worker, recreating it after a shutdown.
+
+    Lifespan teardown shuts the pool down; tests (and a restarted app in the
+    same process) keep calling ``mark_endpoint_*`` afterwards, so a shut-down
+    executor must not be a permanent dead end.
+    """
+    global _TRANSITION_EXECUTOR
+    with _transition_executor_lock:
+        if _TRANSITION_EXECUTOR is None:
+            _TRANSITION_EXECUTOR = concurrent.futures.ThreadPoolExecutor(max_workers=1)
+        return _TRANSITION_EXECUTOR
+
+
+def _flush_endpoint_transitions(reschedule: bool = True) -> None:
     """Coalesce endpoint-transition INSERTs and the 5000-row cap off the event loop.
 
     Runs on a worker thread so the sync sqlite3 work never blocks the async
@@ -75,12 +90,12 @@ def _flush_endpoint_transitions() -> None:
         except Exception as exc:
             logger.warning("[EndpointTransition] persistence failed: %s", exc)
     with _pending_transitions_lock:
-        has_pending = bool(_pending_transitions)
+        has_pending = bool(_pending_transitions) and reschedule
     if has_pending:
         # More transitions arrived during the flush; hand off to another pass
         # without clearing the scheduled flag.
         try:
-            _TRANSITION_EXECUTOR.submit(_flush_endpoint_transitions)
+            _get_transition_executor().submit(_flush_endpoint_transitions)
         except Exception:
             with _pending_transitions_lock:
                 _transition_flush_scheduled = False
@@ -96,7 +111,7 @@ def _schedule_transition_flush() -> None:
             return
         _transition_flush_scheduled = True
     try:
-        _TRANSITION_EXECUTOR.submit(_flush_endpoint_transitions)
+        _get_transition_executor().submit(_flush_endpoint_transitions)
     except Exception:
         with _pending_transitions_lock:
             _transition_flush_scheduled = False
@@ -110,6 +125,26 @@ def flush_endpoint_transitions() -> None:
     ``mark_endpoint_*``) to drain the coalesced worker before querying.
     """
     _flush_endpoint_transitions()
+
+
+def shutdown_endpoint_transitions() -> None:
+    """Drain queued endpoint transitions and stop the worker thread.
+
+    ``_TRANSITION_EXECUTOR`` is a non-daemon pool: without this the process
+    waits on it at exit, and any row queued in the final window before
+    shutdown is never written.
+    """
+    global _TRANSITION_EXECUTOR
+    try:
+        _flush_endpoint_transitions(reschedule=False)
+    finally:
+        with _transition_executor_lock:
+            executor = _TRANSITION_EXECUTOR
+            _TRANSITION_EXECUTOR = None
+        if executor is not None:
+            executor.shutdown(wait=True)
+
+
 def _upstream_context_window(entry: Dict[str, Any]) -> int:
     """Extract a usable context window from one upstream /models entry.
 
