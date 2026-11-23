@@ -211,6 +211,10 @@ class AdvancedSearchManager(SearchEvidenceMixin, DuckDuckGoProviderMixin, Search
         if not intents:
             return ""
 
+        # Records are re-fetched per run; drop the previous run's side memos so
+        # their result dicts are not held alive after the answer is formatted.
+        self._reset_record_memos()
+
         if len(intents) > 1:
             self.logger.info(f"Subquery fanout enabled. Running {len(intents)} search intents fully in parallel.")
 
@@ -354,6 +358,10 @@ class AdvancedSearchManager(SearchEvidenceMixin, DuckDuckGoProviderMixin, Search
         all_formatted = []
         all_citations = []
         seen_urls = set()
+
+        # Same per-run scope as the streaming pipeline: memos are only useful
+        # while this run holds the records that own them.
+        self._reset_record_memos()
 
         for intent in intents:
             selected_topic = self._classify_topic(intent)

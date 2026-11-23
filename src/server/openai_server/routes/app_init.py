@@ -434,7 +434,6 @@ async def security_middleware(request: Request, call_next):
 async def _watch_env_file():
     from src.core.config_n_logg import ENV_PATH, reload_config
     from src.backend.keys.status import register_keys_in_db, set_key_tier_batch_db
-    from src.core.limits import clear_rate_limiters
     from src.core.router import router
     from src.core.providers import api_manager
 
@@ -450,7 +449,6 @@ async def _watch_env_file():
             for i, k in enumerate(config.GEMINI_API_KEYS)
         }
         set_key_tier_batch_db(tiers)
-    _set_tiers()
 
     # Initial register of standard keys on startup
     register_keys_in_db(list(config.GEMINI_API_KEYS))
@@ -469,22 +467,29 @@ async def _watch_env_file():
                     logger.info("[EnvWatch] .env file change detected! Reloading keys & models...")
                     last_mtime = mtime
 
-                    def _reload_env():
+                    def _reload_env_files():
+                        # File/env/SQLite work only. Pool size, rate limiters
+                        # and model instances are event-loop affine and are
+                        # refreshed below, on the loop thread.
                         from dotenv import load_dotenv
                         load_dotenv(ENV_PATH, override=True)
                         new_keys = reload_config()
                         register_keys_in_db(new_keys)
                         _set_tiers()
-                        router.refresh_keys()
-                        api_manager.refresh_pool_size()
-                        clear_rate_limiters()
-
-                        from src.core.config.api_config import reload_model_config
-                        reload_model_config()
                         from src.backend.models.config import sync_env_to_db
                         sync_env_to_db()
 
-                    await asyncio.to_thread(_reload_env)
+                    await asyncio.to_thread(_reload_env_files)
+
+                    # `refresh_pool_size()` clears class-level asyncio.Semaphores
+                    # and `reload_model_config()` clears asyncio.Lock-holding
+                    # rate limiters and drops ModelPool instances that own
+                    # asyncio.Locks — all of which must be mutated on the event
+                    # loop, never from a worker thread.
+                    from src.core.config.api_config import reload_model_config
+                    router.refresh_keys()
+                    api_manager.refresh_pool_size()
+                    reload_model_config()
 
                     logger.info("[EnvWatch] Keys and models successfully reloaded and synced to DB!")
         except asyncio.CancelledError:
@@ -550,6 +555,14 @@ async def lifespan(app: FastAPI):
         await asyncio.to_thread(flush_pending_writes)
     except Exception as shutdown_err:
         logger.warning("[Shutdown] Failed to flush key-status writes: %s", shutdown_err)
+
+    # Endpoint transitions are coalesced onto their own non-daemon worker;
+    # flush what is queued and stop the pool so the process can exit.
+    try:
+        from src.core.providers.custom_endpoint.manager import shutdown_endpoint_transitions
+        await asyncio.to_thread(shutdown_endpoint_transitions)
+    except Exception as shutdown_err:
+        logger.warning("[Shutdown] Failed to flush endpoint transitions: %s", shutdown_err)
 
 
 app.router.lifespan_context = lifespan
