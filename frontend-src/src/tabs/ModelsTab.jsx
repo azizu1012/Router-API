@@ -1,266 +1,211 @@
-import React, { useState, useEffect, useCallback } from 'react';
+import { useState, useEffect, useCallback, useMemo } from 'react';
 import { useApp } from '../context/AppContext';
 import { t } from '../utils/i18n';
 import { api } from '../utils/api';
-import { createPortal } from 'react-dom';
 import Loading from '../components/Loading';
-import { Layers, Save, Trash2, Edit3, Plus, X, RefreshCw, Eye, EyeOff, Info, HelpCircle, Zap } from 'lucide-react';
+import PageHeader from '../components/PageHeader';
+import Card from '../components/Card';
+import Badge from '../components/Badge';
+import Button from '../components/Button';
+import Alert from '../components/Alert';
+import Modal from '../components/Modal';
+import { Layers, Trash2, Edit3, Plus, RefreshCw, Zap } from 'lucide-react';
 
-function Tooltip({ text }) {
-  return (
-    <span className="tooltip tooltip-right" data-tip={text}>
-      <HelpCircle className="w-3 h-3 text-base-content/30 hover:text-primary cursor-help transition-colors" />
-    </span>
-  );
-}
-
+/* Field metadata is keyed into i18n rather than carrying Vietnamese strings,
+   so the whole form follows the language switch. */
 const FIELD_META = {
-  alias: {
-    label: 'Alias',
-    desc: 'Tên model hiển thị cho client. VD: gemini-flash-35',
-    placeholder: 'gemini-flash-35',
-    editDisabled: true,
-  },
-  display: {
-    label: 'Display Name',
-    desc: 'Tên thân thiện hiển thị trong dashboard. VD: Gemini Flash 3.5',
-    placeholder: 'Gemini Flash 3.5',
-    editDisabled: false,
-  },
-  model_id: {
-    label: 'Backing Model ID',
-    desc: 'Model ID thật gửi lên API Gemini. VD: gemini-3.5-flash',
-    placeholder: 'gemini-3.5-flash',
-    editDisabled: false,
-  },
-  rpm: {
-    label: 'RPM',
-    desc: 'Requests Per Minute',
-    placeholder: '10',
-    type: 'number',
-  },
-  tpm: {
-    label: 'TPM',
-    desc: 'Tokens Per Minute',
-    placeholder: '1000000',
-    type: 'number',
-  },
-  rpd: {
-    label: 'RPD',
-    desc: 'Requests Per Day',
-    placeholder: '1000',
-    type: 'number',
-  },
-  priority: {
-    label: 'Priority',
-    desc: 'Độ ưu tiên khi chọn model',
-    placeholder: '1',
-    type: 'number',
-  },
-  context_length: {
-    label: 'Context Length',
-    desc: 'Độ dài context tối đa (token)',
-    placeholder: '220000',
-    type: 'number',
-  },
-  pool_name: {
-    label: 'Pool',
-    desc: 'Gán model vào pool để load balance với các thành viên khác.',
-    type: 'select',
-    editDisabled: false,
-  },
+  alias: { labelKey: 'md_field_alias', descKey: 'md_field_alias_desc', placeholder: 'gemini-flash-35', editDisabled: true },
+  display: { labelKey: 'md_field_display', descKey: 'md_field_display_desc', placeholder: 'Gemini Flash 3.5' },
+  model_id: { labelKey: 'md_field_model_id', descKey: 'md_field_model_id_desc', placeholder: 'gemini-3.5-flash' },
+  rpm: { labelKey: 'th_rpm', descKey: 'md_field_rpm_hint', placeholder: '10', type: 'number' },
+  tpm: { labelKey: 'th_tpm', descKey: 'md_field_tpm_hint', placeholder: '1000000', type: 'number' },
+  rpd: { labelKey: 'th_rpd', descKey: 'md_field_rpd_hint', placeholder: '1000', type: 'number' },
+  priority: { labelKey: 'md_field_priority', descKey: 'md_field_priority_desc', placeholder: '1', type: 'number' },
+  context_length: { labelKey: 'md_field_context', descKey: 'md_field_context_desc', placeholder: '220000', type: 'number' },
+  pool_name: { labelKey: 'md_field_pool', descKey: 'md_field_pool_desc', type: 'select' },
 };
 
-function FormField({ field, value, onChange, disabled, placeholder, type, editing, options }) {
+/* A disabled field says why it is disabled in the hint line under it, not only
+   in a tooltip that a keyboard user may never open. */
+function FormField({ field, value, onChange, disabled, lang, editing, options }) {
   const meta = FIELD_META[field];
   if (!meta) return null;
-  const isDisabled = editing && meta.editDisabled;
+  const locked = Boolean(editing && meta.editDisabled);
+  const off = disabled || locked;
+  const label = t(meta.labelKey, lang);
+  const hint = t(meta.descKey, lang);
 
   if (meta.type === 'select') {
     return (
-      <div className="form-control w-full">
-        <label className="label py-1">
-          <span className="label-text text-[11px] font-bold text-base-content/60 uppercase flex items-center gap-1">
-            {meta.label}
-            <Tooltip text={meta.desc} />
-          </span>
-        </label>
+      <label className="block">
+        <span className="label-micro block mb-1.5">{label}</span>
         <select
           value={value ?? ''}
           onChange={e => onChange(field, e.target.value)}
-          disabled={disabled || isDisabled}
-          className={`select select-bordered select-sm text-xs w-full ${isDisabled ? 'bg-base-200/50 cursor-not-allowed' : ''}`}
+          disabled={off}
+          className="select select-sm text-xs w-full"
         >
-          <option value="">— Không thuộc pool —</option>
+          <option value="">{t('md_no_pool', lang)}</option>
           {(options || []).map(opt => (
             <option key={opt} value={opt}>{opt}</option>
           ))}
         </select>
-      </div>
+        <span className="block text-[0.6875rem] leading-snug mt-1.5" style={{ color: 'var(--c-ink-3)' }}>
+          {hint}
+        </span>
+      </label>
     );
   }
 
-  const inputProps = {
-    value: value ?? '',
-    onChange: e => onChange(field, meta.type === 'number' ? (parseInt(e.target.value) || 0) : e.target.value),
-    placeholder: placeholder || meta.placeholder,
-    disabled: disabled || isDisabled,
-    className: `input input-bordered input-sm text-xs w-full ${isDisabled ? 'bg-base-200/50 cursor-not-allowed text-base-content/40' : ''}`,
-  };
-  if (meta.type === 'number') {
-    inputProps.type = 'number';
-  }
-
   return (
-    <div className="form-control w-full">
-      <label className="label py-1">
-        <span className="label-text text-[11px] font-bold text-base-content/60 uppercase flex items-center gap-1">
-          {meta.label}
-          <Tooltip text={meta.desc} />
-        </span>
-      </label>
-      <input {...inputProps} />
+    <label className="block">
+      <span className="label-micro block mb-1.5">{label}</span>
+      <input
+        value={value ?? ''}
+        onChange={e => onChange(field, meta.type === 'number' ? (parseInt(e.target.value, 10) || 0) : e.target.value)}
+        placeholder={meta.placeholder}
+        disabled={off}
+        type={meta.type === 'number' ? 'number' : 'text'}
+        inputMode={meta.type === 'number' ? 'numeric' : undefined}
+        className={`input input-sm text-xs w-full ${meta.type === 'number' ? 'font-mono tabular-nums' : ''} ${locked ? 'opacity-60' : ''}`}
+      />
+      <span className="block text-[0.6875rem] leading-snug mt-1.5" style={{ color: 'var(--c-ink-3)' }}>
+        {locked ? `${hint} · ${t('md_field_alias', lang)}` : hint}
+      </span>
+    </label>
+  );
+}
+
+function GroupLabel({ children }) {
+  return (
+    <div className="label-micro pt-1 pb-1.5" style={{ borderBottom: '1px solid var(--c-line)' }}>
+      {children}
     </div>
   );
 }
 
+const BLANK = {
+  alias: '', display: '', model_id: '', rpm: 10, tpm: 1000000, rpd: 1000,
+  hidden: false, priority: 1, context_length: 220000, pool_name: '', account_id: '',
+};
+
+/* The row's values seed the form once, at mount. The parent remounts this
+   component per model (see `key` at the call site), so there is nothing to
+   re-sync and no effect that could fire against a half-written form. */
+const seedFrom = (model) => ({
+  alias: model.alias || '',
+  display: model.display || '',
+  model_id: model.model_id || '',
+  rpm: model.rpm || 10,
+  tpm: model.tpm || 1000000,
+  rpd: model.rpd || 1000,
+  hidden: !!model.hidden,
+  priority: model.priority || 1,
+  context_length: model.context_length || 220000,
+  pool_name: model.pool_name || '',
+  rpd_enabled: model.db_rpd != null,
+  account_id: model.account_id || '',
+});
+
 function EditModelModal({ model, onClose, onSaved, token, lang, poolOptions }) {
-  const [form, setForm] = useState({
-    alias: '', display: '', model_id: '', rpm: 10, tpm: 1000000, rpd: 1000,
-    hidden: false, priority: 1, context_length: 220000, pool_name: '', rpd_enabled: false,
-    account_id: '',
-  });
+  const [form, setForm] = useState(() => seedFrom(model));
   const [saving, setSaving] = useState(false);
   const [msg, setMsg] = useState({ text: '', type: '' });
-
-  useEffect(() => {
-    if (model) {
-      setForm({
-        alias: model.alias || '',
-        display: model.display || '',
-        model_id: model.model_id || '',
-        rpm: model.rpm || 10,
-        tpm: model.tpm || 1000000,
-        rpd: model.rpd || 1000,
-        hidden: !!model.hidden,
-        priority: model.priority || 1,
-        context_length: model.context_length || 220000,
-        pool_name: model.pool_name || '',
-        rpd_enabled: model.db_rpd != null,
-        account_id: model.account_id || '',
-      });
-    }
-  }, [model]);
 
   const updateField = (field, val) => setForm(prev => ({ ...prev, [field]: val }));
 
   const handleSave = async (e) => {
     e.preventDefault();
-    if (!form.alias) { setMsg({ text: 'Alias là bắt buộc', type: 'error' }); return; }
+    if (!form.alias) { setMsg({ text: t('md_alias_required', lang), type: 'error' }); return; }
     setSaving(true);
-    setMsg({ text: '⏳ Đang lưu...', type: 'info' });
     try {
       await api('/dashboard/admin/models/save', {
         method: 'POST',
         body: JSON.stringify(form),
       }, token);
-      setMsg({ text: '✅ Đã lưu model ' + form.alias, type: 'success' });
-      setTimeout(() => { onSaved(); onClose(); }, 600);
+      onSaved();
+      onClose();
     } catch (err) {
-      setMsg({ text: '❌ Lưu thất bại: ' + err.message, type: 'error' });
-    } finally {
+      setMsg({ text: `${t('md_save_err', lang)}${err.message}`, type: 'error' });
       setSaving(false);
     }
   };
 
-  if (!model) return null;
-
-  return createPortal(
-    <div className="modal modal-open z-[9999] fixed inset-0 flex items-center justify-center">
-      <div className="modal-overlay fixed inset-0 bg-black/60 backdrop-blur-sm" onClick={onClose}></div>
-      <div className="modal-box max-w-lg bg-base-100 border border-base-content/10 relative z-10 p-6 rounded-2xl shadow-2xl max-h-[90vh] overflow-y-auto">
-        <h3 className="font-extrabold text-lg mb-4 text-left">Sửa model: {model.alias}</h3>
-
-        <form onSubmit={handleSave} className="space-y-2 text-left">
-          <div className="text-[10px] font-extrabold uppercase tracking-wider text-base-content/40 pb-1 border-b border-base-content/5 mb-3">
-            Identity
-          </div>
-          <FormField field="alias" value={form.alias} onChange={updateField} editing disabled={saving} />
-          <FormField field="display" value={form.display} onChange={updateField} editing disabled={saving} />
-          <FormField field="model_id" value={form.model_id} onChange={updateField} editing disabled={saving} />
-          {model.source === 'custom_endpoint' && model.account_name && (
-            <div className="form-control w-full">
-              <label className="label py-1">
-                <span className="label-text text-[11px] font-bold text-base-content/60 uppercase flex items-center gap-1">Account</span>
-              </label>
-              <div className="text-xs font-mono bg-base-200/50 px-3 py-2 rounded-lg">{model.account_name}</div>
+  return (
+    <Modal
+      isOpen
+      onClose={saving ? () => {} : onClose}
+      title={`${t('md_edit_title', lang)}${model.alias}`}
+      size="lg"
+      footer={
+        <>
+          <Button type="button" variant="ghost" onClick={onClose} disabled={saving}>
+            {t('btn_cancel', lang)}
+          </Button>
+          <Button type="submit" form="model-edit-form" icon={null} loading={saving}>
+            {t('md_save_changes', lang)}
+          </Button>
+        </>
+      }
+    >
+      <form id="model-edit-form" onSubmit={handleSave} className="space-y-3">
+        <GroupLabel>{t('md_identity', lang)}</GroupLabel>
+        <FormField field="alias" value={form.alias} onChange={updateField} lang={lang} editing disabled={saving} />
+        <FormField field="display" value={form.display} onChange={updateField} lang={lang} editing disabled={saving} />
+        <FormField field="model_id" value={form.model_id} onChange={updateField} lang={lang} editing disabled={saving} />
+        {model.source === 'custom_endpoint' && model.account_name && (
+          <div>
+            <span className="label-micro block mb-1.5">{t('md_account', lang)}</span>
+            <div className="text-xs font-mono px-3 py-2 rounded-lg"
+                 style={{ background: 'var(--c-surface-2)', border: '1px solid var(--c-line)', color: 'var(--c-ink-2)' }}>
+              {model.account_name}
             </div>
-          )}
+          </div>
+        )}
 
-          <div className="text-[10px] font-extrabold uppercase tracking-wider text-base-content/40 pb-1 border-b border-base-content/5 mb-3 mt-4">
-            Rate Limits
-          </div>
-          <div className="grid grid-cols-3 gap-3">
-            <FormField field="rpm" value={form.rpm} onChange={updateField} editing disabled={saving} />
-            <FormField field="tpm" value={form.tpm} onChange={updateField} editing disabled={saving} />
-            <FormField field="rpd" value={form.rpd} onChange={updateField} editing disabled={saving} />
-          </div>
+        <GroupLabel>{t('md_rate_limits', lang)}</GroupLabel>
+        <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+          <FormField field="rpm" value={form.rpm} onChange={updateField} lang={lang} editing disabled={saving} />
+          <FormField field="tpm" value={form.tpm} onChange={updateField} lang={lang} editing disabled={saving} />
+          <FormField field="rpd" value={form.rpd} onChange={updateField} lang={lang} editing disabled={saving} />
+        </div>
 
-          <div className="text-[10px] font-extrabold uppercase tracking-wider text-base-content/40 pb-1 border-b border-base-content/5 mb-3 mt-4">
-            Advanced
-          </div>
-          <div className="grid grid-cols-2 gap-3">
-            <FormField field="priority" value={form.priority} onChange={updateField} editing disabled={saving} />
-            <FormField field="context_length" value={form.context_length} onChange={updateField} editing disabled={saving} />
-          </div>
-          <FormField field="pool_name" value={form.pool_name} onChange={updateField} editing disabled={saving} options={poolOptions} />
+        <GroupLabel>{t('md_advanced', lang)}</GroupLabel>
+        <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+          <FormField field="priority" value={form.priority} onChange={updateField} lang={lang} editing disabled={saving} />
+          <FormField field="context_length" value={form.context_length} onChange={updateField} lang={lang} editing disabled={saving} />
+        </div>
+        <FormField field="pool_name" value={form.pool_name} onChange={updateField} lang={lang} editing disabled={saving} options={poolOptions} />
 
-          <div className="flex flex-wrap items-center gap-4 pt-1">
-            <label className="flex items-center gap-2 cursor-pointer">
-              <input type="checkbox" className="checkbox checkbox-xs checkbox-primary"
-                checked={form.hidden}
-                onChange={e => updateField('hidden', e.target.checked)}
-                disabled={saving} />
-              <span className="text-[11px] font-bold text-base-content/70 flex items-center gap-1">
-                Hidden
-                <Tooltip text="Ẩn model khỏi danh sách /v1/models" />
-              </span>
-            </label>
-            <label className="flex items-center gap-2 cursor-pointer">
-              <input type="checkbox" className="checkbox checkbox-xs checkbox-primary"
-                checked={form.rpd_enabled}
-                onChange={e => updateField('rpd_enabled', e.target.checked)}
-                disabled={saving} />
-              <span className="text-[11px] font-bold text-base-content/70 flex items-center gap-1">
-                RPD Enabled
-                <Tooltip text="Bật giới hạn RPD cho model này." />
-              </span>
-            </label>
-          </div>
+        <div className="flex flex-wrap items-center gap-5 pt-1">
+          <label className="flex items-center gap-2 cursor-pointer">
+            <input type="checkbox" className="toggle toggle-xs"
+                   checked={form.hidden}
+                   onChange={e => updateField('hidden', e.target.checked)}
+                   disabled={saving} />
+            <span className="text-xs font-medium" style={{ color: 'var(--c-ink-2)' }}>{t('md_hidden', lang)}</span>
+          </label>
+          <label className="flex items-center gap-2 cursor-pointer">
+            <input type="checkbox" className="toggle toggle-xs"
+                   checked={form.rpd_enabled}
+                   onChange={e => updateField('rpd_enabled', e.target.checked)}
+                   disabled={saving} />
+            <span className="text-xs font-medium" style={{ color: 'var(--c-ink-2)' }}>{t('md_rpd_mode', lang)}</span>
+          </label>
+        </div>
+        <p className="text-[0.6875rem] leading-snug" style={{ color: 'var(--c-ink-3)' }}>
+          {t('md_hidden_hint', lang)} · {t('md_rpd_mode_hint', lang)}
+        </p>
 
-          {msg.text && (
-            <div className={`text-xs font-semibold p-3 rounded-lg border ${
-              msg.type === 'success' ? 'bg-success/10 text-success border-success/20' :
-              msg.type === 'error' ? 'bg-error/10 text-error border-error/20' : 'bg-info/10 text-info border-info/20'
-            }`}>
-              {msg.text}
-            </div>
-          )}
-
-          <div className="modal-action gap-2 justify-end pt-2 border-t border-base-content/5 mt-5">
-            <button type="button" onClick={onClose} disabled={saving} className="btn btn-sm btn-ghost normal-case font-bold">Huỷ</button>
-            <button type="submit" disabled={saving} className="btn btn-sm btn-primary normal-case font-bold px-4 gap-1">
-              {saving ? <><span className="loading loading-spinner loading-xs"></span> Đang lưu...</> : <><Save className="w-3.5 h-3.5" /> Lưu thay đổi</>}
-            </button>
-          </div>
-        </form>
-      </div>
-    </div>,
-    document.body
+        {msg.text && <Alert type={msg.type} message={msg.text} />}
+      </form>
+    </Modal>
   );
 }
 
-function PoolCell({ model, poolOptions, token, onRefresh }) {
+/* Pool assignment for a custom-endpoint model. The failure is shown in the row
+   that failed, not in an alert() that names neither the model nor the pool. */
+function PoolCell({ model, poolOptions, token, onRefresh, lang, onError }) {
   const [assigning, setAssigning] = useState(false);
 
   const handleChange = async (poolName) => {
@@ -273,7 +218,7 @@ function PoolCell({ model, poolOptions, token, onRefresh }) {
       }, token);
       onRefresh();
     } catch (err) {
-      alert('Lỗi: ' + err.message);
+      onError(`${t('md_pool_assign_err', lang)}${err.message}`);
     } finally {
       setAssigning(false);
     }
@@ -281,93 +226,113 @@ function PoolCell({ model, poolOptions, token, onRefresh }) {
 
   if (model.source === 'custom_endpoint') {
     return (
-      <div className="flex items-center gap-1">
+      <span className="inline-flex items-center gap-1">
         <select
           value={model.pool_name || ''}
           onChange={e => handleChange(e.target.value)}
           disabled={assigning}
-          className="select select-ghost select-xs text-[10px] font-mono max-w-[130px] bg-transparent"
+          className="select select-xs text-[0.6875rem] font-mono max-w-[6.5rem]"
+          aria-label={t('md_field_pool', lang)}
         >
           <option value="">—</option>
           {poolOptions.map(p => (
             <option key={p} value={p}>{p}</option>
           ))}
         </select>
-        {assigning && <span className="loading loading-spinner loading-xs"></span>}
-      </div>
+        {assigning && <span className="loading loading-spinner loading-xs" />}
+      </span>
     );
   }
 
-  return <span className="text-xs font-mono">{model.pool_name || '-'}</span>;
+  return (
+      <span className="text-xs font-mono whitespace-nowrap truncate inline-block max-w-full align-bottom"
+            title={model.pool_name || ''} style={{ color: 'var(--c-ink-2)' }}>
+        {model.pool_name || '—'}
+      </span>
+    );
 }
 
-function PoolMembersPanel({ pools, models, token, onToggle, busyAlias }) {
-  const healthByAlias = {};
-  for (const m of models || []) {
-    healthByAlias[m.alias] = m;
-  }
+function PoolMembersPanel({ pools, models, onToggle, busyAlias, lang }) {
+  const healthByAlias = useMemo(() => {
+    const map = {};
+    for (const m of models || []) map[m.alias] = m;
+    return map;
+  }, [models]);
+
+  if (!(pools || []).length) return null;
 
   return (
     <div className="space-y-3">
-      {(pools || []).map(p => {
+      {pools.map(p => {
+        const members = p.members || [];
         const activeCount = (p.active_members || []).length;
-        const total = (p.members || []).length;
         return (
-          <div key={p.name} className="card glass-card rounded-2xl border border-base-content/5 overflow-hidden">
-            <div className="flex flex-wrap items-center justify-between gap-2 px-4 py-3 bg-base-200/35 border-b border-base-content/5">
+          <Card key={p.name} padding="none" className="overflow-hidden">
+            <div className="flex flex-wrap items-center justify-between gap-2 px-4 py-2.5"
+                 style={{ background: 'var(--c-surface-2)', borderBottom: '1px solid var(--c-line)' }}>
               <div className="flex items-center gap-2 min-w-0">
-                <span className="font-bold text-sm font-mono truncate">{p.name}</span>
-                <span className={`badge badge-xs font-bold ${activeCount ? 'badge-success' : 'badge-error'}`}>
-                  {activeCount}/{total} hoạt động
+                <span className="text-sm font-semibold font-mono truncate" style={{ color: 'var(--c-ink)' }}>
+                  {p.name}
                 </span>
+                <Badge variant={activeCount ? 'success' : 'error'} dot={false}>
+                  {t('md_pool_ratio', lang).replace('{a}', activeCount).replace('{b}', members.length)}
+                </Badge>
               </div>
-              <span className="text-[10px] text-base-content/50">
-                Tắt model mà key của bạn không được phép dùng (Google yêu cầu paid tier)
+              <span className="text-[0.6875rem] leading-snug max-w-[26rem]"
+                    style={{ color: 'var(--c-ink-3)' }}>
+                {t('md_pool_off_note', lang)}
               </span>
             </div>
-            <div className="divide-y divide-base-content/5">
-              {(p.members || []).map(m => {
+            <div>
+              {members.map(m => {
                 const info = healthByAlias[m] || {};
                 const on = info.enabled !== false;
                 const busy = busyAlias === m;
                 return (
-                  <div
-                    key={m}
-                    className={`flex flex-wrap items-center justify-between gap-3 px-4 py-2.5 transition-colors ${on ? '' : 'bg-base-200/25'}`}
-                  >
-                    <div className="flex items-center gap-2 min-w-0">
-                      <span className={`font-mono text-xs font-bold ${on ? '' : 'text-base-content/40 line-through'}`}>
+                  <div key={m}
+                       className="flex flex-wrap items-center justify-between gap-3 px-4 py-2"
+                       style={{
+                         borderTop: '1px solid var(--c-line)',
+                         background: on ? 'transparent' : 'var(--c-surface-2)',
+                       }}>
+                    <div className="flex items-baseline gap-2 min-w-0">
+                      <span className="font-mono text-xs font-medium truncate"
+                            style={{
+                              color: on ? 'var(--c-ink)' : 'var(--c-ink-3)',
+                              textDecoration: on ? 'none' : 'line-through',
+                            }}>
                         {m}
                       </span>
                       {info.display && (
-                        <span className="text-[10px] text-base-content/40 truncate hidden sm:inline">
+                        <span className="text-[0.6875rem] truncate hidden sm:inline" style={{ color: 'var(--c-ink-3)' }}>
                           {info.display}
                         </span>
                       )}
                     </div>
-                    <div className="flex items-center gap-3">
-                      <span className="text-[10px] font-mono text-base-content/50">
-                        {on ? `${info.rpm ?? '?'} RPM` : 'đang tắt'}
+                    <div className="flex items-center gap-3 shrink-0">
+                      <span className="text-[0.6875rem] font-mono tabular-nums" style={{ color: 'var(--c-ink-3)' }}>
+                        {on ? `${info.rpm ?? '?'} RPM` : t('md_disabled', lang)}
                       </span>
                       <label className="flex items-center gap-2 cursor-pointer">
                         <input
                           type="checkbox"
-                          className="toggle toggle-success toggle-xs"
+                          className="toggle toggle-xs"
                           checked={on}
                           disabled={busy}
                           onChange={e => onToggle(m, e.target.checked)}
+                          aria-label={`${m} — ${on ? t('md_on', lang) : t('md_off', lang)}`}
                         />
-                        <span className={`text-[10px] font-bold ${on ? 'text-success' : 'text-base-content/40'}`}>
-                          {on ? 'Bật' : 'Tắt'}
+                        <span className="text-[0.6875rem] font-medium w-[1.75rem]"
+                              style={{ color: on ? 'var(--c-ink-2)' : 'var(--c-ink-3)' }}>
+                          {on ? t('md_on', lang) : t('md_off', lang)}
                         </span>
                       </label>
-                      {busy && <span className="loading loading-spinner loading-xs"></span>}
                     </div>
                   </div>
                 );
               })}
             </div>
-          </div>
+          </Card>
         );
       })}
     </div>
@@ -382,31 +347,62 @@ export default function ModelsTab() {
   const [msg, setMsg] = useState({ text: '', type: '' });
 
   const [showAddForm, setShowAddForm] = useState(false);
-  const [addForm, setAddForm] = useState({
-    alias: '', display: '', model_id: '', rpm: 10, tpm: 1000000, rpd: 1000,
-    hidden: false, priority: 1, context_length: 220000, pool_name: '',
-    account_id: '',
-  });
+  const [addForm, setAddForm] = useState(BLANK);
   const [adding, setAdding] = useState(false);
   const [addMsg, setAddMsg] = useState({ text: '', type: '' });
 
-  const endpoints = data?.endpoints || tabData.ep || [];
-
   const [selectedEpInfo, setSelectedEpInfo] = useState(null);
-  const endpointModelOptions = [];
-  for (const ep of endpoints) {
-    if (!ep.enabled) continue;
-    const accountName = ep.account_name || '';
-    for (const mid of (ep.enabled_models || [])) {
-      endpointModelOptions.push({
-        epName: ep.name,
-        modelId: mid,
-        accountName,
-        accountId: ep.account_id || '',
-        label: `${ep.name} → ${mid}`,
-      });
+  const [editModel, setEditModel] = useState(null);
+  const [editOpen, setEditOpen] = useState(false);
+  const [busyAlias, setBusyAlias] = useState(null);
+
+  const endpoints = useMemo(() => data?.endpoints || tabData.ep || [], [data?.endpoints, tabData.ep]);
+
+  const showMsg = useCallback((text, type) => {
+    setMsg({ text, type });
+    if (type === 'success') setTimeout(() => setMsg({ text: '', type: '' }), 4000);
+  }, []);
+
+  /* `isCurrent` is passed only by the mount effect. The refresh button, the
+     save handler and PoolCell call it bare — they want whatever comes back. */
+  const fetchData = useCallback(async (isCurrent = () => true) => {
+    setLoading(true);
+    try {
+      const res = await api('/dashboard/admin/models', {}, token);
+      if (!isCurrent()) return;
+      setData(res);
+    } catch (err) {
+      if (!isCurrent()) return;
+      setMsg({ text: `${t('stg_load_err', lang)}${err.message}`, type: 'error' });
+    } finally {
+      if (isCurrent()) setLoading(false);
     }
-  }
+  }, [token, lang]);
+
+  useEffect(() => {
+    let alive = true;
+    (async () => { await fetchData(() => alive); })();
+    return () => { alive = false; };
+  }, [fetchData]);
+
+  /* Every enabled model on every enabled endpoint, flattened once so the
+     "pick from endpoint" select does not rescan the endpoint list each key. */
+  const endpointModelOptions = useMemo(() => {
+    const out = [];
+    for (const ep of endpoints) {
+      if (ep.enabled === false) continue;
+      for (const mid of (ep.enabled_models || [])) {
+        out.push({
+          epName: ep.name,
+          modelId: mid,
+          accountName: ep.account_name || '',
+          accountId: ep.account_id || '',
+          label: `${ep.name} → ${mid}`,
+        });
+      }
+    }
+    return out;
+  }, [endpoints]);
 
   const pickFromEndpoint = (val) => {
     if (!val) return;
@@ -422,11 +418,6 @@ export default function ModelsTab() {
     }));
   };
 
-  const [editModel, setEditModel] = useState(null);
-  const [editOpen, setEditOpen] = useState(false);
-
-  const [busyAlias, setBusyAlias] = useState(null);
-
   const handleToggleMember = async (alias, enabled) => {
     setBusyAlias(alias);
     try {
@@ -434,46 +425,24 @@ export default function ModelsTab() {
         method: 'POST',
         body: JSON.stringify({ alias, enabled }),
       }, token);
-      const left = (res.active_members || []).filter(m => m !== alias);
+      const active = res.active_members || [];
+      const rest = active.filter(m => m !== alias);
       showMsg(
-        `${enabled ? 'Đã bật' : 'Đã tắt'} ${alias}`
-        + (res.pool ? ` — pool ${res.pool} còn ${(res.active_members || []).length} member: ${left.join(', ') || '—'}` : ''),
+        `${enabled ? t('md_on', lang) : t('md_off', lang)} ${alias}`
+        + (res.pool ? ` — ${res.pool}: ${t('md_pool_ratio', lang).replace('{a}', active.length).replace('{b}', '?')}${rest.length ? ` (${rest.join(', ')})` : ''}` : ''),
         'success',
       );
       fetchData();
     } catch (err) {
-      showMsg('Không đổi được: ' + err.message, 'error');
+      showMsg(`${t('md_pool_assign_err', lang)}${err.message}`, 'error');
     } finally {
       setBusyAlias(null);
     }
   };
 
-  const fetchData = useCallback(async () => {
-    setLoading(true);
-    try {
-      const res = await api('/dashboard/admin/models', {}, token);
-      setData(res);
-    } catch (err) {
-      setMsg({ text: 'Lỗi tải: ' + err.message, type: 'error' });
-    } finally {
-      setLoading(false);
-    }
-  }, [token]);
-
-  useEffect(() => { fetchData(); }, [fetchData]);
-
-  const showMsg = (text, type) => {
-    setMsg({ text, type });
-    setTimeout(() => setMsg({ text: '', type: '' }), 3000);
-  };
-
   const resetAddForm = () => {
     setSelectedEpInfo(null);
-    setAddForm({
-      alias: '', display: '', model_id: '', rpm: 10, tpm: 1000000, rpd: 1000,
-      hidden: false, priority: 1, context_length: 220000, pool_name: '',
-      account_id: '',
-    });
+    setAddForm(BLANK);
     setAddMsg({ text: '', type: '' });
   };
 
@@ -481,22 +450,20 @@ export default function ModelsTab() {
 
   const handleAdd = async (e) => {
     e.preventDefault();
-    if (!addForm.alias) { setAddMsg({ text: 'Alias là bắt buộc', type: 'error' }); return; }
+    if (!addForm.alias) { setAddMsg({ text: t('md_alias_required', lang), type: 'error' }); return; }
     setAdding(true);
-    setAddMsg({ text: '⏳ Đang thêm...', type: 'info' });
+    setAddMsg({ text: t('md_adding', lang), type: 'info' });
     try {
       await api('/dashboard/admin/models/save', {
         method: 'POST',
         body: JSON.stringify(addForm),
       }, token);
-      setAddMsg({ text: '✅ Đã thêm model ' + addForm.alias, type: 'success' });
-      setTimeout(() => {
-        resetAddForm();
-        setShowAddForm(false);
-        fetchData();
-      }, 800);
+      resetAddForm();
+      setShowAddForm(false);
+      showMsg(`${t('md_added', lang)}${addForm.alias}`, 'success');
+      fetchData();
     } catch (err) {
-      setAddMsg({ text: '❌ Thêm thất bại: ' + err.message, type: 'error' });
+      setAddMsg({ text: `${t('md_add_err', lang)}${err.message}`, type: 'error' });
     } finally {
       setAdding(false);
     }
@@ -505,9 +472,10 @@ export default function ModelsTab() {
   const handleDelete = async (model) => {
     if (model.source === 'custom_endpoint') {
       const actions = [];
-      if (model.pool_name) actions.push('xoá pool assignment');
-      actions.push('xoá model khỏi endpoint');
-      if (!confirm(`Xoá custom endpoint model "${model.alias}" khỏi hệ thống?\n(Hành động: ${actions.join(' + ')} )`)) return;
+      if (model.pool_name) actions.push(t('md_action_unassign', lang));
+      actions.push(t('md_action_detach', lang));
+      const body = `${t('md_delete_custom_title', lang).replace('{alias}', model.alias)}\n${t('md_delete_custom_actions', lang).replace('{actions}', actions.join(' + '))}`;
+      if (!window.confirm(body)) return;
       try {
         if (model.pool_name) {
           await api('/dashboard/admin/endpoints/pool-assign', {
@@ -519,24 +487,24 @@ export default function ModelsTab() {
           method: 'POST',
           body: JSON.stringify({ name: model.endpoint, model_id: model.alias, enabled: false }),
         }, token);
-        showMsg('Đã xoá ' + model.alias + ' khỏi endpoint', 'success');
+        showMsg(`${t('md_deleted', lang)}${model.alias}`, 'success');
         fetchData();
       } catch (err) {
-        showMsg('Xoá thất bại: ' + err.message, 'error');
+        showMsg(`${t('md_delete_err', lang)}${err.message}`, 'error');
       }
       return;
     }
 
-    if (!confirm(`Xoá model "${model.alias}" khỏi DB và env?`)) return;
+    if (!window.confirm(t('md_delete_confirm', lang).replace('{alias}', model.alias))) return;
     try {
       await api('/dashboard/admin/models/delete', {
         method: 'POST',
         body: JSON.stringify({ alias: model.alias }),
       }, token);
-      showMsg('Đã xoá ' + model.alias, 'success');
+      showMsg(`${t('md_deleted', lang)}${model.alias}`, 'success');
       fetchData();
     } catch (err) {
-      showMsg('Xoá thất bại: ' + err.message, 'error');
+      showMsg(`${t('md_delete_err', lang)}${err.message}`, 'error');
     }
   };
 
@@ -545,240 +513,274 @@ export default function ModelsTab() {
     setEditOpen(true);
   };
 
-  if (loading) return <Loading message="Đang tải model config..." />;
+  if (loading) return <Loading message={t('md_loading', lang)} />;
 
   const models = data?.models || [];
-  const poolOptions = (data?.pools || []).map(p => p.name);
+  const pools = data?.pools || [];
+  const poolOptions = pools.map(p => p.name);
 
   return (
     <div className="space-y-5">
-      <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4 animate-tab-in">
-        <div className="text-left">
-          <h1 className="text-2xl font-black tracking-tight flex items-center gap-2">
-            <Layers className="w-6 h-6 text-primary" />
-            Quản lý Model Config
-          </h1>
-          <p className="text-xs text-base-content/60 mt-1">
-            Chỉnh RPM/TPM/RPD, gán pool, thêm/xoá model. Lưu DB trước, sync env sau.
-          </p>
-        </div>
-        <div className="flex gap-2">
-          <button onClick={fetchData} className="btn btn-ghost btn-sm gap-1 font-bold">
-            <RefreshCw className="w-3.5 h-3.5" /> Refresh
-          </button>
-          <button onClick={() => { resetAddForm(); setShowAddForm(v => !v); }}
-            className="btn btn-primary btn-sm gap-2 font-bold shadow-lg shadow-primary/25 hover:scale-[1.03] active:scale-[0.97] transition-all">
-            <Plus className="w-4 h-4" /> Thêm Model
-          </button>
-        </div>
-      </div>
+      <PageHeader
+        title={t('md_title', lang)}
+        subtitle={t('md_sub', lang)}
+        actions={
+          <>
+            <Button variant="ghost" icon={RefreshCw} onClick={fetchData}>{t('cm_refresh', lang)}</Button>
+            <Button icon={Plus} onClick={() => { resetAddForm(); setShowAddForm(v => !v); }}>
+              {t('md_add', lang)}
+            </Button>
+          </>
+        }
+      />
 
-      {msg.text && (
-        <div className={`text-xs font-semibold p-3 rounded-lg border ${
-          msg.type === 'error' ? 'bg-error/10 text-error border-error/20' : 'bg-success/10 text-success border-success/20'
-        }`}>
-          {msg.text}
-        </div>
-      )}
+      {msg.text && <Alert type={msg.type} message={msg.text} onClose={() => setMsg({ text: '', type: '' })} />}
 
       {showAddForm && (
-        <div className="card glass-card p-5 rounded-2xl text-left border border-primary/20 animate-fade-in-up">
-          <h3 className="font-extrabold text-sm mb-4 flex items-center gap-2">
-            <Plus className="w-4 h-4 text-primary" />
-            Thêm Model Mới
-          </h3>
+        <Card padding="lg" className="animate-fade-in-up">
+          <h2 className="text-xs font-semibold mb-3" style={{ color: 'var(--c-ink)' }}>
+            {t('md_add_title', lang)}
+          </h2>
           <form onSubmit={handleAdd} className="space-y-3">
-            <div className="form-control w-full">
-              <label className="label py-1">
-                <span className="label-text text-[11px] font-bold text-base-content/60 uppercase flex items-center gap-1">
-                  Chọn từ Custom Endpoint
-                  <Tooltip text="Chọn model từ custom endpoint đã kết nối. Thông tin sẽ tự động điền vào các field bên dưới." />
-                </span>
-              </label>
+            <label className="block">
+              <span className="label-micro block mb-1.5">{t('md_pick_ep', lang)}</span>
               <select
                 onChange={e => pickFromEndpoint(e.target.value)}
                 disabled={adding}
-                className="select select-bordered select-sm text-xs w-full"
+                className="select select-sm text-xs w-full font-mono"
+                defaultValue=""
               >
-                <option value="">— Chọn endpoint + model —</option>
+                <option value="">{t('md_pick_ep_placeholder', lang)}</option>
                 {endpointModelOptions.length > 0 ? endpointModelOptions.map(opt => (
                   <option key={opt.epName + '|' + opt.modelId} value={opt.epName + '|' + opt.modelId}>
                     {opt.label}{opt.accountName ? ` (${opt.accountName})` : ''}
                   </option>
                 )) : (
-                  <option value="" disabled>Không có custom endpoint nào</option>
+                  <option value="" disabled>{t('md_pick_ep_empty', lang)}</option>
                 )}
               </select>
-            </div>
+              <span className="block text-[0.6875rem] leading-snug mt-1.5" style={{ color: 'var(--c-ink-3)' }}>
+                {t('md_pick_ep_hint', lang)}
+              </span>
+            </label>
 
-            <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
-              <FormField field="alias" value={addForm.alias} onChange={updateAddField} disabled={adding} />
-              <FormField field="display" value={addForm.display} onChange={updateAddField} disabled={adding} />
-              <FormField field="model_id" value={addForm.model_id} onChange={updateAddField} disabled={adding} />
+            <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+              <FormField field="alias" value={addForm.alias} onChange={updateAddField} lang={lang} disabled={adding} />
+              <FormField field="display" value={addForm.display} onChange={updateAddField} lang={lang} disabled={adding} />
+              <FormField field="model_id" value={addForm.model_id} onChange={updateAddField} lang={lang} disabled={adding} />
             </div>
 
             {selectedEpInfo && (
-              <div className="bg-base-200/30 rounded-lg px-3 py-2 text-xs">
-                <span className="font-bold text-base-content/60">Account: </span>
-                <span className="font-mono">{selectedEpInfo.accountName || selectedEpInfo.accountId || '-'}</span>
-              </div>
-            )}
-
-            <div className="text-[10px] font-extrabold uppercase tracking-wider text-base-content/40 pb-1 border-b border-base-content/5 mb-1">
-              Rate Limits
-            </div>
-            <div className="grid grid-cols-3 gap-4">
-              <FormField field="rpm" value={addForm.rpm} onChange={updateAddField} disabled={adding} />
-              <FormField field="tpm" value={addForm.tpm} onChange={updateAddField} disabled={adding} />
-              <FormField field="rpd" value={addForm.rpd} onChange={updateAddField} disabled={adding} />
-            </div>
-
-            <div className="text-[10px] font-extrabold uppercase tracking-wider text-base-content/40 pb-1 border-b border-base-content/5 mb-1 mt-3">
-              Advanced
-            </div>
-            <div className="grid grid-cols-2 gap-4">
-              <FormField field="priority" value={addForm.priority} onChange={updateAddField} disabled={adding} />
-              <FormField field="context_length" value={addForm.context_length} onChange={updateAddField} disabled={adding} />
-            </div>
-            <FormField field="pool_name" value={addForm.pool_name} onChange={updateAddField} disabled={adding} options={poolOptions} />
-
-            <div className="flex flex-wrap items-center gap-4 pt-1">
-              <label className="flex items-center gap-2 cursor-pointer">
-                <input type="checkbox" className="checkbox checkbox-xs checkbox-primary"
-                  checked={addForm.hidden}
-                  onChange={e => updateAddField('hidden', e.target.checked)}
-                  disabled={adding} />
-                <span className="text-[11px] font-bold text-base-content/70 flex items-center gap-1">
-                  Hidden
-                  <Tooltip text="Ẩn model khỏi danh sách /v1/models" />
+              <div className="rounded-lg px-3 py-2 text-[0.6875rem]"
+                   style={{ background: 'var(--c-surface-2)', border: '1px solid var(--c-line)' }}>
+                <span className="label-micro">{t('md_account', lang)}</span>{' '}
+                <span className="font-mono" style={{ color: 'var(--c-ink-2)' }}>
+                  {selectedEpInfo.accountName || selectedEpInfo.accountId || '—'}
                 </span>
-              </label>
-            </div>
-
-            {addMsg.text && (
-              <div className={`text-xs font-semibold p-3 rounded-lg border ${
-                addMsg.type === 'success' ? 'bg-success/10 text-success border-success/20' :
-                addMsg.type === 'error' ? 'bg-error/10 text-error border-error/20' : 'bg-info/10 text-info border-info/20'
-              }`}>
-                {addMsg.text}
               </div>
             )}
 
-            <div className="flex gap-2 justify-end pt-2 border-t border-base-content/5 mt-4">
-              <button type="button" onClick={() => setShowAddForm(false)} disabled={adding}
-                className="btn btn-sm btn-ghost normal-case font-bold">Huỷ</button>
-              <button type="submit" disabled={adding}
-                className="btn btn-sm btn-primary normal-case font-bold px-4 gap-1">
-                {adding ? <><span className="loading loading-spinner loading-xs"></span> Đang thêm...</> : <><Plus className="w-3.5 h-3.5" /> Thêm</>}
-              </button>
+            <GroupLabel>{t('md_rate_limits', lang)}</GroupLabel>
+            <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+              <FormField field="rpm" value={addForm.rpm} onChange={updateAddField} lang={lang} disabled={adding} />
+              <FormField field="tpm" value={addForm.tpm} onChange={updateAddField} lang={lang} disabled={adding} />
+              <FormField field="rpd" value={addForm.rpd} onChange={updateAddField} lang={lang} disabled={adding} />
+            </div>
+
+            <GroupLabel>{t('md_advanced', lang)}</GroupLabel>
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+              <FormField field="priority" value={addForm.priority} onChange={updateAddField} lang={lang} disabled={adding} />
+              <FormField field="context_length" value={addForm.context_length} onChange={updateAddField} lang={lang} disabled={adding} />
+            </div>
+            <FormField field="pool_name" value={addForm.pool_name} onChange={updateAddField} lang={lang} disabled={adding} options={poolOptions} />
+
+            <label className="flex items-center gap-2 cursor-pointer pt-1">
+              <input type="checkbox" className="toggle toggle-xs"
+                     checked={addForm.hidden}
+                     onChange={e => updateAddField('hidden', e.target.checked)}
+                     disabled={adding} />
+              <span className="text-xs font-medium" style={{ color: 'var(--c-ink-2)' }}>{t('md_hidden', lang)}</span>
+              <span className="text-[0.6875rem]" style={{ color: 'var(--c-ink-3)' }}>— {t('md_hidden_hint', lang)}</span>
+            </label>
+
+            {addMsg.text && <Alert type={addMsg.type} message={addMsg.text} />}
+
+            <div className="flex flex-wrap items-center justify-end gap-2 pt-3"
+                 style={{ borderTop: '1px solid var(--c-line)' }}>
+              <Button type="button" variant="ghost" onClick={() => setShowAddForm(false)} disabled={adding}>
+                {t('btn_cancel', lang)}
+              </Button>
+              <Button type="submit" icon={Plus} loading={adding}>
+                {t('md_add', lang)}
+              </Button>
             </div>
           </form>
-        </div>
+        </Card>
       )}
 
-      {/* Pool Members */}
-      <div className="flex justify-between items-center bg-base-200/20 px-4 py-3 rounded-xl border border-base-content/5 animate-fade-in-up cascade-1">
-        <span className="text-xs font-bold text-base-content/70 flex items-center gap-1.5">
-          <Zap className="w-4 h-4 text-amber-400" />
-          Thành viên Pool
-        </span>
-        <span className="text-[10px] text-base-content/50">Bật/tắt model con, áp dụng ngay không cần restart</span>
+      {/* Pool members — each pool is a block, not a table row, because the
+          toggle applies instantly and the pool is the unit it acts on. */}
+      <div className="space-y-3 animate-fade-in-up cascade-1">
+        <div className="flex flex-wrap items-baseline justify-between gap-2">
+          <span className="flex items-center gap-1.5 label-micro">
+            <Zap className="w-3.5 h-3.5" />
+            {t('md_pool_members', lang)}
+          </span>
+          <span className="text-[0.6875rem]" style={{ color: 'var(--c-ink-3)' }}>
+            {t('md_pool_members_hint', lang)}
+          </span>
+        </div>
+        <PoolMembersPanel
+          pools={pools}
+          models={models}
+          onToggle={handleToggleMember}
+          busyAlias={busyAlias}
+          lang={lang}
+        />
       </div>
 
-      <PoolMembersPanel
-        pools={data?.pools}
-        models={models}
-        token={token}
-        onToggle={handleToggleMember}
-        busyAlias={busyAlias}
-      />
+      {/* Models table */}
+      <div className="space-y-3 animate-fade-in-up cascade-2">
+        <div className="flex flex-wrap items-baseline justify-between gap-2">
+          <span className="flex items-center gap-1.5 label-micro">
+            <Layers className="w-3.5 h-3.5" />
+            {t('md_models_list', lang)}
+          </span>
+          <span className="text-[0.6875rem] tabular-nums px-1.5 py-0.5 rounded"
+                style={{ background: 'var(--c-surface-3)', color: 'var(--c-ink-3)' }}>
+            {t('md_models_count', lang).replace('{n}', String(models.length))}
+          </span>
+        </div>
 
-      {/* Models Table */}
-      <div className="flex justify-between items-center bg-base-200/20 px-4 py-3 rounded-xl border border-base-content/5 animate-fade-in-up cascade-1">
-        <span className="text-xs font-bold text-base-content/70 flex items-center gap-1.5">
-          <Layers className="w-4 h-4 text-indigo-400" />
-          Danh sách Model
-        </span>
-        <span className="badge badge-primary font-bold text-xs">{models.length} models</span>
-      </div>
-
-      <div className="card glass-card rounded-2xl overflow-hidden text-left border border-base-content/5 animate-fade-in-up cascade-2">
-        <div className="overflow-x-auto w-full">
-          <table className="table table-zebra w-full text-xs">
-            <thead>
-              <tr className="border-b border-base-content/5 text-base-content/60 bg-base-200/35">
-                <th className="font-bold min-w-[100px]">Alias</th>
-                <th className="font-bold min-w-[90px]">Display</th>
-                <th className="font-bold min-w-[75px]">Source</th>
-                <th className="font-bold min-w-[90px]">Model ID</th>
-                <th className="font-bold min-w-[80px]">Pool</th>
-                <th className="font-bold min-w-[60px]">Account</th>
-                <th className="font-bold min-w-[45px]">RPM</th>
-                <th className="font-bold min-w-[55px]">TPM</th>
-                <th className="font-bold min-w-[45px]">RPD</th>
-                <th className="font-bold min-w-[40px]">DB</th>
-                <th className="font-bold min-w-[60px]">Trạng thái</th>
-                <th className="font-bold min-w-[80px]">Hành động</th>
-              </tr>
-            </thead>
-            <tbody>
-              {models.map((m) => (
-                <tr key={m.source + '|' + m.alias} className={`border-b border-base-content/5 hover:bg-base-200/50 ${m.hidden ? 'opacity-50' : ''}`}>
-                  <td className="font-mono font-bold text-xs">{m.alias}</td>
-                  <td className="text-xs text-base-content/80 truncate max-w-[150px]">{m.display}</td>
-                  <td>
-                    <span className={`badge badge-xs font-bold ${m.source === 'gemini' ? 'badge-primary' : 'badge-ghost'}`}>
-                      {m.source === 'gemini' ? 'Gemini' : m.endpoint || 'custom'}
-                    </span>
-                  </td>
-                  <td className="font-mono text-xs text-base-content/50">{m.model_id}</td>
-                  <td>
-                    <PoolCell model={m} poolOptions={poolOptions} token={token} onRefresh={fetchData} />
-                  </td>
-                  <td className="text-xs text-base-content/70">
-                    {m.source === 'custom_endpoint' ? (
-                      <span className="font-mono">{m.account_name || m.account_id || '-'}</span>
-                    ) : '-'}
-                  </td>
-                  <td className="font-mono text-xs">
-                    {m.db_rpm != null ? <><span className="text-primary">{m.db_rpm}</span><span className="text-base-content/30"> / {m.rpm}</span></> : m.rpm || '-'}
-                  </td>
-                  <td className="font-mono text-xs">
-                    {m.db_tpm != null ? <><span className="text-primary">{m.db_tpm}</span><span className="text-base-content/30"> / {m.tpm}</span></> : m.tpm || '-'}
-                  </td>
-                  <td className="font-mono text-xs">
-                    {m.db_rpd != null ? <><span className="text-primary">{m.db_rpd}</span><span className="text-base-content/30"> / {m.rpd}</span></> : m.rpd || '-'}
-                  </td>
-                  <td>
-                    {m.in_db
-                      ? <span className="badge badge-xs badge-success font-bold">DB</span>
-                      : <span className="badge badge-xs badge-ghost font-bold">env</span>}
-                  </td>
-                  <td>
-                    {m.source === 'gemini' && m.enabled === false
-                      ? <span className="badge badge-xs badge-error font-bold">Đã tắt</span>
-                      : <span className="badge badge-xs badge-success badge-outline font-bold">Hoạt động</span>}
-                  </td>
-                  <td>
-                    <div className="flex items-center gap-0.5">
-                      <button onClick={() => openEdit(m)} className="btn btn-ghost btn-xs btn-square text-primary hover:bg-primary/15" title="Edit model">
-                        <Edit3 className="w-3.5 h-3.5" />
-                      </button>
-                      <button onClick={() => handleDelete(m)} className="btn btn-ghost btn-xs btn-square text-error hover:bg-error/15" title="Delete model">
-                        <Trash2 className="w-3.5 h-3.5" />
-                      </button>
-                    </div>
-                  </td>
+        <div className="glass-card rounded-xl overflow-hidden text-left">
+          <div className="overflow-x-auto w-full">
+            <table className="table table-pin w-full text-xs">
+              {/* Twelve columns in a 1134 px pane is more than fits, and
+                  three of them were names for the same model: the display
+                  name, the client-facing alias, and the upstream id. Alias and
+                  display now share one identity cell (display on top, alias
+                  beneath in mono), which is the same shape the pool graph
+                  uses. The upstream id keeps its own column - for a custom
+                  endpoint it is a genuinely different name, not a restatement. */}
+              <thead>
+                <tr>
+                  <th className="min-w-[9rem]">{t('th_alias', lang)}</th>
+                  <th className="min-w-[5rem]">{t('th_source', lang)}</th>
+                  <th className="min-w-[8.5rem]">{t('th_model', lang)}</th>
+                  <th className="min-w-[5rem] whitespace-nowrap">{t('th_pool', lang)}</th>
+                  <th className="min-w-[4rem]">{t('th_account', lang)}</th>
+                  <th className="min-w-[4.5rem] text-right">{t('th_rpm', lang)}</th>
+                  <th className="min-w-[6rem] text-right">{t('th_tpm', lang)}</th>
+                  <th className="min-w-[5.5rem] text-right">{t('th_rpd', lang)}</th>
+                  <th className="min-w-[4rem]">{t('th_db', lang)}</th>
+                  <th className="min-w-[5.5rem] whitespace-nowrap">{t('th_status', lang)}</th>
+                  <th className="min-w-[5.5rem] text-right">{t('th_actions', lang)}</th>
                 </tr>
-              ))}
-            </tbody>
-          </table>
+              </thead>
+              <tbody>
+                {models.length === 0 && (
+                  <tr>
+                    <td colSpan="11" className="text-center py-6 text-xs" style={{ color: 'var(--c-ink-3)' }}>
+                      {t('no_data', lang)}
+                    </td>
+                  </tr>
+                )}
+                {models.map(m => (
+                  <tr key={m.source + '|' + m.alias} style={{ opacity: m.hidden ? 0.6 : 1 }}>
+                    <td className="max-w-0">
+                      <span className="block truncate font-medium" title={m.display || m.alias}
+                            style={{ color: 'var(--c-ink)' }}>
+                        {m.display || m.alias}
+                      </span>
+                      <span className="block truncate font-mono text-[0.6875rem]" title={m.alias}
+                            style={{ color: 'var(--c-ink-3)' }}>
+                        {m.alias}
+                      </span>
+                    </td>
+                    <td>
+                      <Badge variant={m.source === 'gemini' ? 'primary' : 'ghost'}>
+                        {m.source === 'gemini' ? 'Gemini' : (m.endpoint || 'custom')}
+                      </Badge>
+                    </td>
+                    <td className="font-mono max-w-0">
+                      <span className="block truncate" title={m.model_id || ''} style={{ color: 'var(--c-ink-3)' }}>
+                        {m.model_id}
+                      </span>
+                    </td>
+                    <td>
+                      <PoolCell
+                        model={m}
+                        poolOptions={poolOptions}
+                        token={token}
+                        onRefresh={fetchData}
+                        lang={lang}
+                        onError={(text) => showMsg(text, 'error')}
+                      />
+                    </td>
+                    <td className="font-mono max-w-0">
+                      <span className="block truncate" title={m.account_name || m.account_id || ''}
+                            style={{ color: 'var(--c-ink-2)' }}>
+                        {m.source === 'custom_endpoint' ? (m.account_name || m.account_id || '—') : '—'}
+                      </span>
+                    </td>
+                    <td className="text-right font-mono tabular-nums whitespace-nowrap">
+                      {m.db_rpm != null ? (
+                        <>
+                          <span style={{ color: 'var(--c-ink)' }}>{m.db_rpm}</span>
+                          <span style={{ color: 'var(--c-ink-3)' }}> / {m.rpm}</span>
+                        </>
+                      ) : (m.rpm || '—')}
+                    </td>
+                    <td className="text-right font-mono tabular-nums whitespace-nowrap">
+                      {m.db_tpm != null ? (
+                        <>
+                          <span style={{ color: 'var(--c-ink)' }}>{m.db_tpm}</span>
+                          <span style={{ color: 'var(--c-ink-3)' }}> / {m.tpm}</span>
+                        </>
+                      ) : (m.tpm || '—')}
+                    </td>
+                    <td className="text-right font-mono tabular-nums whitespace-nowrap">
+                      {m.db_rpd != null ? (
+                        <>
+                          <span style={{ color: 'var(--c-ink)' }}>{m.db_rpd}</span>
+                          <span style={{ color: 'var(--c-ink-3)' }}> / {m.rpd}</span>
+                        </>
+                      ) : (m.rpd || '—')}
+                    </td>
+                    <td>
+                      {m.in_db
+                        ? <Badge variant="primary">DB</Badge>
+                        : <Badge variant="ghost">env</Badge>}
+                    </td>
+                    <td>
+                      {m.source === 'gemini' && m.enabled === false
+                        ? <Badge variant="error" dot>{t('st_disabled', lang)}</Badge>
+                        : <Badge variant="success" dot>{t('st_enabled', lang)}</Badge>}
+                    </td>
+                    <td className="text-right">
+                      <div className="inline-flex items-center gap-0.5">
+                        <Button variant="ghost" size="xs" icon={Edit3} onClick={() => openEdit(m)}
+                                aria-label={`${t('md_edit', lang)} ${m.alias}`} title={t('md_edit', lang)}>
+                          <span className="sr-only">{t('md_edit', lang)}</span>
+                        </Button>
+                        <Button variant="ghost" size="xs" icon={Trash2} onClick={() => handleDelete(m)}
+                                style={{ color: 'var(--c-critical)' }}
+                                aria-label={`${t('md_delete', lang)} ${m.alias}`} title={t('md_delete', lang)}>
+                          <span className="sr-only">{t('md_delete', lang)}</span>
+                        </Button>
+                      </div>
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
         </div>
       </div>
 
-      {/* Edit Modal */}
-      {editOpen && (
+      {editOpen && editModel && (
         <EditModelModal
+          key={editModel.alias}
           model={editModel}
           onClose={() => { setEditOpen(false); setEditModel(null); }}
           onSaved={fetchData}

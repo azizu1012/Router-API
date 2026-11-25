@@ -1,4 +1,15 @@
-import { useState, useEffect, useRef, useCallback } from 'react';
+import { useState, useEffect, useRef, useCallback, useMemo } from 'react';
+
+/* Reconnect pacing: 0.5 s, 1, 2, 4, 8, then a 15 s ceiling, with up to 25 %
+   jitter so a server restart does not bring every open tab back in the same
+   millisecond. */
+const BASE_DELAY_MS = 500;
+const MAX_DELAY_MS = 15000;
+
+const backoffDelay = (attempt) => {
+  const exp = Math.min(MAX_DELAY_MS, BASE_DELAY_MS * 2 ** attempt);
+  return Math.round(exp * (1 + Math.random() * 0.25));
+};
 
 export function useWebSocket(token) {
   const ws = useRef(null);
@@ -6,6 +17,7 @@ export function useWebSocket(token) {
   const subscribeQueue = useRef([]);
   const [connected, setConnected] = useState(false);
   const reconnectTimer = useRef(null);
+  const attemptRef = useRef(0);
   const mountedRef = useRef(true);
 
   useEffect(() => {
@@ -13,8 +25,13 @@ export function useWebSocket(token) {
     return () => { mountedRef.current = false; };
   }, []);
 
+  // The reconnect path needs to call this from a timer, so it is reached
+  // through a ref: the closure captured at connect time is always the current
+  // token's socket factory, never a stale one.
+  const connectRef = useRef(null);
   const connect = useCallback(() => {
     if (!token || !mountedRef.current) return;
+    clearTimeout(reconnectTimer.current);
 
     const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
     const url = `${protocol}//${window.location.host}/dashboard/ws?token=${encodeURIComponent(token)}`;
@@ -22,37 +39,34 @@ export function useWebSocket(token) {
 
     socket.onopen = () => {
       if (!mountedRef.current) { socket.close(); return; }
-      console.log('[WS Connected]');
+      attemptRef.current = 0;
       setConnected(true);
-      // Re-subscribe all active channels
       const chs = subscribeQueue.current;
       if (chs.length > 0) {
-        console.log('[WS Re-subscribing]', chs);
         socket.send(JSON.stringify({ type: 'subscribe', channels: chs }));
       }
     };
 
     socket.onmessage = (e) => {
+      let msg;
       try {
-        const msg = JSON.parse(e.data);
-        console.log('[WS Receive]', msg);
-        const channel = msg.channel;
-        if (channel) {
-          const cbs = listeners.current[channel] || [];
-          cbs.forEach(fn => fn(msg));
-        }
-        // Also dispatch to wildcard listeners
-        const wildcard = listeners.current['*'] || [];
-        wildcard.forEach(fn => fn(msg));
-      } catch (err) {
-        console.error('[WS Parse Error]', err);
+        msg = JSON.parse(e.data);
+      } catch {
+        return;
       }
+      const channel = msg.channel;
+      if (channel) {
+        (listeners.current[channel] || []).forEach(fn => fn(msg));
+      }
+      (listeners.current['*'] || []).forEach(fn => fn(msg));
     };
 
     socket.onclose = () => {
       if (!mountedRef.current) return;
       setConnected(false);
-      reconnectTimer.current = setTimeout(connect, 3000);
+      const delay = backoffDelay(attemptRef.current);
+      attemptRef.current = Math.min(attemptRef.current + 1, 8);
+      reconnectTimer.current = setTimeout(() => connectRef.current?.(), delay);
     };
 
     socket.onerror = () => {
@@ -62,13 +76,21 @@ export function useWebSocket(token) {
     ws.current = socket;
   }, [token]);
 
+  useEffect(() => { connectRef.current = connect; }, [connect]);
+
   useEffect(() => {
+    attemptRef.current = 0;
     connect();
     return () => {
-      if (reconnectTimer.current) clearTimeout(reconnectTimer.current);
-      if (ws.current) {
-        ws.current.onclose = null; // prevent reconnect
-        ws.current.close();
+      clearTimeout(reconnectTimer.current);
+      const socket = ws.current;
+      if (socket) {
+        // Detach first: assigning onclose = null is what stops a closing
+        // socket from scheduling another reconnect into an unmounted tree.
+        socket.onclose = null;
+        socket.onerror = null;
+        socket.onmessage = null;
+        socket.close();
         ws.current = null;
       }
       setConnected(false);
@@ -82,7 +104,6 @@ export function useWebSocket(token) {
     listeners.current[channel] = [...(listeners.current[channel] || []), callback];
 
     if (ws.current && ws.current.readyState === WebSocket.OPEN) {
-      console.log('[WS Sending Subscribe]', channel);
       ws.current.send(JSON.stringify({ type: 'subscribe', channels: [channel] }));
     }
 
@@ -111,5 +132,11 @@ export function useWebSocket(token) {
     }
   }, []);
 
-  return { connected, subscribe, unsubscribe, ws: ws.current };
+  // Memoised so consumers that list `wsHook` in an effect's deps do not
+  // re-subscribe on every render. `ws` is the ref, not `ws.current`: the old
+  // snapshot was always the socket from whichever render created it.
+  return useMemo(
+    () => ({ connected, subscribe, unsubscribe, ws }),
+    [connected, subscribe, unsubscribe]
+  );
 }

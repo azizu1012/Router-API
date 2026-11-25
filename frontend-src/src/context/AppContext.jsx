@@ -1,8 +1,12 @@
-import React, { createContext, useContext, useState, useEffect, useRef } from 'react';
+import { createContext, useContext, useState, useEffect, useRef, useCallback } from 'react';
 import { api } from '../utils/api';
 import { useWebSocket } from '../utils/useWebSocket';
 
 const AppContext = createContext();
+
+/* Tabs a non-admin may not see. Kept module-level so the routing guard and the
+   login redirect cannot drift apart. */
+const ADMIN_TABS = ['ov', 'ks', 'ac', 'us', 'ep', 'pe', 'mu', 'md', 'st'];
 
 const getTabFromPath = (path) => {
   const normalized = path.replace(/\/$/, '').toLowerCase();
@@ -47,7 +51,7 @@ const getPathFromTab = (tab) => {
 export function AppProvider({ children }) {
   const [token, setToken] = useState(() => sessionStorage.getItem('_rt') || null);
   const [user, setUser] = useState(null);
-  const [activeTab, setActiveTab] = useState(() => {
+  const [requestedTab, setActiveTab] = useState(() => {
     const tab = getTabFromPath(window.location.pathname);
     return tab || 'ov';
   });
@@ -55,6 +59,14 @@ export function AppProvider({ children }) {
   const [lang, setLang] = useState(() => localStorage.getItem('_rl') || 'vi');
   const [fontSize, setFontSize] = useState(() => localStorage.getItem('_rfs') || '100%');
   
+  /* The tab the user asked for is not always the tab they may see: a session
+     whose tier drops, or a bookmarked admin URL opened by a free user. Resolving
+     that here, as a derivation, means one render paints the right tab - no
+     flash of an admin panel followed by a redirect. */
+  const activeTab = user && user.tier !== 'admin' && ADMIN_TABS.includes(requestedTab)
+    ? 'myacc'
+    : requestedTab;
+
   // Easter egg tracker states
   const [foundEggs, setFoundEggs] = useState(() => {
     try {
@@ -113,14 +125,11 @@ export function AppProvider({ children }) {
   };
 
 
-  // Sync token to session storage
+  // Mirror the token into sessionStorage. `user` is cleared by every path that
+  // clears the token (login, register, logout), so it is not mirrored here.
   useEffect(() => {
-    if (token) {
-      sessionStorage.setItem('_rt', token);
-    } else {
-      sessionStorage.removeItem('_rt');
-      setUser(null);
-    }
+    if (token) sessionStorage.setItem('_rt', token);
+    else sessionStorage.removeItem('_rt');
   }, [token]);
 
   // Handle Theme switching
@@ -188,18 +197,10 @@ export function AppProvider({ children }) {
     return () => window.removeEventListener('popstate', handlePopState);
   }, []);
 
-  // Validate activeTab accessibility when user/tier loads or changes
-  useEffect(() => {
-    if (user) {
-      const isAdminTab = ['ov', 'ks', 'ac', 'us', 'ep', 'pe', 'mu', 'md', 'st'].includes(activeTab);
-      if (isAdminTab && user.tier !== 'admin') {
-        setActiveTab('myacc');
-      }
-    }
-  }, [user, activeTab]);
-
-  // Helper to fetch data for the active tab
-  const fetchTabData = async (tabName, isSilent = false) => {
+  /* Helper to fetch data for the active tab. `isCurrent` is passed only by the
+     effects, so a response that arrives after logout or a token change cannot
+     resurrect a stale profile. */
+  const fetchTabData = useCallback(async (tabName, isSilent = false, isCurrent = () => true) => {
     if (!token) return;
     if (!isSilent) setLoading(true);
     
@@ -222,32 +223,37 @@ export function AppProvider({ children }) {
           data = await api('/api/stats?days=30', {}, token);
           setTabData(prev => ({ ...prev, us: data.top_keys || [] }));
           break;
-        case 'ep':
+        case 'ep': {
           const eps = await api('/dashboard/endpoints', {}, token);
           const accsForEp = await api('/dashboard/accounts', {}, token);
-          setTabData(prev => ({ 
-            ...prev, 
-            ep: eps.endpoints || [], 
-            ac: accsForEp.accounts || [] 
+          if (!isCurrent()) return;
+          setTabData(prev => ({
+            ...prev,
+            ep: eps.endpoints || [],
+            ac: accsForEp.accounts || []
           }));
           break;
+        }
         case 'pe':
           data = await api('/dashboard/penalties', {}, token);
           setTabData(prev => ({ ...prev, pe: data.penalties || [] }));
           break;
-        case 'mu':
+        case 'mu': {
           const costData = await api('/api/stats?days=30', {}, token);
           const poolDetail = await api('/api/model-pools-detail', {}, token);
-          setTabData(prev => ({ 
-            ...prev, 
+          if (!isCurrent()) return;
+          setTabData(prev => ({
+            ...prev,
             mu: {
               savings: costData.savings || {},
               pools: poolDetail.pools || []
-            } 
+            }
           }));
           break;
+        }
         case 'myacc':
           data = await api('/dashboard/me', {}, token);
+          if (!isCurrent()) return;
           setTabData(prev => ({ ...prev, myacc: data }));
           // If we loaded current user profile, sync it to context user state too
           setUser({ name: data.name, tier: data.tier, must_change_password: data.must_change_password });
@@ -268,21 +274,25 @@ export function AppProvider({ children }) {
     } finally {
       if (!isSilent) setLoading(false);
     }
-  };
+  }, [token]);
 
   // Re-fetch when active tab changes or user changes
   useEffect(() => {
-    if (token) {
-      fetchTabData(activeTab);
-    }
-  }, [activeTab, token]);
+    if (!token) return;
+    let alive = true;
+    (async () => { await fetchTabData(activeTab, false, () => alive); })();
+    return () => { alive = false; };
+  }, [activeTab, token, fetchTabData]);
 
   // Load user profile on startup to determine tier/admin menu rendering
   useEffect(() => {
-    if (token && !user) {
-      fetchTabData('myacc', true); // Silent load
-    }
-  }, [token, user]);
+    if (!token) return;
+    let alive = true;
+    (async () => {
+      if (!user) await fetchTabData('myacc', true, () => alive); // Silent load
+    })();
+    return () => { alive = false; };
+  }, [token, user, fetchTabData]);
 
   // Setup dynamic auto-refresh loop depending on the active tab
   useEffect(() => {
@@ -305,7 +315,7 @@ export function AppProvider({ children }) {
     return () => {
       if (refreshTimerRef.current) clearInterval(refreshTimerRef.current);
     };
-  }, [activeTab, token]);
+  }, [activeTab, token, fetchTabData]);
 
   // Global shared WebSocket
   const wsHook = useWebSocket(token);
@@ -327,7 +337,7 @@ export function AppProvider({ children }) {
     setToken(data.token);
     setUser({ name: data.name, tier: data.tier, must_change_password: data.must_change_password });
     // Default routing: preserve requested tab if authorized, otherwise redirect
-    const isAdminTab = ['ov', 'ks', 'ac', 'us', 'ep', 'pe', 'mu', 'md', 'st'].includes(activeTab);
+    const isAdminTab = ADMIN_TABS.includes(activeTab);
     if (data.tier === 'admin') {
       if (!activeTab || !['ov', 'ks', 'ac', 'us', 'ep', 'pe', 'mu', 'md', 'myacc', 'myuse', 'st', 'help'].includes(activeTab)) {
         setActiveTab('ov');
@@ -379,6 +389,9 @@ export function AppProvider({ children }) {
   );
 }
 
+// Not a component export, but it belongs beside the context it reads; splitting
+// the file in two would cost every consumer an import change for no behaviour.
+// eslint-disable-next-line react-refresh/only-export-components
 export function useApp() {
   const context = useContext(AppContext);
   if (!context) {

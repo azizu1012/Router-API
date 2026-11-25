@@ -1,162 +1,564 @@
 @import "tailwindcss";
-@plugin "daisyui";
+@plugin "daisyui" {
+  themes: false;
+}
+
+/* ─────────────────────────────────────────────────────────────────────────
+   Cockpit design system.
+
+   Three themes, one structure. Every value below is either a hex literal in a
+   token block or a rem length — nothing in px, so the 90/100/115/130 % font
+   scaling keeps working end to end.
+
+   Chart series colours are the dataviz reference palette, validated against
+   this app's own card surfaces (#12141b dark, #fafcfd light, #fffafb sakura):
+   lightness band, chroma floor, CVD separation and normal-vision floor all
+   PASS in every theme. Light mode raises a contrast WARN on slots 3–5, which
+   is why every chart in this app ships a legend plus a table view.
+   ───────────────────────────────────────────────────────────────────────── */
 
 @theme {
-  --font-sans: "Inter", sans-serif;
-  --font-mono: "JetBrains Mono", monospace;
+  --font-sans: "Inter", system-ui, -apple-system, "Segoe UI", sans-serif;
+  --font-mono: "JetBrains Mono", ui-monospace, monospace;
 }
 
-:root {
-  --radius-box: 1.25rem;
-  --radius-btn: 0.75rem;
-  --radius-badge: 1.9rem;
+/* ─── Tokens ─────────────────────────────────────────────────────────────── */
+
+:root,
+[data-theme="dark"] {
+  color-scheme: dark;
+
+  --c-canvas: #07090f;
+  --c-surface: #12141b;
+  --c-surface-2: #191c25;
+  --c-surface-3: #21252f;
+  --c-ink: #f0efec;
+  --c-ink-2: #c3c2b7;
+  --c-ink-3: #8b8f9c;
+  --c-accent: #3987e5;
+  --c-accent-soft: rgba(57, 135, 229, 0.14);
+  --c-line: rgba(255, 255, 255, 0.07);
+  --c-line-strong: rgba(255, 255, 255, 0.12);
+  --c-grid: rgba(255, 255, 255, 0.055);
+  --c-track: rgba(255, 255, 255, 0.1);
+  --c-shadow: 0 1px 2px rgba(0, 0, 0, 0.4), 0 12px 32px -12px rgba(0, 0, 0, 0.7);
+  --c-glass: rgba(18, 20, 27, 0.72);
+  --c-scroll: rgba(255, 255, 255, 0.12);
+
+  /* Status — reserved, never a series colour. */
+  --c-good: #0ca30c;
+  --c-warn: #fab219;
+  --c-serious: #ec835a;
+  --c-critical: #d03b3b;
+
+  /* Categorical series, fixed order. Never cycled, never re-ranked. */
+  --s-1: #3987e5;
+  --s-2: #d95926;
+  --s-3: #199e70;
+  --s-4: #c98500;
+  --s-5: #d55181;
+  --s-6: #0ca30c;
+  --s-7: #9085e9;
+  --s-8: #e66767;
+
+  --radius-box: 0.75rem;
+  --radius-btn: 0.5rem;
+
+  /* daisyUI 5 component variables, mapped onto the tokens above so `btn`,
+     `badge`, `table` and `alert` inherit the same system instead of their
+     own defaults. `themes: false` in the plugin block means nothing below is
+     supplied by daisyUI. */
+  --color-base-100: #12141b;
+  --color-base-200: #191c25;
+  --color-base-300: #21252f;
+  --color-base-content: #f0efec;
+  --color-primary: #3987e5;
+  --color-primary-content: #ffffff;
+  --color-secondary: #8b8f9c;
+  --color-secondary-content: #0b0b0b;
+  --color-accent: #199e70;
+  --color-accent-content: #ffffff;
+  --color-neutral: #21252f;
+  --color-neutral-content: #e6e5df;
+  --color-info: #3987e5;
+  --color-info-content: #ffffff;
+  --color-success: #0ca30c;
+  --color-success-content: #ffffff;
+  --color-warning: #fab219;
+  --color-warning-content: #241a00;
+  --color-error: #d03b3b;
+  --color-error-content: #ffffff;
+  --radius-selector: 0.5rem;
+  --radius-field: 0.5rem;
+  --border: 1px;
+  --depth: 0;
+  --noise: 0;
 }
+
+[data-theme="light"] {
+  color-scheme: light;
+
+  --c-canvas: #eef4fb;
+  --c-surface: #fafcfd;
+  --c-surface-2: #f1f5fa;
+  --c-surface-3: #e6edf6;
+  --c-ink: #0b0b0b;
+  --c-ink-2: #52514e;
+  --c-ink-3: #898781;
+  --c-accent: #2a78d6;
+  --c-accent-soft: rgba(42, 120, 214, 0.1);
+  --c-line: rgba(11, 11, 11, 0.08);
+  --c-line-strong: rgba(11, 11, 11, 0.14);
+  --c-grid: rgba(11, 11, 11, 0.06);
+  --c-track: rgba(11, 11, 11, 0.1);
+  --c-shadow: 0 1px 2px rgba(11, 11, 11, 0.04), 0 8px 24px -12px rgba(11, 11, 11, 0.18);
+  --c-glass: rgba(250, 252, 253, 0.78);
+  --c-scroll: rgba(11, 11, 11, 0.14);
+
+  --c-good: #0ca30c;
+  --c-warn: #b07d00;
+  --c-serious: #c25a2c;
+  --c-critical: #c02f2f;
+
+  --s-1: #2a78d6;
+  --s-2: #eb6834;
+  --s-3: #1baf7a;
+  --s-4: #eda100;
+  --s-5: #e87ba4;
+  --s-6: #008300;
+  --s-7: #6250d6;
+  --s-8: #e34948;
+
+  --radius-box: 0.75rem;
+  --radius-btn: 0.5rem;
+
+  --color-base-100: #fafcfd;
+  --color-base-200: #f1f5fa;
+  --color-base-300: #e6edf6;
+  --color-base-content: #0b0b0b;
+  --color-primary: #2a78d6;
+  --color-primary-content: #ffffff;
+  --color-secondary: #898781;
+  --color-secondary-content: #ffffff;
+  --color-accent: #1baf7a;
+  --color-accent-content: #ffffff;
+  --color-neutral: #e6edf6;
+  --color-neutral-content: #52514e;
+  --color-info: #2a78d6;
+  --color-info-content: #ffffff;
+  --color-success: #0ca30c;
+  --color-success-content: #ffffff;
+  --color-warning: #b07d00;
+  --color-warning-content: #ffffff;
+  --color-error: #c02f2f;
+  --color-error-content: #ffffff;
+  --radius-selector: 0.5rem;
+  --radius-field: 0.5rem;
+  --border: 1px;
+  --depth: 0;
+  --noise: 0;
+}
+
+[data-theme="valentine"] {
+  color-scheme: light;
+
+  --c-canvas: #fdf1f4;
+  --c-surface: #fffafb;
+  --c-surface-2: #fdeef2;
+  --c-surface-3: #f9e3ea;
+  --c-ink: #2e0b16;
+  --c-ink-2: #7a5262;
+  --c-ink-3: #a2868f;
+  --c-accent: #c2406b;
+  --c-accent-soft: rgba(194, 64, 107, 0.1);
+  --c-line: rgba(194, 64, 107, 0.14);
+  --c-line-strong: rgba(194, 64, 107, 0.24);
+  --c-grid: rgba(194, 64, 107, 0.1);
+  --c-track: rgba(194, 64, 107, 0.14);
+  --c-shadow: 0 1px 2px rgba(46, 11, 22, 0.04), 0 8px 24px -12px rgba(46, 11, 22, 0.16);
+  --c-glass: rgba(255, 250, 251, 0.8);
+  --c-scroll: rgba(194, 64, 107, 0.22);
+
+  --c-good: #0a7a3d;
+  --c-warn: #a86a00;
+  --c-serious: #c25a2c;
+  --c-critical: #c02f2f;
+
+  /* Sakura reads as a light surface, so it shares the light series steps. */
+  --s-1: #2a78d6;
+  --s-2: #eb6834;
+  --s-3: #1baf7a;
+  --s-4: #eda100;
+  --s-5: #e87ba4;
+  --s-6: #008300;
+  --s-7: #6250d6;
+  --s-8: #e34948;
+
+  --radius-box: 0.75rem;
+  --radius-btn: 0.5rem;
+
+  --color-base-100: #fffafb;
+  --color-base-200: #fdeef2;
+  --color-base-300: #f9e3ea;
+  --color-base-content: #2e0b16;
+  --color-primary: #c2406b;
+  --color-primary-content: #ffffff;
+  --color-secondary: #a2868f;
+  --color-secondary-content: #2e0b16;
+  --color-accent: #1baf7a;
+  --color-accent-content: #ffffff;
+  --color-neutral: #f9e3ea;
+  --color-neutral-content: #7a5262;
+  --color-info: #2a78d6;
+  --color-info-content: #ffffff;
+  --color-success: #0a7a3d;
+  --color-success-content: #ffffff;
+  --color-warning: #a86a00;
+  --color-warning-content: #ffffff;
+  --color-error: #c02f2f;
+  --color-error-content: #ffffff;
+  --radius-selector: 0.5rem;
+  --radius-field: 0.5rem;
+  --border: 1px;
+  --depth: 0;
+  --noise: 0;
+}
+
+/* ─── Base ───────────────────────────────────────────────────────────────── */
 
 @layer base {
+  html {
+    /* The 90/100/115/130 % control writes this; keep the browser default in rem. */
+    font-size: 100%;
+  }
+
   body {
-    @apply font-sans m-0 p-0 overflow-x-hidden min-h-screen select-none text-base-content;
-    background: radial-gradient(150% 150% at 50% 0%, #0a0c16 0%, #05060b 70%, #010103 100%);
-    color: #f3f4f6;
+    @apply font-sans m-0 p-0 overflow-x-hidden min-h-screen;
+    background-color: var(--c-canvas);
+    color: var(--c-ink);
+    -webkit-font-smoothing: antialiased;
+    text-rendering: optimizeLegibility;
+  }
+
+  /* Selection is allowed where it matters: codes, keys, IDs. Global
+     select-none stays off so numbers can be copied. */
+  .select-none {
+    user-select: none;
+  }
+
+  h1, h2, h3, h4 {
+    @apply tracking-tight;
+    text-wrap: balance;
+  }
+
+  :focus-visible {
+    outline: 2px solid var(--c-accent);
+    outline-offset: 2px;
+  }
+
+  ::selection {
+    background: var(--c-accent-soft);
+    color: var(--c-ink);
   }
 }
 
-[data-theme="light"] body {
-  background: linear-gradient(135deg, #bae6fd 0%, #e0f2fe 35%, #fafaf9 100%);
-  color: #1f2937;
-}
+/* ─── Scrollbars ─────────────────────────────────────────────────────────── */
 
-[data-theme="valentine"] body {
-  background: linear-gradient(135deg, #fce7f3 0%, #ffe4e6 45%, #fff1f2 100%);
-  color: #590d22;
-}
-
-/* ─── Custom scrollbars for clean UI ─── */
 ::-webkit-scrollbar {
-  width: 6px;
-  height: 6px;
+  width: 0.5rem;
+  height: 0.5rem;
 }
 ::-webkit-scrollbar-track {
   background: transparent;
 }
 ::-webkit-scrollbar-thumb {
-  background: rgba(255, 255, 255, 0.08);
-  border-radius: 3px;
-}
-[data-theme="light"] ::-webkit-scrollbar-thumb {
-  background: rgba(0, 0, 0, 0.08);
+  background: var(--c-scroll);
+  border-radius: 0.25rem;
 }
 ::-webkit-scrollbar-thumb:hover {
-  background: rgba(255, 255, 255, 0.18);
+  background: var(--c-ink-3);
 }
 
-/* ─── Animated Particles Background ─── */
+/* ─── Canvas backdrop ────────────────────────────────────────────────────── */
+
 #particles-canvas {
   position: fixed;
-  top: 0;
-  left: 0;
+  inset: 0;
   width: 100vw;
   height: 100vh;
   z-index: 0;
   pointer-events: none;
 }
 
-/* ─── Glassmorphism navigation & sidebar ─── */
+/* ─── Surfaces: nav + card ───────────────────────────────────────────────── */
+
+/* One edge treatment everywhere: 1 px hairline, 0.75 rem radius, a shadow
+   that reads as depth rather than glow. Glass is a tint, not a blur bath. */
 .glass-nav {
-  background: rgba(8, 12, 24, 0.45);
-  backdrop-filter: blur(20px);
-  -webkit-backdrop-filter: blur(20px);
-  border-right: 1px solid rgba(255, 255, 255, 0.03);
-  border-bottom: 1px solid rgba(255, 255, 255, 0.03);
-  transition: all 0.4s cubic-bezier(0.16, 1, 0.3, 1);
+  background: var(--c-glass);
+  backdrop-filter: blur(16px) saturate(140%);
+  -webkit-backdrop-filter: blur(16px) saturate(140%);
+  border-color: var(--c-line);
 }
 
-[data-theme="light"] .glass-nav {
-  background: rgba(255, 255, 255, 0.45);
-  border-right: 1px solid rgba(0, 0, 0, 0.03);
-  border-bottom: 1px solid rgba(0, 0, 0, 0.03);
-}
-
-[data-theme="valentine"] .glass-nav {
-  background: rgba(255, 229, 236, 0.45);
-  border-right: 1px solid rgba(255, 77, 109, 0.06);
-  border-bottom: 1px solid rgba(255, 77, 109, 0.06);
-}
-
-/* ─── Interactive Glass Cards ─── */
 .glass-card {
-  background: rgba(13, 18, 30, 0.4);
-  backdrop-filter: blur(16px);
-  -webkit-backdrop-filter: blur(16px);
-  border: 1px solid rgba(255, 255, 255, 0.04);
-  box-shadow: 0 12px 40px 0 rgba(0, 0, 0, 0.25);
-  transition: all 0.45s cubic-bezier(0.16, 1, 0.3, 1);
+  background: var(--c-surface);
+  border: 1px solid var(--c-line);
+  box-shadow: var(--c-shadow);
+  transition: border-color 0.18s ease, box-shadow 0.18s ease;
 }
 
+/* Hover is a hint, not a performance: hairline brightens, nothing moves. */
 .glass-card:hover {
-  border-color: rgba(99, 102, 241, 0.15);
-  box-shadow: 0 16px 40px 0 rgba(99, 102, 241, 0.05);
+  border-color: var(--c-line-strong);
 }
 
-[data-theme="light"] .glass-card {
-  background: rgba(255, 255, 255, 0.55);
-  border: 1px solid rgba(0, 0, 0, 0.03);
-  box-shadow: 0 12px 40px 0 rgba(0, 0, 0, 0.03);
-}
-
-[data-theme="light"] .glass-card:hover {
-  border-color: rgba(79, 70, 229, 0.1);
-  box-shadow: 0 16px 40px 0 rgba(79, 70, 229, 0.03);
-}
-
-[data-theme="valentine"] .glass-card {
-  background: rgba(255, 255, 255, 0.65);
-  border: 1px solid rgba(255, 77, 109, 0.04);
-  box-shadow: 0 12px 40px 0 rgba(255, 77, 109, 0.03);
-}
-
-[data-theme="valentine"] .glass-card:hover {
-  border-color: rgba(255, 77, 109, 0.15);
-  box-shadow: 0 16px 40px 0 rgba(255, 77, 109, 0.05);
-}
-
-/* Interactive Card Modifier (Fluid & Grounded) */
 .glass-card-interactive {
   cursor: pointer;
-  transition: transform 0.3s cubic-bezier(0.16, 1, 0.3, 1), border-color 0.3s ease, box-shadow 0.3s ease;
+  transition: border-color 0.18s ease, background-color 0.18s ease,
+              transform 0.18s cubic-bezier(0.16, 1, 0.3, 1);
 }
 .glass-card-interactive:hover {
-  border-color: rgba(99, 102, 241, 0.35) !important;
-  box-shadow: 0 16px 36px -10px rgba(0, 0, 0, 0.35), 0 0 0 1px rgba(99, 102, 241, 0.2) !important;
-  transform: translateY(-2px) !important;
+  border-color: var(--c-line-strong);
+  background: var(--c-surface-2);
+  transform: translateY(-2px);
 }
 .glass-card-interactive:active {
-  transform: translateY(0px) scale(0.995) !important;
-  box-shadow: 0 8px 20px -6px rgba(0, 0, 0, 0.25) !important;
+  transform: translateY(0);
 }
 
-[data-theme="light"] .glass-card-interactive:hover {
-  border-color: rgba(79, 70, 229, 0.25) !important;
-  box-shadow: 0 16px 36px -10px rgba(79, 70, 229, 0.08), 0 0 0 1px rgba(79, 70, 229, 0.15) !important;
-  transform: translateY(-2px) !important;
+/* ─── Controls ───────────────────────────────────────────────────────────── */
+
+.input,
+.select,
+.textarea {
+  background: var(--c-surface-2) !important;
+  border: 1px solid var(--c-line) !important;
+  border-radius: var(--radius-btn);
+  color: var(--c-ink) !important;
+  transition: border-color 0.15s ease, box-shadow 0.15s ease;
 }
 
-[data-theme="valentine"] .glass-card-interactive:hover {
-  border-color: rgba(255, 77, 109, 0.35) !important;
-  box-shadow: 0 16px 36px -10px rgba(255, 77, 109, 0.12), 0 0 0 1px rgba(255, 77, 109, 0.2) !important;
-  transform: translateY(-2px) !important;
-}
-/* ─── Shake error animation ─── */
-.animate-shake {
-  animation: shake 0.4s ease-in-out;
+.input:hover,
+.select:hover,
+.textarea:hover {
+  border-color: var(--c-line-strong) !important;
 }
 
-@keyframes shake {
-  0%, 100% { transform: translateX(0); }
-  10%, 30%, 50%, 70%, 90% { transform: translateX(-4px); }
-  20%, 40%, 60%, 80% { transform: translateX(4px); }
+.input:focus,
+.select:focus,
+.textarea:focus,
+.input:focus-within,
+.select:focus-within {
+  border-color: var(--c-accent) !important;
+  box-shadow: 0 0 0 3px var(--c-accent-soft) !important;
+  outline: none;
+  /* No scale: a control that grows on focus shifts its neighbours. */
 }
 
-/* ─── Hacker green console style ─── */
+.input::placeholder,
+.textarea::placeholder {
+  color: var(--c-ink-3);
+}
+
+.select option {
+  background-color: var(--c-surface);
+  color: var(--c-ink);
+}
+
+/* Range slider. daisyUI's `range` ships its own palette and thickness; this
+   one is drawn entirely from the token layer so a number you drag reads the
+   same in all three themes, and it stays a rem height so font scaling holds. */
+.range-token {
+  -webkit-appearance: none;
+  appearance: none;
+  width: 100%;
+  height: 1.25rem;
+  background: transparent;
+  cursor: pointer;
+}
+
+.range-token::-webkit-slider-runnable-track {
+  height: 0.25rem;
+  border-radius: 999px;
+  background: var(--c-track);
+}
+
+.range-token::-moz-range-track {
+  height: 0.25rem;
+  border-radius: 999px;
+  background: var(--c-track);
+}
+
+.range-token::-webkit-slider-thumb {
+  -webkit-appearance: none;
+  appearance: none;
+  width: 0.875rem;
+  height: 0.875rem;
+  margin-top: -0.3125rem;
+  border-radius: 999px;
+  background: var(--c-accent);
+  border: 2px solid var(--c-surface);
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.35);
+  transition: transform 0.15s ease;
+}
+
+.range-token::-moz-range-thumb {
+  width: 0.875rem;
+  height: 0.875rem;
+  border-radius: 999px;
+  background: var(--c-accent);
+  border: 2px solid var(--c-surface);
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.35);
+}
+
+.range-token:hover::-webkit-slider-thumb {
+  transform: scale(1.08);
+}
+
+.range-token:focus-visible {
+  outline: none;
+}
+
+.range-token:focus-visible::-webkit-slider-thumb {
+  box-shadow: 0 0 0 3px var(--c-accent-soft);
+}
+
+.range-token:focus-visible::-moz-range-thumb {
+  box-shadow: 0 0 0 3px var(--c-accent-soft);
+}
+
+.range-token:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+/* ─── Tables ─────────────────────────────────────────────────────────────── */
+
+.table tr {
+  transition: background-color 0.12s ease;
+  border-bottom-color: var(--c-line) !important;
+}
+
+.table th {
+  background: transparent !important;
+  color: var(--c-ink-3) !important;
+  font-weight: 600;
+  font-size: 0.6875rem;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  white-space: nowrap;
+}
+
+.table td {
+  color: var(--c-ink-2);
+}
+
+.table td strong,
+.table td .font-bold {
+  color: var(--c-ink);
+}
+
+.table-zebra tbody tr:nth-child(even) {
+  background-color: color-mix(in srgb, var(--c-surface-2) 45%, transparent);
+}
+
+.table tbody tr:hover {
+  background-color: var(--c-surface-2) !important;
+}
+
+/* Pinned identity column. The documented contract (§6 of
+   docs/frontend_dashboard.md) is overflow-x-auto rather than table-fixed, which
+   means a wide table scrolls its first column - the one that says *which row
+   this is* - off the left edge. These two rules keep that column in place.
+
+   The background must be !important because `.table th` above sets it to
+   transparent with !important, and a sticky cell with no background lets the
+   scrolling cells show through it. `table-fixed` is still not used: the column
+   widths remain content-driven; only the paint order changed. */
+.table-pin th:first-child,
+.table-pin td:first-child {
+  position: sticky;
+  left: 0;
+  z-index: 1;
+  background: var(--c-surface) !important;
+}
+
+.table-pin tbody tr:hover td:first-child {
+  background: var(--c-surface-2) !important;
+}
+
+/* A hairline in the pinned column's own right edge marks where it ends, so
+   content passing under it reads as "scrolling beneath" rather than "clipped". */
+.table-pin th:first-child,
+.table-pin td:first-child {
+  box-shadow: 1px 0 0 var(--c-line);
+}
+
+/* Denser horizontal padding for the wide, pinned tables only. daisyUI's 1rem
+   per side costs 32 px per column - on an 11-column table that is most of the
+   overflow. Tables that already fit keep their roomier padding. */
+.table-pin :where(th, td) {
+  padding-inline: 0.625rem;
+}
+
+/* ─── Data-viz primitives ────────────────────────────────────────────────── */
+
+/* Legend / series swatch: a 0.5 rem square, never a line pretending to be one. */
+.series-dot {
+  display: inline-block;
+  width: 0.5rem;
+  height: 0.5rem;
+  border-radius: 0.125rem;
+  flex-shrink: 0;
+}
+
+@media (forced-colors: active) {
+  .series-dot {
+    background: CanvasText !important;
+    forced-color-adjust: none;
+  }
+}
+
+/* Meter: 0.375 rem track, filled with the status colour, always labelled. */
+.meter {
+  height: 0.375rem;
+  border-radius: 999px;
+  background: var(--c-track);
+  overflow: hidden;
+}
+.meter > span {
+  display: block;
+  height: 100%;
+  border-radius: 999px;
+  transition: width 0.4s cubic-bezier(0.16, 1, 0.3, 1);
+}
+
+/* ─── Type utilities ─────────────────────────────────────────────────────── */
+
+.tabular-nums {
+  font-variant-numeric: tabular-nums;
+}
+
+.label-micro {
+  font-size: 0.6875rem;
+  line-height: 1.2;
+  font-weight: 600;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--c-ink-3);
+}
+
+.text-muted {
+  color: var(--c-ink-3);
+}
+
+.text-secondary {
+  color: var(--c-ink-2);
+}
+
+/* ─── Easter-egg styles (game chrome, not part of the data system) ───────── */
+
 .matrix-text {
   color: #22c55e !important;
   font-family: "JetBrains Mono", monospace !important;
@@ -165,175 +567,116 @@
   background: rgba(0, 0, 0, 0.75) !important;
 }
 
-
-/* ─── Premium Inputs & Selects ─── */
-.input, .select {
-  background: rgba(255, 255, 255, 0.01) !important;
-  border: 1px solid rgba(255, 255, 255, 0.06) !important;
-  border-radius: 0.75rem;
-  transition: all 0.3s cubic-bezier(0.16, 1, 0.3, 1) !important;
+.animate-shake {
+  animation: shake 0.4s ease-in-out;
 }
 
-.select option {
-  background-color: #0f172a !important;
-  color: #f3f4f6 !important;
+@keyframes shake {
+  0%, 100% { transform: translateX(0); }
+  10%, 30%, 50%, 70%, 90% { transform: translateX(-0.25rem); }
+  20%, 40%, 60%, 80% { transform: translateX(0.25rem); }
 }
 
-.input:focus, .select:focus {
-  border-color: #6366f1 !important;
-  box-shadow: 0 0 0 3px rgba(99, 102, 241, 0.15) !important;
-  background: rgba(255, 255, 255, 0.03) !important;
-  transform: scale(1.005);
-}
+/* ─── DevTools guard ─────────────────────────────────────────────────────── */
 
-[data-theme="light"] .input, [data-theme="light"] .select {
-  background: rgba(0, 0, 0, 0.01) !important;
-  border-color: rgba(0, 0, 0, 0.06) !important;
-}
-
-[data-theme="light"] .select option {
-  background-color: #ffffff !important;
-  color: #1f2937 !important;
-}
-
-[data-theme="light"] .input:focus, [data-theme="light"] .select:focus {
-  border-color: #4f46e5 !important;
-  box-shadow: 0 0 0 3px rgba(79, 70, 229, 0.12) !important;
-  background: rgba(0, 0, 0, 0.02) !important;
-}
-
-[data-theme="valentine"] .input, [data-theme="valentine"] .select {
-  background: rgba(255, 255, 255, 0.5) !important;
-  border-color: rgba(255, 77, 109, 0.1) !important;
-  color: #590d22 !important;
-}
-
-[data-theme="valentine"] .select option {
-  background-color: #fff1f2 !important;
-  color: #590d22 !important;
-}
-
-[data-theme="valentine"] .input:focus, [data-theme="valentine"] .select:focus {
-  border-color: #ff4d6d !important;
-  box-shadow: 0 0 0 3px rgba(255, 77, 109, 0.15) !important;
-}
-
-/* ─── Clean Tables ─── */
-.table tr {
-  transition: background-color 0.2s ease;
-  border-bottom-color: rgba(255, 255, 255, 0.02) !important;
-}
-.table th {
-  background: rgba(0, 0, 0, 0.15) !important;
-  color: rgba(255, 255, 255, 0.5) !important;
-  font-weight: 700;
-  text-transform: uppercase;
-  letter-spacing: 0.05em;
-}
-[data-theme="light"] .table th {
-  background: rgba(0, 0, 0, 0.01) !important;
-  color: rgba(0, 0, 0, 0.5) !important;
-  border-bottom-color: rgba(0, 0, 0, 0.03) !important;
-}
-[data-theme="valentine"] .table th {
-  background: rgba(255, 77, 109, 0.03) !important;
-  color: #800f2f !important;
-  border-bottom-color: rgba(255, 77, 109, 0.08) !important;
-}
-
-/* ─── DevTools Warning fullscreen overlay ─── */
 #dtw-screen {
   position: fixed;
-  top: 0;
-  left: 0;
+  inset: 0;
   width: 100vw;
   height: 100vh;
   z-index: 99999;
-  background: rgba(9, 13, 22, 0.98);
+  background: var(--c-canvas);
   display: flex;
   flex-direction: column;
   align-items: center;
   justify-content: center;
-  color: #f43f5e;
-  font-family: 'Inter', sans-serif;
+  color: var(--c-critical);
+  font-family: "Inter", sans-serif;
   text-align: center;
 }
 
 #dtw-screen svg {
-  width: 64px;
-  height: 64px;
+  width: 4rem;
+  height: 4rem;
   animation: dtwPulse 2s infinite ease-in-out;
-  margin-bottom: 16px;
+  margin-bottom: 1rem;
 }
 
 @keyframes dtwPulse {
   0%, 100% { transform: scale(1); opacity: 0.9; }
-  50% { transform: scale(1.1); opacity: 0.5; }
+  50% { transform: scale(1.08); opacity: 0.55; }
 }
 
-/* ─── Premium Entrance & Cascade Animations ─── */
+/* ─── Motion ─────────────────────────────────────────────────────────────── */
+
+/* One entrance, 0.28 s. The old 0.6 s + 75 ms cascade made every tab feel
+   like it was loading when it was already there. */
 .animate-tab-in {
-  opacity: 0;
-  animation: tabIn 0.6s cubic-bezier(0.16, 1, 0.3, 1) forwards;
+  animation: tabIn 0.28s cubic-bezier(0.16, 1, 0.3, 1) both;
 }
 
 @keyframes tabIn {
-  from {
-    opacity: 0;
-    transform: translateY(12px);
-  }
-  to {
-    opacity: 1;
-    transform: translateY(0);
-  }
+  from { opacity: 0; transform: translateY(0.375rem); }
+  to { opacity: 1; transform: translateY(0); }
 }
 
 .animate-fade-in-up {
-  opacity: 0;
-  animation: fadeInUp 0.55s cubic-bezier(0.16, 1, 0.3, 1) forwards;
+  animation: fadeInUp 0.24s cubic-bezier(0.16, 1, 0.3, 1) both;
 }
 
 @keyframes fadeInUp {
-  from {
-    opacity: 0;
-    transform: translateY(16px);
-  }
-  to {
-    opacity: 1;
-    transform: translateY(0);
-  }
+  from { opacity: 0; transform: translateY(0.25rem); }
+  to { opacity: 1; transform: translateY(0); }
 }
 
-/* Cascade delays matching staggered DOM structures */
-.cascade-1 { animation-delay: 75ms !important; }
-.cascade-2 { animation-delay: 150ms !important; }
-.cascade-3 { animation-delay: 225ms !important; }
-.cascade-4 { animation-delay: 300ms !important; }
-.cascade-5 { animation-delay: 375ms !important; }
-.cascade-6 { animation-delay: 450ms !important; }
-.cascade-7 { animation-delay: 525ms !important; }
-.cascade-8 { animation-delay: 600ms !important; }
-.cascade-9 { animation-delay: 675ms !important; }
-.cascade-10 { animation-delay: 750ms !important; }
+/* Cascade kept as a name so existing markup still compiles; the delays are
+   compressed to a single 30 ms step — enough to read as sequence, short
+   enough that the last card is on screen before the eye lands. */
+.cascade-1 { animation-delay: 30ms !important; }
+.cascade-2 { animation-delay: 60ms !important; }
+.cascade-3 { animation-delay: 90ms !important; }
+.cascade-4 { animation-delay: 120ms !important; }
+.cascade-5 { animation-delay: 150ms !important; }
+.cascade-6 { animation-delay: 180ms !important; }
+.cascade-7 { animation-delay: 210ms !important; }
+.cascade-8 { animation-delay: 240ms !important; }
+.cascade-9 { animation-delay: 270ms !important; }
+.cascade-10 { animation-delay: 300ms !important; }
 
-
-/* ─── Living Breathing Pulse & Motion Utilities ─── */
 @keyframes breathingGlow {
-  0%, 100% {
-    transform: scale(1);
-    opacity: 0.9;
-  }
-  50% {
-    transform: scale(1.2);
-    opacity: 0.5;
-  }
+  0%, 100% { transform: scale(1); opacity: 0.9; }
+  50% { transform: scale(1.15); opacity: 0.55; }
 }
 
 .animate-breathing {
-  animation: breathingGlow 3s cubic-bezier(0.4, 0, 0.6, 1) infinite;
+  animation: breathingGlow 2.4s cubic-bezier(0.4, 0, 0.6, 1) infinite;
 }
 
-.tabular-nums {
-  font-variant-numeric: tabular-nums;
+/* Pool flow graph. Colour comes from the SVG's own `stroke` attribute (a
+   --c-* token read at render time); this class only animates the dash offset,
+   so one rule serves every theme. */
+.flowing-line {
+  animation: flowDash 1.4s linear infinite;
 }
 
+@keyframes flowDash {
+  to { stroke-dashoffset: -20; }
+}
+
+.flow-fast {
+  animation-duration: 0.7s;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+    scroll-behavior: auto !important;
+  }
+  .glass-card-interactive:hover {
+    transform: none;
+  }
+}

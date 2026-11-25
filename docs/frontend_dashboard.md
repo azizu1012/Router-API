@@ -122,13 +122,94 @@ Các lỗi routing đi kèm đã sửa cùng lúc:
 - Poll 1.5s của My Account ghi đè `user` bằng `{name, tier}` và làm mất cờ `must_change_password`, khiến banner đổi mật khẩu biến mất sau lần poll đầu.
 
 
+## 5c. Tab API Reference (`ApiHelpTab`)
+
+Danh mục endpoint **không nằm trong bundle JS** — nó được server trả từ `GET /api/help`
+(`src/server/openai_server/api_help.py`). Lý do: một chuỗi curl viết trong bundle sẽ âm thầm
+sai đi khi route đổi tên, còn trên server nó nằm cạnh `tests/test_api_help.py` — test so mọi
+path với bảng route thật của app, nên đổi tên route làm đỏ CI thay vì ship một ví dụ 404.
+
+### Base URL lấy từ chính trang đang mở
+
+Ví dụ curl dùng **origin mà dashboard được phục vụ**, không phải hằng số:
+
+* `public_origin(request)` đọc `X-Forwarded-Proto` / `X-Forwarded-Host` trước, rồi tới header
+  `Host`, rồi `request.url` — nên một instance sau nginx với `https://api.example.com` hiện
+  đúng `https://api.example.com`, không phải `127.0.0.1:58100`.
+* Giá trị host đi vào một chuỗi shell trong ví dụ, nên nó **được validate bằng regex chứ không
+  escape**: header không khớp dạng hostname thì bị bỏ và rơi về nguồn kế tiếp. Không "sửa" một
+  header lạ.
+* Response trả kèm `base_url` để tab hiện một dòng "ví dụ bên dưới dùng địa chỉ bạn đang mở
+  trang này" — người đọc thấy ngay vì sao nó khác tài liệu trên mạng.
+
+### Nút Copy hoạt động trên cả HTTP thường
+
+`navigator.clipboard` là `undefined` ngoài secure context (https, hoặc http trên localhost).
+Dashboard này thường chạy http trên IP LAN, nên nút Copy trước đây "không bấm được": promise bị
+`catch {}` nuốt, không copy, không phản hồi. Nay mọi chỗ copy đi qua `src/utils/clipboard.js`
+(`copyText`) — thử Clipboard API, fallback về `textarea` + `execCommand`, và **trả boolean** để
+UI báo được `Copy failed` thay vì im lặng.
+
+Dùng chung ở: `ApiHelpTab`, `PasswordReveal`, `AccountDetailPanel`, `TokenTable`, `AccountsTab`,
+`ModelAliasesTab`.
+
+### Ngôn ngữ
+
+Mỗi chuỗi trong catalog là map `{vi, en, ja}` và được resolve theo `?lang=` của request.
+Tab refetch khi đổi ngôn ngữ (biến `lang` nằm trong dependency của `useEffect`), vì phần văn xuôi
+và câu mẫu trong ví dụ (`"Xin chào"` / `"Hello"` / `"こんにちは"`) đều đến từ server — refetch để
+trang không bị nửa Việt nửa Anh. `tests/test_api_help.py::TestTranslations` fail nếu một chuỗi
+thiếu bản dịch.
+
+---
+
+## 5d. Hợp đồng i18n: chuỗi mới phải đi qua `t()`
+
+`t(key, lang)` trong `src/utils/i18n.js` trả `TR[lang][key] || TR['vi'][key] || key`. Hệ quả:
+**một key thiếu bản dịch sẽ hiện tiếng Việt, không hiện tên key** — nên lỗi này rất khó thấy khi
+dev người Việt test. Vì vậy:
+
+* Mọi chuỗi hiển thị phải gọi `t()`. Một literal viết thẳng trong JSX là chỗ rò tiếng Việt.
+  `ALIAS_TEMPLATES` trong `ModelAliasesTab` từng như vậy: `label` vừa hiển thị vừa được gửi lên
+  server, nên đổi sang EN vẫn thấy tiếng Việt *và* lưu luôn nhãn tiếng Việt vào alias. Nay nó
+  giữ `label_key` / `description_key`, resolve ở cả chỗ render lẫn chỗ submit.
+* Bộ lọc và id giữ tiếng Anh (`'claude'`, `'openai'`, `'custom'`), chỉ nhãn hiển thị đi qua `t()`
+  — so sánh không được phụ thuộc ngôn ngữ.
+* Thông báo lỗi phía server trả **tiếng Anh kèm `reason_code`**; client map code sang bản dịch
+  và chỉ rơi về chuỗi tiếng Anh khi gặp code lạ. Xem `PasswordReveal`.
+* Tên ngôn ngữ trong `ThemeLanguageSelector` (`Tiếng Việt`, `日本語`) là endonym — cố ý không dịch.
+
 ## 6. Bảng Dữ liệu Keys & Cơ Chế Khôi Phục Lỗi Tự Động
 Tab quản lý API Keys ([KeysTab.jsx](file:///d:/AI_Projects/router_api/frontend-src/src/tabs/KeysTab.jsx)) được thiết kế lại để giải quyết triệt để lỗi chồng chéo chữ trên màn hình nhỏ:
 
 ### Thiết kế bảng không cố định (Flexible Table Layout):
-* Loại bỏ class `table-fixed` để trình duyệt tự động tính toán kích thước cột dựa trên nội dung thực tế.
+* Loại bỏ class `table-fixed` để trình duyệt tự động tính toán kích thước cột dựa trên nội dung thực tế. **`table-fixed` vẫn bị cấm** — cột giãn theo nội dung là điều kiện để không cột nào bị ép chữ xuống dòng giữa một cụm id.
 * Thiết lập `min-w-[...]` cho các cột quan trọng (ví dụ: Key Code tối thiểu `180px`, Status tối thiểu `140px`, Actions tối thiểu `96px`).
 * Bọc bảng trong thẻ `overflow-x-auto`, đảm bảo khi chiều rộng màn hình nhỏ hơn tổng kích thước tối thiểu của các cột, bảng sẽ xuất hiện thanh cuộn ngang mượt mà thay vì co cụm và đè chữ lên nhau.
+
+#### Bổ sung: cột định danh dính (`table-pin`)
+
+Hệ quả trực tiếp của hợp đồng trên là cột **đầu tiên** — cột nói *dòng này là gì* (tên token, tên model, alias) — bị cuộn ra khỏi mép trái khi bảng rộng hơn khung chứa. Người dùng nhìn sang phải để đọc số liệu nhưng mất luôn nhãn của dòng đang đọc.
+
+Class `table-pin` (định nghĩa trong `index.css`) giải quyết việc này mà **không phá hợp đồng**: vẫn `overflow-x-auto`, vẫn `min-w-*`, vẫn không `table-fixed` — chỉ đổi thứ tự vẽ.
+
+* `th:first-child, td:first-child { position: sticky; left: 0 }` giữ cột định danh ở mép trái.
+* `background` của ô dính buộc phải có `!important` vì quy tắc `.table th` phía trên đặt `transparent !important`; một ô sticky không nền sẽ để nội dung cuộn xuyên qua.
+* `tbody tr:hover td:first-child` đổi nền theo `--c-surface-2` để hover trên cả dòng vẫn thấy đều.
+* `box-shadow: 1px 0 0 var(--c-line)` vẽ một hairline ở mép phải cột dính, để nội dung trôi bên dưới đọc là "cuộn xuống dưới" chứ không phải "bị cắt".
+* `padding-inline: 0.625rem` (thay vì `1rem` mặc định của daisyUI) chỉ áp cho `.table-pin`. Trên bảng 11 cột, 1rem mỗi bên tốn 32 px/cột — đó là phần lớn khoảng tràn. Các bảng đã vừa khung thì giữ padding rộng hơn.
+
+`table-pin` hiện dùng cho bảng Tokens ở Accounts và bảng Model Config.
+
+#### Ngân sách bề rộng của bảng Model Config
+
+Bảng Model Config có 11 cột và **vừa khít** pane 1134 px ở 1440×900 — trước đây tràn 1314/1134. Ba thay đổi đưa nó về đích:
+
+* **Gộp ALIAS + DISPLAY thành một ô định danh hai dòng** (tên hiển thị ở trên, alias bằng mono ở dưới). Ba cột trước đó là ba tên cho cùng một model; giờ còn hai — và cột upstream id vẫn giữ riêng vì với custom endpoint nó *thật sự* là một cái tên khác.
+* Thu `min-w-[...]` của các cột số liệu về đúng nhu cầu nội dung, và giới hạn `<select>` chọn pool của custom endpoint ở `max-w-[6.5rem]`.
+* Padding dày hơn ở mục `table-pin` phía trên.
+
+Cột MODEL vẫn có thể cắt đuôi một id dài (`gemini-3.8-fla…`) — đó là chủ ý: nó luôn có `title` để rê chuột đọc đủ, và id đầy đủ nằm ngay trong ô ALIAS ở cột thứ nhất.
 
 ### Quản lý trạng thái Suy giảm & Cơ chế Tự động Hồi phục (Failure Decay):
 * **Trạng thái Suy giảm (Degraded)**: Xảy ra khi một key dính lỗi liên tiếp từ 3 lần trở lên (`consecutive_failures >= 3`). Key bị dính lỗi nhiều thường do đụng hạn mức rate limit (HTTP 429) của gói miễn phí dưới tải cao.
@@ -206,5 +287,21 @@ Toggle gọi `POST /dashboard/admin/pools/toggle-member` và **áp dụng ngay k
 Route trả 400 nếu tắt member cuối cùng của một pool: pool rỗng nghĩa là `ModelPool.acquire()` hết member và mọi request vào pool alias sẽ `TimeoutError` sau 120s.
 
 Bảng Models bên dưới có thêm cột **Trạng thái** để nhất quán với toggle — đọc `enabled` từ `GET /dashboard/admin/models`, nơi cũng trả `active_members` cho từng pool.
+
+Cột **Alias** của bảng này là một ô định danh hai dòng: tên hiển thị ở trên, alias dùng khi gọi API ở dưới (mono). Trước đây alias và tên hiển thị là hai cột riêng, nhưng chúng gần như luôn nói cùng một model — gộp lại vừa đọc nhanh hơn vừa đủ chỗ để bảng 11 cột vừa khít pane. Chi tiết ngân sách bề rộng ở §6.
+
+## 9. Trang trí nền & Easter egg
+
+`CanvasParticles.jsx` vẽ toàn bộ trang trí nền bằng canvas, **không có DOM** — mọi thứ nằm sau `#particles-canvas` với `pointer-events: none`. Mỗi theme có một bộ hạt riêng:
+
+| Theme | Nội dung nền | Thiên thể góc dưới-phải |
+|---|---|---|
+| `dark` | Sao nhấp nháy (90 hạt, ~20 % hình chữ thập) + sao băng thỉnh thoảng | Trăng lưỡi liềm |
+| `light` | Chấm sáng nhẹ, không sao băng | Mặt trời vàng |
+| `valentine` | Cánh hoa anh đào rơi, tự rụng từng cánh | Trăng lưỡi liềm |
+
+Thiên thể đó **vừa là trang trí vừa là điểm bấm easter egg**: bấm 5 lần vào nó (mặt trời khi ở theme sáng, trăng khi ở theme tối) sẽ mở hiệu ứng tương ứng. Vị trí neo ở góc dưới-phải (`ORB_MARGIN_X = 96`, `ORB_MARGIN_Y = 84`) chứ không phải góc trên-phải như trước — chỗ cũ trùng đúng dải nút hành động của `PageHeader` và bị nút "Tải lại" cắt đôi trên năm tab. Bán kính vùng bấm là 45 px, tách rời khỏi bán kính vẽ, nên hoạ tiết có thể nhỏ mà vẫn dễ bấm.
+
+Bộ đếm `Trứng N/5` trên thanh trên cùng mở bảng theo dõi đủ 5 egg (Konami, Savings, Sun, Moon, Claude) kèm gợi ý cho cái chưa tìm ra. Trạng thái lưu ở `localStorage._eggs`.
 
 

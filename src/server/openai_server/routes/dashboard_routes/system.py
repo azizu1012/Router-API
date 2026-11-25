@@ -347,11 +347,18 @@ async def api_help(request: Request):
 
     Session-gated like the rest of the dashboard — it names routes and the auth
     model, which is not something to hand to an unauthenticated caller.
+
+    The curl examples point at the origin this request arrived on, so a
+    deployment behind HTTPS shows its own host instead of a localhost nobody can
+    reach. `?lang=` picks the language; anything unknown falls back to `vi`.
     """
     payload = _require_dashboard(request)
     if isinstance(payload, JSONResponse):
         return payload
-    from src.server.openai_server.api_help import help_payload
-    return help_payload()
+    from src.server.openai_server.api_help import help_payload, public_origin
+    return help_payload(
+        origin=public_origin(request),
+        lang=request.query_params.get("lang", "vi"),
+    )
 
 

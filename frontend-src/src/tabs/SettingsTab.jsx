@@ -1,9 +1,84 @@
-import React, { useState, useEffect } from 'react';
+import { useState, useEffect, useCallback } from 'react';
 import { useApp } from '../context/AppContext';
 import { t } from '../utils/i18n';
 import { api } from '../utils/api';
 import Loading from '../components/Loading';
-import { Save, Settings, ShieldAlert, Cpu, RefreshCw, KeyRound, Sliders, HardDrive, Info } from 'lucide-react';
+import PageHeader from '../components/PageHeader';
+import Card from '../components/Card';
+import Button from '../components/Button';
+import Alert from '../components/Alert';
+import { Save, RefreshCw, Sliders, Cpu, HardDrive, KeyRound, Info } from 'lucide-react';
+
+/* Settings is a form, not a report: one column of labelled controls, a value
+   chip that states what the control currently is, and hint text under each.
+   Every control is a real input — a number typed here is what gets saved. */
+
+function Section({ icon: Icon, title, children, cols = 'lg:col-span-1' }) {
+  return (
+    <Card padding="lg" className={cols}>
+      <div className="flex items-center gap-2 mb-4 pb-2.5" style={{ borderBottom: '1px solid var(--c-line)' }}>
+        <Icon className="w-4 h-4 shrink-0" style={{ color: 'var(--c-ink-3)' }} />
+        <h2 className="text-xs font-semibold" style={{ color: 'var(--c-ink)' }}>{title}</h2>
+      </div>
+      <div className="space-y-5">{children}</div>
+    </Card>
+  );
+}
+
+function Slider({ label, hint, value, min, max, step = 1, unit, onChange }) {
+  return (
+    <label className="block">
+      <span className="flex items-baseline justify-between gap-3 mb-2">
+        <span className="label-micro">{label}</span>
+        <span className="text-[0.6875rem] font-medium tabular-nums px-1.5 py-0.5 rounded shrink-0"
+              style={{ background: 'var(--c-surface-3)', color: 'var(--c-ink-2)' }}>
+          {value}{unit ? ` ${unit}` : ''}
+        </span>
+      </span>
+      <input
+        type="range"
+        min={min}
+        max={max}
+        step={step}
+        value={value ?? min}
+        onChange={e => onChange(e.target.value)}
+        className="range-token"
+      />
+      <span className="block text-[0.6875rem] leading-snug mt-1.5" style={{ color: 'var(--c-ink-3)' }}>
+        {hint}
+      </span>
+    </label>
+  );
+}
+
+function NumberField({ label, hint, value, unit, onChange }) {
+  return (
+    <label className="block">
+      <span className="label-micro block mb-1.5">{label}</span>
+      <span className="relative block">
+        <input
+          type="number"
+          inputMode="numeric"
+          value={value ?? ''}
+          onChange={e => onChange(e.target.value)}
+          className="input input-sm w-full text-xs font-mono tabular-nums"
+          style={{ paddingRight: unit ? '3.5rem' : undefined }}
+        />
+        {unit && (
+          <span className="absolute right-3 top-1/2 -translate-y-1/2 pointer-events-none text-[0.625rem]"
+                style={{ color: 'var(--c-ink-3)' }}>
+            {unit}
+          </span>
+        )}
+      </span>
+      {hint && (
+        <span className="block text-[0.6875rem] leading-snug mt-1.5" style={{ color: 'var(--c-ink-3)' }}>
+          {hint}
+        </span>
+      )}
+    </label>
+  );
+}
 
 export default function SettingsTab() {
   const { token, lang } = useApp();
@@ -12,319 +87,215 @@ export default function SettingsTab() {
   const [saving, setSaving] = useState(false);
   const [msg, setMsg] = useState({ text: '', type: '' });
 
-  const fetchSettings = async () => {
+  /* One loader serves the first fetch and both buttons ("Reload" in the header,
+     "Discard" in the save bar), so it lives in a callback rather than inside the
+     effect. The effect only fires it — guarded so a token change mid-flight does
+     not let a stale response land on the new settings. */
+  const fetchSettings = useCallback(async (isCurrent = () => true) => {
     setLoading(true);
     try {
       const data = await api('/dashboard/admin/settings', {}, token);
+      if (!isCurrent()) return;
       setSettings(data);
+      setMsg({ text: '', type: '' });
     } catch (err) {
-      setMsg({ text: 'Không thể tải cấu hình: ' + err.message, type: 'error' });
+      if (!isCurrent()) return;
+      setMsg({ text: `${t('stg_load_err', lang)}${err.message}`, type: 'error' });
     } finally {
-      setLoading(false);
+      if (isCurrent()) setLoading(false);
     }
-  };
+  }, [token, lang]);
 
   useEffect(() => {
-    fetchSettings();
-  }, [token]);
+    let alive = true;
+    (async () => { await fetchSettings(() => alive); })();
+    return () => { alive = false; };
+  }, [fetchSettings]);
 
   const handleSubmit = async (e) => {
     e.preventDefault();
     setSaving(true);
-    setMsg({ text: 'Đang lưu cấu hình...', type: 'info' });
+    setMsg({ text: t('stg_saving', lang), type: 'info' });
     try {
       await api('/dashboard/admin/settings', {
         method: 'POST',
         body: JSON.stringify(settings)
       }, token);
-      setMsg({ text: 'Đã lưu cấu hình và nạp lại hệ thống thành công!', type: 'success' });
-      setTimeout(() => setMsg({ text: '', type: '' }), 4000);
+      setMsg({ text: t('stg_saved', lang), type: 'success' });
+      setTimeout(() => setMsg(prev => (prev.type === 'success' ? { text: '', type: '' } : prev)), 4000);
     } catch (err) {
-      setMsg({ text: 'Lưu thất bại: ' + err.message, type: 'error' });
+      setMsg({ text: `${t('stg_save_err', lang)}${err.message}`, type: 'error' });
     } finally {
       setSaving(false);
     }
   };
 
+  /* Empty input is kept as an empty string so the field can be cleared while
+     typing; the server treats it as "leave unchanged". */
   const handleChange = (key, value) => {
-    setSettings(prev => ({
-      ...prev,
-      [key]: value === '' ? '' : Number(value)
-    }));
+    setSettings(prev => ({ ...prev, [key]: value === '' ? '' : Number(value) }));
   };
 
-  if (loading) {
-    return <Loading message={t('loading', lang) || 'Đang tải...'} />;
-  }
+  const change = (key) => (value) => handleChange(key, value);
+
+  if (loading) return <Loading message={t('stg_loading', lang)} />;
 
   if (!settings) {
     return (
-      <div className="card glass-card p-12 text-center text-error font-medium rounded-2xl border border-error/15">
-        Không tìm thấy hoặc không có quyền truy cập cấu hình hệ thống.
+      <div className="space-y-5">
+        <PageHeader title={t('stg_title', lang)} />
+        <Alert type="error" message={t('stg_no_access', lang)} />
       </div>
     );
   }
 
   return (
-    <div className="space-y-6">
-      {/* Title */}
-      <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4 animate-tab-in">
-        <div className="text-left">
-          <h1 className="text-2xl font-black tracking-tight flex items-center gap-2">
-            <Settings className="w-6 h-6 text-primary" />
-            Cấu hình Hệ thống (System Settings)
-          </h1>
-          <p className="text-xs text-base-content/60 mt-1">
-            Điều chỉnh trực quan các tham số cấu hình chạy nền của Router API v2. Thay đổi sẽ cập nhật trực tiếp vào file .env và tự động nạp lại (hot-reload).
-          </p>
-        </div>
-        <button
-          onClick={fetchSettings}
-          className="btn btn-outline btn-sm gap-2 font-bold hover:scale-[1.03] active:scale-[0.97] transition-all rounded-xl"
-        >
-          <RefreshCw className="w-3.5 h-3.5" />
-          Tải lại (Reload)
-        </button>
-      </div>
+    <div className="space-y-5">
+      <PageHeader
+        title={t('stg_title', lang)}
+        subtitle={t('stg_sub', lang)}
+        actions={<Button variant="outline" icon={RefreshCw} onClick={fetchSettings}>{t('stg_reload', lang)}</Button>}
+      />
 
-      {msg.text && (
-        <div className={`text-xs font-semibold p-4 rounded-xl border animate-fade-in-up ${
-          msg.type === 'success' ? 'bg-success/10 text-success border-success/20' :
-          msg.type === 'error' ? 'bg-error/10 text-error border-error/20' : 'bg-info/10 text-info border-info/20'
-        }`}>
-          {msg.text}
-        </div>
-      )}
+      {msg.text && <Alert type={msg.type} message={msg.text} onClose={() => setMsg({ text: '', type: '' })} />}
 
-      <form onSubmit={handleSubmit} className="space-y-6 animate-fade-in-up cascade-1">
-        {/* Settings Groups Grid */}
-        <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
-          
-          {/* Card 1: General & Timeout */}
-          <div className="card glass-card p-6 rounded-3xl text-left border border-base-content/5 space-y-4">
-            <h3 className="font-extrabold text-sm text-primary flex items-center gap-2 border-b border-base-content/5 pb-2">
-              <Sliders className="w-4 h-4" />
-              Cấu hình Chung & Timeout
-            </h3>
-            
-            <div className="form-control w-full space-y-1">
-              <div className="flex justify-between items-center">
-                <span className="text-xs font-bold text-base-content/75 uppercase">Số lần Thử lại Tối đa (MAX_RETRIES)</span>
-                <span className="badge badge-sm badge-primary font-mono">{settings.ROUTER_API_MAX_RETRIES}</span>
-              </div>
-              <input 
-                type="range" 
-                min="1" 
-                max="20" 
-                value={settings.ROUTER_API_MAX_RETRIES} 
-                onChange={(e) => handleChange('ROUTER_API_MAX_RETRIES', e.target.value)}
-                className="range range-xs range-primary" 
+      <form onSubmit={handleSubmit} className="space-y-4">
+        <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
+          <Section icon={Sliders} title={t('stg_general', lang)}>
+            <Slider
+              label={t('stg_retries', lang)}
+              hint={t('stg_retries_hint', lang)}
+              value={settings.ROUTER_API_MAX_RETRIES}
+              min={1} max={20}
+              unit={t('stg_unit_times', lang)}
+              onChange={change('ROUTER_API_MAX_RETRIES')}
+            />
+            <Slider
+              label={t('stg_timeout', lang)}
+              hint={t('stg_timeout_hint', lang)}
+              value={settings.ROUTER_API_REQUEST_TIMEOUT_SEC}
+              min={30} max={600} step={30}
+              unit="s"
+              onChange={change('ROUTER_API_REQUEST_TIMEOUT_SEC')}
+            />
+          </Section>
+
+          <Section icon={Cpu} title={t('stg_resilience', lang)}>
+            <Slider
+              label={t('stg_swap', lang)}
+              hint={t('stg_swap_hint', lang)}
+              value={settings.POOL_SWAP_FAILURES}
+              min={1} max={30}
+              unit={t('stg_unit_times', lang)}
+              onChange={change('POOL_SWAP_FAILURES')}
+            />
+            <Slider
+              label={t('stg_attempts', lang)}
+              hint={t('stg_attempts_hint', lang)}
+              value={settings.POOL_MAX_ATTEMPTS}
+              min={5} max={120}
+              unit={t('stg_unit_times', lang)}
+              onChange={change('POOL_MAX_ATTEMPTS')}
+            />
+          </Section>
+
+          <Section icon={HardDrive} title={t('stg_compaction', lang)} cols="lg:col-span-2">
+            <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+              <NumberField
+                label={t('stg_threshold', lang)}
+                hint={t('stg_threshold_hint', lang)}
+                value={settings.COMPACTION_TOKEN_THRESHOLD}
+                unit={t('stg_unit_tokens', lang)}
+                onChange={change('COMPACTION_TOKEN_THRESHOLD')}
               />
-              <p className="text-[10px] text-base-content/50">Số lần tối đa thử gửi lại request qua các key dự phòng khác khi gặp lỗi từ Gemini.</p>
-            </div>
-
-            <div className="form-control w-full space-y-1">
-              <div className="flex justify-between items-center">
-                <span className="text-xs font-bold text-base-content/75 uppercase">Thời gian Timeout Request (Giây)</span>
-                <span className="badge badge-sm badge-primary font-mono">{settings.ROUTER_API_REQUEST_TIMEOUT_SEC}s</span>
-              </div>
-              <input 
-                type="range" 
-                min="30" 
-                max="600" 
-                step="30"
-                value={settings.ROUTER_API_REQUEST_TIMEOUT_SEC} 
-                onChange={(e) => handleChange('ROUTER_API_REQUEST_TIMEOUT_SEC', e.target.value)}
-                className="range range-xs range-primary" 
+              <NumberField
+                label={t('stg_target', lang)}
+                hint={t('stg_target_hint', lang)}
+                value={settings.COMPACTION_TARGET_LIMIT}
+                unit={t('stg_unit_tokens', lang)}
+                onChange={change('COMPACTION_TARGET_LIMIT')}
               />
-              <p className="text-[10px] text-base-content/50">Thời gian timeout tối đa cho các request API dài hoặc stream nặng trước khi ngắt kết nối.</p>
-            </div>
-          </div>
-
-          {/* Card 2: Pool & Failures */}
-          <div className="card glass-card p-6 rounded-3xl text-left border border-base-content/5 space-y-4">
-            <h3 className="font-extrabold text-sm text-cyan-400 flex items-center gap-2 border-b border-base-content/5 pb-2">
-              <Cpu className="w-4 h-4" />
-              Khả năng Dung lỗi & Hoán đổi Pool
-            </h3>
-
-            <div className="form-control w-full space-y-1">
-              <div className="flex justify-between items-center">
-                <span className="text-xs font-bold text-base-content/75 uppercase">Số lỗi Hoán đổi Pool (POOL_SWAP_FAILURES)</span>
-                <span className="badge badge-sm badge-secondary font-mono">{settings.POOL_SWAP_FAILURES} lần</span>
-              </div>
-              <input 
-                type="range" 
-                min="1" 
-                max="30" 
-                value={settings.POOL_SWAP_FAILURES} 
-                onChange={(e) => handleChange('POOL_SWAP_FAILURES', e.target.value)}
-                className="range range-xs range-secondary" 
+              <NumberField
+                label={t('stg_emergency', lang)}
+                hint={t('stg_emergency_hint', lang)}
+                value={settings.EMERGENCY_MAX_INPUT_TOKENS}
+                unit={t('stg_unit_tokens', lang)}
+                onChange={change('EMERGENCY_MAX_INPUT_TOKENS')}
               />
-              <p className="text-[10px] text-base-content/50">Số lần gặp lỗi liên tiếp trên một pool trước khi tự động hoán chuyển sang pool dự phòng khác.</p>
             </div>
 
-            <div className="form-control w-full space-y-1">
-              <div className="flex justify-between items-center">
-                <span className="text-xs font-bold text-base-content/75 uppercase">Số lần Thử lại tối đa mỗi Pool (POOL_MAX_ATTEMPTS)</span>
-                <span className="badge badge-sm badge-secondary font-mono">{settings.POOL_MAX_ATTEMPTS} lần</span>
-              </div>
-              <input 
-                type="range" 
-                min="5" 
-                max="120" 
-                value={settings.POOL_MAX_ATTEMPTS} 
-                onChange={(e) => handleChange('POOL_MAX_ATTEMPTS', e.target.value)}
-                className="range range-xs range-secondary" 
-              />
-              <p className="text-[10px] text-base-content/50">Tổng số lần cố gắng thử các key trong cùng một pool trước khi báo lỗi toàn bộ hệ thống.</p>
-            </div>
-          </div>
-
-          {/* Card 3: Context Compaction */}
-          <div className="card glass-card p-6 rounded-3xl text-left border border-base-content/5 space-y-4 lg:col-span-2">
-            <h3 className="font-extrabold text-sm text-amber-400 flex items-center gap-2 border-b border-base-content/5 pb-2">
-              <HardDrive className="w-4 h-4" />
-              Ngưỡng thu nén Context (Smart Token Compaction)
-            </h3>
-
-            <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
-              <div className="form-control w-full space-y-1">
-                <label className="label py-0">
-                  <span className="label-text text-[11px] font-bold text-base-content/75 uppercase">Ngưỡng nén Token (Threshold)</span>
-                </label>
-                <div className="relative">
-                  <input 
-                    type="number" 
-                    value={settings.COMPACTION_TOKEN_THRESHOLD} 
-                    onChange={(e) => handleChange('COMPACTION_TOKEN_THRESHOLD', e.target.value)}
-                    className="input input-bordered input-sm w-full font-mono text-xs pr-12" 
-                  />
-                  <span className="absolute right-3 top-1/2 -translate-y-1/2 text-[9px] font-bold text-base-content/40">Tokens</span>
-                </div>
-                <p className="text-[9px] text-base-content/50 leading-relaxed">Router bắt đầu thu nén khi context của client vượt quá mức này.</p>
-              </div>
-
-              <div className="form-control w-full space-y-1">
-                <label className="label py-0">
-                  <span className="label-text text-[11px] font-bold text-base-content/75 uppercase">Mức Token Đích (Target Limit)</span>
-                </label>
-                <div className="relative">
-                  <input 
-                    type="number" 
-                    value={settings.COMPACTION_TARGET_LIMIT} 
-                    onChange={(e) => handleChange('COMPACTION_TARGET_LIMIT', e.target.value)}
-                    className="input input-bordered input-sm w-full font-mono text-xs pr-12" 
-                  />
-                  <span className="absolute right-3 top-1/2 -translate-y-1/2 text-[9px] font-bold text-base-content/40">Tokens</span>
-                </div>
-                <p className="text-[9px] text-base-content/50 leading-relaxed">Số lượng token đích tối đa sau khi thực hiện thuật toán thu nén context.</p>
-              </div>
-
-              <div className="form-control w-full space-y-1">
-                <label className="label py-0">
-                  <span className="label-text text-[11px] font-bold text-base-content/75 uppercase">Ngưỡng Khẩn cấp (Emergency Max)</span>
-                </label>
-                <div className="relative">
-                  <input 
-                    type="number" 
-                    value={settings.EMERGENCY_MAX_INPUT_TOKENS} 
-                    onChange={(e) => handleChange('EMERGENCY_MAX_INPUT_TOKENS', e.target.value)}
-                    className="input input-bordered input-sm w-full font-mono text-xs pr-12" 
-                  />
-                  <span className="absolute right-3 top-1/2 -translate-y-1/2 text-[9px] font-bold text-base-content/40">Tokens</span>
-                </div>
-                <p className="text-[9px] text-base-content/50 leading-relaxed">Giới hạn khẩn cấp tối đa chấp nhận trước khi cắt bỏ mạnh để chống quá tải (429).</p>
-              </div>
-            </div>
-
-            {/* Sub-section: Claude Code specific overrides */}
-            <div className="bg-base-200/20 p-4 rounded-2xl border border-base-content/5 space-y-3 mt-2">
-              <div className="flex items-center gap-1.5 text-amber-500/80 font-bold text-xs">
-                <Info className="w-3.5 h-3.5" />
-                <span>Cấu hình ghi đè riêng cho Claude Code (RTK Compaction Override)</span>
-              </div>
-              <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
-                <div className="form-control w-full space-y-1">
-                  <label className="label py-0"><span className="label-text text-[10px] font-bold text-base-content/60 uppercase">Claude Threshold</span></label>
-                  <input type="number" value={settings.CLAUDE_CODE_COMPACTION_THRESHOLD} onChange={(e) => handleChange('CLAUDE_CODE_COMPACTION_THRESHOLD', e.target.value)} className="input input-bordered input-sm w-full font-mono text-xs" />
-                </div>
-                <div className="form-control w-full space-y-1">
-                  <label className="label py-0"><span className="label-text text-[10px] font-bold text-base-content/60 uppercase">Claude Target Limit</span></label>
-                  <input type="number" value={settings.CLAUDE_CODE_COMPACTION_TARGET_LIMIT} onChange={(e) => handleChange('CLAUDE_CODE_COMPACTION_TARGET_LIMIT', e.target.value)} className="input input-bordered input-sm w-full font-mono text-xs" />
-                </div>
-                <div className="form-control w-full space-y-1">
-                  <label className="label py-0"><span className="label-text text-[10px] font-bold text-base-content/60 uppercase">Claude Emergency Max</span></label>
-                  <input type="number" value={settings.CLAUDE_CODE_EMERGENCY_MAX_INPUT_TOKENS} onChange={(e) => handleChange('CLAUDE_CODE_EMERGENCY_MAX_INPUT_TOKENS', e.target.value)} className="input input-bordered input-sm w-full font-mono text-xs" />
+            <div className="rounded-lg p-4"
+                 style={{ background: 'var(--c-surface-2)', border: '1px solid var(--c-line)' }}>
+              <div className="flex items-start gap-2 mb-3">
+                <Info className="w-3.5 h-3.5 shrink-0 mt-0.5" style={{ color: 'var(--c-ink-3)' }} />
+                <div className="min-w-0">
+                  <h3 className="text-[0.6875rem] font-semibold" style={{ color: 'var(--c-ink-2)' }}>
+                    {t('stg_claude', lang)}
+                  </h3>
+                  <p className="text-[0.6875rem] leading-snug mt-0.5" style={{ color: 'var(--c-ink-3)' }}>
+                    {t('stg_claude_hint', lang)}
+                  </p>
                 </div>
               </div>
-            </div>
-          </div>
-
-          {/* Card 4: Client Rate Limits */}
-          <div className="card glass-card p-6 rounded-3xl text-left border border-base-content/5 space-y-4 lg:col-span-2">
-            <h3 className="font-extrabold text-sm text-emerald-400 flex items-center gap-2 border-b border-base-content/5 pb-2">
-              <KeyRound className="w-4 h-4" />
-              Giới hạn Tải mặc định của Client
-            </h3>
-            
-            <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
-              <div className="form-control w-full space-y-1">
-                <div className="flex justify-between items-center">
-                  <span className="text-xs font-bold text-base-content/75 uppercase">Hạn mức RPM Mặc định (CLIENT_DEFAULT_RPM)</span>
-                  <span className="badge badge-sm badge-accent font-mono">{settings.CLIENT_DEFAULT_RPM} RPM</span>
-                </div>
-                <input 
-                  type="range" 
-                  min="1" 
-                  max="60" 
-                  value={settings.CLIENT_DEFAULT_RPM} 
-                  onChange={(e) => handleChange('CLIENT_DEFAULT_RPM', e.target.value)}
-                  className="range range-xs range-accent" 
+              <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
+                <NumberField
+                  label={t('stg_claude_threshold', lang)}
+                  value={settings.CLAUDE_CODE_COMPACTION_THRESHOLD}
+                  unit={t('stg_unit_tokens', lang)}
+                  onChange={change('CLAUDE_CODE_COMPACTION_THRESHOLD')}
                 />
-                <p className="text-[10px] text-base-content/50">Số request tối đa mỗi phút (RPM) cấp mặc định cho tài khoản client mới tạo.</p>
-              </div>
-
-              <div className="form-control w-full space-y-1">
-                <div className="flex justify-between items-center">
-                  <span className="text-xs font-bold text-base-content/75 uppercase">Hạn mức RPM Burst (CLIENT_BURST_RPM)</span>
-                  <span className="badge badge-sm badge-accent font-mono">{settings.CLIENT_BURST_RPM} RPM</span>
-                </div>
-                <input 
-                  type="range" 
-                  min="2" 
-                  max="120" 
-                  value={settings.CLIENT_BURST_RPM} 
-                  onChange={(e) => handleChange('CLIENT_BURST_RPM', e.target.value)}
-                  className="range range-xs range-accent" 
+                <NumberField
+                  label={t('stg_claude_target', lang)}
+                  value={settings.CLAUDE_CODE_COMPACTION_TARGET_LIMIT}
+                  unit={t('stg_unit_tokens', lang)}
+                  onChange={change('CLAUDE_CODE_COMPACTION_TARGET_LIMIT')}
                 />
-                <p className="text-[10px] text-base-content/50">Hạn mức RPM tăng cường đột biến cho phép của client để tránh nghẽn khi client gửi dồn dập.</p>
+                <NumberField
+                  label={t('stg_claude_emergency', lang)}
+                  value={settings.CLAUDE_CODE_EMERGENCY_MAX_INPUT_TOKENS}
+                  unit={t('stg_unit_tokens', lang)}
+                  onChange={change('CLAUDE_CODE_EMERGENCY_MAX_INPUT_TOKENS')}
+                />
               </div>
             </div>
-          </div>
+          </Section>
 
+          <Section icon={KeyRound} title={t('stg_client', lang)} cols="lg:col-span-2">
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-5">
+              <Slider
+                label={t('stg_rpm', lang)}
+                hint={t('stg_rpm_hint', lang)}
+                value={settings.CLIENT_DEFAULT_RPM}
+                min={1} max={60}
+                unit="RPM"
+                onChange={change('CLIENT_DEFAULT_RPM')}
+              />
+              <Slider
+                label={t('stg_burst', lang)}
+                hint={t('stg_burst_hint', lang)}
+                value={settings.CLIENT_BURST_RPM}
+                min={2} max={120}
+                unit="RPM"
+                onChange={change('CLIENT_BURST_RPM')}
+              />
+            </div>
+          </Section>
         </div>
 
-        {/* Submit Bar */}
-        <div className="flex items-center justify-end gap-3 pt-4 border-t border-base-content/5">
-          <button 
-            type="button" 
-            onClick={fetchSettings} 
-            disabled={saving}
-            className="btn btn-ghost font-bold rounded-xl"
-          >
-            Hủy bỏ (Discard)
-          </button>
-          <button 
-            type="submit" 
-            disabled={saving}
-            className="btn btn-primary px-8 gap-2 font-bold shadow-lg shadow-primary/25 hover:scale-[1.03] active:scale-[0.97] transition-all rounded-xl"
-          >
-            {saving ? <span className="loading loading-spinner loading-xs"></span> : <Save className="w-4 h-4" />}
-            Lưu thay đổi (Save Settings)
-          </button>
+        {/* Save bar stays in reach at the bottom of a long form. */}
+        <div className="sticky bottom-0 z-10 flex items-center justify-end gap-2 py-3"
+             style={{
+               borderTop: '1px solid var(--c-line)',
+               background: 'color-mix(in srgb, var(--c-canvas) 88%, transparent)',
+               backdropFilter: 'blur(8px)',
+             }}>
+          <Button type="button" variant="ghost" onClick={fetchSettings} disabled={saving}>
+            {t('stg_discard', lang)}
+          </Button>
+          <Button type="submit" icon={Save} loading={saving}>
+            {t('stg_save', lang)}
+          </Button>
         </div>
-
       </form>
     </div>
   );

@@ -1,31 +1,45 @@
-import { useState, useEffect } from 'react';
-import { Terminal, X, Download, Pause, Play, Trash2 } from 'lucide-react';
+import { useState, useEffect, useRef } from 'react';
+import { Terminal as TerminalIcon, X, Download, Pause, Play, Trash2 } from 'lucide-react';
 import { useApp } from '../context/AppContext';
+import { t } from '../utils/i18n';
 import LogTerminal from './LogTerminal';
 
 const LOG_CHANNELS = [
-  { id: 'proxy', label: 'Proxy', adminOnly: false },
-  { id: 'api', label: 'API Calls', adminOnly: false },
-  { id: 'system', label: 'System', adminOnly: true },
-  { id: 'keys', label: 'Keys', adminOnly: true },
-  { id: 'web', label: 'Web', adminOnly: true },
+  { id: 'proxy', adminOnly: false, label: 'proxy' },
+  { id: 'api', adminOnly: false, label: 'api' },
+  { id: 'system', adminOnly: true, label: 'system' },
+  { id: 'keys', adminOnly: true, label: 'keys' },
+  { id: 'web', adminOnly: true, label: 'web' },
 ];
 
+/* The header actions act on the terminal's own buffer through the controller
+   LogTerminal hands back — scraping `.xterm-rows` was reading classes xterm
+   does not render, so Download produced an empty file and Clear removed
+   nothing. */
 export default function LogHistoryModal({ endpoint: initialEndpoint, onClose }) {
   const { token, lang, user } = useApp();
   const isAdmin = user?.tier === 'admin';
   const availableChannels = LOG_CHANNELS.filter(c => isAdmin || !c.adminOnly);
 
-  const [activeFile, setActiveFile] = useState('proxy');
+  const [pickedFile, setPickedFile] = useState('proxy');
   const [paused, setPaused] = useState(false);
   const [activeEndpoint, setActiveEndpoint] = useState(initialEndpoint || '');
   const [endpoints, setEndpoints] = useState([]);
+  const controller = useRef(null);
 
+  // Derived, not corrected in an effect: a non-admin who somehow holds a
+  // privileged channel in state still streams proxy. The select can only
+  // offer channels the caller may read.
+  const permitted = isAdmin || !LOG_CHANNELS.find(c => c.id === pickedFile)?.adminOnly;
+  const activeFile = permitted ? pickedFile : 'proxy';
+
+  // Escape closes: this panel covers the page, so a keyboard user must not
+  // have to find the × in the corner.
   useEffect(() => {
-    if (!isAdmin && ['system', 'keys', 'web'].includes(activeFile)) {
-      setActiveFile('proxy');
-    }
-  }, [isAdmin, activeFile]);
+    const onKey = (e) => { if (e.key === 'Escape') onClose(); };
+    document.addEventListener('keydown', onKey);
+    return () => document.removeEventListener('keydown', onKey);
+  }, [onClose]);
 
   useEffect(() => {
     fetch('/dashboard/endpoints', {
@@ -39,99 +53,100 @@ export default function LogHistoryModal({ endpoint: initialEndpoint, onClose }) 
       .catch(() => {});
   }, [token]);
 
+  const tabClass = (active) => `text-[0.6875rem] font-medium rounded-md px-2.5 py-1 whitespace-nowrap transition-colors ${
+    active ? '' : 'hover:opacity-100'
+  }`;
+  const tabStyle = (active) => ({
+    background: active ? 'var(--c-accent-soft)' : 'transparent',
+    border: `1px solid ${active ? 'color-mix(in srgb, var(--c-accent) 35%, transparent)' : 'var(--c-line)'}`,
+    color: active ? 'var(--c-accent)' : 'var(--c-ink-3)',
+  });
+
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 backdrop-blur-sm p-2 sm:p-4 animate-fade-in-up">
-      <div className="card glass-card w-full max-w-7xl max-h-[95vh] p-3 sm:p-4 rounded-2xl sm:rounded-3xl border border-green-500/15 shadow-2xl flex flex-col">
+    <div className="fixed inset-0 z-50 flex items-center justify-center p-2 sm:p-4 animate-fade-in-up"
+         style={{ background: 'rgba(0,0,0,0.62)' }}>
+      <div className="glass-card w-full max-w-7xl max-h-[92vh] rounded-xl flex flex-col overflow-hidden">
         {/* Header */}
-        <div className="flex items-center justify-between mb-3 shrink-0">
+        <div className="flex flex-wrap items-center justify-between gap-2 px-3 py-2.5 shrink-0"
+             style={{ borderBottom: '1px solid var(--c-line)' }}>
           <div className="flex items-center gap-2 min-w-0">
-            <Terminal className="w-4 h-4 text-green-400 shrink-0" />
-            <h2 className="font-extrabold text-sm truncate">
-              Log Stream{initialEndpoint ? `: ${initialEndpoint}` : ''}
+            <TerminalIcon className="w-4 h-4 shrink-0" style={{ color: 'var(--c-ink-3)' }} />
+            <h2 className="text-xs font-semibold truncate" style={{ color: 'var(--c-ink)' }}>
+              {t('lg_title', lang)}{initialEndpoint ? ` · ${initialEndpoint}` : ''}
             </h2>
-            <span className={`w-2 h-2 rounded-full shrink-0 ${paused ? 'bg-yellow-400' : 'bg-green-400 animate-pulse'}`} />
+            <span className="inline-flex items-center gap-1.5 text-[0.625rem] font-medium shrink-0"
+                  style={{ color: paused ? 'var(--c-warn)' : 'var(--c-good)' }}>
+              <span className="w-1.5 h-1.5 rounded-full"
+                    style={{ background: 'currentColor' }}
+                    aria-hidden="true" />
+              {paused ? t('lg_paused', lang) : t('lg_live', lang)}
+            </span>
           </div>
 
-          <div className="flex items-center gap-1.5">
-            {/* File selector */}
+          <div className="flex items-center gap-1.5 shrink-0">
             <select
               value={activeFile}
-              onChange={(e) => setActiveFile(e.target.value)}
-              className="select select-ghost select-xs text-[10px] font-bold bg-base-200/30 rounded-lg"
+              onChange={(e) => setPickedFile(e.target.value)}
+              className="select select-xs text-[0.6875rem]"
+              aria-label={t('lg_channel', lang)}
             >
               {availableChannels.map(f => (
-                <option key={f.id} value={f.id}>{f.label}</option>
+                <option key={f.id} value={f.id}>{f.id}</option>
               ))}
             </select>
 
-            <div className="divider divider-horizontal mx-0.5 h-5" />
-
             <button
               onClick={() => setPaused(p => !p)}
-              className="btn btn-ghost btn-xs btn-square text-base-content/60 hover:text-yellow-400"
-              title={paused ? 'Resume' : 'Pause'}
+              className="btn btn-ghost btn-xs btn-square"
+              style={{ color: paused ? 'var(--c-warn)' : 'var(--c-ink-3)' }}
+              title={paused ? t('lg_resume', lang) : t('lg_pause', lang)}
+              aria-label={paused ? t('lg_resume', lang) : t('lg_pause', lang)}
+              aria-pressed={paused}
             >
               {paused ? <Play className="w-3.5 h-3.5" /> : <Pause className="w-3.5 h-3.5" />}
             </button>
             <button
-              onClick={() => {
-                const term = document.querySelector('.xterm')?.querySelector('.xterm-rows');
-                if (term) term.innerHTML = '';
-              }}
-              className="btn btn-ghost btn-xs btn-square text-base-content/60 hover:text-error"
-              title="Clear"
+              onClick={() => controller.current?.clear()}
+              className="btn btn-ghost btn-xs btn-square"
+              style={{ color: 'var(--c-ink-3)' }}
+              title={t('lg_clear', lang)}
+              aria-label={t('lg_clear', lang)}
             >
               <Trash2 className="w-3.5 h-3.5" />
             </button>
             <button
-              onClick={() => {
-                const el = document.querySelector('.xterm-rows');
-                if (!el) return;
-                const text = Array.from(el.querySelectorAll('.xterm-char-element') || [])
-                  .map(c => c.textContent).join('');
-                const blob = new Blob([text], { type: 'text/plain' });
-                const a = document.createElement('a');
-                a.href = URL.createObjectURL(blob);
-                a.download = `log_${initialEndpoint || 'all'}_${activeFile}.txt`;
-                a.click();
-                URL.revokeObjectURL(a.href);
-              }}
-              className="btn btn-ghost btn-xs btn-square text-base-content/60 hover:text-primary"
-              title="Download"
+              onClick={() => controller.current?.download()}
+              className="btn btn-ghost btn-xs btn-square"
+              style={{ color: 'var(--c-ink-3)' }}
+              title={t('lg_download', lang)}
+              aria-label={t('lg_download', lang)}
             >
               <Download className="w-3.5 h-3.5" />
             </button>
-
-            <div className="divider divider-horizontal mx-0.5 h-5" />
-
-            <button onClick={onClose} className="btn btn-ghost btn-xs btn-square text-base-content/60 hover:text-error">
+            <button onClick={onClose}
+                    className="btn btn-ghost btn-xs btn-square"
+                    style={{ color: 'var(--c-ink-3)' }}
+                    title={t('lg_close', lang)}
+                    aria-label={t('lg_close', lang)}>
               <X className="w-4 h-4" />
             </button>
           </div>
         </div>
 
-        {/* Dynamic endpoint tabs */}
+        {/* Endpoint tabs */}
         {endpoints.length > 0 && (
-          <div className="flex gap-1.5 mb-2 shrink-0 overflow-x-auto pb-1 [&::-webkit-scrollbar]:h-1">
-            <button
-              onClick={() => setActiveEndpoint('')}
-              className={`btn btn-ghost btn-xs font-bold rounded-full px-3 transition-all whitespace-nowrap ${
-                !activeEndpoint
-                  ? 'text-primary bg-primary/10 border border-primary/30'
-                  : 'text-base-content/50 hover:text-base-content hover:bg-base-200/30 border border-transparent'
-              }`}
-            >
-              All
+          <div className="flex gap-1.5 px-3 py-2 shrink-0 overflow-x-auto"
+               style={{ borderBottom: '1px solid var(--c-line)' }}>
+            <button onClick={() => setActiveEndpoint('')} className={tabClass(!activeEndpoint)}
+                    style={tabStyle(!activeEndpoint)}>
+              {t('lg_all', lang)}
             </button>
             {endpoints.map(ep => (
               <button
                 key={ep.name}
                 onClick={() => setActiveEndpoint(ep.name)}
-                className={`btn btn-ghost btn-xs font-bold rounded-full px-3 transition-all whitespace-nowrap ${
-                  activeEndpoint === ep.name
-                    ? 'text-primary bg-primary/10 border border-primary/30'
-                    : 'text-base-content/50 hover:text-base-content hover:bg-base-200/30 border border-transparent'
-                }`}
+                className={tabClass(activeEndpoint === ep.name)}
+                style={tabStyle(activeEndpoint === ep.name)}
               >
                 {ep.name}
               </button>
@@ -140,20 +155,23 @@ export default function LogHistoryModal({ endpoint: initialEndpoint, onClose }) 
         )}
 
         {/* Terminal */}
-        <div className="flex-1 min-h-0 rounded-xl overflow-hidden border border-green-500/10">
+        <div className="flex-1 min-h-0">
           <LogTerminal
             endpoint={activeEndpoint}
             token={token}
             logFile={activeFile}
             height="100%"
+            paused={paused}
+            controllerRef={controller}
           />
         </div>
 
         {/* Status bar */}
-        <div className="flex items-center justify-between mt-2 text-[10px] text-base-content/40 shrink-0">
-          <span>File: {activeFile}.log</span>
-          <span>Endpoint: {activeEndpoint || 'all'}</span>
-          <span>WS: {paused ? 'Paused' : 'Live'}</span>
+        <div className="flex items-center justify-between gap-4 px-3 py-2 text-[0.625rem] font-mono shrink-0"
+             style={{ borderTop: '1px solid var(--c-line)', color: 'var(--c-ink-3)' }}>
+          <span className="truncate">{t('lg_file', lang)}: {activeFile}.log</span>
+          <span className="truncate">{t('lg_endpoint', lang)}: {activeEndpoint || t('lg_all', lang)}</span>
+          <span className="truncate shrink-0">{paused ? t('lg_paused', lang) : t('lg_live', lang)}</span>
         </div>
       </div>
     </div>

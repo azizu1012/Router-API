@@ -1,10 +1,16 @@
-import React, { useState, useEffect, useRef } from 'react';
+import { useState, useEffect, useRef, useCallback, useMemo } from 'react';
 import { useApp } from '../context/AppContext';
 import { t } from '../utils/i18n';
 import { fmt } from '../utils/format';
 import { api } from '../utils/api';
-import { ShieldCheck, Network, DollarSign, Activity, HelpCircle, ArrowRight, Zap, RefreshCw, Layers, Server, Cpu, Edit3, X, Check } from 'lucide-react';
+import { ShieldCheck, Network, DollarSign, Activity, ArrowRight, Zap, RefreshCw, Layers, Server, Edit3, X, Check } from 'lucide-react';
 import Loading from '../components/Loading';
+import PageHeader from '../components/PageHeader';
+import Card from '../components/Card';
+import Badge from '../components/Badge';
+import Button from '../components/Button';
+import Alert from '../components/Alert';
+import { useThemeTokens } from '../utils/themeTokens';
 
 function PoolFlowGraph({
   pool,
@@ -20,10 +26,15 @@ function PoolFlowGraph({
   assigning,
   selectKey,
 }) {
-  const members = pool.members || (pool.models ? pool.models.split(',').map(m => ({alias: m.trim(), model_id: m.trim()})) : []);
+  const members = useMemo(
+    () => pool.members || (pool.models ? pool.models.split(',').map(m => ({ alias: m.trim(), model_id: m.trim() })) : []),
+    [pool.members, pool.models],
+  );
   const poolLive = liveStats?.models?.[pool.name] || {};
-  const poolRpmPct = poolLive.rpm_limit > 0 ? Math.round((1 - poolLive.rpm_remaining / poolLive.rpm_limit) * 100) : 0;
+  const rpmUsed = poolLive.rpm_limit > 0 ? poolLive.rpm_limit - poolLive.rpm_remaining : 0;
+  const poolRpmPct = poolLive.rpm_limit > 0 ? Math.round((rpmUsed / poolLive.rpm_limit) * 100) : 0;
   const isCurrentPoolHovered = hoveredPool === pool.name;
+  const pal = useThemeTokens();
 
   const containerRef = useRef(null);
   const gatewayPortRef = useRef(null);
@@ -33,7 +44,7 @@ function PoolFlowGraph({
 
   const [coords, setCoords] = useState(null);
 
-  const updateCoords = () => {
+  const updateCoords = useCallback(() => {
     if (!containerRef.current) return;
     const containerRect = containerRef.current.getBoundingClientRect();
 
@@ -70,7 +81,7 @@ function PoolFlowGraph({
         members: mPorts,
       });
     }
-  };
+  }, [members]);
 
   useEffect(() => {
     updateCoords();
@@ -91,403 +102,406 @@ function PoolFlowGraph({
       window.removeEventListener('resize', updateCoords);
       clearTimeout(timeoutId);
     };
-  }, [pool.models, liveStats]);
+  }, [updateCoords]);
 
+  /* Friendly names for the ids where the id itself reads badly. Everything else
+     is derived from the id, so a model added to .env tomorrow renders as a name
+     instead of falling through to a raw `gemini-3.9-flash`. */
+  const MODEL_NAME_OVERRIDES = {
+    'gemini-3.5-flash': 'Gemini 3.5 Flash (Latest)',
+    'gemini-3-flash-preview': 'Gemini 3.0 Flash (Preview)',
+    'gemini-2.5-flash': 'Gemini 2.5 Flash',
+    'gemini-3.1-flash-lite': 'Gemini 3.1 Flash Lite',
+    'gemini-2.5-flash-lite': 'Gemini 2.5 Flash Lite',
+  };
+  const ACRONYMS = { it: 'IT', ai: 'AI', vl: 'VL' };
+  const titleToken = (tok) => {
+    if (ACRONYMS[tok]) return ACRONYMS[tok];
+    // 26b -> 26B, a4b -> A4B: the size suffix is capitalised, the number kept.
+    if (/^\d+[a-z]+$/.test(tok)) return tok.replace(/[a-z]+$/, s => s.toUpperCase());
+    if (/^[a-z]\d+[a-z]+$/.test(tok)) return tok.replace(/[a-z]+$/, s => s.toUpperCase()).replace(/^[a-z]/, s => s.toUpperCase());
+    return tok.charAt(0).toUpperCase() + tok.slice(1);
+  };
   const getModelFriendlyName = (modelId) => {
-    const names = {
-      'gemini-3.5-flash': 'Gemini 3.5 Flash (Latest)',
-      'gemini-3-flash-preview': 'Gemini 3.0 Flash (Preview)',
-      'gemini-2.5-flash': 'Gemini 2.5 Flash',
-      'gemini-3.1-flash-lite': 'Gemini 3.1 Flash Lite',
-      'gemini-2.5-flash-lite': 'Gemini 2.5 Flash Lite',
-    };
-    return names[modelId] || modelId;
+    if (!modelId) return '';
+    if (MODEL_NAME_OVERRIDES[modelId]) return MODEL_NAME_OVERRIDES[modelId];
+    return modelId.split('-').map(titleToken).join(' ');
   };
 
+  const poolLabel = pool.name === 'gemini-flash' ? 'Gemini Flash Pool' : 'Gemini Lite Pool';
+  const portSize = 'w-2 h-2 rounded-full';
+
+  /* Below `lg` the three nodes stack, so the SVG connectors have nowhere to go.
+     Instead of hiding them (which silently dropped the topology), each member
+     row keeps a left-hand rule that reads as the same edge. */
   return (
-    <div
-      className={`card glass-card p-6 rounded-3xl border transition-all duration-500 relative overflow-hidden ${
-        isCurrentPoolHovered ? 'border-primary/45 shadow-[0_0_20px_rgba(99,102,241,0.1)]' : 'border-base-content/5'
-      }`}
-      onMouseEnter={() => setHoveredPool(pool.name)}
-      onMouseLeave={() => setHoveredPool(null)}
-    >
-      {/* Background gradient trace for visual aesthetics */}
-      <div className="absolute top-0 right-0 w-64 h-64 bg-primary/5 rounded-full blur-3xl pointer-events-none"></div>
+    <Card padding="md">
+      <div
+        onMouseEnter={() => setHoveredPool(pool.name)}
+        onMouseLeave={() => setHoveredPool(null)}
+      >
+        {/* ── Header ── */}
+        <div className="flex flex-wrap items-start justify-between gap-3 pb-4 mb-5"
+             style={{ borderBottom: '1px solid var(--c-line)' }}>
+          <div className="flex items-center gap-3 min-w-0">
+            <div className="w-9 h-9 rounded-lg flex items-center justify-center shrink-0"
+                 style={{ background: 'var(--c-accent-soft)', color: 'var(--c-accent)' }}>
+              <Layers className="w-4 h-4" />
+            </div>
+            <div className="min-w-0">
+              <h3 className="text-sm font-semibold" style={{ color: 'var(--c-ink)' }}>{poolLabel}</h3>
+              <p className="text-[0.6875rem] font-mono mt-0.5" style={{ color: 'var(--c-ink-3)' }}>
+                {t('pst_alias', lang)}: {pool.name}
+              </p>
+            </div>
+          </div>
 
-      {/* Pool Card Header */}
-      <div className="flex flex-wrap items-center justify-between gap-4 border-b border-base-content/5 pb-4 mb-6">
-        <div className="flex items-center gap-3">
-          <div className={`w-10 h-10 rounded-xl flex items-center justify-center border transition-all duration-300 ${
-            isCurrentPoolHovered ? 'bg-primary/20 text-primary border-primary/40' : 'bg-primary/10 text-primary border-primary/20'
-          }`}>
-            <Layers className="w-5 h-5 animate-pulse" />
-          </div>
-          <div className="text-left">
-            <h3 className="font-extrabold text-base text-base-content/90">
-              {pool.name === 'gemini-flash' ? 'Gemini Flash Pool' : 'Gemini Lite Pool'}
-            </h3>
-            <span className="text-[10px] font-mono bg-base-200 px-2 py-0.5 rounded border border-base-content/5 text-base-content/60 uppercase">
-              Alias: {pool.name}
-            </span>
-          </div>
-        </div>
-
-        {/* Pool capacity summaries */}
-        <div className="flex gap-4 text-xs font-semibold">
-          <div className="text-right">
-            <span className="text-[10px] text-base-content/40 block uppercase">RPM khả dụng</span>
-            <span className="font-mono font-bold text-base-content/80">
-              {poolLive.rpm_remaining !== undefined ? `${poolLive.rpm_remaining} / ${poolLive.rpm_limit}` : pool.rpm}
-            </span>
-          </div>
-          <div className="text-right border-l border-base-content/10 pl-4">
-            <span className="text-[10px] text-base-content/40 block uppercase">TPM khả dụng (Token)</span>
-            <span className="font-mono font-bold text-primary">
-              {poolLive.tpm_remaining !== undefined ? `${fmt(poolLive.tpm_remaining)} / ${fmt(poolLive.tpm_limit)}` : pool.tpm}
-            </span>
-          </div>
-          <div className="text-right border-l border-base-content/10 pl-4">
-            <span className="text-[10px] text-base-content/40 block uppercase">Hoạt Động</span>
-            <span className="badge badge-sm badge-success font-extrabold uppercase text-[9px]">Active</span>
+          <div className="flex flex-wrap items-center gap-x-5 gap-y-2">
+            <div>
+              <span className="label-micro block">{t('pst_rpm_left', lang)}</span>
+              <span className="text-xs font-medium tabular-nums" style={{ color: 'var(--c-ink-2)' }}>
+                {poolLive.rpm_remaining !== undefined
+                  ? `${poolLive.rpm_remaining.toLocaleString()} / ${poolLive.rpm_limit.toLocaleString()}`
+                  : (pool.rpm ?? '—')}
+              </span>
+            </div>
+            <div className="pl-5" style={{ borderLeft: '1px solid var(--c-line)' }}>
+              <span className="label-micro block">{t('pst_tpm_left', lang)}</span>
+              <span className="text-xs font-medium tabular-nums" style={{ color: 'var(--c-accent)' }}>
+                {poolLive.tpm_remaining !== undefined
+                  ? `${fmt(poolLive.tpm_remaining)} / ${fmt(poolLive.tpm_limit)}`
+                  : (pool.tpm ?? '—')}
+              </span>
+            </div>
+            <div className="pl-5" style={{ borderLeft: '1px solid var(--c-line)' }}>
+              <span className="label-micro block">{t('pst_status', lang)}</span>
+              <Badge variant="success" size="xs" dot>{t('pst_active', lang)}</Badge>
+            </div>
           </div>
         </div>
-      </div>
 
-      {/* Sci-Fi Flow Graph Diagram */}
-      <div ref={containerRef} className="relative flex flex-col lg:grid lg:grid-cols-[220px_1fr_300px] gap-8 lg:gap-16 items-center">
+        {/* ── Flow graph ── */}
+        <div ref={containerRef} className="relative flex flex-col lg:grid lg:grid-cols-[minmax(0,15rem)_minmax(0,1fr)_minmax(0,19rem)] gap-6 lg:gap-12 items-center">
 
-        {/* Connecting SVG Canvas */}
-        <div className="hidden lg:block absolute inset-0 pointer-events-none z-10">
-          <svg className="w-full h-full" style={{ overflow: 'visible' }}>
-            <defs>
-              <linearGradient id={`grad-to-pool-${pool.name}`} x1="0%" y1="0%" x2="100%" y2="0%">
-                <stop offset="0%" stopColor="#10b981" />
-                <stop offset="100%" stopColor="#8b5cf6" />
-              </linearGradient>
-              <filter id="glow-filter" x="-20%" y="-20%" width="140%" height="140%">
-                <feGaussianBlur stdDeviation="3" result="blur" />
-                <feComposite in="SourceGraphic" in2="blur" operator="over" />
-              </filter>
-            </defs>
+          {/* Connectors. Only meaningful in the three-column layout. */}
+          <div className="hidden lg:block absolute inset-0 pointer-events-none z-10">
+            <svg className="w-full h-full" style={{ overflow: 'visible' }}>
+              <defs>
+                <linearGradient id={`grad-to-pool-${pool.name}`} x1="0%" y1="0%" x2="100%" y2="0%">
+                  <stop offset="0%" stopColor={pal?.good || 'currentColor'} />
+                  <stop offset="100%" stopColor={pal?.accent || 'currentColor'} />
+                </linearGradient>
+                <filter id={`glow-${pool.name}`} x="-20%" y="-20%" width="140%" height="140%">
+                  <feGaussianBlur stdDeviation="2.5" result="blur" />
+                  <feComposite in="SourceGraphic" in2="blur" operator="over" />
+                </filter>
+              </defs>
 
-            {coords && (
-              <g>
-                {/* Path 1: Client -> Pool Balancer (Left connection) */}
-                {(() => {
-                  const gPort = coords.gateway;
-                  const bPortL = coords.balancerLeft;
-                  const cpX1 = (gPort.x + bPortL.x) / 2;
-                  const path1D = `M ${gPort.x},${gPort.y} C ${cpX1},${gPort.y} ${cpX1},${bPortL.y} ${bPortL.x},${bPortL.y}`;
-                  return (
-                    <>
-                      <path
-                        d={path1D}
-                        fill="none"
-                        stroke={`url(#grad-to-pool-${pool.name})`}
-                        strokeWidth={isCurrentPoolHovered ? 3 : 2}
-                        className="transition-all duration-300"
-                        style={{ filter: isCurrentPoolHovered ? 'url(#glow-filter)' : 'none' }}
-                      />
-                      <path
-                        d={path1D}
-                        fill="none"
-                        stroke="#ffffff"
-                        strokeWidth={1.5}
-                        strokeDasharray="6, 8"
-                        className="flowing-line"
-                        style={{ animationDuration: poolLive.active_requests > 0 ? '0.5s' : '1.5s' }}
-                      />
-                    </>
-                  );
-                })()}
+              {coords && (
+                <g>
+                  {/* Edge 1: gateway → balancer */}
+                  {(() => {
+                    const gPort = coords.gateway;
+                    const bPortL = coords.balancerLeft;
+                    const cpX = (gPort.x + bPortL.x) / 2;
+                    const d = `M ${gPort.x},${gPort.y} C ${cpX},${gPort.y} ${cpX},${bPortL.y} ${bPortL.x},${bPortL.y}`;
+                    return (
+                      <>
+                        <path d={d} fill="none" stroke={`url(#grad-to-pool-${pool.name})`}
+                              strokeWidth={isCurrentPoolHovered ? 2.5 : 2}
+                              style={{ transition: 'stroke-width 180ms ease' }} />
+                        <path d={d} fill="none" stroke={pal?.surface || 'transparent'}
+                              strokeWidth={1.5} strokeDasharray="6, 10"
+                              className={`flowing-line ${poolLive.active_requests > 0 ? 'flow-fast' : ''}`}
+                              style={{ opacity: 0.9 }} />
+                      </>
+                    );
+                  })()}
 
-                {/* Path 2 & 3: Pool Balancer -> Member Upstreams */}
-                {members.map((m) => {
-                  const alias = m.alias || m;
-                  const mPort = coords.members[alias];
-                  if (!mPort) return null;
-                  const bPortR = coords.balancerRight;
-                  const cpX2 = (bPortR.x + mPort.x) / 2;
-                  const path2D = `M ${bPortR.x},${bPortR.y} C ${cpX2},${bPortR.y} ${cpX2},${mPort.y} ${mPort.x},${mPort.y}`;
+                  {/* Edges 2..n: balancer → members */}
+                  {members.map((m) => {
+                    const alias = m.alias || m;
+                    const mPort = coords.members[alias];
+                    if (!mPort) return null;
+                    const bPortR = coords.balancerRight;
+                    const cpX = (bPortR.x + mPort.x) / 2;
+                    const d = `M ${bPortR.x},${bPortR.y} C ${cpX},${bPortR.y} ${cpX},${mPort.y} ${mPort.x},${mPort.y}`;
 
-                  const mLive = liveStats?.models?.[alias] || {};
-                  const isFrozen = mLive.rpd_limit > 0 && mLive.rpd_used >= mLive.rpd_limit;
-                  const isModelHovered = hoveredModel === alias;
+                    const mLive = liveStats?.models?.[alias] || {};
+                    const isFrozen = mLive.rpd_limit > 0 && mLive.rpd_used >= mLive.rpd_limit;
+                    const isModelHovered = hoveredModel === alias;
 
-                  const color = isFrozen ? '#f43f5e' : (isModelHovered || isCurrentPoolHovered ? '#8b5cf6' : '#6366f1');
-                  const strokeW = isModelHovered ? 3.5 : (isCurrentPoolHovered ? 2.5 : 1.5);
+                    const stroke = isFrozen
+                      ? pal?.critical
+                      : (isModelHovered || isCurrentPoolHovered ? pal?.accent : pal?.ink3);
+                    const strokeW = isModelHovered ? 2.5 : (isCurrentPoolHovered ? 2 : 1.5);
 
-                  return (
-                    <g key={alias}>
-                      {/* Main Bezier Connecting Path */}
-                      <path
-                        d={path2D}
-                        fill="none"
-                        stroke={color}
-                        strokeWidth={strokeW}
-                        className="transition-all duration-300"
-                        style={{ filter: isModelHovered ? 'url(#glow-filter)' : 'none', opacity: isFrozen ? 0.35 : 1 }}
-                      />
-                      {/* Flow animation helper if model is active and not frozen */}
-                      {!isFrozen && (
+                    return (
+                      <g key={alias}>
                         <path
-                          d={path2D}
+                          d={d}
                           fill="none"
-                          stroke={isModelHovered ? '#a855f7' : '#c084fc'}
-                          strokeWidth={1.5}
-                          strokeDasharray="4, 10"
-                          className="flowing-line"
+                          stroke={stroke}
+                          strokeWidth={strokeW}
+                          className="transition-all duration-200"
                           style={{
-                            animationDuration: mLive.active_requests > 0 ? '0.6s' : '1.8s',
-                            opacity: isCurrentPoolHovered || isModelHovered ? 1 : 0.4
+                            filter: isModelHovered ? `url(#glow-${pool.name})` : 'none',
+                            opacity: isFrozen ? 0.4 : 1,
                           }}
                         />
-                      )}
-                    </g>
-                  );
-                })}
-              </g>
-            )}
-          </svg>
-        </div>
-
-        {/* Node 1: Client Gateway */}
-        <div className="w-full flex flex-col items-center justify-center p-5 bg-base-200/40 border border-base-content/10 rounded-2xl h-36 relative z-20 shadow-md transition-all duration-300 hover:border-emerald-500/40 hover:shadow-[0_0_15px_rgba(16,185,129,0.1)]">
-          <div className="absolute top-2 left-2 flex items-center gap-1.5">
-            <span className="w-1.5 h-1.5 rounded-full bg-emerald-500 animate-ping"></span>
-            <span className="text-[8px] font-mono text-emerald-400 uppercase font-semibold">GATEWAY ONLINE</span>
-          </div>
-          <Activity className="w-8 h-8 text-emerald-400 mb-2 animate-pulse" />
-          <span className="text-[9px] font-bold text-base-content/40 uppercase tracking-widest">Client API Gateway</span>
-          <code className="text-[10px] font-mono font-bold mt-2 text-emerald-400 bg-emerald-500/10 px-2 py-0.5 rounded border border-emerald-500/20">POST /v1/...</code>
-
-          {/* Port indicator anchor with pulsing visual effect */}
-          <div className="hidden lg:block absolute right-0 top-1/2 -translate-y-1/2 translate-x-1/2 z-30">
-            <div ref={gatewayPortRef} className="w-2.5 h-2.5 rounded-full border border-emerald-400 bg-emerald-500 shadow-[0_0_8px_rgba(16,185,129,0.8)] relative flex items-center justify-center">
-              {poolLive.active_requests > 0 && (
-                <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-emerald-400 opacity-75"></span>
+                        {!isFrozen && (
+                          <path
+                            d={d}
+                            fill="none"
+                            stroke={pal?.surface || 'transparent'}
+                            strokeWidth={1.5}
+                            strokeDasharray="4, 10"
+                            className={`flowing-line ${mLive.active_requests > 0 ? 'flow-fast' : ''}`}
+                            style={{ opacity: isCurrentPoolHovered || isModelHovered ? 1 : 0.5 }}
+                          />
+                        )}
+                      </g>
+                    );
+                  })}
+                </g>
               )}
-            </div>
+            </svg>
           </div>
-        </div>
 
-        {/* Node 2: Pool Gatekeeper (Balancer) */}
-        <div className="w-full flex justify-center items-center">
-          <div
-            className={`w-full max-w-[240px] flex flex-col justify-center p-5 rounded-2xl h-36 relative text-left border transition-all duration-300 z-20 ${
-              isCurrentPoolHovered
-                ? 'bg-gradient-to-tr from-primary/15 to-indigo-500/10 border-primary/45 shadow-inner shadow-primary/10'
-                : 'bg-base-200/40 border-base-content/10 hover:border-primary/45 hover:shadow-[0_0_15px_rgba(99,102,241,0.1)]'
-            }`}
-          >
-            {/* Port indicator anchors with dynamic ping animations */}
-            <div className="hidden lg:block absolute left-0 top-1/2 -translate-y-1/2 -translate-x-1/2 z-30">
-              <div ref={balancerPortLeftRef} className="w-2.5 h-2.5 rounded-full border border-primary bg-primary shadow-[0_0_8px_rgba(99,102,241,0.8)] relative flex items-center justify-center">
-                {poolLive.active_requests > 0 && (
-                  <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-primary opacity-75"></span>
-                )}
-              </div>
+          {/* Node 1: gateway */}
+          <div className="w-full h-32 flex flex-col items-center justify-center relative z-20 rounded-xl"
+               style={{ background: 'var(--c-surface-2)', border: '1px solid var(--c-line)' }}>
+            <div className="absolute top-2 left-2 flex items-center gap-1.5">
+              <span className="w-1.5 h-1.5 rounded-full animate-breathing" style={{ background: 'var(--c-good)' }} />
+              <span className="label-micro" style={{ color: 'var(--c-good)' }}>{t('pst_gateway_online', lang)}</span>
             </div>
+            <Activity className="w-6 h-6 mb-2" style={{ color: 'var(--c-good)' }} />
+            <span className="text-[0.6875rem] font-medium" style={{ color: 'var(--c-ink-3)' }}>{t('pst_gateway', lang)}</span>
+            <code className="text-[0.6875rem] font-mono font-medium mt-2 px-2 py-0.5 rounded-md"
+                  style={{ color: 'var(--c-good)', background: 'color-mix(in srgb, var(--c-good) 10%, transparent)' }}>
+              POST /v1/…
+            </code>
+
             <div className="hidden lg:block absolute right-0 top-1/2 -translate-y-1/2 translate-x-1/2 z-30">
-              <div ref={balancerPortRightRef} className="w-2.5 h-2.5 rounded-full border border-primary bg-primary shadow-[0_0_8px_rgba(99,102,241,0.8)] relative flex items-center justify-center">
-                {poolLive.active_requests > 0 && (
-                  <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-primary opacity-75"></span>
+              <div ref={gatewayPortRef} className={portSize}
+                   style={{ background: 'var(--c-good)', boxShadow: '0 0 0 2px var(--c-surface)' }} />
+            </div>
+          </div>
+
+          {/* Node 2: balancer */}
+          <div className="w-full flex justify-center items-center">
+            <div className="w-full max-w-[15rem] h-32 flex flex-col justify-center p-4 relative z-20 rounded-xl"
+                 style={{
+                   background: 'var(--c-surface-2)',
+                   border: `1px solid ${isCurrentPoolHovered ? 'var(--c-line-strong)' : 'var(--c-line)'}`,
+                   transition: 'border-color 180ms ease',
+                 }}>
+              <div className="hidden lg:block absolute left-0 top-1/2 -translate-y-1/2 -translate-x-1/2 z-30">
+                <div ref={balancerPortLeftRef} className={portSize}
+                     style={{ background: 'var(--c-accent)', boxShadow: '0 0 0 2px var(--c-surface)' }} />
+              </div>
+              <div className="hidden lg:block absolute right-0 top-1/2 -translate-y-1/2 translate-x-1/2 z-30">
+                <div ref={balancerPortRightRef} className={portSize}
+                     style={{ background: 'var(--c-accent)', boxShadow: '0 0 0 2px var(--c-surface)' }} />
+              </div>
+
+              <div className="flex items-center justify-between mb-2.5 gap-2">
+                <span className="label-micro flex items-center gap-1.5" style={{ color: 'var(--c-accent)' }}>
+                  <Zap className="w-3 h-3" /> {t('pst_balancer', lang)}
+                </span>
+                {poolLive.active_requests !== undefined && (
+                  <span className="text-[0.625rem] font-medium tabular-nums px-1.5 py-0.5 rounded"
+                        style={{ color: 'var(--c-accent)', background: 'var(--c-accent-soft)' }}>
+                    {poolLive.active_requests} {t('pst_active', lang).toLowerCase()}
+                  </span>
                 )}
               </div>
-            </div>
 
-            <div className="flex items-center justify-between mb-3">
-              <span className="text-[9px] font-bold text-primary uppercase tracking-widest flex items-center gap-1.5">
-                <Zap className="w-3.5 h-3.5 text-primary" /> Pool Balancer
+              <span className="text-sm font-semibold font-mono block mb-1" style={{ color: 'var(--c-ink)' }}>
+                {pool.name}
               </span>
-              {poolLive.active_requests !== undefined && (
-                <span className="badge badge-xs bg-primary/20 border-primary/30 font-mono font-bold text-[8px] text-primary">{poolLive.active_requests} ACTIVE</span>
+
+              {poolLive.rpm_limit !== undefined ? (
+                <div className="space-y-1.5 mt-1">
+                  <div className="flex justify-between text-[0.625rem] tabular-nums" style={{ color: 'var(--c-ink-3)' }}>
+                    <span>{t('pst_rpm_load', lang)}</span>
+                    <span style={{ color: 'var(--c-ink-2)' }}>{rpmUsed.toLocaleString()} / {poolLive.rpm_limit.toLocaleString()}</span>
+                  </div>
+                  <div className="meter" aria-hidden="true">
+                    <span style={{
+                      width: `${poolRpmPct}%`,
+                      background: poolRpmPct > 80 ? 'var(--c-critical)' : poolRpmPct > 50 ? 'var(--c-warn)' : 'var(--c-accent)',
+                    }} />
+                  </div>
+                </div>
+              ) : (
+                <div className="text-[0.6875rem] italic mt-2 flex items-center gap-2" style={{ color: 'var(--c-ink-3)' }}>
+                  <RefreshCw className="w-3 h-3 animate-spin" />
+                  {t('pst_syncing', lang)}
+                </div>
               )}
             </div>
-
-            <span className="text-sm font-black text-base-content/95 font-mono block mb-1">{pool.name}</span>
-
-            {/* Realtime RPM Dial */}
-            {poolLive.rpm_limit !== undefined ? (
-              <div className="space-y-1.5 mt-2">
-                <div className="flex justify-between text-[9px] font-bold">
-                  <span className="text-base-content/50">RPM Load</span>
-                  <span className="text-primary font-mono">{poolLive.rpm_limit - poolLive.rpm_remaining} / {poolLive.rpm_limit}</span>
-                </div>
-                <div className="w-full h-1.5 bg-base-content/20 rounded-full overflow-hidden">
-                  <div
-                    className={`h-full rounded-full transition-all duration-500 ${poolRpmPct > 80 ? 'bg-error' : poolRpmPct > 50 ? 'bg-warning' : 'bg-primary'}`}
-                    style={{width: `${poolRpmPct}%`}}
-                  ></div>
-                </div>
-              </div>
-            ) : (
-              <div className="text-[10px] text-base-content/40 italic mt-3 flex items-center gap-2">
-                <RefreshCw className="w-3.5 h-3.5 animate-spin" />
-                Syncing real-time feed...
-              </div>
-            )}
           </div>
-        </div>
 
-        {/* Node 3: Member Upstreams (Backing models) */}
-        <div className="w-full flex flex-col gap-3 relative z-20 py-2">
-          {members.map((m) => {
-            const alias = m.alias || m;
-            const modelId = m.model_id || alias;
-            // Fetch live stats for individual member model
-            const mLive = liveStats?.models?.[alias] || {};
-            const mRpmPct = mLive.rpm_limit > 0 ? Math.round((1 - mLive.rpm_remaining / mLive.rpm_limit) * 100) : 0;
+          {/* Node 3: members */}
+          <div className="w-full flex flex-col gap-2 relative z-20">
+            {members.map((m) => {
+              const alias = m.alias || m;
+              const modelId = m.model_id || alias;
+              const mLive = liveStats?.models?.[alias] || {};
 
-            const isFrozen = mLive.rpd_limit > 0 && mLive.rpd_used >= mLive.rpd_limit;
-            const statusColor = isFrozen ? 'text-error bg-error/10 border-error/20' : 'text-success bg-success/10 border-success/20';
-            const statusDot = isFrozen ? 'bg-error' : 'bg-success';
-            const statusText = isFrozen ? 'COOLDOWN' : 'HEALTHY';
-            const isCurrentModelHovered = hoveredModel === alias;
+              const isFrozen = mLive.rpd_limit > 0 && mLive.rpd_used >= mLive.rpd_limit;
+              const isCurrentModelHovered = hoveredModel === alias;
+              const statusColor = isFrozen ? 'var(--c-critical)' : 'var(--c-good)';
 
-            return (
-              <div
-                key={alias}
-                className={`p-3 rounded-2xl flex items-center justify-between gap-4 transition-all duration-300 border h-16 relative ${
-                  isCurrentModelHovered
-                    ? 'bg-base-200/60 border-purple-500/40 shadow-md scale-[1.02]'
-                    : 'bg-base-200/25 border-base-content/5 hover:border-purple-500/30'
-                }`}
-                onMouseEnter={() => setHoveredModel(alias)}
-                onMouseLeave={() => setHoveredModel(null)}
-              >
-                {/* Port indicator anchor with dynamic ping animation */}
-                <div className="hidden lg:block absolute left-0 top-1/2 -translate-y-1/2 -translate-x-1/2 z-30">
-                  <div
-                    ref={(el) => { memberPortRefs.current[alias] = el; }}
-                    className={`w-2.5 h-2.5 rounded-full border ${
-                      isFrozen ? 'border-error bg-error shadow-[0_0_8px_rgba(244,63,94,0.8)]' : 'border-purple-500 bg-purple-500 shadow-[0_0_8px_rgba(139,92,246,0.8)]'
-                    } relative flex items-center justify-center`}
-                  >
-                    {!isFrozen && mLive.active_requests > 0 && (
-                      <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-purple-500 opacity-75"></span>
-                    )}
+              return (
+                <div
+                  key={alias}
+                  className="p-2.5 rounded-lg flex items-center justify-between gap-3 relative transition-colors duration-150"
+                  style={{
+                    background: isCurrentModelHovered ? 'var(--c-surface-3)' : 'var(--c-surface-2)',
+                    border: `1px solid ${isCurrentModelHovered ? 'var(--c-line-strong)' : 'var(--c-line)'}`,
+                  }}
+                  onMouseEnter={() => setHoveredModel(alias)}
+                  onMouseLeave={() => setHoveredModel(null)}
+                >
+                  <div className="hidden lg:block absolute left-0 top-1/2 -translate-y-1/2 -translate-x-1/2 z-30">
+                    <div
+                      ref={(el) => { memberPortRefs.current[alias] = el; }}
+                      className={portSize}
+                      style={{ background: statusColor, boxShadow: '0 0 0 2px var(--c-surface)' }}
+                    />
                   </div>
-                </div>
 
-                <div className="flex items-center gap-2.5 min-w-0">
-                  <div className={`p-1.5 rounded-lg border transition-all duration-300 ${
-                    isCurrentModelHovered ? 'bg-purple-500/20 border-purple-500/35 text-purple-400' : 'bg-base-300 border-base-content/5 text-base-content/60'
-                  }`}>
-                    <Server className="w-4 h-4 shrink-0" />
-                  </div>
-                  <div className="min-w-0 text-left">
-                    <span className="text-[11px] font-bold text-base-content/85 block truncate" title={getModelFriendlyName(modelId)}>
-                      {getModelFriendlyName(modelId)}
-                    </span>
-                    <code className="text-[9px] font-mono text-base-content/40 block truncate">{modelId}</code>
-                  </div>
-                </div>
-
-                {/* Live status gauges for member */}
-                <div className="flex items-center gap-3 shrink-0">
-                  {mLive.rpm_limit !== undefined ? (
-                    <div className="flex flex-col gap-0.5 text-right font-mono text-[9px] min-w-[70px]">
-                      <div>
-                        <span className="text-[7px] text-base-content/40 uppercase font-semibold mr-1">RPM:</span>
-                        <span className="font-extrabold text-base-content/70">{mLive.rpm_limit - mLive.rpm_remaining}/{mLive.rpm_limit}</span>
-                      </div>
-                      {mLive.tpm_limit > 0 && mLive.tpm_limit < 999999999 && (
-                        <div>
-                          <span className="text-[7px] text-base-content/40 uppercase font-semibold mr-1">TPM:</span>
-                          <span className="font-extrabold text-primary">{fmt(mLive.tpm_remaining)}/{fmt(mLive.tpm_limit)}</span>
-                        </div>
-                      )}
-                      {mLive.rpd_limit > 0 && mLive.rpd_limit < 999999 && (
-                        <div>
-                          <span className="text-[7px] text-base-content/40 uppercase font-semibold mr-1">RPD:</span>
-                          <span className="font-extrabold text-warning">{mLive.rpd_limit - mLive.rpd_used}/{mLive.rpd_limit}</span>
-                        </div>
-                      )}
+                  {/* flex-1 against the shrink-0 stats block: the label gets
+                      whatever is left over, and the id wraps rather than
+                      trailing off in an ellipsis with no way to read it. */}
+                  <div className="flex items-center gap-2 min-w-0 flex-1">
+                    <Server className="w-3.5 h-3.5 shrink-0" style={{ color: 'var(--c-ink-3)' }} />
+                    <div className="min-w-0">
+                      {/* Two lines, not one: the stats block is a fixed 162 px
+                        and "Gemini 3.0 Flash (Preview)" loses 57 px to an
+                        ellipsis at one line. Wrapping costs no extra row here -
+                        the id below it already sets the card's height. */}
+                      <span className="text-xs font-medium block leading-tight line-clamp-2" title={getModelFriendlyName(modelId)}
+                            style={{ color: 'var(--c-ink)' }}>
+                        {getModelFriendlyName(modelId)}
+                      </span>
+                      <code className="text-[0.625rem] font-mono block leading-tight break-words"
+                            title={modelId} style={{ color: 'var(--c-ink-3)' }}>
+                        {modelId}
+                      </code>
                     </div>
-                  ) : (
-                    <span className="text-[8px] text-base-content/30 font-mono animate-pulse">SYNCING...</span>
-                  )}
+                  </div>
 
-                  <div className={`flex items-center gap-1 px-2 py-0.5 rounded-full border text-[8px] font-black ${statusColor}`}>
-                    <span className={`w-1 h-1 rounded-full shrink-0 ${statusDot} ${!isFrozen && 'animate-pulse'}`}></span>
-                    <span>{statusText}</span>
+                  <div className="flex items-center gap-2.5 shrink-0">
+                    {mLive.rpm_limit !== undefined ? (
+                      <div className="flex flex-col gap-0.5 text-right font-mono text-[0.625rem] tabular-nums">
+                        <div>
+                          <span className="label-micro mr-1">RPM</span>
+                          <span style={{ color: 'var(--c-ink-2)' }}>{mLive.rpm_limit - mLive.rpm_remaining}/{mLive.rpm_limit}</span>
+                        </div>
+                        {mLive.tpm_limit > 0 && mLive.tpm_limit < 999999999 && (
+                          <div>
+                            <span className="label-micro mr-1">TPM</span>
+                            <span style={{ color: 'var(--c-accent)' }}>{fmt(mLive.tpm_remaining)}/{fmt(mLive.tpm_limit)}</span>
+                          </div>
+                        )}
+                        {mLive.rpd_limit > 0 && mLive.rpd_limit < 999999 && (
+                          <div>
+                            <span className="label-micro mr-1">RPD</span>
+                            <span style={{ color: isFrozen ? 'var(--c-critical)' : 'var(--c-warn)' }}>
+                              {mLive.rpd_limit - mLive.rpd_used}/{mLive.rpd_limit}
+                            </span>
+                          </div>
+                        )}
+                      </div>
+                    ) : (
+                      <span className="text-[0.625rem] animate-pulse" style={{ color: 'var(--c-ink-3)' }}>…</span>
+                    )}
+
+                    {/* Status is colour + text + dot: never colour alone. */}
+                    <span className="flex items-center gap-1 text-[0.625rem] font-medium px-1.5 py-0.5 rounded"
+                          style={{ color: statusColor, background: `color-mix(in srgb, ${statusColor} 12%, transparent)` }}>
+                      <span className="w-1 h-1 rounded-full" style={{ background: statusColor }} />
+                      {isFrozen ? t('pst_cooldown', lang) : t('pst_healthy', lang)}
+                    </span>
                   </div>
                 </div>
-              </div>
-            );
-          })}
+              );
+            })}
+          </div>
         </div>
 
-      </div>
-
-      {/* Pool Assignment Edit Panel */}
-      {editMode && (
-        <div className="mt-6 pt-4 border-t border-base-content/10 space-y-3">
-          <div className="flex items-center justify-between">
-            <span className="text-[10px] font-extrabold uppercase tracking-wider text-base-content/40 flex items-center gap-1.5">
-              <Layers className="w-3 h-3" /> Pool Assignments ({pool.name})
+        {/* ── Assignment editor ── */}
+        {editMode && (
+          <div className="mt-5 pt-4 space-y-3" style={{ borderTop: '1px solid var(--c-line)' }}>
+            <span className="label-micro flex items-center gap-1.5">
+              <Layers className="w-3 h-3" /> {t('pst_assignments', lang)}
             </span>
-          </div>
 
-          {/* Current assignments */}
-          <div className="flex flex-wrap gap-2">
-            {pool.members
-              .filter(m => m.endpoint_name)
-              .map((m) => {
-                const ep = endpoints.find(e => e.name === m.endpoint_name);
-                return (
-                  <div key={m.endpoint_name} className="flex items-center gap-1 bg-base-200/40 rounded-lg px-2 py-1 border border-base-content/5">
-                    <span className="text-[10px] font-bold text-primary">{m.endpoint_name}</span>
-                    <ArrowRight className="w-2.5 h-2.5 text-base-content/30" />
-                    <code className="text-[10px] font-mono text-base-content/70">{m.model_id}</code>
-                    <button
+            <div className="flex flex-wrap gap-2">
+              {pool.members
+                .filter(m => m.endpoint_name)
+                .map((m) => (
+                  <div key={m.endpoint_name}
+                       className="flex items-center gap-1.5 rounded-md px-2 py-1"
+                       style={{ background: 'var(--c-surface-2)', border: '1px solid var(--c-line)' }}>
+                    <span className="text-[0.6875rem] font-medium" style={{ color: 'var(--c-accent)' }}>{m.endpoint_name}</span>
+                    <ArrowRight className="w-2.5 h-2.5" style={{ color: 'var(--c-ink-3)' }} />
+                    <code className="text-[0.6875rem] font-mono" style={{ color: 'var(--c-ink-2)' }}>{m.model_id}</code>
+                    <Button
+                      variant="ghost"
+                      size="xs"
+                      icon={X}
                       onClick={() => onPoolAssign(m.endpoint_name, pool.name, '')}
                       disabled={assigning === pool.name}
-                      className="btn btn-ghost btn-xs btn-square text-error hover:bg-error/15 ml-1"
-                      title="Remove from pool"
+                      className="ml-0.5"
+                      style={{ color: 'var(--c-critical)' }}
+                      aria-label={t('pst_remove', lang)}
+                      title={t('pst_remove', lang)}
                     >
-                      <X className="w-3 h-3" />
-                    </button>
+                      <span className="sr-only">{t('pst_remove', lang)}</span>
+                    </Button>
                   </div>
-                );
-              })}
-            {pool.members.filter(m => m.endpoint_name).length === 0 && (
-              <span className="text-[10px] text-base-content/30 italic">Chưa có custom endpoint nào được gán vào pool này</span>
+                ))}
+              {pool.members.filter(m => m.endpoint_name).length === 0 && (
+                <span className="text-[0.6875rem] italic" style={{ color: 'var(--c-ink-3)' }}>
+                  {t('pst_assign_empty', lang)}
+                </span>
+              )}
+            </div>
+
+            {endpoints.length > 0 && (
+              <div className="flex flex-wrap items-center gap-2 pt-1">
+                <span className="label-micro mr-1">{t('pst_assign_add', lang)}</span>
+                <select
+                  key={selectKey}
+                  onChange={(e) => {
+                    if (!e.target.value) return;
+                    const [epName, modelId] = e.target.value.split('|');
+                    onPoolAssign(epName, pool.name, modelId);
+                    e.target.value = '';
+                  }}
+                  disabled={assigning === pool.name}
+                  className="select select-sm text-xs font-mono max-w-[15rem]"
+                >
+                  <option value="">{t('pst_assign_choose', lang)}</option>
+                  {endpoints.filter(e => e.enabled && e.enabled_models?.length).map(ep => (
+                    ep.enabled_models.map(mid => (
+                      <option key={ep.name + '|' + mid} value={ep.name + '|' + mid}>
+                        {ep.name} → {mid}
+                      </option>
+                    ))
+                  ))}
+                </select>
+                {assigning === pool.name && <span className="loading loading-spinner loading-xs" />}
+              </div>
             )}
           </div>
-
-          {/* Add assignment */}
-          {endpoints.length > 0 && (
-            <div className="flex flex-wrap items-center gap-2 pt-1">
-              <span className="text-[10px] font-bold text-base-content/50 mr-1">Gán thêm:</span>
-              <select
-                key={selectKey}
-                onChange={(e) => {
-                  if (!e.target.value) return;
-                  const [epName, modelId] = e.target.value.split('|');
-                  onPoolAssign(epName, pool.name, modelId);
-                  e.target.value = '';
-                }}
-                disabled={assigning === pool.name}
-                className="select select-ghost select-xs text-[10px] font-mono max-w-[240px] bg-base-200/40"
-              >
-                <option value="">— Chọn endpoint + model —</option>
-                {endpoints.filter(e => e.enabled && e.enabled_models?.length).map(ep => (
-                  ep.enabled_models.map(mid => (
-                    <option key={ep.name + '|' + mid} value={ep.name + '|' + mid}>
-                      {ep.name} → {mid}
-                    </option>
-                  ))
-                ))}
-              </select>
-              {assigning === pool.name && <span className="loading loading-spinner loading-xs"></span>}
-            </div>
-          )}
-        </div>
-      )}
-    </div>
+        )}
+      </div>
+    </Card>
   );
 }
 
@@ -502,7 +516,6 @@ export default function PoolStructureTab() {
   const [editMode, setEditMode] = useState(false);
   const [assigning, setAssigning] = useState(null);
   const [selectKey, setSelectKey] = useState(0);
-  const [msg, setMsg] = useState({ text: '', type: '' });
 
   useEffect(() => {
     if (!wsHook || !wsHook.connected) return;
@@ -511,6 +524,8 @@ export default function PoolStructureTab() {
     });
     return unsub;
   }, [wsHook, wsHook?.connected]);
+
+  const [msg, setMsg] = useState({ text: '', type: '' });
 
   const showMsg = (text, type) => {
     setMsg({ text, type });
@@ -524,112 +539,70 @@ export default function PoolStructureTab() {
         method: 'POST',
         body: JSON.stringify({ name: epName, pool_name: poolName, model_id: modelId || '' }),
       }, token);
-      showMsg(`Pool ${poolName}: ${modelId ? `gán ${epName} → ${modelId}` : `xoá ${epName}`}`, 'success');
+      showMsg(t('pst_assign_ok', lang), 'success');
       setSelectKey(k => k + 1);
     } catch (err) {
-      showMsg('Pool assign error: ' + err.message, 'error');
+      showMsg(`${t('pst_assign_err', lang)}: ${err.message}`, 'error');
     } finally {
       setAssigning(null);
     }
   };
 
-  if (!muData) {
-    return <Loading message={t('loading', lang) || 'Đang tải...'} />;
-  }
+  if (!muData) return <Loading message={t('loading', lang)} />;
 
   const savings = muData.savings || {};
   const pools = muData.pools || [];
 
+  /* Cost savings: four figures that all answer "what would this have cost".
+     Standard → cached → actual → net, in that order, so the subtraction reads
+     left to right. Only "net" carries accent weight. */
+  const money = [
+    { label: t('mu_std_cost', lang), sub: t('mu_std_cost_sub', lang), value: savings.standard_cost, color: 'var(--c-ink)', icon: DollarSign },
+    { label: t('mu_cache_cost', lang), sub: t('mu_cache_cost_sub', lang), value: savings.cached_cost, color: 'var(--c-ink-2)', icon: DollarSign },
+    { label: t('mu_gemini_cost', lang), sub: t('mu_gemini_cost_sub', lang), value: savings.gemini_cost, color: 'var(--c-warn)', icon: DollarSign },
+    { label: t('mu_net_save', lang), sub: t('mu_net_save_sub', lang), value: savings.net_savings, color: 'var(--c-good)', icon: ShieldCheck },
+  ];
+
   return (
-    <div className="space-y-6">
-      {/* Title */}
-      <div className="flex flex-col sm:flex-row sm:items-start sm:justify-between gap-4 animate-tab-in">
-        <div className="text-left">
-          <h1 className="text-2xl font-black tracking-tight flex items-center gap-2">
-            <Network className="w-6 h-6 text-primary" />
-            Cấu trúc Tài nguyên & Tiết kiệm
-          </h1>
-          <p className="text-xs text-base-content/60 mt-1">
-            Báo cáo thống kê hiệu quả tiết kiệm chi phí nhờ Smart Caching và sơ đồ luồng định tuyến (Model Pools) thời gian thực.
-          </p>
-        </div>
-        <div className="flex gap-2 shrink-0">
-          <button
+    <div className="space-y-5">
+      <PageHeader
+        title={t('mu_title', lang)}
+        subtitle={t('mu_sub', lang)}
+        actions={
+          <Button
+            variant={editMode ? 'primary' : 'outline'}
+            size="sm"
+            icon={editMode ? Check : Edit3}
             onClick={() => setEditMode(v => !v)}
-            className={`btn btn-sm gap-1 font-bold transition-all ${editMode ? 'btn-primary shadow-lg shadow-primary/25' : 'btn-ghost'}`}
           >
-            <Edit3 className="w-3.5 h-3.5" />
-            {editMode ? 'Xong' : 'Edit Pool Assignments'}
-          </button>
-        </div>
+            {editMode ? t('pst_done', lang) : t('pst_edit', lang)}
+          </Button>
+        }
+      />
+
+      {msg.text && <Alert type={msg.type} message={msg.text} />}
+
+      <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3 animate-fade-in-up">
+        {money.map(({ label, sub, value, color, icon: Icon }) => (
+          <Card key={label} padding="md" className="glass-card-interactive">
+            <div className="flex items-start justify-between gap-2 mb-3">
+              <span className="label-micro leading-snug">{label}</span>
+              <Icon className="w-3.5 h-3.5 shrink-0" style={{ color }} />
+            </div>
+            <div className="text-[1.5rem] leading-none font-semibold tabular-nums"
+                 style={{ color, letterSpacing: '-0.02em' }}>
+              ${(value || 0).toFixed(4)}
+            </div>
+            <p className="text-[0.6875rem] mt-2 leading-relaxed" style={{ color: 'var(--c-ink-3)' }}>{sub}</p>
+          </Card>
+        ))}
       </div>
 
-      {msg.text && (
-        <div className={`text-xs font-semibold p-3 rounded-lg border ${
-          msg.type === 'error' ? 'bg-error/10 text-error border-error/20' : 'bg-success/10 text-success border-success/20'
-        }`}>
-          {msg.text}
-        </div>
-      )}
-
-      {/* Cost Savings Analytics */}
-      <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4 animate-fade-in-up cascade-1">
-        {/* Standard Cost */}
-        <div className="card glass-card p-5 rounded-2xl flex flex-col text-left transition-all hover:scale-[1.02] duration-300">
-          <div className="flex items-center justify-between mb-3">
-            <span className="text-xs font-bold text-base-content/60 uppercase">Chi phí gốc (Standard Cost)</span>
-            <div className="w-8 h-8 rounded-lg bg-base-content/10 text-base-content flex items-center justify-center">
-              <DollarSign className="w-4 h-4" />
-            </div>
-          </div>
-          <span className="text-2xl font-black">${(savings.standard_cost || 0).toFixed(4)}</span>
-          <span className="text-xs text-base-content/50 mt-1">Ước tính theo giá Claude</span>
-        </div>
-
-        {/* Cached Cost */}
-        <div className="card glass-card p-5 rounded-2xl flex flex-col text-left transition-all hover:scale-[1.02] duration-300">
-          <div className="flex items-center justify-between mb-3">
-            <span className="text-xs font-bold text-base-content/60 uppercase">Chi phí Caching (Cached Cost)</span>
-            <div className="w-8 h-8 rounded-lg bg-cyan-500/10 text-cyan-400 flex items-center justify-center">
-              <DollarSign className="w-4 h-4" />
-            </div>
-          </div>
-          <span className="text-2xl font-black text-cyan-400">${(savings.cached_cost || 0).toFixed(4)}</span>
-          <span className="text-xs text-base-content/50 mt-1">Lượng token đã cache</span>
-        </div>
-
-        {/* Gemini actual cost */}
-        <div className="card glass-card p-5 rounded-2xl flex flex-col text-left transition-all hover:scale-[1.02] duration-300">
-          <div className="flex items-center justify-between mb-3">
-            <span className="text-xs font-bold text-base-content/60 uppercase">Chi phí Gemini (Gemini Cost)</span>
-            <div className="w-8 h-8 rounded-lg bg-warning/10 text-warning flex items-center justify-center">
-              <DollarSign className="w-4 h-4" />
-            </div>
-          </div>
-          <span className="text-2xl font-black text-warning">${(savings.gemini_cost || 0).toFixed(4)}</span>
-          <span className="text-xs text-base-content/50 mt-1">Thực chi tại Gemini API</span>
-        </div>
-
-        {/* Net Savings */}
-        <div className="card glass-card p-5 rounded-2xl flex flex-col text-left border border-success/25 bg-success/5 shadow-lg shadow-success/5 transition-all hover:scale-[1.02] duration-300">
-          <div className="flex items-center justify-between mb-3">
-            <span className="text-xs font-bold text-success uppercase">Tổng tiết kiệm (Net Savings)</span>
-            <div className="w-8 h-8 rounded-lg bg-success/20 text-success flex items-center justify-center">
-              <ShieldCheck className="w-4 h-4" />
-            </div>
-          </div>
-          <span className="text-2xl font-black text-success">${(savings.net_savings || 0).toFixed(4)}</span>
-          <span className="text-xs text-success/80 mt-1">Đã tối ưu hóa thông minh</span>
-        </div>
-      </div>
-
-      {/* Visual Pools Section */}
-      <div className="space-y-6 animate-fade-in-up cascade-2">
-        <div className="flex items-center justify-between">
-          <h2 className="text-sm font-extrabold uppercase tracking-wider text-base-content/40 text-left">
-            Sơ đồ Định tuyến Mạng lưới Pool (Pool Routing Flow)
-          </h2>
-        </div>
+      <div className="space-y-4 animate-fade-in-up cascade-2">
+        <h2 className="text-xs font-semibold flex items-center gap-2" style={{ color: 'var(--c-ink-2)' }}>
+          <Network className="w-3.5 h-3.5" style={{ color: 'var(--c-ink-3)' }} />
+          {t('pst_flow_title', lang)}
+        </h2>
 
         {pools.map((p) => (
           <PoolFlowGraph
@@ -649,19 +622,6 @@ export default function PoolStructureTab() {
           />
         ))}
       </div>
-
-      {/* Styled custom CSS for flowing animations */}
-      <style dangerouslySetInnerHTML={{ __html: `
-        @keyframes flowing-dash {
-          to {
-            stroke-dashoffset: -20;
-          }
-        }
-        .flowing-line {
-          stroke-dasharray: 4, 6;
-          animation: flowing-dash 1.2s linear infinite;
-        }
-      `}} />
     </div>
   );
 }

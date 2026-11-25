@@ -1,34 +1,49 @@
-import React, { useState, useEffect, useCallback } from 'react';
+import { useState, useEffect, useCallback } from 'react';
 import { api } from '../utils/api';
 import { fmt, fmtD } from '../utils/format';
+import { useApp } from '../context/AppContext';
+import { t } from '../utils/i18n';
 import EditAccountModal from './EditAccountModal';
 import TokenTable from './TokenTable';
 import PasswordReveal from './PasswordReveal';
-import { TIER_BADGE } from '../utils/tier';
+import Card from './Card';
+import Badge from './Badge';
+import Button from './Button';
+import { copyText } from '../utils/clipboard';
 import {
   ShieldCheck, ShieldAlert, KeyRound, KeySquare, Edit, Copy, RefreshCw, Trash2, Gauge, Lock,
 } from 'lucide-react';
 
+const TIER_VARIANT = { admin: 'primary', premium: 'info', free: 'ghost' };
 
-function Section({ icon: Icon, title, hint, children, tone = '' }) {
+/* One titled block. The rule under the title is the only divider in the panel,
+   so the four sections read as one column of cards rather than a stack of
+   unrelated boxes. */
+function Section({ icon: Icon, title, hint, children, tone }) {
   return (
-    <section className={`card glass-card rounded-2xl p-5 text-left border ${tone || 'border-base-content/5'}`}>
-      <div className="mb-3">
-        <h3 className="font-extrabold text-sm flex items-center gap-2">
-          {Icon && <Icon className="w-4 h-4 text-primary" />} {title}
-        </h3>
-        {hint && <p className="text-[11px] text-base-content/55 mt-0.5">{hint}</p>}
+    <Card padding="lg">
+      <div className="flex items-start gap-2 mb-4 pb-2.5" style={{ borderBottom: '1px solid var(--c-line)' }}>
+        {Icon && <Icon className="w-4 h-4 shrink-0 mt-px" style={{ color: tone || 'var(--c-ink-3)' }} />}
+        <div className="min-w-0">
+          <h3 className="text-xs font-semibold" style={{ color: 'var(--c-ink)' }}>{title}</h3>
+          {hint && (
+            <p className="text-[0.6875rem] leading-snug mt-0.5" style={{ color: 'var(--c-ink-3)' }}>{hint}</p>
+          )}
+        </div>
       </div>
       {children}
-    </section>
+    </Card>
   );
 }
 
 function LimitTile({ label, value }) {
   return (
-    <div className="rounded-xl bg-base-200/40 border border-base-content/5 px-4 py-3">
-      <div className="text-[10px] font-bold uppercase tracking-wider text-base-content/50">{label}</div>
-      <div className="text-xl font-black text-base-content/90 mt-1 font-mono">{value}</div>
+    <div className="rounded-lg px-3 py-2.5"
+         style={{ background: 'var(--c-surface-2)', border: '1px solid var(--c-line)' }}>
+      <div className="label-micro">{label}</div>
+      <div className="text-lg font-semibold tabular-nums mt-1 leading-none" style={{ color: 'var(--c-ink)' }}>
+        {value}
+      </div>
     </div>
   );
 }
@@ -40,34 +55,44 @@ function LimitTile({ label, value }) {
  * that payload by the number of accounts).
  */
 export default function AccountDetailPanel({ account, token, refreshTab, notify, onSecret, onDeleted }) {
+  const { lang } = useApp();
   const [tokens, setTokens] = useState([]);
   const [tokensLoading, setTokensLoading] = useState(true);
   const [isEditOpen, setIsEditOpen] = useState(false);
   const [busy, setBusy] = useState(null);
 
-  const name = account.name;
+  const name = account?.name || '';
 
-  const loadTokens = useCallback(async () => {
+  /* `isCurrent` guards only the effect's own call: switching accounts mid-fetch
+     must not paint the previous account's keys. The issue/update/revoke handlers
+     call it bare and want the plain behaviour. */
+  const loadTokens = useCallback(async (isCurrent = () => true) => {
     setTokensLoading(true);
     try {
       const res = await api('/dashboard/admin/accounts/keys', {
         method: 'POST',
         body: JSON.stringify({ name }),
       }, token);
+      if (!isCurrent()) return;
       setTokens(res?.keys || []);
     } catch (e) {
+      if (!isCurrent()) return;
       setTokens([]);
-      notify('Không tải được token: ' + e.message, 'error');
+      notify(`${t('ac_tokens_load_err', lang)}${e.message}`, 'error');
     } finally {
-      setTokensLoading(false);
+      if (isCurrent()) setTokensLoading(false);
     }
-  }, [name, token]);
+  }, [name, token, lang, notify]);
 
-  useEffect(() => { loadTokens(); }, [loadTokens]);
+  useEffect(() => {
+    let alive = true;
+    (async () => { await loadTokens(() => alive); })();
+    return () => { alive = false; };
+  }, [loadTokens]);
 
   const run = async (key, fn) => {
     setBusy(key);
-    try { await fn(); } catch (e) { notify('Lỗi: ' + e.message, 'error'); } finally { setBusy(null); }
+    try { await fn(); } catch (e) { notify(`${t('ac_err', lang)}${e.message}`, 'error'); } finally { setBusy(null); }
   };
 
   const issueToken = async (payload) => {
@@ -76,7 +101,9 @@ export default function AccountDetailPanel({ account, token, refreshTab, notify,
     }, token);
     await loadTokens();
     refreshTab();
-    if (res?.token) onSecret({ title: `Token mới cho ${name}`, value: res.token });
+    if (res?.token) {
+      onSecret({ title: t('ac_token_of', lang).replace('{name}', name), value: res.token });
+    }
   };
 
   const updateToken = async (keyId, payload) => {
@@ -99,7 +126,8 @@ export default function AccountDetailPanel({ account, token, refreshTab, notify,
       method: 'POST', body: JSON.stringify({ name, enabled: !account.enabled }),
     }, token);
     refreshTab();
-    notify(account.enabled ? `Đã khoá ${name}` : `Đã mở khoá ${name}`, 'success');
+    const key = account.enabled ? 'ac_lock_done' : 'ac_unlock_done';
+    notify(t(key, lang).replace('{name}', name), 'success');
   });
 
   // A flag only — the stored password is untouched, so the admin needs no
@@ -109,6 +137,7 @@ export default function AccountDetailPanel({ account, token, refreshTab, notify,
       method: 'POST', body: JSON.stringify({ name, required: !account.must_change_password }),
     }, token);
     refreshTab();
+    notify(t(account.must_change_password ? 'ac_flag_cleared' : 'ac_flag_required', lang), 'success');
   });
 
   const copyMasterKey = async () => {
@@ -118,80 +147,89 @@ export default function AccountDetailPanel({ account, token, refreshTab, notify,
     try {
       const res = await api(`/dashboard/admin/accounts/master-key?name=${encodeURIComponent(name)}`, {}, token);
       if (!res?.available || !res?.auth_key) {
-        notify(res?.reason || 'Tài khoản này không có master key.', 'error');
+        notify(res?.reason || t('ac_no_master_key', lang), 'error');
         return;
       }
-      onSecret({ title: `Master Key của ${name}`, value: res.auth_key });
-      await navigator.clipboard.writeText(res.auth_key);
-      notify('Đã copy master key vào clipboard.', 'success');
-    } catch {
-      notify('Trình duyệt chặn clipboard.', 'error');
+      onSecret({ title: t('ac_master_key_of', lang).replace('{name}', name), value: res.auth_key });
+      if (await copyText(res.auth_key)) {
+        notify(t('ac_master_copied', lang), 'success');
+      } else {
+        notify(t('ac_copy_blocked', lang), 'error');
+      }
+    } catch (e) {
+      notify(`${t('ac_err', lang)}${e.message}`, 'error');
     }
   };
 
   const rotateKey = () => {
-    if (!window.confirm(`Cấp mới Master Key cho "${name}"? Key cũ bị vô hiệu hoá ngay lập tức.`)) return;
+    if (!window.confirm(t('ac_rotate_confirm', lang).replace('{name}', name))) return;
     run('rotate', async () => {
       const res = await api('/dashboard/admin/accounts/rotate-key', {
         method: 'POST', body: JSON.stringify({ name }),
       }, token);
       refreshTab();
-      if (res?.account?.auth_key) onSecret({ title: `Master Key mới của ${name}`, value: res.account.auth_key });
+      if (res?.account?.auth_key) {
+        onSecret({ title: t('ac_new_master_key_of', lang).replace('{name}', name), value: res.account.auth_key });
+      }
     });
   };
 
   const deleteAccount = () => {
-    if (!window.confirm(`Xoá vĩnh viễn "${name}"? Toàn bộ thống kê và token của tài khoản sẽ mất.`)) return;
+    if (!window.confirm(t('ac_delete_confirm', lang).replace('{name}', name))) return;
     run('delete', async () => {
       await api('/dashboard/admin/accounts/delete', {
         method: 'POST', body: JSON.stringify({ name }),
       }, token);
       refreshTab();
       onDeleted();
-      notify(`Đã xoá ${name}`, 'success');
+      notify(t('ac_deleted', lang).replace('{name}', name), 'success');
     });
   };
 
   return (
     <div className="space-y-4 animate-fade-in-up">
       {/* Identity + primary actions */}
-      <section className="card glass-card rounded-2xl p-5 text-left border border-base-content/5">
+      <Card padding="lg">
         <div className="flex flex-col sm:flex-row sm:items-center gap-4">
-          <div className="w-14 h-14 shrink-0 bg-primary/10 text-primary text-xl font-black rounded-full flex items-center justify-center border border-primary/20 uppercase">
-            {name.substring(0, 2)}
+          <div className="w-12 h-12 shrink-0 rounded-xl flex items-center justify-center text-base font-semibold uppercase"
+               style={{ background: 'var(--c-accent-soft)', color: 'var(--c-accent)' }}>
+            {(name || '?').substring(0, 2)}
           </div>
           <div className="min-w-0 flex-1">
             <div className="flex items-center gap-2 flex-wrap">
-              <h2 className="text-lg font-black truncate">{name}</h2>
-              <span className={`badge badge-sm text-[10px] font-extrabold uppercase ${TIER_BADGE[account.tier] || TIER_BADGE.free}`}>
-                {account.tier}
-              </span>
-              <span className={`badge badge-sm text-[10px] font-bold ${account.enabled ? 'badge-success badge-outline' : 'badge-ghost text-base-content/50'}`}>
-                {account.enabled ? 'Hoạt động' : 'Đã khoá'}
-              </span>
+              <h2 className="text-base font-semibold truncate" style={{ color: 'var(--c-ink)' }}>{name}</h2>
+              <Badge variant={TIER_VARIANT[account.tier] || 'ghost'} size="sm">{account.tier}</Badge>
+              <Badge variant={account.enabled ? 'success' : 'ghost'} size="sm" dot={account.enabled}>
+                {account.enabled ? t('ac_status_active', lang) : t('ac_status_disabled', lang)}
+              </Badge>
+              {account.must_change_password && (
+                <Badge variant="warning" size="sm" icon={KeySquare}>{t('ac_req_pw_change', lang)}</Badge>
+              )}
             </div>
-            <p className="text-[11px] text-base-content/45 font-mono mt-1 truncate">
-              {account.account_id} · tạo {fmtD(account.created_at)}
+            <p className="text-[0.6875rem] font-mono truncate mt-1" style={{ color: 'var(--c-ink-3)' }}>
+              {account.account_id}
+              {account.created_at ? ` · ${t('ac_created_at', lang).replace('{d}', fmtD(account.created_at))}` : ''}
             </p>
           </div>
           <div className="flex gap-2 shrink-0">
-            <button onClick={() => setIsEditOpen(true)} className="btn btn-sm btn-outline gap-1.5 font-bold">
-              <Edit className="w-3.5 h-3.5" /> Sửa hạn mức
-            </button>
-            <button
+            <Button variant="outline" icon={Edit} onClick={() => setIsEditOpen(true)}>
+              {t('ac_edit_limits', lang)}
+            </Button>
+            <Button
+              variant={account.enabled ? 'ghost' : 'success'}
+              icon={account.enabled ? ShieldAlert : ShieldCheck}
               onClick={toggleStatus}
-              disabled={busy === 'status'}
-              className={`btn btn-sm gap-1.5 font-bold ${account.enabled ? 'btn-ghost text-error hover:bg-error/15' : 'btn-success'}`}
+              loading={busy === 'status'}
+              style={account.enabled ? { color: 'var(--c-critical)' } : undefined}
             >
-              {account.enabled ? <ShieldAlert className="w-3.5 h-3.5" /> : <ShieldCheck className="w-3.5 h-3.5" />}
-              {account.enabled ? 'Khoá' : 'Mở khoá'}
-            </button>
+              {account.enabled ? t('ac_lock', lang) : t('ac_unlock', lang)}
+            </Button>
           </div>
         </div>
-      </section>
+      </Card>
 
-      <Section icon={Gauge} title="Hạn mức tài khoản" hint="Trần áp cho toàn bộ token của tài khoản này.">
-        <div className="grid grid-cols-3 gap-3">
+      <Section icon={Gauge} title={t('ac_limits_title', lang)} hint={t('ac_limits_hint', lang)}>
+        <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
           <LimitTile label="RPM" value={(account.rpm || 0).toLocaleString()} />
           <LimitTile label="TPM" value={fmt(account.tpm || 0)} />
           <LimitTile label="RPD" value={(account.rpd || 0).toLocaleString()} />
@@ -200,9 +238,8 @@ export default function AccountDetailPanel({ account, token, refreshTab, notify,
 
       <Section
         icon={KeyRound}
-        title={`Auth tokens (${tokensLoading ? '…' : tokens.length})`}
-        hint="Mỗi token có hạn mức riêng. Admin được nới trần; user chỉ siết chặt hơn hạn mức tài khoản."
-        tone="border-primary/25"
+        title={t('ac_tokens_title', lang).replace('{n}', tokensLoading ? '…' : tokens.length)}
+        hint={t('ac_tokens_hint', lang)}
       >
         <TokenTable
           tokens={tokens}
@@ -216,50 +253,56 @@ export default function AccountDetailPanel({ account, token, refreshTab, notify,
         />
       </Section>
 
-      <Section icon={Lock} title="Bảo mật & đăng nhập" hint="Mật khẩu web và master key (đường vào không bị rate limit).">
-        <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-          <div className="rounded-xl bg-base-200/30 border border-base-content/5 p-4 space-y-3">
-            <div className="text-[11px] font-bold uppercase tracking-wider text-base-content/50">Mật khẩu web</div>
+      <Section icon={Lock} title={t('ac_security_title', lang)} hint={t('ac_security_hint', lang)}>
+        <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+          <div className="rounded-lg p-4 space-y-3"
+               style={{ background: 'var(--c-surface-2)', border: '1px solid var(--c-line)' }}>
+            <div className="label-micro">{t('ac_web_pw', lang)}</div>
             <PasswordReveal token={token} accountName={name} />
-            <button
+            <Button
+              size="xs"
+              variant={account.must_change_password ? 'danger' : 'ghost'}
+              icon={KeySquare}
               onClick={toggleMustChange}
-              disabled={busy === 'mustchange'}
-              className={`btn btn-xs gap-1 font-bold normal-case ${account.must_change_password ? 'btn-warning' : 'btn-ghost border border-base-content/15'}`}
-              title="Chỉ ghi cờ, không đụng mật khẩu hiện tại"
+              loading={busy === 'mustchange'}
+              title={t('ac_pw_flag_title', lang)}
+              className="max-w-full"
             >
-              <KeySquare className="w-3 h-3" />
-              {account.must_change_password ? 'Đang yêu cầu đổi MK — bấm để bỏ' : 'Yêu cầu đổi MK ở lần đăng nhập tới'}
-            </button>
+              <span className="truncate">
+                {account.must_change_password ? t('ac_pw_flag_on', lang) : t('ac_pw_flag_off', lang)}
+              </span>
+            </Button>
           </div>
 
-          <div className="rounded-xl bg-base-200/30 border border-base-content/5 p-4 space-y-3">
-            <div className="text-[11px] font-bold uppercase tracking-wider text-base-content/50">Master key</div>
-            <code className="block text-xs font-semibold select-all break-all text-base-content/70">
+          <div className="rounded-lg p-4 space-y-3"
+               style={{ background: 'var(--c-surface-2)', border: '1px solid var(--c-line)' }}>
+            <div className="label-micro">{t('ac_master_key', lang)}</div>
+            <code className="block text-[0.6875rem] font-mono select-all break-all"
+                  style={{ color: 'var(--c-ink-3)' }}>
               {account.auth_key_masked || '—'}
             </code>
             <div className="flex flex-wrap gap-2">
-              <button onClick={copyMasterKey} className="btn btn-xs btn-ghost border border-base-content/15 gap-1 font-bold normal-case">
-                <Copy className="w-3 h-3" /> Copy
-              </button>
-              <button
-                onClick={rotateKey}
-                disabled={busy === 'rotate'}
-                className="btn btn-xs btn-ghost border border-base-content/15 gap-1 font-bold normal-case"
-              >
-                <RefreshCw className="w-3 h-3" /> Cấp mới
-              </button>
+              <Button size="xs" variant="ghost" icon={Copy} onClick={copyMasterKey}>{t('ac_copy', lang)}</Button>
+              <Button size="xs" variant="ghost" icon={RefreshCw} onClick={rotateKey} loading={busy === 'rotate'}>
+                {t('ac_rotate', lang)}
+              </Button>
             </div>
-            <p className="text-[10px] text-base-content/45">Cấp mới sẽ vô hiệu hoá key cũ ngay lập tức.</p>
+            <p className="text-[0.6875rem] leading-snug" style={{ color: 'var(--c-ink-3)' }}>
+              {t('ac_rotate_hint', lang)}
+            </p>
           </div>
         </div>
       </Section>
 
-      <Section icon={Trash2} title="Vùng nguy hiểm" tone="border-error/25">
-        <div className="flex items-center justify-between gap-4">
-          <p className="text-[11px] text-base-content/55">Xoá tài khoản kéo theo toàn bộ thống kê sử dụng và token của nó.</p>
-          <button onClick={deleteAccount} disabled={busy === 'delete'} className="btn btn-sm btn-error btn-outline gap-1.5 font-bold shrink-0">
-            <Trash2 className="w-3.5 h-3.5" /> Xoá tài khoản
-          </button>
+      <Section icon={Trash2} title={t('ac_danger_title', lang)} tone="var(--c-critical)">
+        <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3">
+          <p className="text-[0.6875rem] leading-relaxed" style={{ color: 'var(--c-ink-2)' }}>
+            {t('ac_danger_body', lang)}
+          </p>
+          <Button variant="danger" size="sm" icon={Trash2} onClick={deleteAccount} loading={busy === 'delete'}
+                  className="shrink-0 sm:self-auto self-start">
+            {t('ac_delete', lang)}
+          </Button>
         </div>
       </Section>
 

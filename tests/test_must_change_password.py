@@ -153,7 +153,9 @@ class TestAccessAndValidation:
         account_manager.create_account(name="keyonly", tier="free")
         out = _flag(world, "keyonly", True)
         assert out.status_code == 400
-        assert "chưa có mật khẩu" in out.json()["detail"]
+        # Server-side details are English now: a Vietnamese-only string here
+        # leaked into EN/JA dashboards, since the UI renders `e.message` verbatim.
+        assert "no web password" in out.json()["detail"]
 
     def test_the_refusal_did_not_invent_a_credential(self, world):
         from src.backend.accounts.manager import find_account_by_name

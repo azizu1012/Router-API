@@ -1,4 +1,4 @@
-import React, { useEffect, useState, useRef } from 'react';
+import { useEffect, useState, useMemo } from 'react';
 import { useApp } from '../context/AppContext';
 import { t } from '../utils/i18n';
 import { fmt } from '../utils/format';
@@ -7,174 +7,203 @@ import {
   LineElement, Title, Tooltip, Legend, ArcElement
 } from 'chart.js';
 import { Line, Doughnut } from 'react-chartjs-2';
-import { Calendar, BarChart3, TrendingUp, Cpu, Wifi, WifiOff, Clock, Activity } from 'lucide-react';
+import { Calendar, BarChart3, TrendingUp, Cpu, Wifi, WifiOff, Clock, Table2, LineChart } from 'lucide-react';
 import Loading from '../components/Loading';
+import PageHeader from '../components/PageHeader';
+import Card from '../components/Card';
+import Button from '../components/Button';
+import { useThemeTokens } from '../utils/themeTokens';
 
 ChartJS.register(
   CategoryScale, LinearScale, PointElement, LineElement,
   Title, Tooltip, Legend, ArcElement
 );
 
-const CLR = [
-  '#6366f1', '#10b981', '#f59e0b', '#ec4899', '#3b82f6',
-  '#8b5cf6', '#14b8a6', '#f43f5e', '#a855f7', '#06b6d4'
-];
-
-function timeAgo(timestamp) {
+/* Relative time in the reader's language. The unit strings live in i18n so a
+   Japanese operator reads 分前, not "m trước". */
+function timeAgo(timestamp, lang) {
   if (!timestamp) return '-';
   const diff = Math.floor((Date.now() - new Date(timestamp)) / 1000);
-  if (diff < 5) return 'vừa xong';
-  if (diff < 60) return `${diff}s trước`;
-  if (diff < 3600) return `${Math.floor(diff / 60)}m trước`;
-  if (diff < 86400) return `${Math.floor(diff / 3600)}h trước`;
-  return `${Math.floor(diff / 86400)}d trước`;
+  if (diff < 5) return t('time_just_now', lang);
+  if (diff < 60) return `${diff}${t('time_ago_s', lang)}`;
+  if (diff < 3600) return `${Math.floor(diff / 60)}${t('time_ago_m', lang)}`;
+  if (diff < 86400) return `${Math.floor(diff / 3600)}${t('time_ago_h', lang)}`;
+  return `${Math.floor(diff / 86400)}${t('time_ago_d', lang)}`;
 }
 
-function TimeAgo({ timestamp }) {
+/* Re-renders on a slow tick so "12s trước" does not stick at 12s forever. */
+function TimeAgo({ timestamp, lang }) {
   const [, setTick] = useState(0);
   useEffect(() => {
-    const timer = setInterval(() => setTick(t => t + 1), 2000);
+    const timer = setInterval(() => setTick(n => n + 1), 2000);
     return () => clearInterval(timer);
   }, []);
-  return <span>{timeAgo(timestamp)}</span>;
+  return <span>{timeAgo(timestamp, lang)}</span>;
 }
 
 export default function OverviewTab() {
-  const { tabData, lang, theme, refreshTab, token, wsHook } = useApp();
+  const { tabData, lang, refreshTab, wsHook } = useApp();
   const ovData = tabData.ov;
+  const tk = useThemeTokens();
 
-  const [tickingSavings, setTickingSavings] = useState(0);
-  const [clrOffset, setClrOffset] = useState(0);
   const [flipped, setFlipped] = useState(false);
   const [liveStats, setLiveStats] = useState(null);
+  const [showTable, setShowTable] = useState(false);
 
   const recentRequests = liveStats?.recent_requests || ovData?.recent_requests || [];
+  // Derived, not mirrored: the figure is whatever the last poll reported.
+  const savings = ovData?.savings?.net_savings ?? 0;
 
   useEffect(() => {
     if (!wsHook || !wsHook.connected) return;
-    const unsub = wsHook.subscribe('stats:overview', (msg) => {
+    const unsub = wsHook.subscribe('stats:overview', msg => {
       if (msg.type === 'stats_snapshot') setLiveStats(msg);
     });
     return unsub;
-  }, [wsHook, wsHook?.connected]);
+  }, [wsHook]);
 
-  // Set up savings animated ticker
-  useEffect(() => {
-    if (ovData?.savings?.net_savings !== undefined) {
-      const target = ovData.savings.net_savings;
-      setTickingSavings(target);
-      
-      const interval = setInterval(() => {
-        setTickingSavings(prev => prev + Math.random() * 0.0001);
-      }, 3500);
-      
-      return () => clearInterval(interval);
-    }
-  }, [ovData?.savings?.net_savings]);
+  /* Entity → slot. Sorted by alias so a model keeps its colour across polls,
+     across filter changes, and regardless of how the API orders the rows. */
+  const slotOf = useMemo(() => {
+    const names = [...new Set([
+      ...(ovData?.summary || []).map(r => r.model_alias),
+      ...(ovData?.daily || []).map(r => r.model_alias),
+    ].filter(Boolean))].sort((a, b) => a.localeCompare(b));
+    return new Map(names.map((n, i) => [n, i % 8]));
+  }, [ovData]);
 
-  if (!ovData) {
-    return <Loading message={t('loading', lang)} />;
-  }
+  const summary = ovData?.summary || [];
+  const daily = ovData?.daily || [];
 
-  const { summary = [], daily = [] } = ovData;
+  if (!ovData) return <Loading message={t('loading', lang)} />;
+  if (!tk) return <Loading message={t('loading', lang)} />;
 
-  // Calculate stats values
   const now = new Date();
-  const todayStr = `${now.getFullYear()}-${String(now.getMonth()+1).padStart(2,'0')}-${String(now.getDate()).padStart(2,'0')}`;
+  const todayStr = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-${String(now.getDate()).padStart(2, '0')}`;
   const todayRows = daily.filter(x => x.d === todayStr);
   const todayTokens = todayRows.reduce((a, b) => a + (b.t || 0), 0);
   const todayReqs = todayRows.reduce((a, b) => a + (b.req || 0), 0);
   const total30dTokens = summary.reduce((a, b) => a + (b.t || 0), 0);
   const total30dReqs = summary.reduce((a, b) => a + (b.req || 0), 0);
 
-  // 1. Line Chart Data (Daily stats)
   const days = [...new Set(daily.map(x => x.d))].sort();
-  const models = [...new Set(daily.map(x => x.model_alias))];
-  
+  const models = [...new Set(daily.map(x => x.model_alias))].sort((a, b) => a.localeCompare(b));
+
   const lineData = {
     labels: days,
-    datasets: models.map((m, idx) => {
-      const colorIndex = (idx + clrOffset) % CLR.length;
+    datasets: models.map(m => {
+      const c = tk.series[slotOf.get(m) ?? 0];
       return {
         label: m,
         data: days.map(day => {
           const row = daily.find(x => x.d === day && x.model_alias === m);
           return row ? row.t : 0;
         }),
-        borderColor: CLR[colorIndex],
-        backgroundColor: CLR[colorIndex] + '10',
+        borderColor: c,
+        backgroundColor: c + '14',
         fill: true,
-        tension: 0.4,
-        pointRadius: 2,
-        pointHoverRadius: 5,
+        tension: 0.35,
+        pointRadius: 0,
+        pointHoverRadius: 4,
+        pointHoverBorderWidth: 2,
+        pointHoverBackgroundColor: c,
+        pointHoverBorderColor: tk.surface,
         borderWidth: 2,
       };
-    })
+    }),
   };
+
+  const axisFont = { size: 11, family: 'Inter' };
+  const legendFont = { size: 11, family: 'Inter' };
 
   const lineOptions = {
     responsive: true,
     maintainAspectRatio: false,
+    interaction: { mode: 'index', intersect: false },
     plugins: {
       legend: {
+        position: 'top',
+        align: 'start',
         labels: {
-          color: theme === 'light' ? '#4b5563' : '#9ca3af',
-          font: { size: 10, family: 'Inter', weight: 'bold' }
-        }
+          color: tk.ink2,
+          font: legendFont,
+          boxWidth: 8,
+          boxHeight: 8,
+          usePointStyle: true,
+          pointStyle: 'rectRounded',
+          padding: 14,
+        },
       },
       tooltip: {
-        backgroundColor: 'rgba(9,13,22,0.95)',
-        borderColor: 'rgba(255,255,255,0.08)',
+        backgroundColor: tk.surface,
+        titleColor: tk.ink,
+        bodyColor: tk.ink2,
+        borderColor: tk.line,
         borderWidth: 1,
-        callbacks: {
-          label: ctx => ` ${ctx.dataset.label}: ${fmt(ctx.parsed.y)}`
-        }
-      }
+        padding: 10,
+        cornerRadius: 8,
+        boxWidth: 8,
+        boxHeight: 8,
+        usePointStyle: true,
+        callbacks: { label: ctx => ` ${ctx.dataset.label}: ${fmt(ctx.parsed.y)}` },
+      },
     },
     scales: {
       x: {
-        ticks: { color: theme === 'light' ? '#6b7280' : '#4b5563', maxTicksLimit: 7, font: { size: 9 } },
-        grid: { color: theme === 'light' ? 'rgba(0,0,0,0.03)' : 'rgba(255,255,255,0.03)' }
+        ticks: { color: tk.ink3, maxTicksLimit: 6, font: axisFont, maxRotation: 0 },
+        grid: { display: false },
+        border: { color: tk.line },
       },
       y: {
-        ticks: { color: theme === 'light' ? '#6b7280' : '#4b5563', callback: v => fmt(v), font: { size: 9 } },
-        grid: { color: theme === 'light' ? 'rgba(0,0,0,0.03)' : 'rgba(255,255,255,0.03)' }
-      }
-    }
+        beginAtZero: true,
+        ticks: { color: tk.ink3, callback: v => fmt(v), font: axisFont, maxTicksLimit: 5 },
+        grid: { color: tk.grid, drawTicks: false },
+        border: { display: false },
+      },
+    },
   };
 
-  // 2. Donut Chart Data (Model ratio)
+  const donutTotal = summary.reduce((a, b) => a + (b.t || 0), 0);
+
   const donutData = {
     labels: summary.map(x => x.model_alias),
     datasets: [{
       data: summary.map(x => x.t || 0),
-      backgroundColor: CLR.slice(0, summary.length),
-      borderWidth: 0,
-      hoverOffset: 6,
-    }]
+      backgroundColor: summary.map(x => tk.series[slotOf.get(x.model_alias) ?? 0]),
+      // The 2 px surface-coloured ring is what separates neighbouring arcs
+      // without shrinking the marks.
+      borderColor: tk.surface,
+      borderWidth: 2,
+      hoverOffset: 4,
+      hoverBorderColor: tk.surface,
+    }],
   };
 
   const donutOptions = {
     responsive: true,
     maintainAspectRatio: false,
+    cutout: '68%',
     plugins: {
-      legend: {
-        position: 'bottom',
-        labels: {
-          color: theme === 'light' ? '#4b5563' : '#9ca3af',
-          font: { size: 10, family: 'Inter' }
-        }
-      },
+      legend: { display: false },
       tooltip: {
-        backgroundColor: 'rgba(9,13,22,0.95)',
-        borderColor: 'rgba(255,255,255,0.08)',
+        backgroundColor: tk.surface,
+        titleColor: tk.ink,
+        bodyColor: tk.ink2,
+        borderColor: tk.line,
         borderWidth: 1,
+        padding: 10,
+        cornerRadius: 8,
+        boxWidth: 8,
+        boxHeight: 8,
+        usePointStyle: true,
         callbacks: {
-          label: ctx => ` ${ctx.label}: ${fmt(ctx.parsed)}`
-        }
-      }
+          label: ctx => {
+            const pct = donutTotal > 0 ? (ctx.parsed / donutTotal) * 100 : 0;
+            return ` ${ctx.label}: ${fmt(ctx.parsed)} (${pct.toFixed(1)}%)`;
+          },
+        },
+      },
     },
-    cutout: '70%'
   };
 
   const kpiCards = [
@@ -184,13 +213,11 @@ export default function OverviewTab() {
       value: fmt(todayTokens),
       subtext: `${todayReqs.toLocaleString()} ${t('requests_count', lang)}`,
       icon: <Calendar className="w-4 h-4" />,
-      colorClass: 'text-primary bg-primary/10 border-primary/15',
-      dotColor: 'bg-primary',
-      delay: 'cascade-1',
+      accent: 'var(--c-accent)',
       onClick: () => {
         refreshTab();
         window.dispatchEvent(new CustomEvent('spawn-custom-particles', { detail: { type: 'sparkles' } }));
-      }
+      },
     },
     {
       id: 'last_30_days',
@@ -198,34 +225,29 @@ export default function OverviewTab() {
       value: fmt(total30dTokens),
       subtext: `${total30dReqs.toLocaleString()} ${t('requests_count', lang)}`,
       icon: <BarChart3 className="w-4 h-4" />,
-      colorClass: 'text-cyan-400 bg-cyan-500/10 border-cyan-500/15',
-      dotColor: 'bg-cyan-400',
-      delay: 'cascade-2',
+      accent: 'var(--s-3)',
       onClick: () => {
-        setClrOffset(prev => prev + 1);
         window.dispatchEvent(new CustomEvent('spawn-custom-particles', { detail: { type: 'sparkles' } }));
-      }
+      },
     },
     {
       id: 'savings',
       title: flipped ? "Claude's Tears" : t('savings_amt', lang),
-      value: flipped ? "Claude: 😢 | Gemini: 😎" : `$${tickingSavings.toFixed(4)}`,
-      subtext: flipped ? "Unlocked secret!" : t('saved_vs_claude', lang),
+      value: flipped ? '😢' : `$${savings.toFixed(4)}`,
+      subtext: flipped ? "Claude: 😢 · Gemini: 😎" : t('saved_vs_claude', lang),
       icon: <TrendingUp className="w-4 h-4" />,
-      colorClass: flipped ? 'text-red-400 bg-red-500/10 border-red-500/15' : 'text-emerald-400 bg-emerald-500/10 border-emerald-500/15',
-      dotColor: flipped ? 'bg-red-400' : 'bg-emerald-400',
-      delay: 'cascade-3',
-      onClick: (e) => {
+      accent: flipped ? 'var(--c-critical)' : 'var(--c-good)',
+      onClick: e => {
         window.dispatchEvent(new CustomEvent('spawn-custom-particles', {
-          detail: { type: 'money', x: e.clientX, y: e.clientY }
+          detail: { type: 'money', x: e.clientX, y: e.clientY },
         }));
         window.dispatchEvent(new CustomEvent('egg-unlocked-event', { detail: { id: 'savings' } }));
       },
-      onDoubleClick: (e) => {
+      onDoubleClick: e => {
         e.stopPropagation();
-        setFlipped(prev => !prev);
+        setFlipped(p => !p);
         window.dispatchEvent(new CustomEvent('egg-unlocked-event', { detail: { id: 'claude' } }));
-      }
+      },
     },
     {
       id: 'active_models',
@@ -233,203 +255,284 @@ export default function OverviewTab() {
       value: summary.length.toString(),
       subtext: t('gemini_supported', lang),
       icon: <Cpu className="w-4 h-4" />,
-      colorClass: 'text-amber-400 bg-amber-500/10 border-amber-500/15',
-      dotColor: 'bg-amber-400',
-      delay: 'cascade-4',
+      accent: 'var(--s-4)',
       onClick: () => {
-        const tbl = document.getElementById('model-detail-table');
-        if (tbl) tbl.scrollIntoView({ behavior: 'smooth' });
-      }
-    }
+        document.getElementById('model-detail-table')?.scrollIntoView({ behavior: 'smooth' });
+      },
+    },
   ];
 
-  return (
-    <div className="space-y-6">
-      {/* Title */}
-      <div className="text-left animate-tab-in">
-        <h1 className="text-2xl font-black tracking-tight">{t('ov_title', lang)}</h1>
-        <p className="text-xs text-base-content/60 mt-1">{t('ov_sub', lang)}</p>
+  /* Pool live capacity: per-pool, with the meter filled by *consumed* share so
+     the bar and the number agree. */
+  const poolCards = (() => {
+    if (!liveStats) return null;
+    const models = liveStats.models || {};
+    const pools = {
+      flash: { rpm_rem: 0, rpm_lim: 0, tpm_rem: 0, tpm_lim: 0, cnt: 0 },
+      lite: { rpm_rem: 0, rpm_lim: 0, tpm_rem: 0, tpm_lim: 0, cnt: 0 },
+    };
+    for (const [alias, ms] of Object.entries(models)) {
+      const p = alias.includes('lite') ? pools.lite : pools.flash;
+      p.rpm_rem += ms.rpm_remaining || 0;
+      p.rpm_lim += ms.rpm_limit || 0;
+      p.tpm_rem += ms.tpm_remaining || 0;
+      p.tpm_lim += ms.tpm_limit || 0;
+      p.cnt++;
+    }
+    const out = [];
+    if (pools.flash.cnt > 0) out.push({ key: 'flash', label: 'Gemini Flash', ...pools.flash });
+    if (pools.lite.cnt > 0) out.push({ key: 'lite', label: 'Gemini Flash Lite', ...pools.lite });
+    return out;
+  })();
+
+  /* Bar and number measure the same thing — headroom left. A bar filled to the
+     right means "plenty", which is the opposite of how a load meter reads, so
+     the colour carries the alarm instead of the length. */
+  const meter = (label, remain, limit) => {
+    const left = limit > 0 ? Math.max(0, Math.min(100, Math.round((remain / limit) * 100))) : 0;
+    const color = left < 15 ? tk.critical : left < 40 ? tk.warn : tk.good;
+    return (
+      <div key={label}>
+        <div className="flex items-baseline justify-between gap-2 mb-1.5">
+          <span className="label-micro">{label}</span>
+          <span className="text-xs font-medium tabular-nums" style={{ color: 'var(--c-ink-2)' }}>
+            {remain.toLocaleString()}
+            <span style={{ color: 'var(--c-ink-3)' }}> / {limit.toLocaleString()} left</span>
+          </span>
+        </div>
+        <div className="meter" role="meter" aria-valuenow={left} aria-valuemin={0} aria-valuemax={100}
+             aria-label={`${label} headroom ${left}%`}>
+          <span style={{ width: `${left}%`, background: color }} />
+        </div>
       </div>
+    );
+  };
 
-      {/* Live Rate Limit Gauges — aggregated per pool */}
-      {liveStats && (() => {
-        const models = liveStats.models || {};
-        const pools = { flash: { rpm_rem: 0, rpm_lim: 0, tpm_rem: 0, tpm_lim: 0, cnt: 0 }, lite: { rpm_rem: 0, rpm_lim: 0, tpm_rem: 0, tpm_lim: 0, cnt: 0 } };
-        for (const [alias, ms] of Object.entries(models)) {
-          const p = alias.includes('lite') ? pools.lite : pools.flash;
-          p.rpm_rem += ms.rpm_remaining;
-          p.rpm_lim += ms.rpm_limit;
-          p.tpm_rem += ms.tpm_remaining;
-          p.tpm_lim += ms.tpm_limit;
-          p.cnt++;
-        }
-        const gauge = (label, remain, limit, unit) => {
-          const pct = limit > 0 ? Math.round((1 - remain / limit) * 100) : 0;
-          const col = pct > 80 ? 'bg-error' : pct > 50 ? 'bg-warning' : 'bg-success';
-          return (
-            <div>
-              <div className="flex items-center justify-between text-[10px] mb-1">
-                <span className="font-semibold text-base-content/50">{label}</span>
-                <span className="font-mono font-bold text-base-content">{remain.toLocaleString()}/{limit.toLocaleString()} {unit}</span>
-              </div>
-              <div className="w-full h-2 bg-base-content/20 rounded-full overflow-hidden">
-                <div className={`h-full rounded-full transition-all duration-500 ${col}`} style={{width: `${pct}%`}}></div>
-              </div>
-            </div>
-          );
-        };
-        const poolCards = [];
-        if (pools.flash.cnt > 0) poolCards.push({ key: 'flash', label: 'Gemini Flash Pool', color: 'text-cyan-400', ...pools.flash });
-        if (pools.lite.cnt > 0) poolCards.push({ key: 'lite', label: 'Gemini Flash Lite Pool', color: 'text-emerald-400', ...pools.lite });
-        return (
-          <div className="animate-fade-in-up cascade-0 space-y-2">
-            <div className="flex items-center gap-2 text-[10px] font-bold text-base-content/40 uppercase tracking-wider">
-              {wsHook.connected ? (
-                <><Wifi className="w-3 h-3 text-success" /> Pool Live Capacity</>
-              ) : (
-                <><WifiOff className="w-3 h-3 text-error" /> Offline</>
-              )}
-            </div>
-            <div className="grid grid-cols-1 lg:grid-cols-2 gap-3">
-              {poolCards.map(({ key, label, color, rpm_rem, rpm_lim, tpm_rem, tpm_lim, cnt }) => (
-                <div key={key} className="card glass-card p-4 rounded-xl border border-base-content/5">
-                  <div className="flex items-center gap-2 mb-3">
-                    <div className={`text-[12px] font-extrabold ${color}`}>{label}</div>
-                    <div className="text-[9px] text-base-content/40 ml-auto">{cnt} model{cnt > 1 ? 's' : ''}</div>
-                  </div>
-                  <div className="space-y-2.5">
-                    {gauge('RPM', rpm_rem, rpm_lim, '')}
-                    {gauge('TPM', tpm_rem, tpm_lim, '')}
-                  </div>
-                </div>
-              ))}
-            </div>
+  return (
+    <div className="space-y-5">
+      <PageHeader title={t('ov_title', lang)} subtitle={t('ov_sub', lang)} />
+
+      {poolCards && (
+        <div className="animate-fade-in-up">
+          <div className="flex items-center gap-1.5 mb-2">
+            {wsHook?.connected
+              ? <Wifi className="w-3.5 h-3.5" style={{ color: 'var(--c-good)' }} />
+              : <WifiOff className="w-3.5 h-3.5" style={{ color: 'var(--c-critical)' }} />}
+            <span className="label-micro">
+              {wsHook?.connected ? t('ov_pool_live', lang) : t('ov_offline', lang)}
+            </span>
           </div>
-        );
-      })()}
+          <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
+            {poolCards.map(p => (
+              <Card key={p.key} padding="sm">
+                <div className="flex items-baseline justify-between mb-3">
+                  <span className="text-xs font-semibold" style={{ color: 'var(--c-ink)' }}>{p.label}</span>
+                  <span className="text-[0.6875rem]" style={{ color: 'var(--c-ink-3)' }}>
+                    {t('ov_pool_members', lang).replace('{n}', p.cnt)}
+                  </span>
+                </div>
+                <div className="space-y-2.5">
+                  {meter('RPM', p.rpm_rem, p.rpm_lim)}
+                  {meter('TPM', p.tpm_rem, p.tpm_lim)}
+                </div>
+              </Card>
+            ))}
+          </div>
+        </div>
+      )}
 
-      {/* KPI Cards: 2x2 grid */}
-      <div className="grid grid-cols-2 lg:grid-cols-4 gap-4 animate-fade-in-up cascade-1">
-        {kpiCards.map((card, i) => (
-          <div
-            key={i}
+      {/* KPI row — the one place the page spends weight. */}
+      <div className="grid grid-cols-2 lg:grid-cols-4 gap-3">
+        {kpiCards.map(card => (
+          <Card
+            key={card.id}
+            padding="sm"
+            hoverable
+            role="button"
+            tabIndex={0}
             onClick={card.onClick}
             onDoubleClick={card.onDoubleClick}
-            className={`glass-card glass-card-interactive flex items-center gap-3.5 p-4 rounded-2xl border border-base-content/8 shadow-[inset_0_1px_0_0_rgba(255,255,255,0.06)] hover:bg-base-200/40 select-none animate-fade-in-up ${card.delay}`}
+            onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); card.onClick?.(e); } }}
           >
-            <div className={`w-10 h-10 rounded-xl flex items-center justify-center border shadow-sm shrink-0 ${card.colorClass}`}>
-              {card.icon}
+            <div className="flex items-center gap-1.5 mb-2.5">
+              <span style={{ color: card.accent }}>{card.icon}</span>
+              <span className="label-micro truncate">{card.title}</span>
             </div>
-            <div className="flex-1 min-w-0">
-              <span className="text-[10px] font-bold text-base-content/50 uppercase tracking-wider block truncate">{card.title}</span>
-              <span className="text-lg font-bold tracking-tight text-base-content mt-1 block leading-none truncate tabular-nums">{card.value}</span>
-              <span className="text-[9px] font-medium text-base-content/40 flex items-center gap-1.5 mt-1.5">
-                <span className={`w-1.5 h-1.5 rounded-full shrink-0 ${card.dotColor} animate-pulse`}></span>
-                <span className="truncate">{card.subtext}</span>
-              </span>
+            <div className="text-[1.75rem] leading-none font-semibold tabular-nums truncate"
+                 style={{ color: 'var(--c-ink)', letterSpacing: '-0.02em' }}>
+              {card.value}
             </div>
-          </div>
+            <div className="text-[0.6875rem] mt-2 truncate" style={{ color: 'var(--c-ink-3)' }}>
+              {card.subtext}
+            </div>
+          </Card>
         ))}
       </div>
 
-      {/* Charts Row: Line chart (60%) + Donut (40%) */}
-      <div className="grid grid-cols-1 lg:grid-cols-[1.618fr_1fr] gap-6 items-start animate-fade-in-up cascade-2">
-        {/* Daily line chart */}
-        <div className="card glass-card p-5 rounded-3xl text-left">
-          <h3 className="font-extrabold text-sm mb-4 text-base-content/85">{t('ov_daily_stats', lang)}</h3>
-          <div className="h-72 w-full">
-            <Line data={lineData} options={lineOptions} />
+      <div className="grid grid-cols-1 lg:grid-cols-[1.618fr_1fr] gap-4 items-start">
+        <Card padding="sm" className="text-left">
+          <div className="flex items-center justify-between mb-3 gap-3 flex-wrap">
+            <h3 className="text-xs font-semibold" style={{ color: 'var(--c-ink)' }}>{t('ov_daily_stats', lang)}</h3>
+            <Button
+              variant="ghost"
+              size="xs"
+              icon={showTable ? LineChart : Table2}
+              onClick={() => setShowTable(v => !v)}
+              aria-pressed={showTable}
+            >
+              {showTable ? t('ov_view_chart', lang) : t('ov_view_table', lang)}
+            </Button>
           </div>
-        </div>
 
-        {/* Model ratio donut chart */}
-        <div className="card glass-card p-5 rounded-3xl text-left border border-base-content/5">
-          <h3 className="font-extrabold text-[11px] uppercase tracking-wider text-base-content/50 mb-4">{t('ov_model_ratio', lang)}</h3>
-          <div className="h-72 w-full flex items-center justify-center">
-            {summary.length > 0 ? (
-              <Doughnut data={donutData} options={donutOptions} />
-            ) : (
-              <span className="text-xs text-base-content/40">{t('no_data', lang)}</span>
-            )}
-          </div>
-        </div>
+          {showTable ? (
+            <div className="overflow-x-auto max-h-72">
+              <table className="table table-xs w-full">
+                <thead>
+                  <tr>
+                    <th>{t('th_model', lang)}</th>
+                    <th className="text-right">{t('th_total_tokens', lang)}</th>
+                    <th className="text-right">{t('th_share', lang)}</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {summary.map(row => (
+                    <tr key={row.model_alias}>
+                      <td>
+                        <span className="flex items-center gap-2">
+                          <span className="series-dot" style={{ background: tk.series[slotOf.get(row.model_alias) ?? 0] }} />
+                          <span className="font-mono text-[0.8125rem]">{row.model_alias}</span>
+                        </span>
+                      </td>
+                      <td className="text-right tabular-nums">{fmt(row.t || 0)}</td>
+                      <td className="text-right tabular-nums" style={{ color: 'var(--c-ink-3)' }}>
+                        {donutTotal > 0 ? (((row.t || 0) / donutTotal) * 100).toFixed(1) : '0.0'}%
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          ) : (
+            <div className="h-72 w-full">
+              {models.length > 0
+                ? <Line data={lineData} options={lineOptions} />
+                : <div className="h-full grid place-items-center text-xs" style={{ color: 'var(--c-ink-3)' }}>{t('no_data', lang)}</div>}
+            </div>
+          )}
+        </Card>
+
+        <Card padding="sm" className="text-left">
+          <h3 className="text-xs font-semibold mb-3" style={{ color: 'var(--c-ink)' }}>{t('ov_model_ratio', lang)}</h3>
+          {summary.length > 0 ? (
+            <>
+              <div className="h-48 w-full">
+                <Doughnut data={donutData} options={donutOptions} />
+              </div>
+              {/* Legend carries identity so the arcs never have to. */}
+              <ul className="mt-3 space-y-1.5">
+                {summary.map(row => {
+                  const pct = donutTotal > 0 ? ((row.t || 0) / donutTotal) * 100 : 0;
+                  return (
+                    <li key={row.model_alias} className="flex items-center gap-2 text-[0.6875rem]">
+                      <span className="series-dot" style={{ background: tk.series[slotOf.get(row.model_alias) ?? 0] }} />
+                      <span className="flex-1 truncate font-mono" style={{ color: 'var(--c-ink-2)' }}>{row.model_alias}</span>
+                      <span className="tabular-nums" style={{ color: 'var(--c-ink-3)' }}>{pct.toFixed(1)}%</span>
+                    </li>
+                  );
+                })}
+              </ul>
+            </>
+          ) : (
+            <div className="h-48 grid place-items-center text-xs" style={{ color: 'var(--c-ink-3)' }}>{t('no_data', lang)}</div>
+          )}
+        </Card>
       </div>
 
-      {/* Recent Requests Section */}
-      <div className="card glass-card rounded-3xl overflow-hidden text-left border border-base-content/5 animate-fade-in-up cascade-3">
-        <div className="p-5 border-b border-base-content/5 bg-base-200/15 flex items-center justify-between">
-          <h3 className="font-extrabold text-sm text-base-content/95 flex items-center gap-2">
-            <Clock className="w-4 h-4 text-emerald-400" />
-            Yêu cầu Gần đây (Real-time)
+      <Card padding="none" className="overflow-hidden text-left">
+        <div className="px-4 py-3 flex items-center justify-between gap-3"
+             style={{ borderBottom: '1px solid var(--c-line)' }}>
+          <h3 className="text-xs font-semibold flex items-center gap-2" style={{ color: 'var(--c-ink)' }}>
+            <Clock className="w-3.5 h-3.5" style={{ color: 'var(--c-ink-3)' }} />
+            {t('ov_recent', lang)}
           </h3>
-          <span className="badge badge-success badge-xs animate-pulse font-bold text-[9px] uppercase">Live</span>
+          <span className="flex items-center gap-1.5 text-[0.6875rem] font-medium"
+                style={{ color: 'var(--c-ink-3)' }}>
+            <span className="w-1.5 h-1.5 rounded-full animate-breathing" style={{ background: 'var(--c-good)' }} />
+            {t('lg_live', lang)}
+          </span>
         </div>
         <div className="overflow-x-auto w-full">
-          <table className="table table-zebra w-full text-xs">
+          <table className="table w-full">
             <thead>
-              <tr className="border-b border-base-content/5 text-base-content/60 bg-base-200/30">
-                <th className="w-8"></th>
-                <th className="font-bold">Model</th>
-                <th className="font-bold text-right">Prompt Tokens</th>
-                <th className="font-bold text-right">Completion Tokens</th>
-                <th className="font-bold text-right">Thời gian</th>
+              <tr>
+                <th className="w-6"></th>
+                <th>{t('th_model', lang)}</th>
+                <th className="text-right">{t('th_prompt_tokens', lang)}</th>
+                <th className="text-right">{t('th_completion_tokens', lang)}</th>
+                <th className="text-right">{t('th_time', lang)}</th>
               </tr>
             </thead>
             <tbody>
-              {recentRequests.length > 0 ? (
-                recentRequests.map((r, i) => (
-                  <tr key={i} className="border-b border-base-content/5 hover:bg-base-200/50">
-                    <td>
-                      <span className="block w-1.5 h-1.5 rounded-full bg-emerald-500 animate-pulse" />
-                    </td>
-                    <td className="font-bold font-mono text-base-content/95">{r.model_alias}</td>
-                    <td className="text-right text-primary font-semibold">{fmt(r.prompt_tokens)}↑</td>
-                    <td className="text-right text-success font-semibold">{fmt(r.completion_tokens)}↓</td>
-                    <td className="text-right text-base-content/60"><TimeAgo timestamp={r.timestamp} /></td>
-                  </tr>
-                ))
-              ) : (
+              {recentRequests.length > 0 ? recentRequests.map((r, i) => (
+                <tr key={`${r.timestamp}-${i}`}>
+                  <td>
+                    <span className="block w-1.5 h-1.5 rounded-full" style={{ background: 'var(--c-good)' }} aria-hidden="true" />
+                  </td>
+                  <td className="font-mono text-[0.8125rem] whitespace-nowrap" style={{ color: 'var(--c-ink)' }}>
+                    {r.model_alias}
+                  </td>
+                  <td className="text-right tabular-nums whitespace-nowrap">{fmt(r.prompt_tokens)}</td>
+                  <td className="text-right tabular-nums whitespace-nowrap">{fmt(r.completion_tokens)}</td>
+                  <td className="text-right whitespace-nowrap" style={{ color: 'var(--c-ink-3)' }}>
+                    <TimeAgo timestamp={r.timestamp} lang={lang} />
+                  </td>
+                </tr>
+              )) : (
                 <tr>
-                  <td colSpan="5" className="text-center py-6 text-base-content/40 font-medium">
-                    Chưa có yêu cầu nào được ghi nhận.
+                  <td colSpan="5" className="text-center py-8 text-xs" style={{ color: 'var(--c-ink-3)' }}>
+                    {t('ov_recent_empty', lang)}
                   </td>
                 </tr>
               )}
             </tbody>
           </table>
         </div>
-      </div>
+      </Card>
 
-      {/* Model detailed table */}
-      <div id="model-detail-table" className="card glass-card rounded-3xl overflow-hidden text-left border border-base-content/5 animate-fade-in-up cascade-3">
-        <div className="p-5 border-b border-base-content/5 bg-base-200/15">
-          <h3 className="font-extrabold text-sm text-base-content/95">{t('ov_model_detail', lang)}</h3>
+      <Card id="model-detail-table" padding="none" className="overflow-hidden text-left">
+        <div className="px-4 py-3" style={{ borderBottom: '1px solid var(--c-line)' }}>
+          <h3 className="text-xs font-semibold" style={{ color: 'var(--c-ink)' }}>{t('ov_model_detail', lang)}</h3>
         </div>
         <div className="overflow-x-auto w-full">
-          <table className="table table-zebra w-full text-xs">
+          <table className="table w-full">
             <thead>
-              <tr className="border-b border-base-content/5 text-base-content/60 bg-base-200/30">
-                <th className="font-bold">{t('th_model', lang)}</th>
-                <th className="font-bold">{t('th_prompt_tokens', lang)}</th>
-                <th className="font-bold">{t('th_completion_tokens', lang)}</th>
-                <th className="font-bold">{t('th_total_tokens', lang)}</th>
-                <th className="font-bold">{t('th_requests', lang)}</th>
+              <tr>
+                <th>{t('th_model', lang)}</th>
+                <th className="text-right">{t('th_prompt_tokens', lang)}</th>
+                <th className="text-right">{t('th_completion_tokens', lang)}</th>
+                <th className="text-right">{t('th_total_tokens', lang)}</th>
+                <th className="text-right">{t('th_requests', lang)}</th>
               </tr>
             </thead>
             <tbody>
-              {summary.length > 0 ? (
-                summary.map((r, i) => (
-                  <tr key={i} className="border-b border-base-content/5 hover:bg-base-200/50">
-                    <td className="font-bold">{r.model_alias}</td>
-                    <td>{fmt(r.p || 0)}</td>
-                    <td>{fmt(r.c || 0)}</td>
-                    <td className="font-bold text-primary">{fmt(r.t || 0)}</td>
-                    <td>{(r.req || 0).toLocaleString()}</td>
-                  </tr>
-                ))
-              ) : (
+              {summary.length > 0 ? summary.map(r => (
+                <tr key={r.model_alias}>
+                  <td>
+                    <span className="flex items-center gap-2">
+                      <span className="series-dot" style={{ background: tk.series[slotOf.get(r.model_alias) ?? 0] }} />
+                      <span className="font-mono text-[0.8125rem]" style={{ color: 'var(--c-ink)' }}>{r.model_alias}</span>
+                    </span>
+                  </td>
+                  <td className="text-right tabular-nums whitespace-nowrap">{fmt(r.p || 0)}</td>
+                  <td className="text-right tabular-nums whitespace-nowrap">{fmt(r.c || 0)}</td>
+                  <td className="text-right tabular-nums whitespace-nowrap font-semibold" style={{ color: 'var(--c-ink)' }}>
+                    {fmt(r.t || 0)}
+                  </td>
+                  <td className="text-right tabular-nums whitespace-nowrap">{(r.req || 0).toLocaleString()}</td>
+                </tr>
+              )) : (
                 <tr>
-                  <td colSpan="5" className="text-center py-6 text-base-content/40 font-medium">
+                  <td colSpan="5" className="text-center py-8 text-xs" style={{ color: 'var(--c-ink-3)' }}>
                     {t('no_data', lang)}
                   </td>
                 </tr>
@@ -437,7 +540,7 @@ export default function OverviewTab() {
             </tbody>
           </table>
         </div>
-      </div>
+      </Card>
     </div>
   );
 }

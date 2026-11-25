@@ -7,207 +7,519 @@ lists that /v1/messages exists and shows you two nullable string headers. That
 answers the wrong question.
 
 So this module states the request shape by hand, with a runnable curl per
-endpoint. The examples are written against a placeholder token and the port from
-config, so they work as-is once the reader substitutes their own token.
+endpoint. The examples are written against a placeholder token and against the
+origin the dashboard itself was loaded from — host, port and scheme included —
+so an install behind nginx on https://api.example.com gets examples pointing at
+https://api.example.com instead of a 127.0.0.1 the reader cannot reach.
+
+Every human-readable string is a `{lang: text}` map. The dictionary is a flat
+`{key: {lang: text}}` shape for one reason: a missing translation must be visible
+in review, and a per-language catalog would let a group drift out of sync silently.
 
 Kept as data rather than JSX so it can be asserted on. If a route is renamed or
 dropped, the test that compares these paths against the app's own route table
 fails, which is the only way this stays honest.
 """
 
-from typing import Any, Dict, List
+import json
+import re
+from typing import Any, Dict, List, Optional
 
 TOKEN = "<your-token>"          # sk-<account>-<6 chars>, from the dashboard
 KEY = "<your-api-key>"          # the Gemini key, only for native Gemini routes
 
+DEFAULT_ORIGIN = "http://127.0.0.1:58100"
+LANGS = ("vi", "en", "ja")
+SAMPLE = {"vi": "Xin chào", "en": "Hello", "ja": "こんにちは"}
 
-def _curl(method: str, path: str, body: str = "", port: int = 58100) -> str:
-    lines = [f"curl -X {method} http://127.0.0.1:{port}{path} \\",
-             f'  -H "Authorization: Bearer {TOKEN}"']
-    if body:
-        lines.append("  -H \"Content-Type: application/json\" \\")
-        lines.append(f"  -d '{body}'")
-    return "\n".join(lines)
+# A host header reaches us from the client, and its value ends up inside a
+# shell-quoted curl example. Anything outside this shape is dropped rather than
+# escaped: an origin is not a place to be clever.
+_HOST_RE = re.compile(r"^[A-Za-z0-9]([A-Za-z0-9.\-]*)(:\d{1,5})?$")
+
+
+def pick(value: Any, lang: str) -> Any:
+    """Resolve a `{lang: text}` map, falling back to Vietnamese."""
+    if isinstance(value, dict):
+        return value.get(lang) or value.get("vi") or ""
+    return value
+
+
+def public_origin(request: Any) -> str:
+    """The origin the reader's browser is actually on.
+
+    Behind nginx/Caddy the app sees `Host: 127.0.0.1:58100` unless the proxy
+    forwards the original. `X-Forwarded-Host` / `X-Forwarded-Proto` carry it, so
+    we prefer those, validate them against a hostname shape, and fall back to
+    the request's own netloc before the built-in default.
+    """
+    proto = (request.headers.get("x-forwarded-proto") or "").split(",")[0].strip().lower()
+    host = (request.headers.get("x-forwarded-host") or "").split(",")[0].strip()
+
+    if proto not in ("http", "https"):
+        proto = request.url.scheme
+
+    if not _HOST_RE.match(host or ""):
+        host = (request.headers.get("host") or "").strip()
+    if not _HOST_RE.match(host or ""):
+        host = request.url.netloc
+
+    if not host:
+        return DEFAULT_ORIGIN
+    return f"{proto or 'http'}://{host}"
+
+
+SAMPLE_INSTRUCTIONS = {
+    "vi": "Trả lời ngắn gọn.",
+    "en": "Answer briefly.",
+    "ja": "簡潔に答えてください。",
+}
+
+
+def _fill(body: Any, lang: str) -> Any:
+    """Replace the language markers so the example reads in the UI language."""
+    if isinstance(body, dict):
+        return {k: _fill(v, lang) for k, v in body.items()}
+    if isinstance(body, list):
+        return [_fill(v, lang) for v in body]
+    if body == "__sample__":
+        return SAMPLE[lang]
+    if body == "__instructions__":
+        return SAMPLE_INSTRUCTIONS[lang]
+    return body
+
+
+def _curl(
+    method: str,
+    path: str,
+    origin: str,
+    body: Optional[Dict[str, Any]] = None,
+    auth: str = "token",
+) -> str:
+    """One runnable curl. `auth` is token | none.
+
+    The URL is always single-quoted: a Gemini example carries `?key=<your-api-key>`
+    and an unquoted `<` would be a shell redirect, not a placeholder.
+    """
+    parts = [f"curl -X {method} '{origin}{path}'"]
+    if auth == "token":
+        parts.append(f'-H "Authorization: Bearer {TOKEN}"')
+    if body is not None:
+        parts.append('-H "Content-Type: application/json"')
+        payload = json.dumps(body, ensure_ascii=False)
+        parts.append(f"-d '{payload}'")
+    if len(parts) == 1:
+        return parts[0]
+    return " \\\n  ".join(parts)
+
+
+def build_catalog(origin: str = DEFAULT_ORIGIN, lang: str = "vi") -> List[Dict[str, Any]]:
+    """Resolve the catalog for one origin and one language."""
+    if lang not in LANGS:
+        lang = "vi"
+    groups: List[Dict[str, Any]] = []
+
+    for group in CATALOG:
+        endpoints = []
+        for ep in group["endpoints"]:
+            path = ep.get("example_path") or ep["path"]
+            auth = ep.get("auth", "token")
+            built: Dict[str, Any] = {
+                "method": ep["method"],
+                "path": ep["path"],
+                "aliases": list(ep.get("aliases", [])),
+                "note": pick(ep["note"], lang),
+                "curl": _curl(ep["method"], path, origin,
+                              _fill(ep["request"], lang) if ep.get("request") else None, auth),
+            }
+            if ep.get("stream_request") is not None:
+                built["curl_stream"] = _curl(ep["method"], path, origin,
+                                             _fill(ep["stream_request"], lang), auth)
+            if ep.get("search_request") is not None:
+                built["curl_search"] = _curl(ep["method"], path, origin,
+                                             _fill(ep["search_request"], lang), auth)
+            endpoints.append(built)
+        groups.append({
+            "id": group["id"],
+            "group": pick(group["group"], lang),
+            "summary": pick(group["summary"], lang),
+            "endpoints": endpoints,
+        })
+
+    return groups
+
+
+def build_notes(lang: str = "vi") -> List[Dict[str, str]]:
+    if lang not in LANGS:
+        lang = "vi"
+    return [{"title": pick(n["title"], lang), "body": pick(n["body"], lang)} for n in NOTES]
 
 
 CATALOG: List[Dict[str, Any]] = [
     {
-        "group": "Anthropic Messages API",
+        "group": {
+            "vi": "Anthropic Messages API",
+            "en": "Anthropic Messages API",
+            "ja": "Anthropic Messages API",
+        },
         "id": "anthropic",
-        "summary": "Claude Code và mọi client nói chuẩn Anthropic. Cùng một endpoint "
-                   "cho cả stream và non-stream.",
+        "summary": {
+            "vi": "Claude Code và mọi client nói chuẩn Anthropic. Cùng một endpoint "
+                  "cho cả stream và non-stream.",
+            "en": "Claude Code and every client that speaks the Anthropic format. One "
+                  "endpoint serves both stream and non-stream.",
+            "ja": "Claude Code など Anthropic 形式のクライアント向け。ストリームと"
+                  "非ストリームを同じエンドポイントで扱います。",
+        },
         "endpoints": [
             {
                 "method": "POST",
                 "path": "/v1/messages",
                 "aliases": ["/messages"],
-                "note": "\"stream\": true trả SSE theo chuẩn Anthropic. "
-                        "\"tools\" dùng input_schema kiểu Anthropic. "
-                        "\"output_config\": {\"effort\": \"high\"} điều khiển mức suy nghĩ.",
-                "curl": _curl("POST", "/v1/messages", '{"model":"gemini-flash-35","max_tokens":1024,'
-                                                '"messages":[{"role":"user","content":"Xin chào"}]}'),
-                "curl_stream": _curl("POST", "/v1/messages", '{"model":"gemini-flash-35","max_tokens":1024,'
-                                                       '"stream":true,"messages":[{"role":"user","content":"Xin chào"}]}'),
+                "note": {
+                    "vi": "\"stream\": true trả SSE theo chuẩn Anthropic. "
+                          "\"tools\" dùng input_schema kiểu Anthropic. "
+                          "\"output_config\": {\"effort\": \"high\"} điều khiển mức suy nghĩ.",
+                    "en": "\"stream\": true returns SSE in the Anthropic format. "
+                          "\"tools\" takes an Anthropic-style input_schema. "
+                          "\"output_config\": {\"effort\": \"high\"} sets how hard the model thinks.",
+                    "ja": "\"stream\": true で Anthropic 形式の SSE を返します。"
+                          "\"tools\" は Anthropic 形式の input_schema を使います。"
+                          "\"output_config\": {\"effort\": \"high\"} で思考量を指定できます。",
+                },
+                "request": {"model": "gemini-flash-35", "max_tokens": 1024,
+                            "messages": [{"role": "user", "content": "__sample__"}]},
+                "stream_request": {"model": "gemini-flash-35", "max_tokens": 1024, "stream": True,
+                                   "messages": [{"role": "user", "content": "__sample__"}]},
             },
             {
                 "method": "POST",
                 "path": "/v1/messages/count_tokens",
-                "note": "Ước lượng token theo chuẩn Anthropic, không gọi provider.",
-                "curl": _curl("POST", "/v1/messages/count_tokens", '{"model":"gemini-flash",'
-                        '"messages":[{"role":"user","content":"Xin chào"}]}'),
+                "note": {
+                    "vi": "Ước lượng token theo chuẩn Anthropic, không gọi provider.",
+                    "en": "Estimates tokens in the Anthropic format without calling the provider.",
+                    "ja": "プロバイダを呼ばずに Anthropic 形式でトークン数を見積もります。",
+                },
+                "request": {"model": "gemini-flash",
+                            "messages": [{"role": "user", "content": "__sample__"}]},
             },
         ],
     },
     {
-        "group": "OpenAI Chat Completions",
+        "group": {
+            "vi": "OpenAI Chat Completions",
+            "en": "OpenAI Chat Completions",
+            "ja": "OpenAI Chat Completions",
+        },
         "id": "openai-chat",
-        "summary": "OpenAI SDK, Cline, Roo Code, và bất kỳ client nói chuẩn OpenAI.",
+        "summary": {
+            "vi": "OpenAI SDK, Cline, Roo Code, và bất kỳ client nói chuẩn OpenAI.",
+            "en": "OpenAI SDK, Cline, Roo Code, and any client that speaks the OpenAI format.",
+            "ja": "OpenAI SDK、Cline、Roo Code など OpenAI 形式のクライアント向け。",
+        },
         "endpoints": [
             {
                 "method": "POST",
                 "path": "/v1/chat/completions",
-                "note": "\"tools\" dùng parameters kiểu OpenAI. "
-                        "\"reasoning_effort\": low|medium|high được map sang mức nghĩ của Gemini.",
-                "curl": _curl("POST", "/v1/chat/completions", '{"model":"gemini-flash",'
-                        '"messages":[{"role":"user","content":"Xin chào"}]}'),
+                "note": {
+                    "vi": "\"tools\" dùng parameters kiểu OpenAI. "
+                          "\"reasoning_effort\": low|medium|high được map sang mức nghĩ của Gemini.",
+                    "en": "\"tools\" takes OpenAI-style parameters. "
+                          "\"reasoning_effort\": low|medium|high maps onto Gemini's thinking budget.",
+                    "ja": "\"tools\" は OpenAI 形式の parameters を使います。"
+                          "\"reasoning_effort\": low|medium|high は Gemini の思考量に対応します。",
+                },
+                "request": {"model": "gemini-flash",
+                            "messages": [{"role": "user", "content": "__sample__"}]},
             },
             {
                 "method": "POST",
                 "path": "/opencode/v1/chat/completions",
                 "aliases": [],
-                "note": "Bản OpenCode: trả tool_calls dạng OpenCode và giữ tên model khớp opencode.json.",
-                "curl": _curl("POST", "/opencode/v1/chat/completions", '{"model":"gemini-flash",'
-                        '"messages":[{"role":"user","content":"Xin chào"}]}'),
+                "note": {
+                    "vi": "Bản OpenCode: trả tool_calls dạng OpenCode và giữ tên model khớp opencode.json.",
+                    "en": "The OpenCode flavour: tool_calls come back in OpenCode's shape and model "
+                          "names match opencode.json.",
+                    "ja": "OpenCode 向け: tool_calls を OpenCode 形式で返し、モデル名は opencode.json と一致します。",
+                },
+                "request": {"model": "gemini-flash",
+                            "messages": [{"role": "user", "content": "__sample__"}]},
             },
             {
                 "method": "GET",
                 "path": "/v1/models",
-                "note": "Schema superset: vừa đúng kiểu OpenAI vừa đúng kiểu Anthropic.",
-                "curl": _curl("GET", "/v1/models"),
+                "note": {
+                    "vi": "Schema superset: vừa đúng kiểu OpenAI vừa đúng kiểu Anthropic.",
+                    "en": "A schema superset: valid as OpenAI and as Anthropic at the same time.",
+                    "ja": "スキーマの上位互換: OpenAI 形式としても Anthropic 形式としても有効です。",
+                },
             },
         ],
     },
     {
-        "group": "OpenAI Responses API",
+        "group": {
+            "vi": "OpenAI Responses API",
+            "en": "OpenAI Responses API",
+            "ja": "OpenAI Responses API",
+        },
         "id": "openai-responses",
-        "summary": "Endpoint kiểu Responses. Đây là chỗ \"có respond\" — và là chỗ "
-                   "mapping chứ không phải chuyển tiếp trong suốt.",
+        "summary": {
+            "vi": "Endpoint kiểu Responses. Đây là chỗ \"có respond\" — và là chỗ "
+                  "mapping chứ không phải chuyển tiếp trong suốt.",
+            "en": "The Responses-style endpoint. This is where a response object is assembled, "
+                  "and where the router maps rather than passes through.",
+            "ja": "Responses 形式のエンドポイント。レスポンスを組み立てる場所であり、"
+                  "そのまま中継せずマッピングする場所です。",
+        },
         "endpoints": [
             {
                 "method": "POST",
                 "path": "/v1/responses",
-                "note": "tools dùng kiểu Responses. Gửi "
-                        "\"tools\":[{\"type\":\"web_search\"}] để bật tìm kiếm server-side: "
-                        "router chạy tìm kiếm Router-owned với trích dẫn, nên client "
-                        "không phải tự vòng lặp. "
-                        "\"instructions\" thành system message, \"reasoning\":{\"effort\"} "
-                        "thành reasoning_effort, \"stream\": true trả SSE.",
-                "curl": _curl("POST", "/v1/responses", '{"model":"gemini-flash",'
-                        '"instructions":"Trả lời ngắn gọn.","input":"Ai là Turing?"}'),
-                "curl_search": _curl("POST", "/v1/responses", '{"model":"gemini-flash",'
-                        '"input":"Tin mới nhất về Rust 2.0?","tools":[{"type":"web_search"}]}'),
+                "note": {
+                    "vi": "tools dùng kiểu Responses. Gửi "
+                          "\"tools\":[{\"type\":\"web_search\"}] để bật tìm kiếm server-side: "
+                          "router chạy tìm kiếm Router-owned với trích dẫn, nên client "
+                          "không phải tự vòng lặp. "
+                          "\"instructions\" thành system message, \"reasoning\":{\"effort\"} "
+                          "thành reasoning_effort, \"stream\": true trả SSE.",
+                    "en": "tools take the Responses shape. Send "
+                          "\"tools\":[{\"type\":\"web_search\"}] to enable server-side search: "
+                          "the router runs its own search with citations, so the client does not "
+                          "loop. \"instructions\" becomes a system message, \"reasoning\":{\"effort\"} "
+                          "becomes reasoning_effort, \"stream\": true returns SSE.",
+                    "ja": "tools は Responses 形式です。"
+                          "\"tools\":[{\"type\":\"web_search\"}] を送るとサーバー側検索が有効になり、"
+                          "ルーターが引用付きで検索を実行するためクライアント側のループは不要です。"
+                          "\"instructions\" は system メッセージに、\"reasoning\":{\"effort\"} は "
+                          "reasoning_effort に、\"stream\": true は SSE になります。",
+                },
+                "request": {"model": "gemini-flash",
+                            "instructions": "__instructions__",
+                            "input": "__sample__"},
+                "search_request": {"model": "gemini-flash",
+                                   "input": "__sample__",
+                                   "tools": [{"type": "web_search"}]},
             },
         ],
     },
     {
-        "group": "Gemini native (pass-through)",
+        "group": {
+            "vi": "Gemini native (pass-through)",
+            "en": "Gemini native (pass-through)",
+            "ja": "Gemini native（パススルー）",
+        },
         "id": "gemini-native",
-        "summary": "Giữ nguyên kiểu Gemini, dùng key Gemini trực tiếp thay vì token router. "
-                   "Không quay vòng key, không đổi model.",
+        "summary": {
+            "vi": "Giữ nguyên kiểu Gemini, dùng key Gemini trực tiếp thay vì token router. "
+                  "Không quay vòng key, không đổi model.",
+            "en": "Keeps the Gemini shape and takes a Gemini key directly instead of a router "
+                  "token. No key rotation, no model remapping.",
+            "ja": "Gemini 形式のまま、ルータートークンではなく Gemini キーを直接使います。"
+                  "キーのローテーションもモデルの変換も行いません。",
+        },
         "endpoints": [
             {
                 "method": "POST",
                 "path": "/v1beta/models/{model_id}:generateContent",
                 "aliases": ["/v1/models/{model_id}:generateContent",
                             "/v1alpha/models/{model_id}:generateContent"],
-                "note": "Pass-through. Nhận token qua query ?key= hoặc header x-goog-api-key. "
-                        "Ba version v1, v1beta, v1alpha đều trỏ cùng một handler.",
-                "curl": f"curl -X POST 'http://127.0.0.1:58100/v1beta/models/gemini-3.5-flash:generateContent?key={KEY}' \\\n"
-                        f"  -H 'Content-Type: application/json' \\\n"
-                        f"  -d '{{\"contents\":[{{\"role\":\"user\",\"parts\":[{{\"text\":\"Xin chào\"}}]}}]}}'",
+                "example_path": "/v1beta/models/gemini-3.5-flash:generateContent?key=<your-api-key>",
+                "auth": "none",
+                "note": {
+                    "vi": "Pass-through. Nhận token qua query ?key= hoặc header x-goog-api-key. "
+                          "Ba version v1, v1beta, v1alpha đều trỏ cùng một handler.",
+                    "en": "Pass-through. Takes the key via ?key= or the x-goog-api-key header. "
+                          "The v1, v1beta and v1alpha paths all hit the same handler.",
+                    "ja": "パススルー。キーは ?key= または x-goog-api-key ヘッダーで渡します。"
+                          "v1 / v1beta / v1alpha は同じハンドラーに接続されます。",
+                },
+                "request": {"contents": [{"role": "user", "parts": [{"text": "__sample__"}]}]},
             },
             {
                 "method": "POST",
                 "path": "/v1beta/models/{model_id}:streamGenerateContent",
                 "aliases": ["/v1/models/{model_id}:streamGenerateContent",
                             "/v1alpha/models/{model_id}:streamGenerateContent"],
-                "note": "Bản streaming của endpoint trên.",
-                "curl": f"curl -X POST 'http://127.0.0.1:58100/v1beta/models/gemini-3.5-flash:streamGenerateContent?key={KEY}' \\\n"
-                        f"  -H 'Content-Type: application/json' \\\n"
-                        f"  -d '{{\"contents\":[{{\"role\":\"user\",\"parts\":[{{\"text\":\"Xin chào\"}}]}}]}}'",
+                "example_path": "/v1beta/models/gemini-3.5-flash:streamGenerateContent?key=<your-api-key>",
+                "auth": "none",
+                "note": {
+                    "vi": "Bản streaming của endpoint trên.",
+                    "en": "The streaming form of the endpoint above.",
+                    "ja": "上のエンドポイントのストリーミング版です。",
+                },
+                "request": {"contents": [{"role": "user", "parts": [{"text": "__sample__"}]}]},
             },
         ],
     },
     {
-        "group": "Tìm kiếm web",
+        "group": {
+            "vi": "Tìm kiếm web",
+            "en": "Web search",
+            "ja": "Web 検索",
+        },
         "id": "search",
-        "summary": "Search là tính năng riêng của router, không cần dùng trong chat. "
-                   "DuckDuckGo không đụng Gemini key nào, nên agent loop nhiều search "
-                   "gần như không tốn hạn mức.",
+        "summary": {
+            "vi": "Search là tính năng riêng của router, không cần dùng trong chat. "
+                  "DuckDuckGo không đụng Gemini key nào, nên agent loop nhiều search "
+                  "gần như không tốn hạn mức.",
+            "en": "Search is a feature of the router itself, usable outside chat. DuckDuckGo "
+                  "touches no Gemini key, so an agent that searches in a loop spends almost "
+                  "no quota.",
+            "ja": "検索はルーター独自の機能で、チャット以外からも使えます。DuckDuckGo は "
+                  "Gemini キーを消費しないため、検索を繰り返すエージェントでもクォータをほぼ使いません。",
+        },
         "endpoints": [
             {
                 "method": "POST",
                 "path": "/v1/search",
                 "aliases": ["/search"],
-                "note": "\"search_engine\": duckduckgo (mặc định, 0 quota) | "
-                        "duckduckgo (tìm kiếm Router-owned, không dùng quota model).",
-                "curl": _curl("POST", "/v1/search", '{"query":"tin tức Rust mới nhất",'
-                        '"search_engine":"duckduckgo"}'),
+                "note": {
+                    "vi": "\"search_engine\": duckduckgo (mặc định, 0 quota) | "
+                          "duckduckgo (tìm kiếm Router-owned, không dùng quota model).",
+                    "en": "\"search_engine\": duckduckgo (default, 0 quota) — a router-owned "
+                          "search that never spends model quota.",
+                    "ja": "\"search_engine\": duckduckgo（既定、クォータ 0）— ルーター側の検索で、"
+                          "モデルのクォータを消費しません。",
+                },
+                "request": {"query": "__sample__", "search_engine": "duckduckgo"},
             },
         ],
     },
     {
-        "group": "Vận hành",
+        "group": {
+            "vi": "Vận hành",
+            "en": "Operations",
+            "ja": "運用",
+        },
         "id": "ops",
-        "summary": "Kiểm tra sức khỏe và liệt kê model.",
+        "summary": {
+            "vi": "Kiểm tra sức khỏe và liệt kê model.",
+            "en": "Health checks and model listings.",
+            "ja": "ヘルスチェックとモデル一覧。",
+        },
         "endpoints": [
-            {"method": "GET", "path": "/health", "note": "Không cần token.",
-             "curl": "curl -X GET http://127.0.0.1:58100/health"},
-            {"method": "GET", "path": "/api/help", "note": "Chính trang này, dạng JSON. "
-                                                              "Cần session token của dashboard, "
-                                                              "không dùng token API thường.",
-             "curl": _curl("GET", "/api/help")},
-            {"method": "GET", "path": "/preflight", "note": "Kiểm tra key và model trước khi chạy.",
-             "curl": _curl("GET", "/preflight")},
+            {
+                "method": "GET",
+                "path": "/health",
+                "auth": "none",
+                "note": {
+                    "vi": "Không cần token.",
+                    "en": "Needs no token.",
+                    "ja": "トークン不要です。",
+                },
+            },
+            {
+                "method": "GET",
+                "path": "/api/help",
+                "note": {
+                    "vi": "Chính trang này, dạng JSON. Cần session token của dashboard, "
+                          "không dùng token API thường.",
+                    "en": "This page as JSON. Needs a dashboard session token, not a regular "
+                          "API token.",
+                    "ja": "このページの JSON 版。通常の API トークンではなく、"
+                          "ダッシュボードのセッショントークンが必要です。",
+                },
+            },
+            {
+                "method": "GET",
+                "path": "/preflight",
+                "note": {
+                    "vi": "Kiểm tra key và model trước khi chạy.",
+                    "en": "Checks keys and models before a run.",
+                    "ja": "実行前にキーとモデルを確認します。",
+                },
+            },
         ],
     },
 ]
 
-NOTES: List[Dict[str, str]] = [
+NOTES: List[Dict[str, Any]] = [
     {
-        "title": "Token nào dùng được",
-        "body": "sk-<tên-tài-khoản>-<6 ký tự>, tạo trong tab tài khoản. "
-                "Master key (sk- + 43 ký tự) cũng gọi được nhưng không bị giới hạn RPM/TPM.",
+        "title": {"vi": "Token nào dùng được", "en": "Which token works",
+                  "ja": "使えるトークン"},
+        "body": {
+            "vi": "sk-<tên-tài-khoản>-<6 ký tự>, tạo trong tab tài khoản. "
+                  "Master key (sk- + 43 ký tự) cũng gọi được nhưng không bị giới hạn RPM/TPM.",
+            "en": "sk-<account-name>-<6 chars>, created in the accounts tab. A master key "
+                  "(sk- plus 43 chars) also works but carries no RPM/TPM limit.",
+            "ja": "sk-<アカウント名>-<6 文字>。アカウントタブで作成します。マスターキー"
+                  "（sk- と 43 文字）も使えますが、RPM/TPM の制限はありません。",
+        },
     },
     {
-        "title": "Nguồn suy nghĩ từ đâu",
-        "body": "Gemini trả reasoning_content và thought_signature. Khi xuất ra protocol "
-                "Anthropic, signature được chế từ nội dung suy nghĩ vì Anthropic chỉ cần "
-                "chuỗi non-empty. Khi gửi lại cho Gemini, chính signature thật được truyền "
-                "lại — Gemini 3 trả 400 nếu thiếu.",
+        "title": {"vi": "Nguồn suy nghĩ từ đâu", "en": "Where reasoning comes from",
+                  "ja": "推論の出どころ"},
+        "body": {
+            "vi": "Gemini trả reasoning_content và thought_signature. Khi xuất ra protocol "
+                  "Anthropic, signature được chế từ nội dung suy nghĩ vì Anthropic chỉ cần "
+                  "chuỗi non-empty. Khi gửi lại cho Gemini, chính signature thật được truyền "
+                  "lại — Gemini 3 trả 400 nếu thiếu.",
+            "en": "Gemini returns reasoning_content and thought_signature. On the way out to the "
+                  "Anthropic protocol the signature is synthesised from the thinking text, since "
+                  "Anthropic only needs a non-empty string. On the way back to Gemini the real "
+                  "signature is forwarded — Gemini 3 answers 400 without it.",
+            "ja": "Gemini は reasoning_content と thought_signature を返します。Anthropic 形式へ"
+                  "変換する際、Anthropic は空でない文字列しか要求しないため、思考テキストから"
+                  "署名を合成します。Gemini へ戻すときは本物の署名を転送します — Gemini 3 は"
+                  "署名がないと 400 を返します。",
+        },
     },
     {
-        "title": "Pool model",
-        "body": "gemini-flash và gemini-flash-lite là pool ảo, không phải model thật. "
-                "Router thử lần lượt các member phía sau, mỗi member một slot đồng thời. "
-                "Dùng gemini-flash-38 tới gemini-flash-25 để ghim đúng một member.",
+        "title": {"vi": "Pool model", "en": "Model pools", "ja": "モデルプール"},
+        "body": {
+            "vi": "gemini-flash và gemini-flash-lite là pool ảo, không phải model thật. "
+                  "Router thử lần lượt các member phía sau, mỗi member một slot đồng thời. "
+                  "Dùng gemini-flash-38 tới gemini-flash-25 để ghim đúng một member.",
+            "en": "gemini-flash and gemini-flash-lite are virtual pools, not real models. The "
+                  "router tries the members behind them in turn, one concurrency slot each. Use "
+                  "gemini-flash-38 through gemini-flash-25 to pin one specific member.",
+            "ja": "gemini-flash と gemini-flash-lite は実モデルではなく仮想プールです。"
+                  "ルーターは背後メンバーを順に試し、各メンバーが 1 つの同時実行スロットを持ちます。"
+                  "gemini-flash-38 〜 gemini-flash-25 を指定すると 1 メンバーに固定できます。",
+        },
     },
     {
-        "title": "Search trong chat khác gì /v1/search",
-        "body": "Client chat tự lo search: gửi web_search true (Anthropic/OpenAI) hoặc "
-                "tools web_search (Responses) đều đi qua tìm kiếm Router-owned. "
-                "Còn app tự điều phối thì gọi /v1/search rồi đưa "
-                "kết quả vào lượt sau — rẻ hơn vì không phải gọi lại model.",
+        "title": {"vi": "Search trong chat khác gì /v1/search",
+                  "en": "Search inside chat vs /v1/search",
+                  "ja": "チャット内検索と /v1/search の違い"},
+        "body": {
+            "vi": "Client chat tự lo search: gửi web_search true (Anthropic/OpenAI) hoặc "
+                  "tools web_search (Responses) đều đi qua tìm kiếm Router-owned. "
+                  "Còn app tự điều phối thì gọi /v1/search rồi đưa "
+                  "kết quả vào lượt sau — rẻ hơn vì không phải gọi lại model.",
+            "en": "A chat client can search for itself: web_search true (Anthropic/OpenAI) or a "
+                  "web_search tool (Responses) both go through the router-owned search. An app "
+                  "that orchestrates on its own calls /v1/search and feeds the results into the "
+                  "next turn — cheaper, since the model is not called twice.",
+            "ja": "チャットクライアント自身が検索する場合、web_search true（Anthropic/OpenAI）"
+                  "または web_search ツール（Responses）がいずれもルーター側の検索を通ります。"
+                  "アプリ側で制御する場合は /v1/search を呼び、結果を次のターンに渡します — "
+                  "モデルを二度呼ばない分だけ安く済みます。",
+        },
     },
     {
-        "title": "Chỉ chạy một worker",
-        "body": "SQLite locking là process-local. Nhiều Uvicorn worker sẽ dính "
-                "database is locked.",
+        "title": {"vi": "Chỉ chạy một worker", "en": "Run a single worker",
+                  "ja": "ワーカーは 1 つだけ"},
+        "body": {
+            "vi": "SQLite locking là process-local. Nhiều Uvicorn worker sẽ dính "
+                  "database is locked.",
+            "en": "SQLite locking is process-local. Several Uvicorn workers end up with "
+                  "\"database is locked\".",
+            "ja": "SQLite のロックはプロセス単位です。Uvicorn ワーカーを複数にすると "
+                  "\"database is locked\" が発生します。",
+        },
     },
 ]
 
 
-def help_payload() -> Dict[str, Any]:
-    """The whole catalog, as the dashboard consumes it."""
-    return {"groups": CATALOG, "notes": NOTES}
-
+def help_payload(origin: Optional[str] = None, lang: str = "vi") -> Dict[str, Any]:
+    """The whole catalog, resolved for one origin and one language."""
+    origin = (origin or DEFAULT_ORIGIN).rstrip("/")
+    if lang not in LANGS:
+        lang = "vi"
+    return {
+        "base_url": origin,
+        "lang": lang,
+        "groups": build_catalog(origin, lang),
+        "notes": build_notes(lang),
+    }

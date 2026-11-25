@@ -1,4 +1,17 @@
-import React, { useEffect, useRef } from 'react';
+import { useEffect, useRef } from 'react';
+
+/* The celestial ornament — the crescent in dark, the sun in light — is drawn
+   behind everything and is also the 5-click easter-egg hotspot. It used to sit
+   at (W - 140, 120), which is exactly where PageHeader puts a tab's action
+   buttons, so on five tabs the crescent was sliced in half by "Tải lại". It now
+   hugs the bottom-right corner: still a right-aligned motif, clear of every
+   tab's header band. One helper feeds the draw, the hit test and the resize
+   handler so the three can never drift apart. */
+const ORB_MARGIN_X = 96;
+const ORB_MARGIN_Y = 84;
+const ORB_HIT_RADIUS = 45;
+const ORB_RAY_LENGTH = 150;
+const orbPosition = (w, h) => ({ x: w - ORB_MARGIN_X, y: h - ORB_MARGIN_Y });
 
 export default function CanvasParticles() {
   const canvasRef = useRef(null);
@@ -250,11 +263,10 @@ export default function CanvasParticles() {
     const handleWindowClick = (e) => {
       const activeTheme = document.documentElement.getAttribute('data-theme') || 'dark';
       const W = window.innerWidth;
-      const targetX = W - 140;
-      const targetY = 120;
+      const { x: targetX, y: targetY } = orbPosition(W, window.innerHeight);
       const dist = Math.hypot(e.clientX - targetX, e.clientY - targetY);
 
-      if (dist < 45) {
+      if (dist < ORB_HIT_RADIUS) {
         if (activeTheme === 'light') {
           sunClicks++;
           if (sunClicks >= 5) {
@@ -397,8 +409,7 @@ export default function CanvasParticles() {
 
       // ─── LIGHT THEME (Pulsing Sun, Sunrays & Volumetric Clouds) ───
       if (activeTheme === 'light') {
-        const sunX = W - 140;
-        const sunY = 120;
+        const { x: sunX, y: sunY } = orbPosition(W, H);
         
         // Fast spin multiplier if solar spin is active
         const isSunSpin = Date.now() < sunSpinExpiry;
@@ -415,8 +426,8 @@ export default function CanvasParticles() {
         for (let r = 0; r < 8; r++) {
           ctx.beginPath();
           ctx.moveTo(0, 0);
-          ctx.lineTo(Math.cos(r * Math.PI / 4 - 0.08) * 450, Math.sin(r * Math.PI / 4 - 0.08) * 450);
-          ctx.lineTo(Math.cos(r * Math.PI / 4 + 0.08) * 450, Math.sin(r * Math.PI / 4 + 0.08) * 450);
+          ctx.lineTo(Math.cos(r * Math.PI / 4 - 0.08) * ORB_RAY_LENGTH, Math.sin(r * Math.PI / 4 - 0.08) * ORB_RAY_LENGTH);
+          ctx.lineTo(Math.cos(r * Math.PI / 4 + 0.08) * ORB_RAY_LENGTH, Math.sin(r * Math.PI / 4 + 0.08) * ORB_RAY_LENGTH);
           ctx.closePath();
           ctx.fill();
         }
@@ -587,8 +598,7 @@ export default function CanvasParticles() {
 
       // ─── DARK THEME (Twinkling Stars, Moon Aura & Shooting Stars) ───
       else {
-        const moonX = W - 140;
-        const moonY = 120;
+        const { x: moonX, y: moonY } = orbPosition(W, H);
         const moonPulse = Math.sin(time * 0.4) * 4;
 
         ctx.save();

@@ -1,23 +1,29 @@
-import React, { useState, useEffect, useMemo, useRef } from 'react';
+import { useState, useEffect, useMemo, useRef } from 'react';
 import { useApp } from '../context/AppContext';
 import { t } from '../utils/i18n';
 import { fmt } from '../utils/format';
 import { api } from '../utils/api';
 import Loading from '../components/Loading';
+import PageHeader from '../components/PageHeader';
+import Card from '../components/Card';
+import Badge from '../components/Badge';
+import Button from '../components/Button';
+import Alert from '../components/Alert';
 import { InvitePanel } from '../components/TokenTable';
 import AccountDetailPanel from '../components/AccountDetailPanel';
-import { TIER_BADGE } from '../utils/tier';
-import { Search, Plus, Ticket, Copy, X, ArrowDownAZ, ArrowUpAZ, KeySquare, Users } from 'lucide-react';
+import { Search, Plus, Ticket, Copy, ArrowDownAZ, ArrowUpAZ, KeySquare, X } from 'lucide-react';
+import { copyText } from '../utils/clipboard';
 
 const TIER_RANK = { admin: 0, premium: 1, free: 2 };
+const TIER_VARIANT = { admin: 'primary', premium: 'info', free: 'ghost' };
 
 const SORTS = [
-  { id: 'name', label: 'Tên' },
-  { id: 'tier', label: 'Tier' },
-  { id: 'rpm', label: 'RPM' },
-  { id: 'tpm', label: 'TPM' },
-  { id: 'rpd', label: 'RPD' },
-  { id: 'created', label: 'Ngày tạo' },
+  { id: 'name', key: 'ac_sort_name' },
+  { id: 'tier', key: 'ac_sort_tier' },
+  { id: 'rpm', key: 'ac_sort_rpm' },
+  { id: 'tpm', key: 'ac_sort_tpm' },
+  { id: 'rpd', key: 'ac_sort_rpd' },
+  { id: 'created', key: 'ac_sort_created' },
 ];
 
 // Mirrors config.TIER_CAPS. Duplicated rather than fetched so the form can warn
@@ -29,9 +35,13 @@ const TIER_CAPS = {
   admin: { rpm: 300, tpm: 6000000, rpd: 20000 },
 };
 
+/* Master–detail. The list is the spine of this screen: it never scrolls away
+   on desktop (sticky), and it keeps its own sort/filter state so a poll every
+   1.5 s does not reset what the admin was looking at. The detail panel is
+   keyed by account name so switching rows remounts it with clean state. */
 export default function AccountsTab() {
   const { tabData, token, lang, refreshTab } = useApp();
-  const accounts = tabData.ac || [];
+  const accounts = useMemo(() => tabData.ac || [], [tabData.ac]);
 
   const [search, setSearch] = useState('');
   const [filterTier, setFilterTier] = useState('all');
@@ -115,7 +125,7 @@ export default function AccountsTab() {
 
   const count = (tier) => accounts.filter(a => a.tier === tier).length;
   const statChips = [
-    { id: 'all', label: 'Tất cả', value: accounts.length },
+    { id: 'all', label: t('ac_all', lang), value: accounts.length },
     { id: 'admin', label: 'Admin', value: count('admin') },
     { id: 'premium', label: 'Premium', value: count('premium') },
     { id: 'free', label: 'Free', value: count('free') },
@@ -145,76 +155,82 @@ export default function AccountsTab() {
       refreshTab();
       if (res?.account) {
         setSelectedName(res.account.name);
-        if (res.account.auth_key) setSecret({ title: `Master key của ${res.account.name}`, value: res.account.auth_key });
+        if (res.account.auth_key) {
+          setSecret({
+            title: t('ac_master_key_of', lang).replace('{name}', res.account.name),
+            value: res.account.auth_key,
+          });
+        }
       }
-      notify(t('msg_saved', lang) || 'Đã tạo tài khoản');
+      notify(t('ac_created', lang));
     } catch (err) {
-      notify('Lỗi: ' + err.message, 'error');
+      notify(err.message, 'error');
     } finally {
       setIsCreating(false);
     }
   };
 
   const copySecret = async () => {
-    try { await navigator.clipboard.writeText(secret.value); notify('Đã copy.'); } catch { notify('Trình duyệt chặn clipboard.', 'error'); }
+    if (await copyText(secret.value)) {
+      notify(t('ac_copy_done', lang));
+    } else {
+      notify(t('ac_copy_blocked', lang), 'error');
+    }
   };
 
-  const labelCls = 'label-text text-[11px] font-bold text-base-content/60 uppercase';
+  const cap = TIER_CAPS[newTier];
 
   return (
-    <div className="space-y-4">
-      {/* Header */}
-      <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3">
-        <div className="text-left">
-          <h1 className="text-2xl font-black tracking-tight flex items-center gap-2">
-            <Users className="w-6 h-6 text-primary" />
-            {t('ac_title', lang) || 'Quản lý tài khoản'}
-          </h1>
-          <p className="text-xs text-base-content/60 mt-1">
-            Chọn một tài khoản bên trái để xem và chỉnh hạn mức, token, mật khẩu.
-          </p>
-        </div>
-        <div className="flex gap-2">
-          <button
-            onClick={() => setShowInvite(v => !v)}
-            className={`btn btn-sm gap-2 font-bold ${showInvite ? 'btn-secondary' : 'btn-outline'}`}
-          >
-            <Ticket className="w-4 h-4" /> Mã mời
-          </button>
-          <button
-            onClick={() => setShowCreate(v => !v)}
-            className="btn btn-primary btn-sm gap-2 font-bold shadow-lg shadow-primary/25"
-          >
-            <Plus className="w-4 h-4" /> {t('btn_add', lang)}
-          </button>
-        </div>
-      </div>
+    <div className="space-y-5">
+      <PageHeader
+        title={t('ac_title', lang)}
+        subtitle={t('ac_sub_detail', lang)}
+        actions={
+          <>
+            <Button variant="outline" icon={Ticket}
+                    onClick={() => setShowInvite(v => !v)}
+                    aria-expanded={showInvite}>
+              {t('ac_invite', lang)}
+            </Button>
+            <Button icon={Plus} onClick={() => setShowCreate(v => !v)} aria-expanded={showCreate}>
+              {t('btn_add', lang)}
+            </Button>
+          </>
+        }
+      />
 
-      {notice && (
-        <div className={`text-xs font-semibold p-3 rounded-lg border flex items-center justify-between gap-3 ${
-          notice.type === 'error' ? 'bg-error/10 text-error border-error/20' : 'bg-success/10 text-success border-success/20'
-        }`}>
-          <span>{notice.text}</span>
-          <button onClick={() => setNotice(null)} className="opacity-60 hover:opacity-100"><X className="w-3.5 h-3.5" /></button>
-        </div>
-      )}
+      {notice && <Alert type={notice.type} message={notice.text} onClose={() => setNotice(null)} />}
 
+      {/* A minted credential is the one thing on this screen that must not
+          disappear on a timer: it is shown until the admin dismisses it. */}
       {secret && (
-        <div className="rounded-xl border border-warning/40 bg-warning/10 p-4 text-left animate-fade-in-up">
+        <div className="rounded-xl p-4 text-left"
+             style={{
+               background: 'color-mix(in srgb, var(--c-warn) 8%, var(--c-surface))',
+               border: '1px solid color-mix(in srgb, var(--c-warn) 40%, transparent)',
+             }}>
           <div className="flex items-start justify-between gap-3">
             <div className="min-w-0">
-              <div className="text-xs font-extrabold text-warning">{secret.title}</div>
-              <div className="text-[11px] text-base-content/60 mt-0.5">Chỉ hiện một lần — copy và cất đi trước khi đóng.</div>
+              <h3 className="text-xs font-semibold" style={{ color: 'var(--c-ink)' }}>{secret.title}</h3>
+              <p className="text-[0.6875rem] mt-0.5" style={{ color: 'var(--c-ink-3)' }}>
+                {t('ac_secret_once', lang)}
+              </p>
             </div>
-            <button onClick={() => setSecret(null)} className="btn btn-ghost btn-xs btn-square"><X className="w-4 h-4" /></button>
+            <button onClick={() => setSecret(null)}
+                    className="btn btn-ghost btn-xs btn-square shrink-0"
+                    style={{ color: 'var(--c-ink-3)' }}
+                    aria-label={t('btn_cancel', lang)}>
+              <X className="w-4 h-4" />
+            </button>
           </div>
           <div className="mt-3 flex items-center gap-2">
-            <code className="flex-1 min-w-0 truncate text-xs font-mono bg-base-300/60 border border-base-content/10 rounded-lg px-3 py-2">
+            <code className="flex-1 min-w-0 truncate text-xs font-mono px-3 py-2 rounded-lg select-all"
+                  style={{ background: 'var(--c-surface-2)', border: '1px solid var(--c-line)', color: 'var(--c-ink)' }}>
               {secret.value}
             </code>
-            <button onClick={copySecret} className="btn btn-sm btn-warning gap-1.5 font-bold shrink-0">
-              <Copy className="w-3.5 h-3.5" /> Copy
-            </button>
+            <Button size="sm" onClick={copySecret} icon={Copy} className="shrink-0">
+              {t('ac_copy', lang)}
+            </Button>
           </div>
         </div>
       )}
@@ -224,146 +240,202 @@ export default function AccountsTab() {
       )}
 
       {showCreate && (
-        <form onSubmit={handleCreate} className="card glass-card p-5 rounded-2xl text-left border border-primary/20 animate-fade-in-up space-y-4">
-          <h3 className="font-extrabold text-sm flex items-center gap-2">
-            <Plus className="w-4 h-4 text-primary" /> {t('ac_add_account_title', lang) || 'Tạo tài khoản người dùng mới'}
-          </h3>
-          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
-            <label className="form-control">
-              <span className={labelCls}>{t('th_account_name', lang) || 'Tên tài khoản'}</span>
-              <input type="text" required disabled={isCreating} value={newName} onChange={e => setNewName(e.target.value)} placeholder="vd: user_dev" className="input input-bordered input-sm text-xs w-full mt-1" />
-            </label>
-            <label className="form-control">
-              <span className={labelCls}>{t('lbl_tier', lang)}</span>
-              <select disabled={isCreating} value={newTier} onChange={e => setNewTier(e.target.value)} className="select select-bordered select-sm text-xs w-full mt-1">
-                <option value="free">Free</option>
-                <option value="premium">Premium</option>
-                <option value="admin">Admin</option>
-              </select>
-              <span className="text-[10px] text-base-content/45 mt-1 font-mono">
-                trần: {TIER_CAPS[newTier].rpm} RPM · {fmt(TIER_CAPS[newTier].tpm)} TPM · {fmt(TIER_CAPS[newTier].rpd)} RPD
-              </span>
-            </label>
-            <label className="form-control">
-              <span className={labelCls}>Mật khẩu đăng nhập</span>
-              <input type="text" disabled={isCreating} value={newPassword} onChange={e => setNewPassword(e.target.value)} placeholder="trống = 1234, bắt đổi khi đăng nhập" className="input input-bordered input-sm text-xs w-full mt-1" />
-            </label>
-            <div className="form-control">
-              <span className={labelCls}>Giới hạn RPM / TPM / RPD</span>
-              <div className="flex gap-2 mt-1">
-                <input type="number" disabled={isCreating} value={newRpm} onChange={e => setNewRpm(e.target.value)} placeholder="RPM" className="input input-bordered input-sm text-xs w-full" />
-                <input type="number" disabled={isCreating} value={newTpm} onChange={e => setNewTpm(e.target.value)} placeholder="TPM" className="input input-bordered input-sm text-xs w-full" />
-                <input type="number" disabled={isCreating} value={newRpd} onChange={e => setNewRpd(e.target.value)} placeholder="RPD" className="input input-bordered input-sm text-xs w-full" />
+        <Card padding="lg" className="animate-fade-in-up">
+          <h2 className="text-xs font-semibold mb-4" style={{ color: 'var(--c-ink)' }}>
+            {t('ac_add_account_title', lang)}
+          </h2>
+          <form onSubmit={handleCreate} className="space-y-4">
+            <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3">
+              <label className="block">
+                <span className="label-micro block mb-1.5">{t('th_account_name', lang)}</span>
+                <input type="text" required disabled={isCreating} value={newName}
+                       onChange={e => setNewName(e.target.value)} placeholder="user_dev"
+                       className="input input-sm text-xs w-full" autoComplete="off" />
+              </label>
+              <label className="block">
+                <span className="label-micro block mb-1.5">{t('lbl_tier', lang)}</span>
+                <select disabled={isCreating} value={newTier} onChange={e => setNewTier(e.target.value)}
+                        className="select select-sm text-xs w-full">
+                  <option value="free">Free</option>
+                  <option value="premium">Premium</option>
+                  <option value="admin">Admin</option>
+                </select>
+                <span className="block text-[0.6875rem] mt-1.5 font-mono tabular-nums"
+                      style={{ color: 'var(--c-ink-3)' }}>
+                  {t('ac_caps_hint', lang)
+                    .replace('{rpm}', cap.rpm)
+                    .replace('{tpm}', fmt(cap.tpm))
+                    .replace('{rpd}', fmt(cap.rpd))}
+                </span>
+              </label>
+              <label className="block">
+                <span className="label-micro block mb-1.5">{t('ac_web_pw', lang)}</span>
+                <input type="text" disabled={isCreating} value={newPassword}
+                       onChange={e => setNewPassword(e.target.value)}
+                       placeholder="••••" className="input input-sm text-xs w-full" autoComplete="new-password" />
+                <span className="block text-[0.6875rem] mt-1.5 leading-snug" style={{ color: 'var(--c-ink-3)' }}>
+                  {t('ac_pw_hint', lang)}
+                </span>
+              </label>
+              <div>
+                <span className="label-micro block mb-1.5">RPM / TPM / RPD</span>
+                <div className="flex gap-2">
+                  <input type="number" inputMode="numeric" disabled={isCreating} value={newRpm}
+                         onChange={e => setNewRpm(e.target.value)} placeholder="RPM"
+                         className="input input-sm text-xs w-full font-mono tabular-nums" />
+                  <input type="number" inputMode="numeric" disabled={isCreating} value={newTpm}
+                         onChange={e => setNewTpm(e.target.value)} placeholder="TPM"
+                         className="input input-sm text-xs w-full font-mono tabular-nums" />
+                  <input type="number" inputMode="numeric" disabled={isCreating} value={newRpd}
+                         onChange={e => setNewRpd(e.target.value)} placeholder="RPD"
+                         className="input input-sm text-xs w-full font-mono tabular-nums" />
+                </div>
               </div>
-              {tierCapped && (
-                <span className="text-[10px] text-warning font-bold mt-1">vượt trần {newTier} — sẽ bị chặn về tối đa của tier</span>
-              )}
             </div>
-          </div>
-          <div className="flex gap-2 justify-end pt-3 border-t border-base-content/5">
-            <button type="button" disabled={isCreating} onClick={() => setShowCreate(false)} className="btn btn-ghost btn-sm font-bold">Hủy</button>
-            <button type="submit" disabled={isCreating} className="btn btn-primary btn-sm font-bold min-w-24">
-              {isCreating ? <span className="loading loading-spinner loading-xs" /> : t('btn_add', lang)}
-            </button>
-          </div>
-        </form>
+            {tierCapped && (
+              <Alert type="warning" message={t('ac_capped_warn', lang).replace('{tier}', newTier)} />
+            )}
+            <div className="flex flex-wrap items-center justify-end gap-2 pt-3"
+                 style={{ borderTop: '1px solid var(--c-line)' }}>
+              <Button type="button" variant="ghost" onClick={() => setShowCreate(false)} disabled={isCreating}>
+                {t('btn_cancel', lang)}
+              </Button>
+              <Button type="submit" loading={isCreating}>{t('btn_add', lang)}</Button>
+            </div>
+          </form>
+        </Card>
       )}
 
       {/* Master – detail */}
       <div className="grid grid-cols-1 lg:grid-cols-[minmax(300px,360px)_minmax(0,1fr)] gap-4 items-start">
-        {/* List */}
-        <aside className="card glass-card rounded-2xl border border-base-content/5 text-left overflow-hidden lg:sticky lg:top-0">
-          <div className="p-3 space-y-3 border-b border-base-content/5 bg-base-200/10">
+        <aside className="glass-card rounded-xl text-left overflow-hidden lg:sticky lg:top-0 animate-fade-in-up">
+          <div className="p-3 space-y-2.5" style={{ borderBottom: '1px solid var(--c-line)' }}>
             <div className="flex flex-wrap gap-1.5">
-              {statChips.map(c => (
-                <button
-                  key={c.id}
-                  onClick={() => setFilterTier(c.id)}
-                  className={`btn btn-xs rounded-full gap-1.5 font-bold normal-case ${
-                    filterTier === c.id ? 'btn-primary' : 'btn-ghost border border-base-content/15 text-base-content/70'
-                  }`}
-                >
-                  {c.label}
-                  <span className="opacity-70">{c.value}</span>
-                </button>
-              ))}
+              {statChips.map(c => {
+                const active = filterTier === c.id;
+                return (
+                  <button
+                    key={c.id}
+                    onClick={() => setFilterTier(c.id)}
+                    aria-pressed={active}
+                    className="inline-flex items-center gap-1.5 text-[0.6875rem] font-medium rounded-md px-2 py-1 transition-colors"
+                    style={{
+                      background: active ? 'var(--c-accent-soft)' : 'transparent',
+                      border: `1px solid ${active ? 'color-mix(in srgb, var(--c-accent) 35%, transparent)' : 'var(--c-line)'}`,
+                      color: active ? 'var(--c-accent)' : 'var(--c-ink-3)',
+                    }}
+                  >
+                    {c.label}
+                    <span className="tabular-nums opacity-70">{c.value}</span>
+                  </button>
+                );
+              })}
             </div>
 
             <div className="relative flex items-center">
-              <Search className="absolute left-3 w-4 h-4 text-base-content/50" />
+              <Search className="absolute left-2.5 w-3.5 h-3.5 pointer-events-none"
+                      style={{ color: 'var(--c-ink-3)' }} />
               <input
                 type="text"
                 value={search}
                 onChange={e => setSearch(e.target.value)}
-                placeholder={t('placeholder_search_accounts', lang) || 'Tìm theo tên hoặc ID...'}
-                className={`input input-bordered input-sm w-full pl-9 text-xs transition-all duration-300 ${
-                  isGeminiSearch ? 'bg-gradient-to-r from-amber-500 to-purple-600 text-white font-extrabold border-none' :
-                  isHackerSearch ? 'matrix-text' : ''
+                placeholder={t('placeholder_search_accounts', lang)}
+                className={`input input-sm w-full pl-8 text-xs ${
+                  isGeminiSearch ? 'g-gradient' : isHackerSearch ? 'matrix-text' : ''
                 }`}
+                style={isGeminiSearch ? { background: 'linear-gradient(90deg, #c98500, #9085e9)', color: '#fff', fontWeight: 700 } : undefined}
+                aria-label={t('placeholder_search_accounts', lang)}
               />
             </div>
 
             <div className="flex gap-2">
-              <select value={filterStatus} onChange={e => setFilterStatus(e.target.value)} className="select select-bordered select-xs text-[11px] flex-1">
-                <option value="all">Mọi trạng thái</option>
-                <option value="active">Hoạt động</option>
-                <option value="disabled">Đã khoá</option>
+              <select value={filterStatus} onChange={e => setFilterStatus(e.target.value)}
+                      className="select select-xs text-[0.6875rem] flex-1"
+                      aria-label={t('lbl_status', lang)}>
+                <option value="all">{t('ac_status_all', lang)}</option>
+                <option value="active">{t('ac_status_active', lang)}</option>
+                <option value="disabled">{t('ac_status_disabled', lang)}</option>
               </select>
-              <select value={sortBy} onChange={e => setSortBy(e.target.value)} className="select select-bordered select-xs text-[11px] flex-1">
-                {SORTS.map(s => <option key={s.id} value={s.id}>Xếp theo {s.label}</option>)}
+              <select value={sortBy} onChange={e => setSortBy(e.target.value)}
+                      className="select select-xs text-[0.6875rem] flex-1"
+                      aria-label={t('ac_sort_name', lang)}>
+                {SORTS.map(s => (
+                  <option key={s.id} value={s.id}>
+                    {t('ac_sort_by', lang).replace('{k}', t(s.key, lang))}
+                  </option>
+                ))}
               </select>
               <button
                 onClick={() => setSortOrder(o => (o === 'asc' ? 'desc' : 'asc'))}
-                className="btn btn-xs btn-ghost border border-base-content/15 btn-square"
-                title={sortOrder === 'asc' ? 'Tăng dần' : 'Giảm dần'}
+                className="btn btn-ghost btn-xs btn-square shrink-0"
+                style={{ border: '1px solid var(--c-line)', color: 'var(--c-ink-3)' }}
+                title={sortOrder === 'asc' ? t('ac_sort_asc', lang) : t('ac_sort_desc', lang)}
+                aria-label={sortOrder === 'asc' ? t('ac_sort_asc', lang) : t('ac_sort_desc', lang)}
               >
                 {sortOrder === 'asc' ? <ArrowDownAZ className="w-3.5 h-3.5" /> : <ArrowUpAZ className="w-3.5 h-3.5" />}
               </button>
             </div>
           </div>
 
-          <ul className="max-h-[70vh] overflow-y-auto divide-y divide-base-content/5">
+          <ul className="max-h-[70vh] overflow-y-auto">
             {sortedAccounts.length === 0 && (
-              <li className="text-center py-10 text-xs text-base-content/40 font-medium">
-                {t('no_accounts_found', lang) || 'Không tìm thấy tài khoản nào'}
+              <li className="text-center py-10 px-4 text-xs" style={{ color: 'var(--c-ink-3)' }}>
+                {t('no_accounts_found', lang)}
               </li>
             )}
             {sortedAccounts.map(a => {
               const active = selected?.name === a.name;
               return (
-                <li key={a.account_id || a.name}>
+                <li key={a.account_id || a.name} style={{ borderTop: '1px solid var(--c-line)' }}>
                   <button
                     onClick={() => pick(a.name)}
-                    className={`w-full text-left px-3 py-2.5 flex items-center gap-3 transition-colors border-l-2 ${
-                      active ? 'bg-primary/10 border-primary' : 'border-transparent hover:bg-base-200/40'
-                    }`}
+                    aria-current={active ? 'true' : undefined}
+                    className="w-full text-left px-3 py-2.5 flex items-center gap-3 transition-colors"
+                    style={{
+                      background: active ? 'var(--c-accent-soft)' : 'transparent',
+                      borderLeft: `2px solid ${active ? 'var(--c-accent)' : 'transparent'}`,
+                    }}
                   >
                     <div className="relative shrink-0">
-                      <div className="w-9 h-9 rounded-full bg-primary/10 text-primary text-xs font-black flex items-center justify-center border border-primary/15 uppercase">
-                        {a.name.substring(0, 2)}
+                      <div className="w-8 h-8 rounded-full flex items-center justify-center text-[0.6875rem] font-semibold uppercase"
+                           style={{
+                             background: 'var(--c-surface-3)',
+                             color: active ? 'var(--c-accent)' : 'var(--c-ink-3)',
+                           }}>
+                        {(a.name || '?').substring(0, 2)}
                       </div>
-                      <span className={`absolute -bottom-0.5 -right-0.5 w-2.5 h-2.5 rounded-full border-2 border-base-100 ${a.enabled ? 'bg-success' : 'bg-base-content/30'}`} />
+                      <span className="absolute -bottom-0.5 -right-0.5 w-2.5 h-2.5 rounded-full"
+                            style={{
+                              background: a.enabled ? 'var(--c-good)' : 'var(--c-ink-3)',
+                              border: '2px solid var(--c-surface)',
+                            }}
+                            aria-hidden="true" />
                     </div>
                     <div className="min-w-0 flex-1">
                       <div className="flex items-center gap-1.5">
-                        <span className="font-bold text-xs truncate">{a.name}</span>
-                        {a.must_change_password && <KeySquare className="w-3 h-3 text-warning shrink-0" title="Đang yêu cầu đổi mật khẩu" />}
+                        <span className="text-xs font-medium truncate" style={{ color: 'var(--c-ink)' }}>{a.name}</span>
+                        {a.must_change_password && (
+                          <KeySquare className="w-3 h-3 shrink-0" style={{ color: 'var(--c-warn)' }}
+                                     aria-label={t('ac_req_pw_change', lang)} />
+                        )}
                       </div>
-                      <div className="text-[10px] text-base-content/45 font-mono truncate">
+                      <div className="text-[0.6875rem] font-mono tabular-nums truncate mt-0.5"
+                           style={{ color: 'var(--c-ink-3)' }}>
                         {a.rpm || 0} rpm · {fmt(a.tpm || 0)} tpm · {a.rpd || 0} rpd
                       </div>
                     </div>
-                    <span className={`badge badge-xs text-[9px] font-extrabold uppercase shrink-0 ${TIER_BADGE[a.tier] || TIER_BADGE.free}`}>
+                    <Badge variant={TIER_VARIANT[a.tier] || 'ghost'} size="sm">
                       {a.tier}
-                    </span>
+                    </Badge>
                   </button>
                 </li>
               );
             })}
           </ul>
 
-          <div className="px-3 py-2 border-t border-base-content/5 text-[10px] font-bold text-base-content/45">
-            {sortedAccounts.length} / {accounts.length} {t('accounts_count', lang) || 'tài khoản'}
+          <div className="px-3 py-2 text-[0.6875rem] tabular-nums"
+               style={{ borderTop: '1px solid var(--c-line)', color: 'var(--c-ink-3)' }}>
+            {sortedAccounts.length} / {accounts.length} {t('accounts_count', lang)}
           </div>
         </aside>
 
@@ -380,9 +452,9 @@ export default function AccountsTab() {
               onDeleted={() => setSelectedName(null)}
             />
           ) : (
-            <div className="card glass-card rounded-2xl p-10 text-center text-xs text-base-content/45 border border-base-content/5">
-              Không có tài khoản nào khớp bộ lọc.
-            </div>
+            <Card padding="xl" className="text-center">
+              <p className="text-xs" style={{ color: 'var(--c-ink-3)' }}>{t('ac_none', lang)}</p>
+            </Card>
           )}
         </div>
       </div>

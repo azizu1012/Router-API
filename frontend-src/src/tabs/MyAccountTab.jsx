@@ -1,16 +1,19 @@
-import React, { useState, useEffect, useCallback } from 'react';
+import { Fragment, useState, useEffect, useCallback } from 'react';
 import { useApp } from '../context/AppContext';
 import { t } from '../utils/i18n';
 import { fmt } from '../utils/format';
 import { api } from '../utils/api';
-import { Wifi, Zap, Activity, HelpCircle, KeyRound } from 'lucide-react';
+import { Zap, Activity, KeyRound } from 'lucide-react';
 import Card from '../components/Card';
 import Badge from '../components/Badge';
+import Alert from '../components/Alert';
+import Button from '../components/Button';
 import Loading from '../components/Loading';
+import PageHeader from '../components/PageHeader';
 import TokenTable from '../components/TokenTable';
 
 export default function MyAccountTab() {
-  const { tabData, token, lang, refreshTab, wsHook, user, logout } = useApp();
+  const { tabData, token, lang, refreshTab, wsHook, logout } = useApp();
   const data = tabData.myacc;
   const [liveActivity, setLiveActivity] = useState(null);
   // Declared here (not next to the effect that sets it) so it can never be
@@ -27,7 +30,7 @@ export default function MyAccountTab() {
     e.preventDefault();
     setPwdMsg(null);
     if (!currentPassword || !newPassword) {
-      setPwdMsg({ text: '⚠️ Vui lòng nhập đủ thông tin', type: 'error' });
+      setPwdMsg({ text: t('err_pw_fields', lang), type: 'error' });
       return;
     }
     try {
@@ -35,13 +38,13 @@ export default function MyAccountTab() {
         method: 'POST',
         body: JSON.stringify({ current_password: currentPassword, new_password: newPassword })
       }, token);
-      setPwdMsg({ text: '✅ Đổi mật khẩu thành công. Vui lòng đăng nhập lại.', type: 'success' });
+      setPwdMsg({ text: t('msg_pw_changed', lang), type: 'success' });
       setCurrentPassword('');
       setNewPassword('');
       setIsChangingPassword(false);
       setTimeout(() => logout(), 2000);
     } catch (err) {
-      setPwdMsg({ text: '❌ ' + err.message, type: 'error' });
+      setPwdMsg({ text: err.message, type: 'error' });
     }
   };
 
@@ -50,20 +53,29 @@ export default function MyAccountTab() {
   const [tokensLoading, setTokensLoading] = useState(true);
   const [tokenMsg, setTokenMsg] = useState(null);
 
-  const loadTokens = useCallback(async () => {
+  /* `isCurrent` lets the effect drop a response that lands after the token has
+     already changed; the issue/revoke handlers pass nothing and get the plain
+     behaviour. */
+  const loadTokens = useCallback(async (isCurrent = () => true) => {
     setTokensLoading(true);
     try {
       const res = await api('/dashboard/my/keys', {}, token);
+      if (!isCurrent()) return;
       setTokens(res?.keys || []);
     } catch (e) {
+      if (!isCurrent()) return;
       setTokens([]);
-      setTokenMsg({ text: '❌ ' + e.message, type: 'error' });
+      setTokenMsg({ text: e.message, type: 'error' });
     } finally {
-      setTokensLoading(false);
+      if (isCurrent()) setTokensLoading(false);
     }
   }, [token]);
 
-  useEffect(() => { loadTokens(); }, [loadTokens]);
+  useEffect(() => {
+    let alive = true;
+    (async () => { await loadTokens(() => alive); })();
+    return () => { alive = false; };
+  }, [loadTokens]);
 
   const handleIssueToken = async (payload) => {
     setTokenMsg(null);
@@ -75,11 +87,11 @@ export default function MyAccountTab() {
       await loadTokens();
       refreshTab();
       if (res?.token) {
-        window.prompt('Token mới — copy ngay, chỉ hiện một lần:', res.token);
+        window.prompt(t('msg_token_once', lang), res.token);
       }
-      setTokenMsg({ text: '✅ Đã tạo token mới.', type: 'success' });
+      setTokenMsg({ text: t('msg_token_created', lang), type: 'success' });
     } catch (e) {
-      setTokenMsg({ text: '❌ ' + e.message, type: 'error' });
+      setTokenMsg({ text: e.message, type: 'error' });
       throw e;
     }
   };
@@ -92,9 +104,9 @@ export default function MyAccountTab() {
         body: JSON.stringify({ key_id: keyId, ...payload })
       }, token);
       await loadTokens();
-      setTokenMsg({ text: '✅ Đã cập nhật giới hạn token.', type: 'success' });
+      setTokenMsg({ text: t('msg_token_updated', lang), type: 'success' });
     } catch (e) {
-      setTokenMsg({ text: '❌ ' + e.message, type: 'error' });
+      setTokenMsg({ text: e.message, type: 'error' });
       throw e;
     }
   };
@@ -108,9 +120,9 @@ export default function MyAccountTab() {
       }, token);
       await loadTokens();
       refreshTab();
-      setTokenMsg({ text: '🗑 Đã thu hồi token.', type: 'success' });
+      setTokenMsg({ text: t('msg_token_revoked', lang), type: 'success' });
     } catch (e) {
-      setTokenMsg({ text: '❌ ' + e.message, type: 'error' });
+      setTokenMsg({ text: e.message, type: 'error' });
       throw e;
     }
   };
@@ -146,8 +158,6 @@ export default function MyAccountTab() {
   const lite = data.lite || { rpm: 0, tpm: 0, rpd: 0, rpm_used: 0, tpm_used: 0, rpd_used: 0, rpm_left: 0, tpm_left: 0, rpd_left: 0 };
 
   const pct = (used, lim) => Math.min(100, Math.round(((used || 0) / (lim || 1)) * 100)) || 0;
-  const barCol = p => p < 50 ? 'bg-success' : p < 80 ? 'bg-warning' : 'bg-error';
-  const textCol = p => p < 50 ? 'text-success' : p < 80 ? 'text-warning' : 'text-error';
 
   const fRpm = pct(flash.rpm_used, flash.rpm);
   const fTpm = pct(flash.tpm_used, flash.tpm);
@@ -157,24 +167,28 @@ export default function MyAccountTab() {
   const lTpm = pct(lite.tpm_used, lite.tpm);
   const lRpd = pct(lite.rpd_used, lite.rpd);
 
-  const limitCard = (title, val, used, percent, leftText, showReset, icon) => {
-    const colorClass = barCol(percent);
-    const textColorClass = textCol(percent);
+  const limitCard = (title, val, used, percent, leftText, showReset) => {
+    const color = percent < 50 ? 'var(--c-good)' : percent < 80 ? 'var(--c-warn)' : 'var(--c-critical)';
 
     return (
-      <Card variant="glass" padding="md" className="flex flex-col space-y-2">
-        <Card.Row label={title} value={val} color={textColorClass} />
-        <div className="w-full h-1.5 bg-base-content/20 rounded-full overflow-hidden">
-          <div className={`h-full ${colorClass} rounded-full`} style={{ width: `${percent}%` }} />
+      <Card padding="md">
+        <div className="flex items-baseline justify-between gap-2 mb-1.5">
+          <span className="label-micro">{title}</span>
+          <span className="text-xs font-medium tabular-nums" style={{ color }}>{val}</span>
         </div>
-        <div className="flex justify-between items-center text-[10px] text-base-content/50 font-bold pt-1">
-          <span>{t('lbl_left', lang)}: <span className={textColorClass}>{leftText}</span></span>
-          <span>{t('lbl_using', lang)}: <span>{percent}%</span></span>
+        <div className="meter" role="meter" aria-valuenow={percent} aria-valuemin={0} aria-valuemax={100}
+             aria-label={`${title} used ${percent}%`}>
+          <span style={{ width: `${percent}%`, background: color }} />
+        </div>
+        <div className="flex justify-between items-center text-[0.6875rem] mt-2" style={{ color: 'var(--c-ink-3)' }}>
+          <span>{t('lbl_left', lang)}: <span className="tabular-nums" style={{ color }}>{leftText}</span></span>
+          <span>{t('lbl_using', lang)}: <span className="tabular-nums">{percent}%</span></span>
         </div>
         {showReset && (
-          <div className="text-[10px] text-base-content/40 font-bold border-t border-base-content/5 pt-1.5 mt-1 flex justify-between">
+          <div className="flex justify-between text-[0.6875rem] pt-2 mt-2"
+               style={{ borderTop: '1px solid var(--c-line)', color: 'var(--c-ink-3)' }}>
             <span>{t('lbl_reset', lang)}</span>
-            <span className="text-primary font-mono">{resetCountdown}</span>
+            <span className="tabular-nums" style={{ color: 'var(--c-ink-2)' }}>{resetCountdown}</span>
           </div>
         )}
       </Card>
@@ -184,16 +198,16 @@ export default function MyAccountTab() {
   const poolSection = (label, colorClass, icon, poolData) => {
     if (!poolData) return null;
     return (
-      <Card variant="glass" padding="md">
+      <Card padding="md">
         <Card.Header
           title={label}
           action={<Badge variant="success" size="xs">{t('opt_active', lang)}</Badge>}
         />
-        <div className="space-y-2 text-xs">
+        <div className="space-y-0.5 text-xs">
           <Card.Row label={t('lbl_pool_rpd', lang)} value={fmt(poolData.rpd_left)} color={colorClass} />
-          <Card.Row label={t('lbl_pool_1h', lang)} value={fmt(poolData.tokens_1h_left)} color="text-success" />
-          <Card.Row label={t('lbl_pool_reset_time', lang)} value={resetCountdown} color="text-warning font-mono" />
-          <Card.Row label={t('lbl_pool_24h', lang)} value={fmt(poolData.tokens_24h_left)} color="text-primary font-bold" />
+          <Card.Row label={t('lbl_pool_1h', lang)} value={fmt(poolData.tokens_1h_left)} color="var(--c-good)" />
+          <Card.Row label={t('lbl_pool_reset_time', lang)} value={resetCountdown} color="var(--c-warn)" />
+          <Card.Row label={t('lbl_pool_24h', lang)} value={fmt(poolData.tokens_24h_left)} color="var(--c-accent)" />
         </div>
       </Card>
     );
@@ -201,21 +215,28 @@ export default function MyAccountTab() {
 
   const tierBadge = {
     admin: <Badge variant="primary" size="xs">{tier}</Badge>,
-    premium: <Badge variant="success" size="xs">{tier}</Badge>,
+    premium: <Badge variant="primary" size="xs">{tier}</Badge>,
   }[tier] || <Badge variant="ghost" size="xs">{tier}</Badge>;
 
+  /* The bar and the number must read the same way. Both now show headroom
+     (what is left), and the status colour flags a pool running dry — the old
+     version filled by consumption while printing the remaining count, so a
+     nearly-empty bar sat beside a nearly-full number. */
   const poolGauge = (label, remain, limit, unit) => {
-    const pct = limit > 0 ? Math.round((1 - remain / limit) * 100) : 0;
-    const col = pct > 80 ? 'bg-error' : pct > 50 ? 'bg-warning' : 'bg-success';
-    const txtCol = pct > 80 ? 'text-error' : pct > 50 ? 'text-warning' : 'text-success';
+    const left = limit > 0 ? Math.max(0, Math.min(100, Math.round((remain / limit) * 100))) : 0;
+    const color = left < 15 ? 'var(--c-critical)' : left < 40 ? 'var(--c-warn)' : 'var(--c-good)';
     return (
-      <div className="text-[10px]">
-        <div className="flex justify-between mb-1">
-          <span className="font-semibold text-base-content/50">{label}</span>
-          <span className={`font-mono font-bold ${txtCol}`}>{remain.toLocaleString()} / {limit.toLocaleString()} {unit}</span>
+      <div>
+        <div className="flex items-baseline justify-between gap-2 mb-1.5">
+          <span className="label-micro">{label}</span>
+          <span className="text-xs font-medium tabular-nums" style={{ color: 'var(--c-ink-2)' }}>
+            {remain.toLocaleString()}
+            <span style={{ color: 'var(--c-ink-3)' }}> / {limit.toLocaleString()} {unit} left</span>
+          </span>
         </div>
-        <div className="w-full h-1.5 bg-base-content/20 rounded-full overflow-hidden">
-          <div className={`h-full rounded-full transition-all duration-500 ${col}`} style={{width: `${pct}%`}}></div>
+        <div className="meter" role="meter" aria-valuenow={left} aria-valuemin={0} aria-valuemax={100}
+             aria-label={`${label} headroom ${left}%`}>
+          <span style={{ width: `${left}%`, background: color }} />
         </div>
       </div>
     );
@@ -235,14 +256,17 @@ export default function MyAccountTab() {
       p.cnt++;
     }
     const cards = [];
-    if (flash.cnt > 0) cards.push({ label: 'Flash Pool', color: 'text-cyan-400', ...flash });
-    if (lite.cnt > 0) cards.push({ label: 'Lite Pool', color: 'text-emerald-400', ...lite });
+    if (flash.cnt > 0) cards.push({ label: 'Flash Pool', color: 'var(--c-accent)', ...flash });
+    if (lite.cnt > 0) cards.push({ label: 'Lite Pool', color: 'var(--s-3)', ...lite });
     if (cards.length === 0) return null;
     return (
-      <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+      <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
         {cards.map(({ label, color, rpm_rem, rpm_lim, tpm_rem, tpm_lim, cnt }) => (
           <Card key={label} variant="glass" padding="md">
-            <Card.Header title={<span className={color}>{label}</span>} action={<span className="text-[9px] text-base-content/40">{cnt} models</span>} />
+            <Card.Header
+              title={<span style={{ color }}>{label}</span>}
+              action={<span className="text-[0.6875rem] tabular-nums" style={{ color: 'var(--c-ink-3)' }}>{cnt} {t('lbl_models', lang)}</span>}
+            />
             <div className="space-y-2 pt-1">
               {poolGauge('RPM Live', rpm_rem, rpm_lim, '')}
               {poolGauge('TPM Live', tpm_rem, tpm_lim, '')}
@@ -254,91 +278,79 @@ export default function MyAccountTab() {
   })();
 
   return (
-    <div className="space-y-6">
-      <div className="text-left">
-        <h1 className="text-2xl font-black tracking-tight">{t('nav_myacc', lang)}</h1>
-        <p className="text-xs text-base-content/60 mt-1">{t('lbl_key_pools_sub', lang)}</p>
-      </div>
+    <div className="space-y-5">
+      <PageHeader title={t('nav_myacc', lang)} subtitle={t('lbl_key_pools_sub', lang)} />
 
-      <Card variant="glass" padding="lg">
-        <div className="flex items-center gap-4">
-          <div className="w-14 h-14 bg-primary/10 text-primary text-xl font-black rounded-full flex items-center justify-center border border-primary/20 uppercase shadow-inner">
-            {data.name.substring(0, 2).toUpperCase()}
+      <Card padding="md">
+        <div className="flex flex-wrap items-center gap-4">
+          <div className="w-11 h-11 rounded-lg flex items-center justify-center text-sm font-semibold uppercase shrink-0"
+               style={{ background: 'var(--c-accent-soft)', color: 'var(--c-accent)' }}>
+            {(data.name || '??').substring(0, 2).toUpperCase()}
           </div>
-          <div className="flex-1 space-y-1">
-            <div className="flex items-center gap-2">
-              <h2 className="text-lg font-black text-base-content">{data.name}</h2>
+          <div className="flex-1 min-w-0 space-y-1">
+            <div className="flex items-center gap-2 flex-wrap">
+              <h2 className="text-base font-semibold" style={{ color: 'var(--c-ink)' }}>{data.name}</h2>
               {tierBadge}
             </div>
-            <p className="text-xs text-base-content/50 font-mono">
-              {t('lbl_account_id', lang)}: <span className="text-primary font-bold">{data.account_id || '—'}</span>
+            <p className="text-xs font-mono" style={{ color: 'var(--c-ink-3)' }}>
+              {t('lbl_account_id', lang)}: <span style={{ color: 'var(--c-ink-2)' }}>{data.account_id || '—'}</span>
             </p>
           </div>
-          <button 
-            onClick={() => setIsChangingPassword(!isChangingPassword)}
-            className="btn btn-sm btn-outline text-xs whitespace-nowrap ml-auto"
-          >
-            Đổi mật khẩu
-          </button>
+          <Button size="sm" variant="outline" className="ml-auto shrink-0"
+                  onClick={() => setIsChangingPassword(!isChangingPassword)}>
+            {t('lbl_change_pw', lang)}
+          </Button>
         </div>
 
         {isChangingPassword && (
-          <form onSubmit={handleChangePassword} className="mt-6 pt-4 border-t border-base-content/10 max-w-sm animate-fade-in-up">
-            <h3 className="text-sm font-bold mb-3">Đổi Mật Khẩu Web</h3>
-            <div className="space-y-3">
-              <input 
-                type="password" 
-                placeholder="Mật khẩu hiện tại" 
+          <form onSubmit={handleChangePassword} className="mt-4 pt-4 max-w-sm animate-fade-in-up"
+                style={{ borderTop: '1px solid var(--c-line)' }}>
+            <h3 className="text-xs font-semibold mb-3" style={{ color: 'var(--c-ink)' }}>
+              {t('lbl_change_pw_title', lang)}
+            </h3>
+            <div className="space-y-2.5">
+              <input
+                type="password"
+                placeholder={t('ph_current_pw', lang)}
                 value={currentPassword}
                 onChange={e => setCurrentPassword(e.target.value)}
-                className="input input-sm input-bordered w-full" 
+                className="input w-full text-sm"
+                autoComplete="current-password"
               />
-              <input 
-                type="password" 
-                placeholder="Mật khẩu mới (ít nhất 4 ký tự)" 
+              <input
+                type="password"
+                placeholder={t('ph_new_pw', lang)}
                 value={newPassword}
                 onChange={e => setNewPassword(e.target.value)}
-                className="input input-sm input-bordered w-full" 
+                className="input w-full text-sm"
+                autoComplete="new-password"
               />
               <div className="flex items-center gap-2">
-                <button type="submit" className="btn btn-sm btn-primary">Xác nhận</button>
-                <button type="button" onClick={() => setIsChangingPassword(false)} className="btn btn-sm btn-ghost">Hủy</button>
+                <Button type="submit" size="sm">{t('btn_confirm', lang)}</Button>
+                <Button type="button" size="sm" variant="ghost" onClick={() => setIsChangingPassword(false)}>
+                  {t('btn_cancel', lang)}
+                </Button>
               </div>
             </div>
           </form>
         )}
 
-        {pwdMsg && (
-          <div className={`mt-4 text-xs font-semibold p-2.5 rounded-lg border ${
-            pwdMsg.type === 'success' ? 'bg-success/10 text-success border-success/20' : 'bg-error/10 text-error border-error/20'
-          }`}>
-            {pwdMsg.text}
-          </div>
-        )}
+        {pwdMsg && <div className="mt-3"><Alert type={pwdMsg.type} message={pwdMsg.text} /></div>}
       </Card>
 
       {/* Auth tokens — the user-facing half of the token refactor */}
-      <Card variant="glass" padding="lg">
+      <Card padding="md">
         <div className="mb-3">
-          <h3 className="font-extrabold text-sm flex items-center gap-2">
-            <KeyRound className="w-4 h-4 text-primary" /> Auth tokens của tôi
+          <h3 className="text-xs font-semibold flex items-center gap-2" style={{ color: 'var(--c-ink)' }}>
+            <KeyRound className="w-3.5 h-3.5" style={{ color: 'var(--c-ink-3)' }} />
+            {t('lbl_my_tokens', lang)}
           </h3>
-          <p className="text-[11px] text-base-content/55 mt-0.5">
-            Mỗi token có hạn mức riêng (concurrency, RPM, TPM, RPD). Bạn được
-            tạo token và siết chặt hạn mức; không thể nới rộng hơn hạn mức
-            tài khoản.
+          <p className="text-[0.6875rem] mt-1 leading-relaxed" style={{ color: 'var(--c-ink-3)' }}>
+            {t('lbl_my_tokens_desc', lang)}
           </p>
         </div>
 
-        {tokenMsg && (
-          <div className={`text-xs font-semibold p-2.5 rounded-lg border mb-3 ${
-            tokenMsg.type === 'success'
-              ? 'bg-success/10 text-success border-success/20'
-              : 'bg-error/10 text-error border-error/20'
-          }`}>
-            {tokenMsg.text}
-          </div>
-        )}
+        {tokenMsg && <div className="mb-3"><Alert type={tokenMsg.type} message={tokenMsg.text} /></div>}
 
         <TokenTable
           tokens={tokens}
@@ -353,59 +365,59 @@ export default function MyAccountTab() {
       </Card>
 
       {wsHook.connected && liveActivity && (
-        <Card variant="glass" padding="sm">
-          <div className="flex items-center gap-4 text-xs font-bold text-base-content/50">
-            <div className="flex items-center gap-2">
-              <Wifi className="w-3 h-3 text-success" />
-              <span>Live</span>
-            </div>
-            <div className="flex items-center gap-4 text-[10px] font-mono text-base-content/50 flex-wrap">
-              <span>Active Keys: <span className="text-base-content font-bold">{liveActivity.active_keys}</span></span>
-              <span className="hidden sm:inline">|</span>
-              <span className="hidden sm:inline">Connections: <span className="text-base-content font-bold">{liveActivity.connections}</span></span>
-              <span>|</span>
-              <span>429: <span className="text-warning font-bold">{liveActivity.rate_limits_429 || 0}</span></span>
-              <span>|</span>
-              <span>503: <span className="text-warning font-bold">{liveActivity.unavailable_503 || 0}</span></span>
-              <span>|</span>
-              <span>Penalties: <span className="text-error font-bold">{liveActivity.penalties}</span></span>
-            </div>
+        <Card padding="sm">
+          <div className="flex flex-wrap items-center gap-x-5 gap-y-1.5">
+            <span className="flex items-center gap-1.5 label-micro">
+              <span className="w-1.5 h-1.5 rounded-full animate-breathing" style={{ background: 'var(--c-good)' }} />
+              Live
+            </span>
+            {[
+              ['Active Keys', liveActivity.active_keys, 'var(--c-ink)'],
+              ['Connections', liveActivity.connections, 'var(--c-ink)'],
+              ['429', liveActivity.rate_limits_429 || 0, 'var(--c-warn)'],
+              ['503', liveActivity.unavailable_503 || 0, 'var(--c-warn)'],
+              ['Penalties', liveActivity.penalties, 'var(--c-critical)'],
+            ].map(([label, value, color]) => (
+              <span key={label} className="text-[0.6875rem]" style={{ color: 'var(--c-ink-3)' }}>
+                {label}{' '}
+                <span className="font-medium tabular-nums" style={{ color }}>{value}</span>
+              </span>
+            ))}
           </div>
         </Card>
       )}
 
       {livePools}
 
-      <div className="text-left space-y-1">
-        <h3 className="font-extrabold text-sm text-base-content/85">Gemini Flash Pool — {t('lbl_usage_limits', lang)}</h3>
-        <p className="text-[10px] text-base-content/50">{t('lbl_usage_limits_sub', lang)}</p>
+      {[
+        { label: 'Gemini Flash Pool', pool: flash, p: [fRpm, fTpm, fRpd] },
+        { label: 'Gemini Flash Lite Pool', pool: lite, p: [lRpm, lTpm, lRpd] },
+      ].map(({ label, pool, p }) => (
+        <Fragment key={label}>
+          <div className="text-left">
+            <h3 className="text-xs font-semibold" style={{ color: 'var(--c-ink)' }}>
+              {label} — {t('lbl_usage_limits', lang)}
+            </h3>
+            <p className="text-[0.6875rem] mt-0.5" style={{ color: 'var(--c-ink-3)' }}>
+              {t('lbl_usage_limits_sub', lang)}
+            </p>
+          </div>
+          <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
+            {limitCard(t('lbl_rpm_card', lang), `${pool.rpm_used} / ${(pool.rpm || 0).toLocaleString()}`, pool.rpm_used, p[0], pool.rpm_left.toLocaleString(), false)}
+            {limitCard(t('lbl_tpm_card', lang), `${fmt(pool.tpm_used)} / ${fmt(pool.tpm || 0)}`, pool.tpm_used, p[1], fmt(pool.tpm_left), false)}
+            {limitCard(t('lbl_rpd_card', lang), `${pool.rpd_used} / ${fmt(pool.rpd || 0)}`, pool.rpd_used, p[2], pool.rpd_left.toLocaleString(), true)}
+          </div>
+        </Fragment>
+      ))}
+
+      <div className="text-left pt-1">
+        <h3 className="text-xs font-semibold" style={{ color: 'var(--c-ink)' }}>{t('lbl_key_pools', lang)}</h3>
+        <p className="text-[0.6875rem] mt-0.5" style={{ color: 'var(--c-ink-3)' }}>{t('lbl_key_pools_sub', lang)}</p>
       </div>
 
-      <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
-        {limitCard(t('lbl_rpm_card', lang), `${flash.rpm_used} / ${(flash.rpm || 0).toLocaleString()}`, flash.rpm_used, fRpm, flash.rpm_left.toLocaleString(), false)}
-        {limitCard(t('lbl_tpm_card', lang), `${fmt(flash.tpm_used)} / ${fmt(flash.tpm || 0)}`, flash.tpm_used, fTpm, fmt(flash.tpm_left), false)}
-        {limitCard(t('lbl_rpd_card', lang), `${flash.rpd_used} / ${fmt(flash.rpd || 0)}`, flash.rpd_used, fRpd, flash.rpd_left.toLocaleString(), true)}
-      </div>
-
-      <div className="text-left space-y-1 pt-2">
-        <h3 className="font-extrabold text-sm text-base-content/85">Gemini Flash Lite Pool — {t('lbl_usage_limits', lang)}</h3>
-        <p className="text-[10px] text-base-content/50">{t('lbl_usage_limits_sub', lang)}</p>
-      </div>
-
-      <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
-        {limitCard(t('lbl_rpm_card', lang), `${lite.rpm_used} / ${(lite.rpm || 0).toLocaleString()}`, lite.rpm_used, lRpm, lite.rpm_left.toLocaleString(), false)}
-        {limitCard(t('lbl_tpm_card', lang), `${fmt(lite.tpm_used)} / ${fmt(lite.tpm || 0)}`, lite.tpm_used, lTpm, fmt(lite.tpm_left), false)}
-        {limitCard(t('lbl_rpd_card', lang), `${lite.rpd_used} / ${fmt(lite.rpd || 0)}`, lite.rpd_used, lRpd, lite.rpd_left.toLocaleString(), true)}
-      </div>
-
-      <div className="text-left space-y-1 pt-4">
-        <h3 className="font-extrabold text-sm text-base-content/85">{t('lbl_key_pools', lang)}</h3>
-        <p className="text-[10px] text-base-content/50">{t('lbl_key_pools_sub', lang)}</p>
-      </div>
-
-      <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
-        {poolSection('Gemini Flash Pool', 'text-cyan-400', <Zap className="w-4 h-4" />, data.flash_pool)}
-        {poolSection('Gemini Flash Lite Pool', 'text-emerald-400', <Activity className="w-4 h-4" />, data.lite_pool)}
+      <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+        {poolSection('Gemini Flash Pool', 'var(--c-accent)', <Zap className="w-4 h-4" />, data.flash_pool)}
+        {poolSection('Gemini Flash Lite Pool', 'var(--s-3)', <Activity className="w-4 h-4" />, data.lite_pool)}
       </div>
     </div>
   );

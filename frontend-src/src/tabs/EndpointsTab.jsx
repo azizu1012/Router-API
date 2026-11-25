@@ -1,11 +1,18 @@
-import React, { useState } from 'react';
+import { useState } from 'react';
 import { useApp } from '../context/AppContext';
 import { t } from '../utils/i18n';
 import { api } from '../utils/api';
 import { Plus, Trash2, Network, RefreshCw, Power, Info, Terminal as TerminalIcon, Key } from 'lucide-react';
 import LogHistoryModal from '../components/LogHistoryModal';
 import Loading from '../components/Loading';
+import PageHeader from '../components/PageHeader';
+import Card from '../components/Card';
+import Badge from '../components/Badge';
+import Button from '../components/Button';
+import Alert from '../components/Alert';
 
+/* Endpoint cards. The one status signal here is enabled/disabled, and it keeps
+   a word beside its dot; everything else is ink on surface. */
 export default function EndpointsTab() {
   const { tabData, token, lang, refreshTab } = useApp();
   const endpoints = tabData.ep || [];
@@ -23,27 +30,30 @@ export default function EndpointsTab() {
   const [epMsgStates, setEpMsgStates] = useState({});
   const [selectedEndpoint, setSelectedEndpoint] = useState(null);
 
-  if (!tabData.ep) {
-    return <Loading message={t('loading', lang)} />;
-  }
+  if (!tabData.ep) return <Loading message={t('loading', lang)} />;
 
   const handleAddEndpoint = async (e) => {
     e.preventDefault();
     if (!newName.trim() || !newUrl.trim()) return;
     setIsSubmitting(true);
-    setAddMsg({ text: '⏳ Đang thêm...', type: 'info' });
+    setAddMsg({ text: t('ep_adding', lang), type: 'info' });
     try {
       await api('/dashboard/admin/endpoints/add', {
         method: 'POST',
-        body: JSON.stringify({ name: newName.trim(), base_url: newUrl.trim(), auth_key: newKey.trim() || undefined, api_format: newFormat })
+        body: JSON.stringify({
+          name: newName.trim(),
+          base_url: newUrl.trim(),
+          auth_key: newKey.trim() || undefined,
+          api_format: newFormat,
+        })
       }, token);
       setNewName(''); setNewUrl(''); setNewKey(''); setNewFormat('openai');
-      setAddMsg({ text: t('msg_ep_added', lang) || 'Đã thêm Endpoint thành công!', type: 'success' });
+      setAddMsg({ text: t('msg_ep_added', lang), type: 'success' });
       refreshTab();
       setShowAddForm(false);
       setTimeout(() => setAddMsg({ text: '', type: '' }), 4000);
     } catch (err) {
-      setAddMsg({ text: (t('msg_ep_error', lang) || 'Lỗi thêm Endpoint: ') + err.message, type: 'error' });
+      setAddMsg({ text: `${t('msg_ep_error', lang)}${err.message}`, type: 'error' });
     } finally {
       setIsSubmitting(false);
     }
@@ -51,281 +61,308 @@ export default function EndpointsTab() {
 
   const setEpMsg = (epName, text, type) => {
     setEpMsgStates(prev => ({ ...prev, [epName]: { text, type } }));
-    if (type === 'success') setTimeout(() => setEpMsgStates(prev => ({ ...prev, [epName]: { text: '', type: '' } })), 3000);
+    if (type === 'success') {
+      setTimeout(() => setEpMsgStates(prev => ({ ...prev, [epName]: { text: '', type: '' } })), 3000);
+    }
   };
 
   const handleToggleEp = async (epName, isEnabled) => {
     const action = isEnabled ? 'disable' : 'enable';
     try {
-      await api('/dashboard/admin/endpoints/toggle', { method: 'POST', body: JSON.stringify({ name: epName, action }) }, token);
+      await api('/dashboard/admin/endpoints/toggle', {
+        method: 'POST',
+        body: JSON.stringify({ name: epName, action })
+      }, token);
       refreshTab();
-    } catch (err) { alert('Error: ' + err.message); }
+    } catch (err) { setEpMsg(epName, `${t('ep_toggle_err', lang)}: ${err.message}`, 'error'); }
   };
 
   const handleRefreshModels = async (epName) => {
     setEpLoadingStates(prev => ({ ...prev, [epName]: true }));
-    setEpMsg(epName, '⏳ Fetching models...', 'info');
+    setEpMsg(epName, t('ep_fetching', lang), 'info');
     try {
-      const data = await api('/dashboard/admin/endpoints/refresh', { method: 'POST', body: JSON.stringify({ name: epName }) }, token);
-      setEpMsg(epName, `✅ Thành công: Cập nhật được ${data.count} models từ Endpoint`, 'success');
+      const data = await api('/dashboard/admin/endpoints/refresh', {
+        method: 'POST',
+        body: JSON.stringify({ name: epName })
+      }, token);
+      setEpMsg(epName, t('ep_fetch_ok', lang).replace('{n}', data.count), 'success');
       refreshTab();
     } catch (err) {
-      setEpMsg(epName, `❌ Lỗi: ${err.message}`, 'error');
+      setEpMsg(epName, `${t('ep_fetch_err', lang)}: ${err.message}`, 'error');
     } finally {
       setEpLoadingStates(prev => ({ ...prev, [epName]: false }));
     }
   };
 
   const handleDeleteEp = async (epName) => {
-    if (!confirm(`Remove endpoint "${epName}"?`)) return;
+    if (!window.confirm(t('ep_delete_confirm', lang).replace('{name}', epName))) return;
     try {
-      await api('/dashboard/admin/endpoints/delete', { method: 'POST', body: JSON.stringify({ name: epName }) }, token);
+      await api('/dashboard/admin/endpoints/delete', {
+        method: 'POST',
+        body: JSON.stringify({ name: epName })
+      }, token);
       refreshTab();
-    } catch (err) { alert('Error: ' + err.message); }
+    } catch (err) { setEpMsg(epName, `${t('ep_delete_err', lang)}: ${err.message}`, 'error'); }
   };
 
   const handleAccountAssign = async (epName, accountName) => {
     try {
-      await api('/dashboard/admin/endpoints/assign', { method: 'POST', body: JSON.stringify({ name: epName, account_id: accountName }) }, token);
-      setEpMsg(epName, `✅ Gán thành công cho: ${accountName || 'Không gán'}`, 'success');
+      await api('/dashboard/admin/endpoints/assign', {
+        method: 'POST',
+        body: JSON.stringify({ name: epName, account_id: accountName })
+      }, token);
+      setEpMsg(epName, `${t('ep_assign_ok', lang)} ${accountName || t('ep_assign_none', lang)}`, 'success');
       refreshTab();
-    } catch (err) { setEpMsg(epName, `❌ Lỗi gán tài khoản: ${err.message}`, 'error'); }
+    } catch (err) {
+      setEpMsg(epName, `${t('ep_assign_err', lang)}: ${err.message}`, 'error');
+    }
   };
 
   const handleModelToggle = async (epName, modelId, isChecked) => {
     try {
-      await api('/dashboard/admin/endpoints/toggle-model', { method: 'POST', body: JSON.stringify({ name: epName, model_id: modelId, enabled: isChecked }) }, token);
-      setEpMsg(epName, `✅ Đã ${isChecked ? 'bật' : 'tắt'} model ${modelId}`, 'success');
+      await api('/dashboard/admin/endpoints/toggle-model', {
+        method: 'POST',
+        body: JSON.stringify({ name: epName, model_id: modelId, enabled: isChecked })
+      }, token);
+      const label = isChecked ? t('ep_model_on', lang) : t('ep_model_off', lang);
+      setEpMsg(epName, `${label} ${modelId}`, 'success');
       refreshTab();
-    } catch (err) { setEpMsg(epName, `❌ Lỗi toggle model: ${err.message}`, 'error'); }
+    } catch (err) {
+      setEpMsg(epName, `${t('ep_model_err', lang)}: ${err.message}`, 'error');
+    }
   };
+
+  /* Grouped by the last 8 chars of a shared auth key: endpoints minted from the
+     same upstream credential fail and recover together, so they are shown
+     together. Order of `endpoints` is preserved inside each group. */
+  const groups = new Map();
+  endpoints.forEach(ep => {
+    const k = ep.auth_key ? ep.auth_key.slice(-8) : 'unassigned';
+    if (!groups.has(k)) groups.set(k, []);
+    groups.get(k).push(ep);
+  });
 
   return (
     <div className="space-y-5">
-      {/* Title + Add button */}
-      <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4 animate-tab-in">
-        <div className="text-left">
-          <h1 className="text-2xl font-black tracking-tight">{t('nav_ep', lang) || 'Endpoint Tùy Chỉnh'}</h1>
-          <p className="text-xs text-base-content/60 mt-1">{t('ep_sub', lang) || 'Kết nối các endpoint OpenAI/Gemini bên thứ ba và gán cho các tài khoản người dùng khác nhau'}</p>
-        </div>
-        <button
-          onClick={() => setShowAddForm(v => !v)}
-          className="btn btn-primary btn-sm gap-2 font-bold shadow-lg shadow-primary/25 hover:scale-[1.03] active:scale-[0.97] transition-all"
-        >
-          <Plus className="w-4 h-4" />
-          {t('btn_add', lang)}
-        </button>
-      </div>
+      <PageHeader
+        title={t('ep_title', lang)}
+        subtitle={t('ep_sub', lang)}
+        actions={<Button icon={Plus} onClick={() => setShowAddForm(v => !v)}>{t('btn_add', lang)}</Button>}
+      />
 
-      {/* Collapsible Add Endpoint Form */}
       {showAddForm && (
-        <div className="card glass-card p-5 rounded-2xl text-left border border-primary/20 animate-fade-in-up">
-          <h3 className="font-extrabold text-sm mb-4 flex items-center gap-2">
-            <Plus className="w-4 h-4 text-primary" />
-            {t('ep_add_title', lang) || 'Thêm Endpoint Mới'}
+        <Card padding="lg" className="animate-fade-in-up">
+          <h3 className="text-xs font-semibold mb-3" style={{ color: 'var(--c-ink)' }}>
+            {t('ep_add_title', lang)}
           </h3>
-          <form onSubmit={handleAddEndpoint} className="grid grid-cols-1 sm:grid-cols-3 gap-3">
-            <div className="form-control">
-              <label className="label py-1"><span className="label-text text-[11px] font-bold text-base-content/60 uppercase">Tên Endpoint</span></label>
-              <input type="text" required value={newName} onChange={(e) => setNewName(e.target.value)} placeholder="e.g. OpenRouter_Main" className="input input-bordered input-sm text-xs w-full" />
-            </div>
-            <div className="form-control">
-              <label className="label py-1"><span className="label-text text-[11px] font-bold text-base-content/60 uppercase">URL Cơ Sở (Base URL)</span></label>
-              <input type="url" required value={newUrl} onChange={(e) => setNewUrl(e.target.value)} placeholder="https://api.openrouter.ai/v1" className="input input-bordered input-sm text-xs w-full" />
-            </div>
-            <div className="form-control">
-              <label className="label py-1"><span className="label-text text-[11px] font-bold text-base-content/60 uppercase">Auth Key (Optional)</span></label>
-              <input type="password" value={newKey} onChange={(e) => setNewKey(e.target.value)} placeholder="sk-or-..." className="input input-bordered input-sm text-xs w-full" autoComplete="off" />
-            </div>
-            <div className="form-control">
-              <label className="label py-1"><span className="label-text text-[11px] font-bold text-base-content/60 uppercase">Định Dạng API</span></label>
-              <select value={newFormat} onChange={(e) => setNewFormat(e.target.value)} className="select select-bordered select-sm text-xs w-full">
-                <option value="openai">OpenAI-compatible — /chat/completions</option>
-                <option value="anthropic">Anthropic-compatible — /v1/messages</option>
+          <form onSubmit={handleAddEndpoint} className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+            <label className="block">
+              <span className="label-micro block mb-1.5">{t('ep_new_name', lang)}</span>
+              <input type="text" required value={newName} onChange={(e) => setNewName(e.target.value)}
+                     placeholder="OpenRouter_Main" className="input input-sm text-xs w-full" autoComplete="off" />
+            </label>
+            <label className="block">
+              <span className="label-micro block mb-1.5">{t('ep_new_url', lang)}</span>
+              <input type="url" required value={newUrl} onChange={(e) => setNewUrl(e.target.value)}
+                     placeholder="https://api.openrouter.ai/v1" className="input input-sm text-xs w-full" />
+            </label>
+            <label className="block">
+              <span className="label-micro block mb-1.5">{t('ep_new_key', lang)}</span>
+              <input type="password" value={newKey} onChange={(e) => setNewKey(e.target.value)}
+                     placeholder="sk-or-..." className="input input-sm text-xs w-full" autoComplete="off" spellCheck="false" />
+            </label>
+            <label className="block">
+              <span className="label-micro block mb-1.5">{t('ep_new_format', lang)}</span>
+              <select value={newFormat} onChange={(e) => setNewFormat(e.target.value)}
+                      className="select select-sm text-xs w-full">
+                <option value="openai">OpenAI — /chat/completions</option>
+                <option value="anthropic">Anthropic — /v1/messages</option>
               </select>
-              <span className="text-[10px] text-base-content/50 mt-1 leading-snug">
-                Endpoint thuộc về người trả tiền. Chọn đúng định dạng API đó nói — router dịch giúp client, không sửa request của họ.
+              <span className="block text-[0.6875rem] mt-1 leading-snug" style={{ color: 'var(--c-ink-3)' }}>
+                {t('ep_format_hint', lang)}
               </span>
-            </div>
-            <div className="sm:col-span-3 flex gap-3 justify-end">
-              <button type="button" onClick={() => setShowAddForm(false)} className="btn btn-ghost btn-sm font-bold">Hủy</button>
-              <button type="submit" disabled={isSubmitting} className="btn btn-primary btn-sm font-bold">
-                {isSubmitting ? <span className="loading loading-spinner loading-xs"></span> : t('btn_add', lang)}
-              </button>
+            </label>
+            <div className="sm:col-span-2 flex items-center justify-end gap-2">
+              <Button type="button" variant="ghost" onClick={() => setShowAddForm(false)}>{t('btn_cancel', lang)}</Button>
+              <Button type="submit" loading={isSubmitting}>{t('btn_add', lang)}</Button>
             </div>
           </form>
-          {addMsg.text && (
-            <div className={`text-xs font-semibold mt-3 p-3 rounded-lg border ${
-              addMsg.type === 'success' ? 'bg-success/10 text-success border-success/20' :
-              addMsg.type === 'error' ? 'bg-error/10 text-error border-error/20' : 'bg-info/10 text-info border-info/20'
-            }`}>{addMsg.text}</div>
-          )}
-        </div>
+          {addMsg.text && <div className="mt-3"><Alert type={addMsg.type} message={addMsg.text} /></div>}
+        </Card>
       )}
 
-      {/* Endpoints Count Header */}
-      <div className="flex justify-between items-center bg-base-200/20 px-4 py-3 rounded-xl border border-base-content/5 animate-fade-in-up cascade-1">
-        <span className="text-xs font-bold text-base-content/70 flex items-center gap-1.5">
-          <Network className="w-4 h-4 text-indigo-400" />
-          Danh sách Endpoint kết nối
+      <div className="flex flex-wrap items-center justify-between gap-2 animate-fade-in-up cascade-1">
+        <span className="flex items-center gap-1.5 label-micro">
+          <Network className="w-3.5 h-3.5" />
+          {t('ep_list_count', lang)}
         </span>
-        <span className="badge badge-primary font-bold text-xs">{endpoints.length} {t('endpoints_count', lang)}</span>
+        <span className="text-[0.6875rem] tabular-nums px-1.5 py-0.5 rounded"
+              style={{ background: 'var(--c-surface-3)', color: 'var(--c-ink-3)' }}>
+          {endpoints.length}
+        </span>
       </div>
 
-      {/* Endpoints Card List — grouped by shared auth_key */}
-      <div className="space-y-6 animate-fade-in-up cascade-2">
-        {endpoints.length > 0 ? (
-          (() => {
-            const groups = {};
-            endpoints.forEach(ep => {
-              const key = ep.auth_key ? ep.auth_key.slice(-8) : 'unassigned';
-              if (!groups[key]) groups[key] = [];
-              groups[key].push(ep);
-            });
-
-            return Object.entries(groups).map(([keyHash, group]) => (
-              <div key={keyHash} className="space-y-3">
-                {/* Group header */}
-                {keyHash !== 'unassigned' && (
-                  <div className="flex items-center gap-2 px-3 py-2 text-[11px] font-bold text-base-content/40 bg-base-200/20 rounded-xl border border-base-content/5">
-                    <Key className="w-3.5 h-3.5" />
-                    <span>Shared Key: ...{keyHash}</span>
-                    <span className="badge badge-xs badge-ghost font-bold">{group.length}</span>
-                  </div>
-                )}
-
-                {group.map((ep, idx) => {
-                  const isEnabled = ep.enabled !== false;
-                  const models = ep.models || [];
-                  const enabledModels = ep.enabled_models || [];
-                  const accountName = ep.account_name || '';
-                  const assignedAccountId = ep.account_id || '';
-                  const isLoading = !!epLoadingStates[ep.name];
-                  const msg = epMsgStates[ep.name] || { text: '', type: '' };
-
-                  return (
-                    <div key={idx} className="card glass-card p-5 rounded-2xl text-left border border-base-content/5 space-y-4 shadow-md transition-all duration-300 hover:border-base-content/10">
-                      {/* Endpoint Header */}
-                      <div className="flex items-center justify-between flex-wrap gap-3">
-                        <div className="flex items-center gap-2.5 min-w-0">
-                          <span className={`w-2.5 h-2.5 rounded-full shrink-0 ${isEnabled ? 'bg-success' : 'bg-error'}`}></span>
-                          <strong className="text-sm text-base-content font-extrabold">{ep.name}</strong>
-                          <span className="text-xs font-mono text-base-content/50 truncate max-w-[150px] sm:max-w-xs" title={ep.base_url}>{ep.base_url}</span>
-                          <select
-                            value={ep.api_format || 'openai'}
-                            onChange={async (e) => {
-                              const fmt = e.target.value;
-                              try {
-                                await api('/dashboard/admin/endpoints/format', { method: 'POST', body: JSON.stringify({ name: ep.name, api_format: fmt }) }, token);
-                                setEpMsg(ep.name, `✅ Đã đổi sang định dạng ${fmt}`, 'success');
-                                refreshTab();
-                              } catch (err) { setEpMsg(ep.name, `❌ Lỗi: ${err.message}`, 'error'); }
-                            }}
-                            className="select select-bordered select-xs font-bold text-[10px] shrink-0"
-                            title="Định dạng API của endpoint này"
-                          >
-                            <option value="openai">OpenAI</option>
-                            <option value="anthropic">Anthropic</option>
-                          </select>
-                          {accountName && (
-                            <span className="badge badge-sm badge-success font-extrabold text-[10px] uppercase">{accountName}</span>
-                          )}
-                        </div>
-
-                        <div className="flex items-center gap-1.5">
-                          <button onClick={() => setSelectedEndpoint(ep.name)}
-                            className="btn btn-ghost btn-xs text-green-400 hover:bg-green-500/15 gap-1 normal-case font-bold" title="View Logs">
-                            <TerminalIcon className="w-3.5 h-3.5" />
-                            <span>Logs</span>
-                          </button>
-                          <button onClick={() => handleRefreshModels(ep.name)} disabled={isLoading}
-                            className="btn btn-ghost btn-xs text-primary hover:bg-primary/15 gap-1 normal-case font-bold" title="Fetch Models">
-                            <RefreshCw className={`w-3.5 h-3.5 ${isLoading ? 'animate-spin' : ''}`} />
-                            <span>Fetch Models</span>
-                          </button>
-                          <button onClick={() => handleToggleEp(ep.name, isEnabled)}
-                            className={`btn btn-ghost btn-xs gap-1 normal-case font-bold ${isEnabled ? 'text-error hover:bg-error/15' : 'text-success hover:bg-success/15'}`}>
-                            <Power className="w-3.5 h-3.5" />
-                            <span>{isEnabled ? 'Disable' : 'Enable'}</span>
-                          </button>
-                          <button onClick={() => handleDeleteEp(ep.name)} className="btn btn-ghost btn-xs btn-square text-error hover:bg-error/15">
-                            <Trash2 className="w-3.5 h-3.5" />
-                          </button>
-                        </div>
-                      </div>
-
-                      {/* Assignment & Models */}
-                      <div className="grid grid-cols-1 sm:grid-cols-3 gap-4 pt-3 border-t border-base-content/5">
-                        <div className="space-y-2 text-left sm:col-span-1">
-                          <label className="text-[10px] font-bold uppercase tracking-wider text-base-content/50 block">
-                            {t('lbl_assigned_account', lang) || 'Gán cho tài khoản người dùng'}
-                          </label>
-                          <select
-                            value={accountName || assignedAccountId}
-                            onChange={(e) => handleAccountAssign(ep.name, e.target.value)}
-                            className="select select-bordered select-sm text-xs w-full bg-base-200/70"
-                          >
-                            <option value="">— Chưa gán (No assignment) —</option>
-                            {accounts.filter(a => a.enabled).map((a, i) => (
-                              <option key={i} value={a.name}>{a.name} ({a.tier})</option>
-                            ))}
-                          </select>
-                        </div>
-
-                        <div className="sm:col-span-2 space-y-2">
-                          <label className="text-[10px] font-bold uppercase tracking-wider text-base-content/50 block">
-                            Các Model được hỗ trợ ({models.length})
-                          </label>
-                          {models.length > 0 ? (
-                            <div className="collapse collapse-arrow bg-base-200/40 border border-base-content/5 rounded-xl transition-all duration-300">
-                              <input type="checkbox" className="min-h-0 py-2" defaultChecked />
-                              <div className="collapse-title text-[11px] font-bold min-h-0 py-2">Xem chi tiết các Model hỗ trợ</div>
-                              <div className="collapse-content px-4 pb-4">
-                                <div className="grid grid-cols-1 sm:grid-cols-2 gap-2 mt-2 max-h-60 overflow-y-auto pr-1">
-                                  {models.map((mid, mIdx) => {
-                                    const isModelEnabled = enabledModels.includes(mid);
-                                    return (
-                                      <div key={mIdx} className="flex items-center justify-between p-2 rounded-lg bg-base-300/30 border border-base-content/5 text-xs transition-all duration-200 hover:scale-[1.015]">
-                                        <span className={`font-mono truncate max-w-[130px] font-bold ${isModelEnabled ? 'text-success' : 'text-base-content/40'}`} title={mid}>{mid}</span>
-                                        <input type="checkbox" checked={isModelEnabled}
-                                          onChange={(e) => handleModelToggle(ep.name, mid, e.target.checked)}
-                                          className="toggle toggle-xs toggle-success" />
-                                      </div>
-                                    );
-                                  })}
-                                </div>
-                              </div>
-                            </div>
-                          ) : (
-                            <div className="flex items-center gap-2 text-xs text-base-content/40 bg-base-200/20 p-3 rounded-xl border border-dashed border-base-content/10">
-                              <Info className="w-4 h-4 text-base-content/50" />
-                              <span>Chưa fetch danh sách Model — Hãy click 🔄 Fetch Models để lấy danh sách.</span>
-                            </div>
-                          )}
-                        </div>
-                      </div>
-
-                      {msg.text && (
-                        <div className={`text-xs font-semibold p-2.5 rounded-lg border ${
-                          msg.type === 'success' ? 'bg-success/10 text-success border-success/20' :
-                          msg.type === 'error' ? 'bg-error/10 text-error border-error/20' : 'bg-info/10 text-info border-info/20'
-                        }`}>{msg.text}</div>
-                      )}
-                    </div>
-                  );
-                })}
-              </div>
-            ));
-          })()
+      <div className="space-y-5 animate-fade-in-up cascade-2">
+        {endpoints.length === 0 ? (
+          <Card padding="xl" className="text-center">
+            <Network className="w-9 h-9 mx-auto mb-2" style={{ color: 'var(--c-ink-3)', opacity: 0.4 }} />
+            <p className="text-xs" style={{ color: 'var(--c-ink-3)' }}>{t('no_endpoints', lang)}</p>
+          </Card>
         ) : (
-          <div className="card glass-card p-12 text-center text-base-content/50 rounded-2xl">
-            <Network className="w-10 h-10 mx-auto opacity-35 mb-2" />
-            <p className="font-semibold">{t('no_endpoints', lang) || 'Chưa cấu hình Endpoint nào'}</p>
-          </div>
+          [...groups.entries()].map(([keyHash, group]) => (
+            <div key={keyHash} className="space-y-3">
+              {keyHash !== 'unassigned' && (
+                <div className="flex items-center gap-2 text-[0.6875rem] font-medium"
+                     style={{ color: 'var(--c-ink-3)' }}>
+                  <Key className="w-3.5 h-3.5" />
+                  <span className="font-mono">{t('ep_shared_key', lang)}: …{keyHash}</span>
+                  <span className="tabular-nums">{group.length}</span>
+                </div>
+              )}
+
+              {group.map((ep) => {
+                const isEnabled = ep.enabled !== false;
+                const models = ep.models || [];
+                const enabledModels = ep.enabled_models || [];
+                const accountName = ep.account_name || '';
+                const assignedAccountId = ep.account_id || '';
+                const isLoading = !!epLoadingStates[ep.name];
+                const msg = epMsgStates[ep.name] || { text: '', type: '' };
+
+                return (
+                  <Card key={ep.name} padding="lg" className="space-y-4">
+                    <div className="flex items-start justify-between flex-wrap gap-3">
+                      <div className="flex items-center gap-2 min-w-0 flex-wrap">
+                        <span className="w-1.5 h-1.5 rounded-full shrink-0"
+                              style={{ background: isEnabled ? 'var(--c-good)' : 'var(--c-ink-3)' }} />
+                        <strong className="text-sm font-semibold truncate" style={{ color: 'var(--c-ink)' }}>
+                          {ep.name}
+                        </strong>
+                        <Badge variant={isEnabled ? 'success' : 'ghost'}>
+                          {isEnabled ? t('ep_enable', lang) : t('ep_disable', lang)}
+                        </Badge>
+                        <code className="text-[0.6875rem] font-mono truncate max-w-[16rem]"
+                              style={{ color: 'var(--c-ink-3)' }} title={ep.base_url}>
+                          {ep.base_url}
+                        </code>
+                        <select
+                          value={ep.api_format || 'openai'}
+                          onChange={async (e) => {
+                            const fmt = e.target.value;
+                            try {
+                              await api('/dashboard/admin/endpoints/format', {
+                                method: 'POST',
+                                body: JSON.stringify({ name: ep.name, api_format: fmt })
+                              }, token);
+                              setEpMsg(ep.name, `${t('ep_format_changed', lang)} ${fmt}`, 'success');
+                              refreshTab();
+                            } catch (err) {
+                              setEpMsg(ep.name, `${t('ep_format_err', lang)}: ${err.message}`, 'error');
+                            }
+                          }}
+                          className="select select-xs text-[0.6875rem] shrink-0"
+                          aria-label={t('ep_new_format', lang)}
+                          title={t('ep_new_format', lang)}
+                        >
+                          <option value="openai">OpenAI</option>
+                          <option value="anthropic">Anthropic</option>
+                        </select>
+                        {accountName && (
+                          <Badge variant="info" size="sm">{accountName}</Badge>
+                        )}
+                      </div>
+
+                      <div className="flex items-center gap-0.5">
+                        <Button variant="ghost" size="xs" icon={TerminalIcon}
+                                onClick={() => setSelectedEndpoint(ep.name)}>
+                          {t('ep_logs', lang)}
+                        </Button>
+                        <Button variant="ghost" size="xs" icon={RefreshCw} loading={isLoading}
+                                onClick={() => handleRefreshModels(ep.name)}>
+                          {t('ep_fetch', lang)}
+                        </Button>
+                        <Button variant="ghost" size="xs" icon={Power}
+                                style={{ color: isEnabled ? 'var(--c-critical)' : 'var(--c-good)' }}
+                                onClick={() => handleToggleEp(ep.name, isEnabled)}>
+                          {isEnabled ? t('ep_disable', lang) : t('ep_enable', lang)}
+                        </Button>
+                        <button onClick={() => handleDeleteEp(ep.name)}
+                                className="btn btn-ghost btn-xs btn-square"
+                                style={{ color: 'var(--c-critical)' }}
+                                title={t('cm_delete', lang)} aria-label={t('cm_delete', lang)}>
+                          <Trash2 className="w-3.5 h-3.5" />
+                        </button>
+                      </div>
+                    </div>
+
+                    <div className="grid grid-cols-1 lg:grid-cols-3 gap-4 pt-3"
+                         style={{ borderTop: '1px solid var(--c-line)' }}>
+                      <label className="block lg:col-span-1">
+                        <span className="label-micro block mb-1.5">{t('lbl_assigned_account', lang)}</span>
+                        <select
+                          value={accountName || assignedAccountId}
+                          onChange={(e) => handleAccountAssign(ep.name, e.target.value)}
+                          className="select select-sm text-xs w-full"
+                        >
+                          <option value="">{t('ep_unassigned', lang)}</option>
+                          {accounts.filter(a => a.enabled).map((a) => (
+                            <option key={a.name} value={a.name}>{a.name} ({a.tier})</option>
+                          ))}
+                        </select>
+                      </label>
+
+                      <div className="lg:col-span-2">
+                        <div className="flex items-center gap-1.5 mb-1.5">
+                          <span className="label-micro">{t('ep_models_count', lang)}</span>
+                          <span className="text-[0.6875rem] tabular-nums"
+                                style={{ color: 'var(--c-ink-3)' }}>{models.length}</span>
+                        </div>
+                        {models.length > 0 ? (
+                          <details className="rounded-lg group" open={models.length <= 8}>
+                            <summary className="cursor-pointer select-none text-[0.6875rem] font-medium px-2.5 py-2 rounded-lg list-none flex items-center justify-between"
+                                     style={{ background: 'var(--c-surface-2)', color: 'var(--c-ink-2)' }}>
+                              {t('ep_models_show', lang)}
+                              <span className="transition-transform group-open:rotate-180" aria-hidden="true">▾</span>
+                            </summary>
+                            <div className="grid grid-cols-1 sm:grid-cols-2 gap-1.5 mt-2 max-h-60 overflow-y-auto pr-1">
+                              {models.map((mid) => {
+                                const isModelEnabled = enabledModels.includes(mid);
+                                return (
+                                  <div key={mid}
+                                       className="flex items-center justify-between gap-2 p-2 rounded-lg text-xs"
+                                       style={{ background: 'var(--c-surface-2)', border: '1px solid var(--c-line)' }}>
+                                    <span className="font-mono truncate font-medium" title={mid}
+                                          style={{ color: isModelEnabled ? 'var(--c-ink)' : 'var(--c-ink-3)' }}>
+                                      {mid}
+                                    </span>
+                                    <input type="checkbox" checked={isModelEnabled}
+                                           onChange={(e) => handleModelToggle(ep.name, mid, e.target.checked)}
+                                           className="toggle toggle-xs toggle-success shrink-0"
+                                           aria-label={mid} />
+                                  </div>
+                                );
+                              })}
+                            </div>
+                          </details>
+                        ) : (
+                          <div className="flex items-center gap-2 text-[0.6875rem] px-2.5 py-2 rounded-lg"
+                               style={{ background: 'var(--c-surface-2)', color: 'var(--c-ink-3)' }}>
+                            <Info className="w-3.5 h-3.5 shrink-0" />
+                            {t('ep_models_empty', lang)}
+                          </div>
+                        )}
+                      </div>
+                    </div>
+
+                    {msg.text && <Alert type={msg.type} message={msg.text} />}
+                  </Card>
+                );
+              })}
+            </div>
+          ))
         )}
       </div>
 
-      {/* Log Terminal Modal */}
       {selectedEndpoint && (
         <LogHistoryModal
           endpoint={selectedEndpoint}

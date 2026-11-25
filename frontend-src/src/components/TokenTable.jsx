@@ -1,10 +1,17 @@
-import React, { useState, useEffect } from 'react';
+import { useState, useEffect } from 'react';
 import {
   KeyRound, Plus, Copy, Check, Trash2, Pencil, ShieldCheck, ShieldX,
-  Users, AlertTriangle, Clock, Info,
+  Users, AlertTriangle, Clock,
 } from 'lucide-react';
-import { fmt } from '../utils/format';
+import { fmt, fmtD } from '../utils/format';
 import { api } from '../utils/api';
+import { copyText } from '../utils/clipboard';
+import { useApp } from '../context/AppContext';
+import { t } from '../utils/i18n';
+import Button from './Button';
+import Badge from './Badge';
+import Alert from './Alert';
+import Modal from './Modal';
 
 const ALL_TIERS = ['free', 'premium', 'admin'];
 const TIER_RANKS = { free: 0, premium: 1, admin: 2 };
@@ -29,24 +36,27 @@ const DEFAULTS = {
   admin: { max_concurrency: 6, rpm: 30, tpm: 200_000, rpd: 1_000 },
 };
 
-/** Render a labelled numeric field with its allowed range spelled out. */
-function Field({ label, value, min, max, onChange, disabled, hint }) {
+const TIER_VARIANT = { admin: 'primary', premium: 'info', free: 'ghost' };
+
+/** One labelled field. The hint carries the range or a one-line explanation —
+ *  never both, so a field never reads twice. */
+function Field({ label, value, min, max, onChange, disabled, hint, type = 'number' }) {
   return (
-    <label className="form-control w-full">
-      <span className="label-text font-bold text-[11px] uppercase text-base-content/60 mb-1">
-        {label}
-      </span>
+    <label className="block w-full">
+      <span className="label-micro block mb-1.5">{label}</span>
       <input
-        type="number"
-        className="input input-bordered input-sm w-full text-xs"
+        type={type}
+        className="input input-sm w-full text-xs"
         value={value}
         min={min}
         max={max}
         disabled={disabled}
         onChange={(e) => onChange(e.target.value)}
+        spellCheck={false}
+        autoComplete="off"
       />
-      <span className="text-[10px] text-base-content/40 mt-0.5">
-        {hint || `${min} – ${max}`}
+      <span className="block text-[0.6875rem] mt-1" style={{ color: 'var(--c-ink-3)' }}>
+        {hint || (min != null && max != null ? `${min} – ${max}` : '')}
       </span>
     </label>
   );
@@ -62,12 +72,12 @@ function Field({ label, value, min, max, onChange, disabled, hint }) {
  * is already smaller than the interval — so it is disabled and annotated
  * rather than silently ignored.
  */
-function TokenForm({ initial, isAdmin, accountTier = 'free', submitLabel, onSubmit, onCancel, busy }) {
+function TokenForm({ initial, isAdmin, accountTier = 'free', submitLabel, onSubmit, onCancel, busy, lang }) {
   const caps = isAdmin ? LIMITS.admin : LIMITS.user;
   const d = isAdmin ? DEFAULTS.admin : DEFAULTS.user;
 
   const maxRank = isAdmin ? 2 : (TIER_RANKS[accountTier] ?? 0);
-  const availableTiers = ALL_TIERS.filter((t) => TIER_RANKS[t] <= maxRank);
+  const availableTiers = ALL_TIERS.filter((tier) => TIER_RANKS[tier] <= maxRank);
 
   const initialTier = initial?.tier;
   const defaultTier = initialTier
@@ -101,13 +111,13 @@ function TokenForm({ initial, isAdmin, accountTier = 'free', submitLabel, onSubm
       const v = Number(form[k]);
       const [lo, hi] = caps[k];
       if (!Number.isFinite(v) || v < lo || v > hi) {
-        setErr(`${k} phải nằm trong ${lo} – ${hi}`);
+        setErr(`${k} ${t('tt_bounds', lang)} ${lo} – ${hi}`);
         return;
       }
     }
     const interval = Number(form.min_interval_seconds);
     if (!Number.isFinite(interval) || interval < 0) {
-      setErr('min_interval_seconds không được âm');
+      setErr(t('tt_interval_neg', lang));
       return;
     }
     await onSubmit({
@@ -124,19 +134,20 @@ function TokenForm({ initial, isAdmin, accountTier = 'free', submitLabel, onSubm
   return (
     <form onSubmit={handleSubmit} className="space-y-3 text-left">
       <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-        <Field label="Nhãn" value={form.label} onChange={set('label')}
-               disabled={busy} hint="Tùy chọn, giúp nhận biết token" />
-        <label className="form-control w-full">
-          <span className="label-text font-bold text-[11px] uppercase text-base-content/60 mb-1">Tier</span>
-          <select className="select select-bordered select-sm text-xs"
+        <Field label={t('tt_label', lang)} type="text" value={form.label}
+               onChange={set('label')} disabled={busy}
+               hint={t('tt_label_hint', lang)} />
+        <label className="block w-full">
+          <span className="label-micro block mb-1.5">Tier</span>
+          <select className="select select-sm text-xs w-full"
                   value={form.tier} disabled={busy || availableTiers.length <= 1}
                   onChange={(e) => set('tier')(e.target.value)}>
-            {availableTiers.map((t) => <option key={t} value={t}>{t}</option>)}
+            {availableTiers.map((tier) => <option key={tier} value={tier}>{tier}</option>)}
           </select>
-          <span className="text-[10px] text-base-content/40 mt-0.5">
+          <span className="block text-[0.6875rem] mt-1" style={{ color: 'var(--c-ink-3)' }}>
             {availableTiers.length <= 1
-              ? `Cố định theo gói ${accountTier} của tài khoản`
-              : 'Quyết định pool key nào token được dùng'}
+              ? `${t('tt_tier_fixed', lang)} ${accountTier}`
+              : t('tt_tier_hint', lang)}
           </span>
         </label>
       </div>
@@ -145,57 +156,45 @@ function TokenForm({ initial, isAdmin, accountTier = 'free', submitLabel, onSubm
         <Field label="Concurrency" value={form.max_concurrency}
                onChange={setNum('max_concurrency')}
                min={caps.max_concurrency[0]} max={caps.max_concurrency[1]}
-               disabled={busy} hint="Request song song tối đa" />
+               disabled={busy} hint={t('tt_concurrency_hint', lang)} />
         <Field label="RPM" value={form.rpm} onChange={setNum('rpm')}
                min={caps.rpm[0]} max={caps.rpm[1]} disabled={busy}
-               hint="Request / 60 giây" />
+               hint={t('tt_rpm_hint', lang)} />
         <Field label="TPM" value={form.tpm} onChange={setNum('tpm')}
                min={caps.tpm[0]} max={caps.tpm[1]} disabled={busy}
-               hint="Token / 60 giây" />
+               hint={t('tt_tpm_hint', lang)} />
         <Field label="RPD" value={form.rpd} onChange={setNum('rpd')}
                min={caps.rpd[0]} max={caps.rpd[1]} disabled={busy}
-               hint="Request / ngày" />
+               hint={t('tt_rpd_hint', lang)} />
       </div>
 
       <Field
-        label="Min interval (giây)"
+        label={t('tt_interval', lang)}
         value={form.min_interval_seconds}
         onChange={setNum('min_interval_seconds')}
         min={0}
         disabled={busy || !concurrencyOne}
         hint={concurrencyOne
-          ? 'Giãn cách giữa 2 lần bắt đầu'
-          : 'Chỉ có tác dụng khi Concurrency = 1'}
+          ? t('tt_interval_hint', lang)
+          : t('tt_interval_off_hint', lang)}
       />
 
       {!concurrencyOne && (
-        <div className="flex items-start gap-2 p-2.5 rounded-lg bg-info/10 border border-info/20">
-          <Info className="w-3.5 h-3.5 text-info shrink-0 mt-0.5" />
-          <span className="text-[11px] text-base-content/70 leading-relaxed">
-            Với {form.max_concurrency || '?'} slot chạy song song, khoảng cách
-            giữa các lần bắt đầu luôn nhỏ hơn interval — dùng <b>RPM</b> để
-            giãn tải thay thế.
-          </span>
-        </div>
+        <Alert type="info"
+               message={`${form.max_concurrency || '?'} slots — ${t('tt_interval_note', lang)}`} />
       )}
 
-      {err && (
-        <div className="text-xs font-semibold p-2.5 rounded-lg bg-error/10 text-error border border-error/20">
-          {err}
-        </div>
-      )}
+      {err && <Alert type="error" message={err} />}
 
       <div className="flex gap-2 justify-end pt-1">
         {onCancel && (
-          <button type="button" disabled={busy} onClick={onCancel}
-                  className="btn btn-ghost btn-sm font-bold w-24">
-            Hủy
-          </button>
+          <Button type="button" variant="ghost" disabled={busy} onClick={onCancel}>
+            {t('btn_cancel', lang)}
+          </Button>
         )}
-        <button type="submit" disabled={busy}
-                className="btn btn-primary btn-sm font-bold w-32">
-          {busy ? <span className="loading loading-spinner loading-xs" /> : submitLabel}
-        </button>
+        <Button type="submit" loading={busy} className="min-w-[8rem]">
+          {submitLabel}
+        </Button>
       </div>
     </form>
   );
@@ -207,6 +206,7 @@ function TokenForm({ initial, isAdmin, accountTier = 'free', submitLabel, onSubm
  * instead of implying both work.
  */
 export function InvitePanel({ token, onIssued }) {
+  const { lang } = useApp();
   const [invite, setInvite] = useState(null);
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState('');
@@ -232,7 +232,7 @@ export function InvitePanel({ token, onIssued }) {
       setNow(Date.now() / 1000);
       if (onIssued) onIssued(data);
     } catch (e) {
-      setErr('❌ ' + e.message);
+      setErr(e.message);
       setInvite(null);
     } finally {
       setBusy(false);
@@ -241,81 +241,81 @@ export function InvitePanel({ token, onIssued }) {
 
   const copy = async () => {
     if (!invite) return;
-    try {
-      await navigator.clipboard.writeText(invite.code);
+    // The code is on screen either way, so a blocked clipboard needs no alarm.
+    if (await copyText(invite.code)) {
       setCopied(true);
       setTimeout(() => setCopied(false), 2000);
-    } catch { /* clipboard blocked; the code is on screen anyway */ }
+    }
   };
 
   const remaining = invite ? Math.max(0, Math.round(invite.expires_at - now)) : 0;
   const expired = invite && remaining <= 0;
 
+  const ttls = [
+    { v: 180, label: t('tt_ttl_3', lang) },
+    { v: 300, label: t('tt_ttl_5', lang) },
+    { v: 600, label: t('tt_ttl_10', lang) },
+    { v: 900, label: t('tt_ttl_15', lang) },
+  ];
+
   return (
-    <div className="card glass-card rounded-2xl border border-base-content/5 p-5 text-left">
-      <div className="flex items-center justify-between gap-3 mb-3">
-        <div>
-          <h3 className="font-extrabold text-sm flex items-center gap-2">
-            <Users className="w-4 h-4 text-primary" /> Mã đăng ký
+    <div className="glass-card rounded-xl p-4 text-left">
+      <div className="flex flex-wrap items-start justify-between gap-3 mb-3">
+        <div className="min-w-0">
+          <h3 className="text-sm font-semibold flex items-center gap-2" style={{ color: 'var(--c-ink)' }}>
+            <Users className="w-4 h-4" style={{ color: 'var(--c-accent)' }} />
+            {t('tt_invite_title', lang)}
           </h3>
-          <p className="text-[11px] text-base-content/55 mt-0.5">
-            User dùng mã này để tự tạo tài khoản. Hạn 3 phút, dùng 1 lần.
+          <p className="text-[0.6875rem] mt-1 leading-relaxed" style={{ color: 'var(--c-ink-3)' }}>
+            {t('tt_invite_sub', lang)}
           </p>
         </div>
-        <div className="flex items-center gap-2">
+        <div className="flex items-center gap-2 shrink-0">
           <select
-            className="select select-bordered select-xs text-[11px]"
+            className="select select-xs text-[0.6875rem]"
             value={ttl}
             disabled={busy}
             onChange={(e) => setTtl(e.target.value)}
+            aria-label={t('tt_invite_title', lang)}
           >
-            <option value={180}>3 phút</option>
-            <option value={300}>5 phút</option>
-            <option value={600}>10 phút</option>
-            <option value={900}>15 phút</option>
+            {ttls.map((o) => <option key={o.v} value={o.v}>{o.label}</option>)}
           </select>
-          <button onClick={issue} disabled={busy}
-                  className="btn btn-primary btn-sm font-bold">
-            {busy ? <span className="loading loading-spinner loading-xs" /> : 'Cấp mã'}
-          </button>
+          <Button onClick={issue} loading={busy}>{t('tt_invite_issue', lang)}</Button>
         </div>
       </div>
 
-      {err && (
-        <div className="text-xs font-semibold p-2.5 rounded-lg bg-error/10 text-error border border-error/20 mb-3">
-          {err}
-        </div>
-      )}
+      {err && <div className="mb-3"><Alert type="error" message={err} /></div>}
 
       {invite ? (
-        <div className={`flex items-center justify-between gap-3 p-4 rounded-xl border ${
-          expired
-            ? 'bg-error/5 border-error/20 opacity-60'
-            : 'bg-success/5 border-success/20'
-        }`}>
-          <div className="flex items-center gap-4">
-            <code className="font-mono text-3xl font-black tracking-[0.3em] text-primary">
+        <div className="flex flex-wrap items-center justify-between gap-3 p-4 rounded-lg"
+             style={{
+               background: expired ? 'var(--c-surface-2)' : 'color-mix(in srgb, var(--c-good) 8%, transparent)',
+               border: `1px solid ${expired ? 'var(--c-line)' : 'color-mix(in srgb, var(--c-good) 26%, transparent)'}`,
+               opacity: expired ? 0.7 : 1,
+             }}>
+          <div className="flex flex-wrap items-center gap-x-4 gap-y-2">
+            <code className="font-mono text-[1.75rem] leading-none font-semibold tracking-[0.3em] tabular-nums"
+                  style={{ color: expired ? 'var(--c-ink-3)' : 'var(--c-accent)' }}>
               {invite.code}
             </code>
-            <span className={`flex items-center gap-1.5 text-xs font-bold ${
-              expired ? 'text-error' : 'text-success'
-            }`}>
+            <span className="flex items-center gap-1.5 text-xs font-medium"
+                  style={{ color: expired ? 'var(--c-ink-3)' : 'var(--c-good)' }}>
               {expired ? <ShieldX className="w-3.5 h-3.5" /> : <Clock className="w-3.5 h-3.5" />}
               {expired
-                ? 'Đã hết hạn'
-                : `còn ${Math.floor(remaining / 60)}:${String(remaining % 60).padStart(2, '0')}`}
+                ? t('tt_invite_expired', lang)
+                : `${t('tt_invite_left', lang)} ${Math.floor(remaining / 60)}:${String(remaining % 60).padStart(2, '0')}`}
             </span>
           </div>
-          <button onClick={copy} disabled={expired}
-                  className="btn btn-ghost btn-sm gap-1.5 font-bold">
-            {copied ? <Check className="w-3.5 h-3.5 text-success" /> : <Copy className="w-3.5 h-3.5" />}
-            {copied ? 'Đã copy' : 'Copy'}
-          </button>
+          <Button variant="ghost" onClick={copy} disabled={expired}
+                  icon={copied ? Check : Copy}>
+            {copied ? t('tt_copied', lang) : t('tt_copy', lang)}
+          </Button>
         </div>
       ) : (
-        <div className="flex items-center gap-2 p-3 rounded-lg bg-base-200/30 text-base-content/45 text-xs">
-          <AlertTriangle className="w-3.5 h-3.5" />
-          Chưa có mã nào. Bấm "Cấp mã" — mỗi lần cấp mã cũ sẽ hết hiệu lực.
+        <div className="flex items-center gap-2 p-3 rounded-lg text-[0.6875rem]"
+             style={{ background: 'var(--c-surface-2)', color: 'var(--c-ink-3)' }}>
+          <AlertTriangle className="w-3.5 h-3.5 shrink-0" />
+          {t('tt_invite_empty', lang)}
         </div>
       )}
     </div>
@@ -332,6 +332,7 @@ export default function TokenTable({
   tokens, loading, scope = 'user', accountTier = 'free', accountName,
   onIssue, onUpdate, onRevoke,
 }) {
+  const { lang } = useApp();
   const [mode, setMode] = useState(null);       // {type:'issue'} | {type:'edit', token}
   const [busy, setBusy] = useState(false);
   const [msg, setMsg] = useState(null);
@@ -349,7 +350,7 @@ export default function TokenTable({
       setMsg({ text: okText, type: 'success' });
       close();
     } catch (e) {
-      setMsg({ text: '❌ ' + e.message, type: 'error' });
+      setMsg({ text: e.message, type: 'error' });
     } finally {
       setBusy(false);
     }
@@ -357,31 +358,30 @@ export default function TokenTable({
 
   const handleIssue = (payload) => run(
     () => onIssue(payload),
-    '✅ Đã cấu hình token. Copy giá trị bên dưới — chỉ hiện một lần.'
+    t('msg_token_config', lang)
   );
 
   const handleUpdate = (payload) => run(
     () => onUpdate(mode.token.key_id, payload),
-    '✅ Đã cập nhật giới hạn token.'
+    t('msg_token_updated', lang)
   );
 
   const handleToggle = (tk) => run(
     () => onUpdate(tk.key_id, { enabled: !tk.enabled }),
-    tk.enabled ? '⏸ Đã tạm khoá token.' : '▶ Đã kích hoạt token.'
+    tk.enabled ? t('msg_token_locked', lang) : t('msg_token_unlocked', lang)
   );
 
   const handleRevoke = () => {
     const tk = confirm;
     setConfirm(null);
-    run(() => onRevoke(tk.key_id), '🗑 Đã thu hồi token.');
+    run(() => onRevoke(tk.key_id), t('msg_token_revoked', lang));
   };
 
   const copy = async (tk) => {
-    try {
-      await navigator.clipboard.writeText(tk.token);
+    if (await copyText(tk.token)) {
       setCopiedId(tk.key_id);
       setTimeout(() => setCopiedId(null), 2000);
-    } catch { /* clipboard blocked */ }
+    }
   };
 
   const rows = tokens || [];
@@ -390,169 +390,164 @@ export default function TokenTable({
     <div className="space-y-3">
       {onIssue && mode?.type !== 'issue' && (
         <div className="flex justify-end">
-          <button
-            onClick={() => { setMsg(null); setMode({ type: 'issue' }); }}
-            className="btn btn-primary btn-sm gap-1.5 font-bold"
-          >
-            <Plus className="w-3.5 h-3.5" /> Tạo token mới
-          </button>
+          <Button icon={Plus} onClick={() => { setMsg(null); setMode({ type: 'issue' }); }}>
+            {t('tt_new_token', lang)}
+          </Button>
         </div>
       )}
 
       {mode?.type === 'issue' && (
-        <div className="card glass-card rounded-2xl border border-primary/25 p-5">
-          <h4 className="font-extrabold text-xs mb-3 uppercase text-base-content/70">
-            Cấu hình token mới
+        <div className="rounded-lg p-4 animate-fade-in-up"
+             style={{ background: 'var(--c-surface-2)', border: '1px solid var(--c-line)' }}>
+          <h4 className="text-xs font-semibold mb-3" style={{ color: 'var(--c-ink)' }}>
+            {t('tt_issue_title', lang)}
           </h4>
           <TokenForm
             isAdmin={isAdmin}
             accountTier={accountTier}
             busy={busy}
-            submitLabel="Tạo token"
+            lang={lang}
+            submitLabel={t('tt_submit_create', lang)}
             onSubmit={handleIssue}
             onCancel={close}
           />
         </div>
       )}
 
-      {msg && (
-        <div className={`text-xs font-semibold p-2.5 rounded-lg border ${
-          msg.type === 'success'
-            ? 'bg-success/10 text-success border-success/20'
-            : 'bg-error/10 text-error border-error/20'
-        }`}>
-          {msg.text}
-        </div>
-      )}
+      {msg && <Alert type={msg.type} message={msg.text} />}
 
       {loading ? (
-        <div className="flex items-center justify-center gap-2 py-8 text-base-content/45 text-xs">
-          <span className="loading loading-spinner loading-xs" /> Đang tải token...
+        <div className="flex items-center justify-center gap-2 py-8 text-xs"
+             style={{ color: 'var(--c-ink-3)' }}>
+          <span className="loading loading-spinner loading-xs" /> {t('tt_loading', lang)}
         </div>
       ) : rows.length === 0 && mode?.type !== 'issue' ? (
-        <div className="flex flex-col items-center gap-3 py-8 text-base-content/45">
+        <div className="flex flex-col items-center gap-3 py-8" style={{ color: 'var(--c-ink-3)' }}>
           <KeyRound className="w-7 h-7 opacity-40" />
           <span className="text-xs font-medium">
             {isAdmin
-              ? `Tài khoản ${accountName} chưa có token nào`
-              : 'Bạn chưa có auth token nào'}
+              ? `${t('tt_empty_admin_pre', lang)} ${accountName} ${t('tt_empty_admin_post', lang)}`
+              : t('tt_empty_user', lang)}
           </span>
         </div>
       ) : (
-        <div className="overflow-x-auto w-full">
-          <table className="table table-zebra w-full text-xs">
-            <thead>
-              <tr className="border-b border-base-content/5 text-base-content/60 bg-base-200/35 select-none">
-                <th className="font-bold whitespace-nowrap">Token</th>
-                <th className="font-bold whitespace-nowrap">Tier</th>
-                <th className="font-bold whitespace-nowrap">Conc</th>
-                <th className="font-bold whitespace-nowrap">RPM</th>
-                <th className="font-bold whitespace-nowrap">TPM</th>
-                <th className="font-bold whitespace-nowrap">RPD</th>
-                <th className="font-bold whitespace-nowrap">Trạng thái</th>
-                <th className="font-bold whitespace-nowrap">Ngày tạo</th>
-                <th className="font-bold whitespace-nowrap">Hành động</th>
-              </tr>
-            </thead>
-            <tbody>
-              {rows.map((tk) => (
-                <tr key={tk.key_id} className="border-b border-base-content/5 hover:bg-base-200/50">
-                  <td className="max-w-0">
-                    <div className="flex items-center gap-1.5">
-                      <code
-                        className={`font-mono text-[10px] block overflow-hidden text-ellipsis whitespace-nowrap ${
-                          tk.enabled ? 'text-primary' : 'text-base-content/40 line-through'
-                        }`}
-                        title={tk.token}
-                      >
-                        {tk.token}
-                      </code>
-                      <button
-                        onClick={() => copy(tk)}
-                        className="btn btn-ghost btn-xs btn-square text-base-content/60 hover:text-primary shrink-0"
-                        title="Copy token"
-                      >
-                        {copiedId === tk.key_id
-                          ? <Check className="w-3 h-3 text-success" />
-                          : <Copy className="w-3 h-3" />}
-                      </button>
-                    </div>
-                    {tk.label && (
-                      <span className="text-[10px] text-base-content/45 italic">{tk.label}</span>
-                    )}
-                  </td>
-                  <td>
-                    <span className={`badge badge-xs text-[9px] font-extrabold uppercase ${
-                      tk.tier === 'admin' ? 'badge-primary'
-                        : tk.tier === 'premium' ? 'badge-accent'
-                        : 'badge-ghost border-base-content/15'
-                    }`}>{tk.tier}</span>
-                  </td>
-                  <td>{tk.max_concurrency}</td>
-                  <td>{(tk.rpm || 0).toLocaleString()}</td>
-                  <td>{fmt(tk.tpm || 0)}</td>
-                  <td>{(tk.rpd || 0).toLocaleString()}</td>
-                  <td>
-                    <span className={`badge badge-xs font-bold uppercase ${
-                      tk.enabled
-                        ? 'badge-success/15 text-success border border-success/30'
-                        : 'badge-ghost border-base-content/15 text-base-content/50'
-                    }`}>{tk.enabled ? 'Active' : 'Locked'}</span>
-                  </td>
-                  <td className="text-base-content/50 font-medium whitespace-nowrap">
-                    {tk.created_at ? fmt(tk.created_at) : '—'}
-                  </td>
-                  <td>
-                    <div className="flex items-center gap-0.5">
-                      <button
-                        onClick={() => handleToggle(tk)}
-                        disabled={busy}
-                        className={`btn btn-ghost btn-xs btn-square ${
-                          tk.enabled
-                            ? 'text-error hover:bg-error/15'
-                            : 'text-success hover:bg-success/15'
-                        }`}
-                        title={tk.enabled ? 'Khoá token' : 'Kích hoạt token'}
-                      >
-                        {tk.enabled
-                          ? <ShieldX className="w-3.5 h-3.5" />
-                          : <ShieldCheck className="w-3.5 h-3.5" />}
-                      </button>
-                      <button
-                        onClick={() => {
-                          setMsg(null);
-                          setMode({ type: 'edit', token: tk });
-                        }}
-                        disabled={busy}
-                        className="btn btn-ghost btn-xs btn-square text-primary hover:bg-primary/15"
-                        title="Sửa giới hạn"
-                      >
-                        <Pencil className="w-3.5 h-3.5" />
-                      </button>
-                      <button
-                        onClick={() => setConfirm(tk)}
-                        disabled={busy}
-                        className="btn btn-ghost btn-xs btn-square text-error hover:bg-error/15"
-                        title="Thu hồi token"
-                      >
-                        <Trash2 className="w-3.5 h-3.5" />
-                      </button>
-                    </div>
-                  </td>
+        <div className="glass-card rounded-xl overflow-hidden">
+          <div className="overflow-x-auto w-full">
+            <table className="table table-pin w-full">
+              <thead>
+                <tr>
+                  <th className="min-w-[14rem]">{t('th_token', lang)}</th>
+                  <th className="min-w-[5.5rem]">{t('th_tier', lang)}</th>
+                  <th className="min-w-[4rem] text-right">{t('th_concurrency', lang)}</th>
+                  <th className="min-w-[4.5rem] text-right">{t('th_rpm', lang)}</th>
+                  <th className="min-w-[4.5rem] text-right">{t('th_tpm', lang)}</th>
+                  <th className="min-w-[4.5rem] text-right">{t('th_rpd', lang)}</th>
+                  <th className="min-w-[6.5rem]">{t('th_status', lang)}</th>
+                  <th className="min-w-[6.5rem]">{t('th_created', lang)}</th>
+                  <th className="min-w-[7.5rem] text-right">{t('th_actions', lang)}</th>
                 </tr>
-              ))}
-            </tbody>
-          </table>
+              </thead>
+              <tbody>
+                {rows.map((tk) => (
+                  <tr key={tk.key_id}>
+                    <td className="max-w-0">
+                      <div className="flex items-center gap-1.5">
+                        <code
+                          className="font-mono text-[0.6875rem] block overflow-hidden text-ellipsis whitespace-nowrap"
+                          style={{
+                            color: tk.enabled ? 'var(--c-accent)' : 'var(--c-ink-3)',
+                            textDecoration: tk.enabled ? 'none' : 'line-through',
+                          }}
+                          title={tk.token}
+                        >
+                          {tk.token}
+                        </code>
+                        <button
+                          onClick={() => copy(tk)}
+                          className="btn btn-ghost btn-xs btn-square shrink-0"
+                          style={{ color: copiedId === tk.key_id ? 'var(--c-good)' : 'var(--c-ink-3)' }}
+                          title={t('tt_copy_token', lang)}
+                          aria-label={t('tt_copy_token', lang)}
+                        >
+                          {copiedId === tk.key_id
+                            ? <Check className="w-3 h-3" />
+                            : <Copy className="w-3 h-3" />}
+                        </button>
+                      </div>
+                      {tk.label && (
+                        <span className="text-[0.6875rem] italic" style={{ color: 'var(--c-ink-3)' }}>
+                          {tk.label}
+                        </span>
+                      )}
+                    </td>
+                    <td>
+                      <Badge variant={TIER_VARIANT[tk.tier] || 'ghost'}>{tk.tier}</Badge>
+                    </td>
+                    <td className="text-right tabular-nums">{tk.max_concurrency}</td>
+                    <td className="text-right tabular-nums">{(tk.rpm || 0).toLocaleString()}</td>
+                    <td className="text-right tabular-nums">{fmt(tk.tpm || 0)}</td>
+                    <td className="text-right tabular-nums">{(tk.rpd || 0).toLocaleString()}</td>
+                    <td>
+                      <Badge variant={tk.enabled ? 'success' : 'ghost'} dot={tk.enabled}>
+                        {tk.enabled ? t('st_enabled', lang) : t('st_locked', lang)}
+                      </Badge>
+                    </td>
+                    <td className="text-[0.6875rem] whitespace-nowrap tabular-nums"
+                        style={{ color: 'var(--c-ink-3)' }}>
+                      {fmtD(tk.created_at)}
+                    </td>
+                    <td>
+                      <div className="flex items-center justify-end gap-0.5">
+                        <button
+                          onClick={() => handleToggle(tk)}
+                          disabled={busy}
+                          className="btn btn-ghost btn-xs btn-square"
+                          style={{ color: tk.enabled ? 'var(--c-critical)' : 'var(--c-good)' }}
+                          title={tk.enabled ? t('tt_toggle_lock', lang) : t('tt_toggle_unlock', lang)}
+                          aria-label={tk.enabled ? t('tt_toggle_lock', lang) : t('tt_toggle_unlock', lang)}
+                        >
+                          {tk.enabled
+                            ? <ShieldX className="w-3.5 h-3.5" />
+                            : <ShieldCheck className="w-3.5 h-3.5" />}
+                        </button>
+                        <button
+                          onClick={() => { setMsg(null); setMode({ type: 'edit', token: tk }); }}
+                          disabled={busy}
+                          className="btn btn-ghost btn-xs btn-square"
+                          style={{ color: 'var(--c-accent)' }}
+                          title={t('tt_edit_limits', lang)}
+                          aria-label={t('tt_edit_limits', lang)}
+                        >
+                          <Pencil className="w-3.5 h-3.5" />
+                        </button>
+                        <button
+                          onClick={() => setConfirm(tk)}
+                          disabled={busy}
+                          className="btn btn-ghost btn-xs btn-square"
+                          style={{ color: 'var(--c-critical)' }}
+                          title={t('tt_revoke', lang)}
+                          aria-label={t('tt_revoke', lang)}
+                        >
+                          <Trash2 className="w-3.5 h-3.5" />
+                        </button>
+                      </div>
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
         </div>
       )}
 
       {mode?.type === 'edit' && (
-        <div className="card glass-card rounded-2xl border border-primary/25 p-5">
-          <div className="flex items-center justify-between mb-3">
-            <h4 className="font-extrabold text-xs uppercase text-base-content/70">
-              Sửa giới hạn token
+        <div className="rounded-lg p-4 animate-fade-in-up"
+             style={{ background: 'var(--c-surface-2)', border: '1px solid var(--c-line)' }}>
+          <div className="flex items-center justify-between gap-3 mb-3">
+            <h4 className="text-xs font-semibold" style={{ color: 'var(--c-ink)' }}>
+              {t('tt_edit_title', lang)}
             </h4>
-            <code className="font-mono text-[10px] text-base-content/50">
+            <code className="font-mono text-[0.6875rem] truncate" style={{ color: 'var(--c-ink-3)' }}>
               {mode.token.token}
             </code>
           </div>
@@ -561,35 +556,40 @@ export default function TokenTable({
             isAdmin={isAdmin}
             accountTier={accountTier}
             busy={busy}
-            submitLabel="Lưu"
+            lang={lang}
+            submitLabel={t('tt_submit_save', lang)}
             onSubmit={handleUpdate}
             onCancel={close}
           />
         </div>
       )}
 
-      {confirm && (
-        <div className="modal modal-open z-[9999] fixed inset-0 flex items-center justify-center">
-          <div className="modal-overlay fixed inset-0 bg-black/60 backdrop-blur-sm"
-               onClick={() => setConfirm(null)}></div>
-          <div className="modal-box max-w-sm bg-base-100 border border-base-content/10 relative z-10 p-6 rounded-2xl shadow-2xl">
-            <h3 className="font-extrabold text-base mb-2 text-left flex items-center gap-2">
-              <AlertTriangle className="w-4 h-4 text-error" /> Thu hồi token?
-            </h3>
-            <p className="text-xs text-base-content/65 leading-relaxed mb-4 text-left">
-              <code className="font-mono text-primary">{confirm.token}</code> sẽ
-              ngừng hoạt động ngay. Mọi client đang dùng nó sẽ nhận 401 và phải
-              lấy token mới. Không thể hoàn tác.
+      <Modal
+        isOpen={Boolean(confirm)}
+        onClose={() => setConfirm(null)}
+        title={t('tt_confirm_title', lang)}
+        size="sm"
+        footer={
+          <>
+            <Button variant="ghost" onClick={() => setConfirm(null)}>
+              {t('btn_cancel', lang)}
+            </Button>
+            <Button variant="danger" onClick={handleRevoke}>
+              {t('tt_revoke', lang)}
+            </Button>
+          </>
+        }
+      >
+        {confirm && (
+          <div className="flex items-start gap-2.5">
+            <AlertTriangle className="w-4 h-4 mt-px shrink-0" style={{ color: 'var(--c-critical)' }} />
+            <p className="text-xs leading-relaxed" style={{ color: 'var(--c-ink-2)' }}>
+              <code className="font-mono" style={{ color: 'var(--c-accent)' }}>{confirm.token}</code>{' '}
+              {t('tt_confirm_body', lang)}
             </p>
-            <div className="flex gap-2 justify-end">
-              <button onClick={() => setConfirm(null)}
-                      className="btn btn-ghost btn-sm font-bold w-24">Hủy</button>
-              <button onClick={handleRevoke}
-                      className="btn btn-error btn-sm font-bold w-28">Thu hồi</button>
-            </div>
           </div>
-        </div>
-      )}
+        )}
+      </Modal>
     </div>
   );
 }

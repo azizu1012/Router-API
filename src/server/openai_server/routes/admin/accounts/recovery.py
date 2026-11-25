@@ -40,7 +40,8 @@ async def admin_account_recovery(request: Request, name: str):
             "name": clean,
             "password": None,
             "available": False,
-            "reason": "ROUTER_API_PASSWORD_KEY chưa được đặt — tính năng xem mật khẩu đang tắt",
+            "reason_code": "password_key_missing",
+            "reason": "ROUTER_API_PASSWORD_KEY is not set — password reveal is disabled.",
         }
 
     plain = await asyncio.to_thread(get_recoverable_password_db, acct["account_id"])
@@ -49,8 +50,8 @@ async def admin_account_recovery(request: Request, name: str):
             "name": clean,
             "password": None,
             "available": False,
-            "reason": "Tài khoản này chưa có bản mật khẩu có thể đọc lại. "
-                      "Đặt lại mật khẩu để tạo bản mới.",
+            "reason_code": "password_not_recoverable",
+            "reason": "This account has no readable password. Reset it to create one.",
         }
     return {"name": clean, "password": plain, "available": True}
 
@@ -84,7 +85,8 @@ async def admin_account_master_key(request: Request, name: str):
     key = str(acct.get("auth_key") or "")
     if not key:
         return {"name": clean, "auth_key": None, "available": False,
-                "reason": "Tài khoản này chưa có master key."}
+                "reason_code": "master_key_missing",
+                "reason": "This account has no master key."}
     return {"name": clean, "auth_key": key, "available": True}
 
 
@@ -120,7 +122,7 @@ async def admin_require_password_change(request: Request):
     if not await asyncio.to_thread(get_credential_db, acct["account_id"]):
         raise HTTPException(
             status_code=400,
-            detail="Tài khoản này chưa có mật khẩu web. Cấp mật khẩu trước rồi đánh dấu bắt đổi.",
+            detail="This account has no web password yet. Set one before requiring a change.",
         )
 
     try:
