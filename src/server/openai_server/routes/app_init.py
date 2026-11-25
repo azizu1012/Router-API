@@ -18,7 +18,11 @@ from ...realtime.log_watcher import log_watcher
 from ...realtime.stats import stats_pusher
 from src.core.runtime.request_context import set_request_id
 
-app = FastAPI(title="Router API v2", version="2.0.0")
+# docs_url/redoc_url are disabled here on purpose: FastAPI's stock pages pull
+# Swagger UI from cdn.jsdelivr.net and bootstrap with an inline <script>, and the
+# app's CSP allows neither, which is why /docs rendered blank. routes/docs_routes.py
+# serves a same-origin replacement at the same URLs. /openapi.json is unaffected.
+app = FastAPI(title="Router API v2", version="2.0.0", docs_url=None, redoc_url=None)
 
 
 class ClaudeResponseSendTraceMiddleware:

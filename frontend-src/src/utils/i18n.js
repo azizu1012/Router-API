@@ -1069,7 +1069,7 @@ export const TR = {
     stg_rpm_hint: "Requests per minute granted to a newly created client account.",
     stg_burst: "Burst RPM",
     stg_burst_hint: "Extra headroom so a client bursting requests is not throttled.",
-    stg_unit_times: "",
+    stg_unit_times: "times",
     stg_unit_tokens: "tokens",
     // ── Model config ──
     th_alias: "Alias", th_display: "Display", th_source: "Source",

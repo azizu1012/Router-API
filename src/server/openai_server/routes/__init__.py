@@ -3,6 +3,7 @@ from fastapi.staticfiles import StaticFiles
 
 from .app_init import app
 from . import standard_routes as standard_routes
+from . import docs_routes as docs_routes  # /docs + /redoc, same-origin (CSP-safe)
 from . import completions as completions
 from . import dashboard_routes as dashboard_routes
 from . import admin as admin  # admin/ package (keys, endpoints, accounts)

@@ -56,6 +56,14 @@ PUBLIC_ROUTES: dict[str, str] = {
     "/mcp": "server banner / client bootstrap",
     "/stats": "serves index.html; all data behind it is fetched with a token",
     "/stats/{path:path}": "SPA route, same as /stats",
+    # The API reference renders /openapi.json, which FastAPI publishes without
+    # auth anyway (docs_url=None only removed the HTML page, not the spec). These
+    # handlers touch no database and return no caller data: a static document and
+    # the same-origin script that draws it. Gating the page while the spec it
+    # fetches stays public would be decoration, not access control.
+    "/docs": "static API reference page; reads the already-public /openapi.json",
+    "/docs.js": "script for /docs; static, no data access",
+    "/redoc": "same page as /docs",
     "/dashboard/login": "you cannot present a token before you have one",
     "/dashboard/register": "gated by a single-use invite code instead",
     "/api/me/alias-templates": "static list of recommended model alias templates",
