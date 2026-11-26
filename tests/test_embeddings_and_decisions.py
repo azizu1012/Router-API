@@ -303,16 +303,16 @@ class TestModelDiscoveryIncludesNewModels:
 
         assert r_openai.status_code == 200
         by_id = {m["id"]: m for m in r_openai.json()["data"]}
-        assert "gemini-4-hydrogen" in by_id
-        assert "gemini-flash-25" in by_id
+        assert "gemini-4" in by_id
+        assert "gemini-2" in by_id
         assert by_id["gemini-embedding-2"]["kind"] == "embedding"
         assert by_id["gemini-embedding-001"]["kind"] == "embedding"
         assert by_id["gemini-decision-1"]["kind"] == "decision"
 
         assert r_gemini.status_code == 200
         g_by_name = {m["name"]: m for m in r_gemini.json()["models"]}
-        assert "models/gemini-4-hydrogen" in g_by_name
-        assert "models/gemini-flash-25" in g_by_name
+        assert "models/gemini-4" in g_by_name
+        assert "models/gemini-2" in g_by_name
         assert g_by_name["models/gemini-embedding-2"]["supportedGenerationMethods"] == ["embedContent", "batchEmbedContents"]
         assert g_by_name["models/gemini-embedding-2"]["outputTokenLimit"] == 0
         assert g_by_name["models/gemini-decision-1"]["supportedGenerationMethods"] == ["decide"]

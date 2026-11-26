@@ -298,10 +298,10 @@ class TestPoolDisplayHasNoMemberList:
         return AVAILABLE_MODELS[alias]["display"]
 
     def test_the_flash_pool_is_just_the_tier_name(self):
-        assert self._display("gemini-flash") == "Gemini Flash Pool"
+        assert self._display("gemini-flash") == "Gemini 3"
 
     def test_the_lite_pool_is_just_the_tier_name(self):
-        assert self._display("gemini-flash-lite") == "Gemini Flash Lite Pool"
+        assert self._display("gemini-flash-lite") == "Lite"
 
     def test_no_pool_label_carries_a_parenthetical(self):
         from src.core.config.api_config import MODEL_POOLS
@@ -316,7 +316,7 @@ class TestPoolDisplayHasNoMemberList:
         entry = _model_entry({"id": "gemini-flash",
                               "display": self._display("gemini-flash")})
 
-        assert entry["display_name"] == "Gemini Flash Pool"
+        assert entry["display_name"] == "Gemini 3"
 
     def test_an_env_override_still_wins(self, temp_db):
         """The escape hatch for anyone who wants a more specific label.

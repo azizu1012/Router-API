@@ -117,15 +117,19 @@ class TestModelRegistrySingleSource:
         }
 
         for standalone in (
-            "gemini-4-hydrogen",
-            "gemini-flash-25",
+            "gemini-4",
+            "gemini-2",
             "gemini-embedding-2",
             "gemini-embedding-001",
             "gemini-decision-1",
         ):
             cfg = api_config.AVAILABLE_MODELS[standalone]
             assert cfg.get("hidden") is False, standalone
-            for pool_cfg in api_config.MODEL_POOLS.values():
+            if standalone in ("gemini-4", "gemini-2"):
+                assert standalone in api_config.MODEL_POOLS
+            else:
+                for pool_cfg in api_config.MODEL_POOLS.values():
+                    assert standalone not in pool_cfg["members"]
                 assert standalone not in pool_cfg["members"]
 
     def test_embedding_and_decision_metadata(self):
