@@ -301,7 +301,7 @@ class TestTextBlock:
 
         async def collect():
             return [c async for c in claude_proxy.stream_message({
-                "model": "test-model",
+                "model": "gemini-flash",
                 "messages": [{"role": "user", "content": "continue the task"}],
             })]
 
@@ -353,7 +353,7 @@ class TestTextBlock:
 
         async def collect():
             return [c async for c in claude_proxy.stream_message({
-                "model": "test-model",
+                "model": "gemini-flash",
                 "messages": [{"role": "user", "content": "continue the task"}],
             })]
 
