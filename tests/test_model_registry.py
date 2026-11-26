@@ -124,7 +124,7 @@ class TestModelRegistrySingleSource:
             "gemini-decision-1",
         ):
             cfg = api_config.AVAILABLE_MODELS[standalone]
-            assert cfg.get("hidden") is False, standalone
+            assert not cfg.get("hidden"), standalone
             if standalone in ("gemini-4", "gemini-2"):
                 assert standalone in api_config.MODEL_POOLS
             else:
