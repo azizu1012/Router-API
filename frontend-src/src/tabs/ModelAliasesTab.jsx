@@ -86,7 +86,7 @@ const ALIAS_TEMPLATES = [
     category: 'claude',
     name: 'Claude Opus 5.5 (Deep Reasoning)',
     alias_name: 'claude-opus-5-5',
-    target_model: 'gemini-pro',
+    target_model: 'gemini-4-hydrogen',
     target_endpoint: null,
     label_key: 'mal_tpl_opus55_label',
     description_key: 'mal_tpl_opus55_desc'
@@ -96,7 +96,7 @@ const ALIAS_TEMPLATES = [
     category: 'claude',
     name: 'Claude 3 Opus (Classic Flagship)',
     alias_name: 'claude-3-opus-20240229',
-    target_model: 'gemini-pro',
+    target_model: 'gemini-4-hydrogen',
     target_endpoint: null,
     label_key: 'mal_tpl_opus3_label',
     description_key: 'mal_tpl_opus3_desc'
@@ -108,7 +108,7 @@ const ALIAS_TEMPLATES = [
     category: 'openai',
     name: 'GPT-4.5 Preview (Orion Flagship)',
     alias_name: 'gpt-4.5-preview',
-    target_model: 'gemini-pro',
+    target_model: 'gemini-4-hydrogen',
     target_endpoint: null,
     label_key: 'mal_tpl_gpt45_label',
     description_key: 'mal_tpl_gpt45_desc'
@@ -128,7 +128,7 @@ const ALIAS_TEMPLATES = [
     category: 'openai',
     name: 'OpenAI o1 (Full Reasoning)',
     alias_name: 'o1',
-    target_model: 'gemini-pro',
+    target_model: 'gemini-4-hydrogen',
     target_endpoint: null,
     label_key: 'mal_tpl_o1_label',
     description_key: 'mal_tpl_o1_desc'
@@ -158,7 +158,7 @@ const ALIAS_TEMPLATES = [
     category: 'openai',
     name: 'GPT-5 (Speculative Next-Gen)',
     alias_name: 'gpt-5',
-    target_model: 'gemini-pro',
+    target_model: 'gemini-4-hydrogen',
     target_endpoint: null,
     label_key: 'mal_tpl_gpt5_label',
     description_key: 'mal_tpl_gpt5_desc'
@@ -194,6 +194,13 @@ export default function ModelAliasesTab() {
   const [activeSubTab, setActiveSubTab] = useState('aliases'); // 'aliases' | 'endpoints'
   const [aliases, setAliases] = useState([]);
   const [endpoints, setEndpoints] = useState([]);
+  const [internalTargetModels, setInternalTargetModels] = useState([
+    'gemini-flash',
+    'gemini-flash-lite',
+    'gemini-4-hydrogen',
+    'gemini-flash-25',
+    'gemma-4-26b',
+  ]);
   const [loading, setLoading] = useState(true);
   const [showAddForm, setShowAddForm] = useState(false);
   const [showTemplates, setShowTemplates] = useState(false);
@@ -306,9 +313,18 @@ export default function ModelAliasesTab() {
     (async () => {
       await loadAliases(() => alive);
       await loadEndpoints(() => alive);
+      try {
+        const poolRes = await api('/api/model-pools', { method: 'GET' }, token);
+        if (!alive) return;
+        if (Array.isArray(poolRes?.target_models) && poolRes.target_models.length > 0) {
+          setInternalTargetModels(poolRes.target_models);
+        }
+      } catch {
+        /* keep fallback internal targets */
+      }
     })();
     return () => { alive = false; };
-  }, [loadAliases, loadEndpoints]);
+  }, [loadAliases, loadEndpoints, token]);
 
   const handleAddAlias = async (e) => {
     e.preventDefault();
@@ -558,7 +574,7 @@ export default function ModelAliasesTab() {
     ? (selectedEndpointObj.enabled_models && selectedEndpointObj.enabled_models.length > 0
         ? selectedEndpointObj.enabled_models
         : (selectedEndpointObj.models || []))
-    : ['gemini-flash', 'gemini-flash-lite', 'gemini-pro'];
+    : internalTargetModels;
 
 if (loading && aliases.length === 0) {
     return <Loading message={t('loading', lang)} />;

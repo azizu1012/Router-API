@@ -24,9 +24,9 @@ def _model_supports_thinking(model_id: str) -> bool:
         bool: True nếu model hỗ trợ thinking, False nếu ngược lại.
     """
     m = model_id.lower()
-    if "lite" in m:
+    if "lite" in m or "embedding" in m or "decision" in m:
         return False
-    return any(x in m for x in ["gemini-2", "gemini-2.5", "gemini-3", "gemini-3.5", "gemma-4", "gemma"])
+    return any(x in m for x in ["gemini-2", "gemini-2.5", "gemini-3", "gemini-3.5", "gemini-4", "gemma-4", "gemma"])
 
 
 class ClaudeProxy(ClaudeProxyNonstreamMixin, ClaudeProxyStreamMixin):

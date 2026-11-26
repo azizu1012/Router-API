@@ -19,6 +19,36 @@ from .utils import (
 )
 
 
+class GeminiBadRequestError(RuntimeError):
+    """Non-retryable client 400 error (must not freeze API keys)."""
+
+
+_EMBED_CONFIG_KEYS = {
+    "task_type": ("task_type", "taskType"),
+    "title": ("title",),
+    "output_dimensionality": ("output_dimensionality", "outputDimensionality"),
+    "mime_type": ("mime_type", "mimeType"),
+    "auto_truncate": ("auto_truncate", "autoTruncate"),
+    "document_ocr": ("document_ocr", "documentOcr"),
+    "audio_track_extraction": ("audio_track_extraction", "audioTrackExtraction"),
+}
+
+
+def _build_embed_config(raw: Optional[Dict[str, Any]]) -> Optional[types.EmbedContentConfig]:
+    if not raw:
+        return None
+    kwargs: Dict[str, Any] = {}
+    for target_key, aliases in _EMBED_CONFIG_KEYS.items():
+        for src_key in aliases:
+            if src_key in raw and raw[src_key] is not None:
+                val = raw[src_key]
+                if target_key == "output_dimensionality":
+                    val = int(val)
+                kwargs[target_key] = val
+                break
+    return types.EmbedContentConfig(**kwargs) if kwargs else None
+
+
 class GeminiAPIManager:
     """Orchestrates Gemini API calls with key rotation and error handling.
 
@@ -317,6 +347,190 @@ class GeminiAPIManager:
                 await backoff(attempt, model_failures, model_alias)
 
         raise RuntimeError(f"call_gemini_stream_failed: {last_error or 'no keys available'}")
+
+    async def call_embed(
+        self,
+        model_alias: str,
+        contents: Any,
+        embed_config: Optional[Dict[str, Any]] = None,
+        account: Optional[Dict[str, Any]] = None,
+        estimated_tokens: int = 1,
+    ) -> Dict[str, Any]:
+        est = max(1, int(estimated_tokens or 1))
+        has_quota = await get_rate_limiter(model_alias).acquire_quota(est)
+        if not has_quota:
+            raise RuntimeError("quota_exhausted")
+
+        model_failures: Dict[str, int] = {}
+        last_error: Optional[Exception] = None
+        total_keys = self.pool.pool_size
+        tier = self.pool.resolve_tier(account)
+        cfg_obj = _build_embed_config(embed_config)
+
+        for attempt in range(1, config.MAX_RETRIES + 1):
+            await wait_global_cooldown(attempt)
+            tried_keys: set = set()
+
+            for idx in range(total_keys):
+                if idx > 0:
+                    await asyncio.sleep(0.3 + random.uniform(0, 0.3))
+
+                if all_models_excluded(model_failures, model_alias):
+                    raise RuntimeError("quota_exhausted")
+
+                api_key, model_id, _, _ = await self._get_best_key(
+                    model_alias, account, est,
+                    get_excluded_models(model_failures, model_alias),
+                )
+                if not api_key:
+                    break
+                if api_key in tried_keys:
+                    router.release_key(api_key)
+                    continue
+                tried_keys.add(api_key)
+
+                if self.pool.is_key_frozen_by_project(api_key, model_id):
+                    router.release_key(api_key)
+                    continue
+
+                try:
+                    await self.pool.throttle(api_key, self.pool.get_key_last_used(api_key))
+                    self.pool.record_key_usage(api_key)
+
+                    response = await caller.embed_content(
+                        self.pool, api_key, model_id, contents,
+                        embed_config=cfg_obj, tier=tier,
+                    )
+
+                    embeddings = list(getattr(response, "embeddings", None) or [])
+                    token_sum = sum(
+                        int(getattr(getattr(emb, "statistics", None), "token_count", 0) or 0)
+                        for emb in embeddings
+                    )
+                    input_tokens = token_sum if token_sum > 0 else est
+
+                    self._commit_key(api_key, model_id)
+                    router.reset_429_counter()
+                    router.record_success(api_key, model_id, input_tokens, 0)
+                    return {
+                        "response": response,
+                        "embeddings": embeddings,
+                        "input_tokens": input_tokens,
+                        "model_alias": model_alias,
+                        "model_id": model_id,
+                        "api_key": api_key,
+                    }
+                except Exception as e:
+                    if gerror.classify(e) == "bad_request":
+                        raise GeminiBadRequestError(str(e)) from e
+                    last_error = e
+                    await handle_error(
+                        e, api_key, model_id, model_failures, attempt, self.pool,
+                    )
+                finally:
+                    router.release_key(api_key)
+
+            if attempt < config.MAX_RETRIES:
+                await backoff(attempt, model_failures, model_alias)
+
+        raise RuntimeError(f"call_embed_failed: {last_error or 'no keys available'}")
+
+    async def call_decisions(
+        self,
+        model_alias: str,
+        payload: Dict[str, Any],
+        api_version: str = "v1beta",
+        account: Optional[Dict[str, Any]] = None,
+        estimated_tokens: int = 1,
+    ) -> Dict[str, Any]:
+        est = max(1, int(estimated_tokens or 1))
+        has_quota = await get_rate_limiter(model_alias).acquire_quota(est)
+        if not has_quota:
+            raise RuntimeError("quota_exhausted")
+
+        model_failures: Dict[str, int] = {}
+        last_error: Optional[Exception] = None
+        total_keys = self.pool.pool_size
+        tier = self.pool.resolve_tier(account)
+
+        for attempt in range(1, config.MAX_RETRIES + 1):
+            await wait_global_cooldown(attempt)
+            tried_keys: set = set()
+
+            for idx in range(total_keys):
+                if idx > 0:
+                    await asyncio.sleep(0.3 + random.uniform(0, 0.3))
+
+                if all_models_excluded(model_failures, model_alias):
+                    raise RuntimeError("quota_exhausted")
+
+                api_key, model_id, _, _ = await self._get_best_key(
+                    model_alias, account, est,
+                    get_excluded_models(model_failures, model_alias),
+                )
+                if not api_key:
+                    break
+                if api_key in tried_keys:
+                    router.release_key(api_key)
+                    continue
+                tried_keys.add(api_key)
+
+                if self.pool.is_key_frozen_by_project(api_key, model_id):
+                    router.release_key(api_key)
+                    continue
+
+                req_payload = dict(payload)
+                raw_model = req_payload.get("model")
+                if isinstance(raw_model, str) and raw_model.startswith("models/"):
+                    req_payload["model"] = f"models/{model_id}"
+                elif raw_model is not None or "model" not in req_payload:
+                    req_payload["model"] = model_id
+
+                try:
+                    await self.pool.throttle(api_key, self.pool.get_key_last_used(api_key))
+                    self.pool.record_key_usage(api_key)
+
+                    resp_dict = await caller.call_decisions_http(
+                        api_key, req_payload, api_version=api_version, tier=tier,
+                    )
+
+                    usage_meta = resp_dict.get("usageMetadata") or resp_dict.get("usage") or {}
+                    input_tokens = int(
+                        usage_meta.get("promptTokenCount")
+                        or usage_meta.get("prompt_tokens")
+                        or est
+                    )
+                    output_tokens = int(
+                        usage_meta.get("candidatesTokenCount")
+                        or usage_meta.get("completion_tokens")
+                        or 0
+                    )
+
+                    self._commit_key(api_key, model_id)
+                    router.reset_429_counter()
+                    router.record_success(api_key, model_id, input_tokens, output_tokens)
+                    return {
+                        "response": resp_dict,
+                        "input_tokens": input_tokens,
+                        "output_tokens": output_tokens,
+                        "model_alias": model_alias,
+                        "model_id": model_id,
+                        "api_key": api_key,
+                    }
+                except Exception as e:
+                    if gerror.classify(e) == "bad_request":
+                        raise GeminiBadRequestError(str(e)) from e
+                    last_error = e
+                    await handle_error(
+                        e, api_key, model_id, model_failures, attempt, self.pool,
+                    )
+                finally:
+                    router.release_key(api_key)
+
+            if attempt < config.MAX_RETRIES:
+                await backoff(attempt, model_failures, model_alias)
+
+        raise RuntimeError(f"call_decisions_failed: {last_error or 'no keys available'}")
 
     # ── Shared helpers ──────────────────────────────────────────
 

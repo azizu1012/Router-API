@@ -19,6 +19,12 @@ from typing import Any, Dict, List
 
 VIRTUAL_POOL_MODEL_ID = "gemini-flash-pool"
 
+RETIRED_MODEL_ALIASES = frozenset({
+    "gemini-flash-37",
+    "gemini-flash-35",
+    "gemma-4-31b",
+})
+
 MODEL_SPECS: List[Dict[str, Any]] = [
     {
         "alias": "gemini-flash-38",
@@ -32,21 +38,6 @@ MODEL_SPECS: List[Dict[str, Any]] = [
         "price_in": 0.00015, "price_out": 0.0006,
     },
     {
-        "alias": "gemini-flash-37",
-        "display": "Gemini Flash 3.7",
-        "env": "GEMINI_FLASH_37",
-        "model": "gemini-3.7-flash",
-        "rpm": 1, "tpm": 250000, "rpd": 15,
-        "ctx": "gemini", "phys": None,
-        "hidden": True, "priority": 1,
-        "role": "member", "pool": "gemini-flash", "pool_index": 3,
-        "price_in": 0.00015, "price_out": 0.0006,
-        "note": "3.7 is capacity-constrained upstream. Token budget is left at "
-                "the standard ceiling so a single large request is not "
-                "artificially truncated. Request rate is what gets throttled, "
-                "since bursts are what the model drops.",
-    },
-    {
         "alias": "gemini-flash-36",
         "display": "Gemini Flash 3.6",
         "env": "GEMINI_FLASH_36",
@@ -55,17 +46,6 @@ MODEL_SPECS: List[Dict[str, Any]] = [
         "ctx": "gemini", "phys": 1048576,
         "hidden": True, "priority": 1,
         "role": "member", "pool": "gemini-flash", "pool_index": 0,
-        "price_in": 0.00015, "price_out": 0.0006,
-    },
-    {
-        "alias": "gemini-flash-35",
-        "display": "Gemini Flash Latest",
-        "env": "GEMINI_FLASH_35",
-        "model": "gemini-3.5-flash",
-        "rpm": 2, "tpm": 250000, "rpd": 50,
-        "ctx": "gemini", "phys": 1048576,
-        "hidden": True, "priority": 1,
-        "role": "member", "pool": "gemini-flash", "pool_index": 4,
         "price_in": 0.00015, "price_out": 0.0006,
     },
     {
@@ -81,7 +61,7 @@ MODEL_SPECS: List[Dict[str, Any]] = [
     },
     {
         "alias": "gemini-flash",
-        "display": "Gemini Flash Pool (38-36-30)",
+        "display": "Gemini 3",
         "display_env": "GEMINI_FLASH_DISPLAY",
         "env": "GEMINI_FLASH",
         "model": "gemini-flash-pool",
@@ -95,13 +75,41 @@ MODEL_SPECS: List[Dict[str, Any]] = [
     },
     {
         "alias": "gemini-flash-lite",
-        "display": "Gemini Flash Lite Pool",
+        "display": "Lite",
+        "display_env": "GEMINI_FLASH_LITE_DISPLAY",
         "env": "GEMINI_FLASH_LITE",
-        "model": "gemini-3.1-flash-lite",
-        "rpm": 15, "tpm": 250000, "rpd": 500,
+        "model": "gemini-flash-pool",
+        "fixed_model_id": "gemini-flash-pool",
+        "rpm": 40, "tpm": 750000, "rpd": 1020,
         "ctx": "gemini", "phys": 1048576,
         "hidden": None, "priority": 2,
         "role": "pool", "tier": "lite",
+        "price_in": None, "price_out": None,
+    },
+    {
+        "alias": "gemini-4",
+        "display": "Gemini 4",
+        "display_env": "GEMINI_4_DISPLAY",
+        "env": "GEMINI_4",
+        "model": "gemini-flash-pool",
+        "fixed_model_id": "gemini-flash-pool",
+        "rpm": 5, "tpm": 250000, "rpd": 20,
+        "ctx": "gemini", "phys": 1048576,
+        "hidden": None, "priority": 1,
+        "role": "pool", "tier": "gemini4",
+        "price_in": None, "price_out": None,
+    },
+    {
+        "alias": "gemini-2",
+        "display": "Gemini 2",
+        "display_env": "GEMINI_2_DISPLAY",
+        "env": "GEMINI_2",
+        "model": "gemini-flash-pool",
+        "fixed_model_id": "gemini-flash-pool",
+        "rpm": 5, "tpm": 250000, "rpd": 20,
+        "ctx": "gemini", "phys": 1048576,
+        "hidden": None, "priority": 2,
+        "role": "pool", "tier": "gemini2",
         "price_in": None, "price_out": None,
     },
     {
@@ -138,14 +146,14 @@ MODEL_SPECS: List[Dict[str, Any]] = [
         "price_in": None, "price_out": None,
     },
     {
-        "alias": "gemma-4-31b",
-        "display": "Gemma 4 31B (Standalone)",
-        "env": "GEMMA_4_31B",
-        "model": "gemma-4-31b-it",
-        "rpm": 30, "tpm": 16000, "rpd": 14400,
-        "ctx": "gemma", "phys": 262144,
-        "hidden": False, "priority": 3,
-        "role": "standalone", "pool": None, "pool_index": 0,
+        "alias": "gemini-4-hydrogen",
+        "display": "Gemini 4 Hydrogen",
+        "env": "GEMINI_4_HYDROGEN",
+        "model": "gemini-4-hydrogen",
+        "rpm": 5, "tpm": 250000, "rpd": 20,
+        "ctx": "gemini", "phys": 1048576,
+        "hidden": True, "priority": 1,
+        "role": "member", "pool": "gemini-4", "pool_index": 0,
         "price_in": None, "price_out": None,
     },
     {
@@ -154,17 +162,53 @@ MODEL_SPECS: List[Dict[str, Any]] = [
         "env": "GEMINI_FLASH_25",
         "model": "gemini-2.5-flash",
         "rpm": 5, "tpm": 250000, "rpd": 20,
-        "ctx": "gemini", "phys": None,
-        "hidden": True, "priority": 1,
-        "role": "member", "pool": "gemini-flash", "pool_index": 5,
+        "ctx": "gemini", "phys": 1048576,
+        "hidden": True, "priority": 2,
+        "role": "member", "pool": "gemini-2", "pool_index": 0,
         "price_in": 0.0001, "price_out": 0.0004,
+    },
+    {
+        "alias": "gemini-embedding-2",
+        "display": "Gemini Embedding 2",
+        "env": "GEMINI_EMBEDDING_2",
+        "model": "gemini-embedding-2",
+        "rpm": 100, "tpm": 30000, "rpd": 1000,
+        "ctx": "gemini", "phys": 8192,
+        "hidden": False, "priority": 4,
+        "role": "standalone", "pool": None, "pool_index": 0,
+        "kind": "embedding",
+        "price_in": None, "price_out": None,
+    },
+    {
+        "alias": "gemini-embedding-001",
+        "display": "Gemini Embedding 1",
+        "env": "GEMINI_EMBEDDING_001",
+        "model": "gemini-embedding-001",
+        "rpm": 100, "tpm": 30000, "rpd": 1000,
+        "ctx": "gemini", "phys": 2048,
+        "hidden": False, "priority": 4,
+        "role": "standalone", "pool": None, "pool_index": 0,
+        "kind": "embedding",
+        "price_in": None, "price_out": None,
+    },
+    {
+        "alias": "gemini-decision-1",
+        "display": "Gemini Decision 1",
+        "env": "GEMINI_DECISION_1",
+        "model": "gemini-decision-1",
+        "rpm": 200, "tpm": 50000, "rpd": 10000,
+        "ctx": "gemini", "phys": 65536,
+        "hidden": False, "priority": 4,
+        "role": "standalone", "pool": None, "pool_index": 0,
+        "kind": "decision",
+        "price_in": None, "price_out": None,
     },
     {
         "alias": "gemini-flash-25-lite",
         "display": "Gemini Flash 2.5 Lite",
         "env": "GEMINI_FLASH_25_LITE",
         "model": "gemini-2.5-flash-lite",
-        "rpm": 3, "tpm": 250000, "rpd": 20,
+        "rpm": 10, "tpm": 250000, "rpd": 20,
         "ctx": "gemini", "phys": None,
         "hidden": True, "priority": 2,
         "role": "member", "pool": "gemini-flash-lite", "pool_index": 2,
@@ -206,6 +250,10 @@ POOL_TIERS: Dict[str, str] = {
     spec["alias"]: spec["tier"] for spec in MODEL_SPECS if spec["role"] == "pool"
 }
 
+POOL_DEFAULT_DISPLAYS: Dict[str, str] = {
+    spec["alias"]: spec["display"] for spec in MODEL_SPECS if spec["role"] == "pool"
+}
+
 
 def build_available_models(context_lengths: Dict[str, int]) -> Dict[str, Dict[str, Any]]:
     models: Dict[str, Dict[str, Any]] = {}
@@ -225,6 +273,9 @@ def build_available_models(context_lengths: Dict[str, int]) -> Dict[str, Dict[st
         else:
             model_id = os.getenv(env + "_MODEL", spec["model"])
             display = spec["display"]
+        ctx_len = context_lengths[spec["ctx"]]
+        if spec.get("kind") == "embedding" and spec.get("phys") is not None:
+            ctx_len = min(ctx_len, int(spec["phys"]))
         entry: Dict[str, Any] = {
             "display": display,
             "priority": spec["priority"],
@@ -232,8 +283,10 @@ def build_available_models(context_lengths: Dict[str, int]) -> Dict[str, Dict[st
             "rpm": int(os.getenv(env + "_RPM", spec["rpm"])),
             "tpm": int(os.getenv(env + "_TPM", spec["tpm"])),
             "rpd": int(os.getenv(env + "_RPD", spec["rpd"])),
-            "context_length": context_lengths[spec["ctx"]],
+            "context_length": ctx_len,
         }
+        if spec.get("kind") is not None:
+            entry["kind"] = spec["kind"]
         if spec.get("phys") is not None:
             entry["physical_context"] = spec["phys"]
         if spec.get("hidden") is not None:
@@ -312,5 +365,6 @@ def price_rows() -> List[Any]:
                 rows.append((spec["alias"], pin, pout, spec.get("price_response", spec["model"])))
         else:
             rows.append((spec["model"], pin, pout, spec["model"]))
-            rows.append((spec["alias"], pin, pout, spec["model"]))
+            if spec["alias"] != spec["model"]:
+                rows.append((spec["alias"], pin, pout, spec["model"]))
     return rows

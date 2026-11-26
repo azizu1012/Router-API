@@ -95,3 +95,50 @@ class TestModelRegistrySingleSource:
 
     def test_default_prices_come_from_registry(self):
         assert list(DEFAULT_MODEL_PRICES) == price_rows()
+
+    def test_flash_pool_restricted_to_flash_3_and_standalone_models_separated(self):
+        flash_members = set(api_config.MODEL_POOLS["gemini-flash"]["members"])
+        assert flash_members == {
+            "gemini-flash-36",
+            "gemini-flash-30",
+            "gemini-flash-38",
+        }
+        assert "gemini-flash-25" not in flash_members
+        assert "gemini-4-hydrogen" not in flash_members
+        for removed in ("gemini-flash-37", "gemini-flash-35", "gemma-4-31b"):
+            assert removed not in api_config.AVAILABLE_MODELS
+            assert removed not in flash_members
+
+        lite_members = set(api_config.MODEL_POOLS["gemini-flash-lite"]["members"])
+        assert lite_members == {
+            "gemini-flash-35-lite",
+            "gemini-flash-31-lite",
+            "gemini-flash-25-lite",
+        }
+
+        for standalone in (
+            "gemini-4-hydrogen",
+            "gemini-flash-25",
+            "gemini-embedding-2",
+            "gemini-embedding-001",
+            "gemini-decision-1",
+        ):
+            cfg = api_config.AVAILABLE_MODELS[standalone]
+            assert cfg.get("hidden") is False, standalone
+            for pool_cfg in api_config.MODEL_POOLS.values():
+                assert standalone not in pool_cfg["members"]
+
+    def test_embedding_and_decision_metadata(self):
+        emb2 = api_config.AVAILABLE_MODELS["gemini-embedding-2"]
+        assert emb2["kind"] == "embedding"
+        assert emb2["context_length"] <= 8192
+        assert emb2["physical_context"] == 8192
+
+        emb1 = api_config.AVAILABLE_MODELS["gemini-embedding-001"]
+        assert emb1["kind"] == "embedding"
+        assert emb1["context_length"] <= 2048
+        assert emb1["physical_context"] == 2048
+
+        dec1 = api_config.AVAILABLE_MODELS["gemini-decision-1"]
+        assert dec1["kind"] == "decision"
+        assert dec1["model_id"] == "gemini-decision-1"

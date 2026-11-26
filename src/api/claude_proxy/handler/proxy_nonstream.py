@@ -7,6 +7,8 @@ import json
 import uuid
 from typing import Any, Dict, Optional
 
+from fastapi import HTTPException
+
 from src.core.config_n_logg import config
 from src.core.config_n_logg.logger import logger_proxy as logger
 from src.core.router import router
@@ -188,7 +190,22 @@ class ClaudeProxyNonstreamMixin:
             or is_compaction_request(openai_messages)
         )
 
-        model_alias = router.resolve_model_alias(body.get("model", "")) or config.DEFAULT_MODEL_ALIAS
+        model_alias = router.resolve_model_alias(body.get("model", ""))
+        if not model_alias:
+            requested = str(body.get("model") or "").strip()
+            raise HTTPException(
+                status_code=404,
+                detail={
+                    "type": "error",
+                    "error": {
+                        "type": "invalid_request_error",
+                        "message": (
+                            f"Model '{requested}' not found. Add a model alias for it "
+                            "or enable a custom endpoint that serves it."
+                        ),
+                    },
+                },
+            )
         openai_messages = trim_old_tool_results_softly(
             openai_messages, max_output_tokens=int(body.get("max_tokens", 4096) or 4096)
         )

@@ -72,6 +72,22 @@ async def responses(
 
     is_stream = bool(chat_body.get("stream"))
     try:
+        # Validate before any streaming response is opened: an unknown model
+        # must be a 404 the client can see, not an SSE frame or a late error.
+        from src.core.router import router
+        if not router.resolve_model_alias(chat_body.get("model", ""), account=account):
+            return JSONResponse(
+                status_code=404,
+                content={
+                    "error": {
+                        "message": (
+                            f"Model '{chat_body.get('model', '')}' not found. Add a model "
+                            "alias for it or enable a custom endpoint that serves it."
+                        ),
+                        "type": "invalid_request_error",
+                    }
+                },
+            )
         await _apply_account_limit(account, chat_body)
         from src.api.opencode_proxy import opencode_proxy
         search_trace: list = []

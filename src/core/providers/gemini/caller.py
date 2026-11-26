@@ -1,11 +1,24 @@
 import asyncio
-from typing import Any, AsyncIterator, List, Optional
+import json
+from typing import Any, AsyncIterator, Dict, List, Optional
+
+import aiohttp
 
 from src.core.providers.genai_types import types
 
 from src.core.config_n_logg import config
 from src.core.config_n_logg.logger import logger_system as logger
 from .pool import ClientPool
+
+
+class UpstreamStatusError(RuntimeError):
+    """HTTP error raised by direct REST calls (e.g. Decisions API) for error classification."""
+
+    def __init__(self, status_code: int, message: str, body: Any = None) -> None:
+        super().__init__(f"HTTP {status_code}: {message}")
+        self.status_code = status_code
+        self.message = message
+        self.body = body
 
 
 def _build_safety_settings() -> Optional[List[types.SafetySetting]]:
@@ -138,6 +151,63 @@ async def generate_content_stream(
                 await close()
             except Exception as e:
                 logger.warning("[GeminiCaller] Error closing stream: %s", e)
+
+
+async def embed_content(
+    pool: ClientPool,
+    api_key: str,
+    model_id: str,
+    contents: Any,
+    embed_config: Optional[types.EmbedContentConfig] = None,
+    tier: str = "free",
+) -> Any:
+    """Call Google GenAI embed_content via threadpool under tier semaphore."""
+    client = await pool.get_client(api_key)
+    async with ClientPool.get_semaphore(tier):
+        return await asyncio.wait_for(
+            asyncio.to_thread(
+                client.models.embed_content,
+                model=model_id,
+                contents=contents,
+                config=embed_config,
+            ),
+            timeout=config.REQUEST_TIMEOUT_SECONDS,
+        )
+
+
+async def call_decisions_http(
+    api_key: str,
+    payload: Dict[str, Any],
+    api_version: str = "v1beta",
+    tier: str = "free",
+    base_url: str = "https://generativelanguage.googleapis.com",
+) -> Dict[str, Any]:
+    """Call Google Gemini Decisions REST API asynchronously."""
+    version = api_version if api_version in ("v1beta", "v1alpha", "v1") else "v1beta"
+    url = f"{base_url.rstrip('/')}/{version}/decisions"
+    headers = {
+        "Content-Type": "application/json",
+        "x-goog-api-key": api_key,
+    }
+    timeout = aiohttp.ClientTimeout(total=config.REQUEST_TIMEOUT_SECONDS)
+    async with ClientPool.get_semaphore(tier):
+        async with aiohttp.ClientSession(timeout=timeout) as session:
+            async with session.post(url, json=payload, headers=headers) as resp:
+                raw_text = await resp.text()
+                if resp.status >= 400:
+                    msg = raw_text
+                    parsed = None
+                    try:
+                        parsed = json.loads(raw_text)
+                        err = parsed.get("error") if isinstance(parsed, dict) else None
+                        if isinstance(err, dict) and err.get("message"):
+                            msg = f"{err.get('status', '')} {err.get('message', '')}".strip()
+                    except Exception:
+                        pass
+                    raise UpstreamStatusError(resp.status, msg or f"HTTP {resp.status}", body=parsed)
+                if not raw_text:
+                    return {}
+                return json.loads(raw_text)
 
 
 def has_media_or_files(contents: List[types.Content]) -> bool:

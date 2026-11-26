@@ -1,12 +1,21 @@
 import os
 from typing import Any, Dict, List
 from src.core.config.model_registry import (
+    MODEL_SPECS,
+    POOL_DEFAULT_DISPLAYS,
+    RETIRED_MODEL_ALIASES,
     build_available_models,
     build_backing_to_alias,
     build_model_pools,
     default_search_chain as _default_search_chain,
     pool_for_tier as _pool_for_tier,
 )
+
+_REGISTRY_HIDDEN: Dict[str, bool] = {
+    spec["alias"]: bool(spec["hidden"])
+    for spec in MODEL_SPECS
+    if spec.get("hidden") is not None
+}
 
 
 # Deprecated: sunset mechanism removed 2026-10-23. Admin disables models
@@ -19,7 +28,16 @@ MODEL_CONTEXT_LENGTH: int = int(os.getenv("MODEL_CONTEXT_LENGTH", "185000"))
 GEMMA_CONTEXT_LENGTH: int = int(os.getenv("GEMMA_CONTEXT_LENGTH", "14000"))
 
 AVAILABLE_MODELS: Dict[str, Dict[str, Any]] = build_available_models({"gemini": MODEL_CONTEXT_LENGTH, "gemma": GEMMA_CONTEXT_LENGTH})
-MODEL_PRIORITY: List[str] = ["gemini-flash", "gemini-flash-lite", "gemma-4-26b", "gemma-4-31b"]
+MODEL_PRIORITY: List[str] = [
+    "gemini-flash",
+    "gemini-4",
+    "gemini-2",
+    "gemini-flash-lite",
+    "gemma-4-26b",
+    "gemini-embedding-2",
+    "gemini-embedding-001",
+    "gemini-decision-1",
+]
 
 # Reverse map: backing model_id → virtual pool alias
 BACKING_TO_ALIAS: Dict[str, str] = build_backing_to_alias(AVAILABLE_MODELS)
@@ -121,9 +139,10 @@ def _recompute_pool_aggregates() -> None:
                 # client reading this string cannot use: it needs the alias, and
                 # the members are already listed in the dashboard's pool panel
                 # and in MODEL_POOLS. Override the label with
-                # GEMINI_FLASH_DISPLAY / GEMINI_FLASH_LITE_DISPLAY if you want
-                # something more specific.
-                title = "Gemini Flash Lite Pool" if "lite" in pool_name else "Gemini Flash Pool"
+                # GEMINI_FLASH_DISPLAY / GEMINI_FLASH_LITE_DISPLAY /
+                # GEMINI_4_DISPLAY / GEMINI_2_DISPLAY if you want something
+                # more specific.
+                title = POOL_DEFAULT_DISPLAYS.get(pool_name, pool_name)
                 AVAILABLE_MODELS[pool_name]["display"] = title
 
 
@@ -134,6 +153,8 @@ def merge_db_models() -> None:
     except Exception:
         db_models = {}
     for alias, db_cfg in db_models.items():
+        if alias in RETIRED_MODEL_ALIASES:
+            continue
         if alias in AVAILABLE_MODELS:
             existing = AVAILABLE_MODELS[alias]
             existing["display"] = db_cfg.get("display") or existing.get("display", alias)
@@ -142,7 +163,11 @@ def merge_db_models() -> None:
             existing["tpm"] = db_cfg.get("tpm", existing.get("tpm", 1000000))
             existing["rpd"] = db_cfg.get("rpd", existing.get("rpd", 1000))
             existing["rpd_enabled"] = db_cfg.get("rpd_enabled", False)
-            existing["hidden"] = db_cfg.get("hidden", existing.get("hidden", False))
+            existing["hidden"] = (
+                _REGISTRY_HIDDEN[alias]
+                if alias in _REGISTRY_HIDDEN
+                else db_cfg.get("hidden", existing.get("hidden", False))
+            )
             existing["priority"] = db_cfg.get("priority", existing.get("priority", 1))
             existing["context_length"] = db_cfg.get("context_length", existing.get("context_length", 220000))
             # Read even when disabled: the flag itself is the thing being switched,

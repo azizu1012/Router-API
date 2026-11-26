@@ -37,6 +37,8 @@ class ModelResolutionMixin:
                         m["physical_context"] = int(phys)
                 except (TypeError, ValueError):
                     pass
+            if cfg.get("kind"):
+                m["kind"] = cfg["kind"]
             models.append(m)
 
         # Include custom endpoint models (operator endpoints only; member-owned endpoints are attached per-account)
@@ -94,10 +96,19 @@ class ModelResolutionMixin:
         account: Optional[Dict[str, Any]] = None,
         account_id: Optional[str] = None,
         account_key_id: Optional[str] = None,
-    ) -> str:
+    ) -> Optional[str]:
         """
-        Resolves a raw model string (either alias or concrete model ID) into a standardized alias.
-        Supports per-account/per-key dynamic aliases as well as built-in model mappings.
+        Resolves a raw model string into a routable alias, or ``None``.
+
+        A model is routable only when one of these holds:
+          1. it is an enabled per-account/per-key alias in ``model_aliases``,
+          2. it is a native alias or backing ``model_id`` in ``AVAILABLE_MODELS``,
+          3. it is advertised by an **enabled** custom endpoint.
+
+        There is deliberately no name heuristic and no default-model fallback.
+        A client asking for a model the operator never configured must be
+        rejected, not silently served by a different one — otherwise the router
+        becomes impossible to reason about once more aliases exist.
 
         Args:
             model: The raw model string provided in the request.
@@ -106,11 +117,11 @@ class ModelResolutionMixin:
             account_key_id: Optional account key ID.
 
         Returns:
-            The resolved standardized model alias. Defaults to `self.current_model` if no match is found.
+            The resolved standardized model alias, or ``None`` when unknown.
         """
         raw = (model or "").strip()
         if not raw:
-            return self.current_model
+            return None
 
         # 1. Resolve user-defined per-account or per-key alias if account info is provided
         acc_id = account_id or (account.get("account_id") if account else None)
@@ -125,34 +136,28 @@ class ModelResolutionMixin:
                 pass
 
         raw_lower = raw.lower()
-        # Exact catalog match wins over any substring heuristic — a custom
-        # endpoint model (e.g. ``deepseek-v4.1-flash``) must never be remapped
-        # to a native alias just because its id contains "gemma"/"flash".
+        # 2. Native catalog: exact alias first, then backing model_id. Exact
+        # matching only — a custom endpoint model (e.g. ``deepseek-v4.1-flash``)
+        # must never be remapped to a native alias just because it contains
+        # "gemma"/"flash"/"sonnet".
         if raw_lower in AVAILABLE_MODELS:
             return raw_lower
         for alias, cfg in AVAILABLE_MODELS.items():
-            if raw_lower == cfg.get("model_id"):
+            if raw_lower == str(cfg.get("model_id", "")).lower():
                 return alias
-        # Custom endpoint model list (exact membership, no heuristics).
+
+        # 3. Enabled custom endpoint models (exact membership, no heuristics).
+        # Disabled endpoints are not routable: their catalog must not keep a
+        # model alive after the operator switched the endpoint off.
         from src.core.providers import _custom_endpoint_manager
         for ep in _custom_endpoint_manager.list_endpoints():
-            if raw in ep.get("models", []) or raw_lower in [m.lower() for m in ep.get("models", [])]:
+            if not ep.get("enabled", True):
+                continue
+            candidates = ep.get("enabled_models") or ep.get("models") or []
+            if raw in candidates or raw_lower in [str(m).lower() for m in candidates]:
                 return raw
 
-        # Heuristic fallbacks only now, after exact matches were exhausted.
-        if "gemma" in raw_lower:
-            if any(k in raw_lower for k in ("27b", "26b", "27", "26")):
-                return "gemma-4-26b"
-            if any(k in raw_lower for k in ("31b", "31")):
-                return "gemma-4-31b"
-            return "gemma-4-26b"
-
-        if "haiku" in raw_lower:
-            return "gemini-flash-lite"
-        if "sonnet" in raw_lower or "opus" in raw_lower:
-            return "gemini-flash"
-
-        return self.current_model
+        return None
 
     def get_model_id(self, alias: str) -> str:
         cfg = AVAILABLE_MODELS.get(alias)

@@ -106,18 +106,48 @@ async def dashboard_penalties(request: Request):
 @app.get("/api/model-pools")
 async def api_model_pools(request: Request):
     _require_dashboard(request)
-    from src.core.config.api_config import MODEL_POOLS
+    from src.core.config.api_config import AVAILABLE_MODELS, MODEL_POOLS
+    _pool_meta = {
+        "gemini-flash": ("⚡", "gemini3"),
+        "gemini-flash-lite": ("💡", "lite"),
+        "gemini-4": ("🚀", "gemini4"),
+        "gemini-2": ("✨", "gemini2"),
+    }
     pools = [
         {
             "id": pid,
-            "label": "Flash Pool" if "flash-lite" not in pid else "Lite Pool",
-            "icon": "⚡" if "flash-lite" not in pid else "💡",
-            "short": "flash" if "flash-lite" not in pid else "lite",
+            "label": AVAILABLE_MODELS.get(pid, {}).get("display", pid),
+            "icon": _pool_meta.get(pid, ("🔹", pid))[0],
+            "short": _pool_meta.get(pid, ("🔹", pid))[1],
             "members": p.get("members", []),
         }
         for pid, p in MODEL_POOLS.items()
     ]
-    return {"pools": pools}
+    pool_members = {m for p in MODEL_POOLS.values() for m in p.get("members", [])}
+    standalone_models = [
+        {
+            "alias": alias,
+            "display": cfg.get("display", alias),
+            "model_id": cfg.get("model_id", alias),
+            "enabled": cfg.get("enabled", True),
+            "priority": cfg.get("priority", 99),
+            "context_length": cfg.get("context_length", 185000),
+            "rpm": cfg.get("rpm", 0),
+            "tpm": cfg.get("tpm", 0),
+            "rpd": cfg.get("rpd", 0),
+        }
+        for alias, cfg in AVAILABLE_MODELS.items()
+        if alias not in MODEL_POOLS and alias not in pool_members and not cfg.get("hidden", False)
+    ]
+    standalone_models.sort(key=lambda item: (item["priority"], item["alias"]))
+    target_models = [p["id"] for p in pools] + [
+        s["alias"] for s in standalone_models if s["enabled"]
+    ]
+    return {
+        "pools": pools,
+        "standalone_models": standalone_models,
+        "target_models": target_models,
+    }
 
 
 @app.get("/dashboard/endpoints")
@@ -262,7 +292,7 @@ async def get_model_pools_api(request: Request):
         total_tpm = sum(m["tpm"] for m in members if m["tpm"] != 999999999)
         pools_data.append({
             "name": pool_name,
-            "display_name": f"{pool_name} (Pool)",
+            "display_name": AVAILABLE_MODELS.get(pool_name, {}).get("display", f"{pool_name} (Pool)"),
             "members": [
                 {
                     "alias": m.get("alias", m["model_id"]),
@@ -270,6 +300,7 @@ async def get_model_pools_api(request: Request):
                     "rpm": m["rpm"],
                     "tpm": m["tpm"],
                     "health_score": m.get("health_score", 100.0),
+                    "enabled": m.get("enabled", True),
                 }
                 for m in members
             ],
@@ -278,7 +309,38 @@ async def get_model_pools_api(request: Request):
             "tpm": f"{total_tpm:,} TPM",
         })
 
-    return {"pools": pools_data}
+    pool_member_aliases = {m for pc in MODEL_POOLS.values() for m in pc.get("members", [])}
+    standalone_models = []
+    for alias, cfg in AVAILABLE_MODELS.items():
+        if alias in MODEL_POOLS or alias in pool_member_aliases or cfg.get("hidden", False):
+            continue
+        enabled = cfg.get("enabled", True)
+        backing_id = cfg.get("model_id", alias)
+        health = core_router._model_health.get(alias, {})
+        if enabled:
+            limiter = get_rate_limiter(alias)
+            rpm_val = limiter.rpm_limit
+            tpm_val = limiter.tpm_limit
+            rpd_val = limiter.rpd_limit
+        else:
+            rpm_val = 0
+            tpm_val = 0
+            rpd_val = 0
+        standalone_models.append({
+            "alias": alias,
+            "display": cfg.get("display", alias),
+            "model_id": backing_id,
+            "rpm": rpm_val,
+            "tpm": tpm_val,
+            "rpd": rpd_val,
+            "health_score": health.get("score", 100.0) if isinstance(health, dict) else 100.0,
+            "enabled": enabled,
+            "context_length": cfg.get("context_length", 185000),
+            "priority": cfg.get("priority", 99),
+        })
+    standalone_models.sort(key=lambda item: (item["priority"], item["alias"]))
+
+    return {"pools": pools_data, "standalone_models": standalone_models}
 
 
 @app.get("/api/stats")

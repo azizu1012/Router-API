@@ -157,6 +157,7 @@ def sync_default_models_to_db(force: bool = False) -> int:
     Nếu force=True hoặc là pool mang tên hiển thị cũ (outdated display), sẽ cập nhật lại.
     """
     from src.core.config.api_config import AVAILABLE_MODELS, MODEL_POOLS
+    from src.core.config.model_registry import RETIRED_MODEL_ALIASES
 
     alias_to_pool = {}
     for pn, pc in MODEL_POOLS.items():
@@ -169,9 +170,15 @@ def sync_default_models_to_db(force: bool = False) -> int:
     with _LOCK:
         c = _conn()
         try:
+            if RETIRED_MODEL_ALIASES:
+                placeholders = ",".join("?" for _ in RETIRED_MODEL_ALIASES)
+                c.execute(
+                    f"DELETE FROM model_config WHERE account_id = '' AND alias IN ({placeholders})",
+                    tuple(sorted(RETIRED_MODEL_ALIASES)),
+                )
             for alias, cfg in AVAILABLE_MODELS.items():
                 cur = c.execute(
-                    "SELECT display, rpm, tpm, rpd, context_length FROM model_config WHERE alias = ? AND account_id = ''",
+                    "SELECT display, rpm, tpm, rpd, context_length, hidden, pool_name FROM model_config WHERE alias = ? AND account_id = ''",
                     (alias,),
                 )
                 existing = cur.fetchone()
@@ -185,10 +192,12 @@ def sync_default_models_to_db(force: bool = False) -> int:
                 priority = int(cfg.get("priority", 1))
                 context_length = int(cfg.get("context_length", 185000))
 
-                # Cập nhật nếu chưa có, hoặc nếu force=True, hoặc display không khớp, hoặc context_length cũ (200k/220k)
+                # Cập nhật nếu chưa có, hoặc nếu force=True, hoặc display/hidden/pool_name không khớp, hoặc context_length cũ (200k/220k)
                 needs_update = (
                     force
                     or (existing and existing["display"] != display)
+                    or (existing and bool(existing["hidden"]) != bool(hidden))
+                    or (existing and (existing["pool_name"] or "") != pool_name)
                     or (existing and existing["context_length"] in (200000, 220000) and context_length != existing["context_length"])
                 )
 

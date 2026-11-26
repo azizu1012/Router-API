@@ -108,11 +108,17 @@ function PoolFlowGraph({
      is derived from the id, so a model added to .env tomorrow renders as a name
      instead of falling through to a raw `gemini-3.9-flash`. */
   const MODEL_NAME_OVERRIDES = {
-    'gemini-3.5-flash': 'Gemini 3.5 Flash (Latest)',
+    'gemini-4-hydrogen': 'Gemini 4 Hydrogen (Standalone)',
+    'gemini-3.8-flash': 'Gemini 3.8 Flash',
+    'gemini-3.6-flash': 'Gemini 3.6 Flash',
     'gemini-3-flash-preview': 'Gemini 3.0 Flash (Preview)',
-    'gemini-2.5-flash': 'Gemini 2.5 Flash',
+    'gemini-3.5-flash-lite': 'Gemini 3.5 Flash Lite',
     'gemini-3.1-flash-lite': 'Gemini 3.1 Flash Lite',
+    'gemini-2.5-flash': 'Gemini 2.5 Flash (Standalone)',
     'gemini-2.5-flash-lite': 'Gemini 2.5 Flash Lite',
+    'gemini-embedding-2-preview': 'Gemini Embedding 2',
+    'gemini-embedding-001': 'Gemini Embedding 001',
+    'gemini-decision-1': 'Gemini Decision 1',
   };
   const ACRONYMS = { it: 'IT', ai: 'AI', vl: 'VL' };
   const titleToken = (tok) => {
@@ -128,7 +134,11 @@ function PoolFlowGraph({
     return modelId.split('-').map(titleToken).join(' ');
   };
 
-  const poolLabel = pool.name === 'gemini-flash' ? 'Gemini Flash Pool' : 'Gemini Lite Pool';
+  const poolLabel = pool.name === 'gemini-flash'
+    ? 'Gemini Flash 3 Pool'
+    : pool.name === 'gemini-flash-lite'
+      ? 'Gemini Flash Lite Pool'
+      : (pool.display_name || pool.name);
   const portSize = 'w-2 h-2 rounded-full';
 
   /* Below `lg` the three nodes stack, so the SVG connectors have nowhere to go.
@@ -552,6 +562,7 @@ export default function PoolStructureTab() {
 
   const savings = muData.savings || {};
   const pools = muData.pools || [];
+  const standaloneModels = muData.standalone_models || [];
 
   /* Cost savings: four figures that all answer "what would this have cost".
      Standard → cached → actual → net, in that order, so the subtraction reads
@@ -622,6 +633,91 @@ export default function PoolStructureTab() {
           />
         ))}
       </div>
+
+      {standaloneModels.length > 0 && (
+        <div className="space-y-3 animate-fade-in-up">
+          <div>
+            <h2 className="text-xs font-semibold flex items-center gap-2" style={{ color: 'var(--c-ink-2)' }}>
+              <Server className="w-3.5 h-3.5" style={{ color: 'var(--c-accent)' }} />
+              {t('pst_standalone_title', lang)}
+            </h2>
+            <p className="text-[0.6875rem] mt-0.5" style={{ color: 'var(--c-ink-3)' }}>
+              {t('pst_standalone_sub', lang)}
+            </p>
+          </div>
+
+          <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-3">
+            {standaloneModels.map((m) => {
+              const mLive = liveStats?.models?.[m.alias] || {};
+              const isFrozen = mLive.rpd_limit > 0 && mLive.rpd_used >= mLive.rpd_limit;
+              const isEnabled = m.enabled !== false;
+              const statusVariant = !isEnabled ? 'ghost' : isFrozen ? 'error' : 'success';
+              const statusLabel = !isEnabled
+                ? t('pst_disabled', lang)
+                : isFrozen
+                  ? t('pst_cooldown', lang)
+                  : t('pst_healthy', lang);
+              const rpmLimit = mLive.rpm_limit ?? m.rpm ?? 0;
+              const rpmLeft = mLive.rpm_remaining ?? rpmLimit;
+              const tpmLimit = mLive.tpm_limit ?? m.tpm ?? 0;
+              const tpmLeft = mLive.tpm_remaining ?? tpmLimit;
+              const rpdLimit = mLive.rpd_limit ?? m.rpd ?? 0;
+              const rpdLeft = mLive.rpd_limit !== undefined ? Math.max(0, rpdLimit - (mLive.rpd_used || 0)) : rpdLimit;
+
+              return (
+                <Card key={m.alias} padding="md">
+                  <div className="flex items-start justify-between gap-2 pb-3 mb-3"
+                       style={{ borderBottom: '1px solid var(--c-line)' }}>
+                    <div className="min-w-0">
+                      <h3 className="text-xs font-semibold truncate" style={{ color: 'var(--c-ink)' }}>
+                        {m.display || m.alias}
+                      </h3>
+                      <div className="flex items-center gap-1.5 mt-0.5 flex-wrap">
+                        <code className="text-[0.6875rem] font-mono" style={{ color: 'var(--c-accent)' }}>
+                          {m.alias}
+                        </code>
+                        {m.model_id && m.model_id !== m.alias && (
+                          <span className="text-[0.625rem] font-mono truncate" style={{ color: 'var(--c-ink-3)' }}>
+                            → {m.model_id}
+                          </span>
+                        )}
+                      </div>
+                    </div>
+                    <Badge variant={statusVariant} size="xs" dot={isEnabled}>{statusLabel}</Badge>
+                  </div>
+
+                  <div className="grid grid-cols-3 gap-2 text-xs tabular-nums">
+                    <div>
+                      <span className="label-micro block">RPM</span>
+                      <span className="font-mono font-medium" style={{ color: 'var(--c-ink-2)' }}>
+                        {rpmLeft.toLocaleString()}/{rpmLimit.toLocaleString()}
+                      </span>
+                    </div>
+                    <div>
+                      <span className="label-micro block">TPM</span>
+                      <span className="font-mono font-medium" style={{ color: 'var(--c-accent)' }}>
+                        {tpmLimit > 0 ? `${fmt(tpmLeft)}/${fmt(tpmLimit)}` : '—'}
+                      </span>
+                    </div>
+                    <div>
+                      <span className="label-micro block">RPD</span>
+                      <span className="font-mono font-medium" style={{ color: isFrozen ? 'var(--c-critical)' : 'var(--c-warn)' }}>
+                        {rpdLimit > 0 && rpdLimit < 999999 ? `${rpdLeft.toLocaleString()}/${rpdLimit.toLocaleString()}` : '∞'}
+                      </span>
+                    </div>
+                  </div>
+
+                  <div className="flex items-center justify-between text-[0.6875rem] mt-3 pt-2.5"
+                       style={{ borderTop: '1px solid var(--c-line)', color: 'var(--c-ink-3)' }}>
+                    <span>{t('pst_context', lang)}: {fmt(m.context_length || 0)}</span>
+                    <span className="font-mono">P{m.priority ?? 1}</span>
+                  </div>
+                </Card>
+              );
+            })}
+          </div>
+        </div>
+      )}
     </div>
   );
 }

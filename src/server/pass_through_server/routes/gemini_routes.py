@@ -3,8 +3,27 @@ from fastapi.responses import JSONResponse
 
 from src.server.openai_server.routes.app_init import app
 from src.server.openai_server.auth import _check_auth
-from .gemini_handlers import _handle_gemini_native
+from .gemini_handlers import (
+    _handle_gemini_decisions,
+    _handle_gemini_embed,
+    _handle_gemini_native,
+)
 from .gemini_parsers import resolve_gemini_auth
+
+
+def _supported_methods(cfg: dict) -> list[str]:
+    kind = cfg.get("kind")
+    if kind == "embedding":
+        return ["embedContent", "batchEmbedContents"]
+    if kind == "decision":
+        return ["decide"]
+    return ["generateContent", "countTokens"]
+
+
+def _output_token_limit(cfg: dict) -> int:
+    if cfg.get("kind") == "embedding":
+        return 0
+    return 8192
 
 
 @app.post("/v1beta/models/{model_id:path}:generateContent")
@@ -33,6 +52,52 @@ async def stream_generate_content(
     return await _handle_gemini_native(model_id, request, authorization, x_api_key, x_goog_api_key, stream=True)
 
 
+@app.post("/v1beta/models/{model_id:path}:embedContent")
+@app.post("/v1alpha/models/{model_id:path}:embedContent")
+@app.post("/v1/models/{model_id:path}:embedContent")
+async def embed_content(
+    model_id: str,
+    request: Request,
+    authorization: str | None = Header(default=None),
+    x_api_key: str | None = Header(default=None),
+    x_goog_api_key: str | None = Header(default=None),
+):
+    return await _handle_gemini_embed(model_id, request, authorization, x_api_key, x_goog_api_key, batch=False)
+
+
+@app.post("/v1beta/models/{model_id:path}:batchEmbedContents")
+@app.post("/v1alpha/models/{model_id:path}:batchEmbedContents")
+@app.post("/v1/models/{model_id:path}:batchEmbedContents")
+async def batch_embed_contents(
+    model_id: str,
+    request: Request,
+    authorization: str | None = Header(default=None),
+    x_api_key: str | None = Header(default=None),
+    x_goog_api_key: str | None = Header(default=None),
+):
+    return await _handle_gemini_embed(model_id, request, authorization, x_api_key, x_goog_api_key, batch=True)
+
+
+@app.post("/v1beta/decisions")
+async def decisions_v1beta(
+    request: Request,
+    authorization: str | None = Header(default=None),
+    x_api_key: str | None = Header(default=None),
+    x_goog_api_key: str | None = Header(default=None),
+):
+    return await _handle_gemini_decisions(request, authorization, x_api_key, x_goog_api_key, api_version="v1beta")
+
+
+@app.post("/v1alpha/decisions")
+async def decisions_v1alpha(
+    request: Request,
+    authorization: str | None = Header(default=None),
+    x_api_key: str | None = Header(default=None),
+    x_goog_api_key: str | None = Header(default=None),
+):
+    return await _handle_gemini_decisions(request, authorization, x_api_key, x_goog_api_key, api_version="v1alpha")
+
+
 @app.get("/v1beta/models")
 @app.get("/v1alpha/models")
 async def list_gemini_models(
@@ -55,8 +120,8 @@ async def list_gemini_models(
             "displayName": cfg.get("display", alias),
             "description": f"Router API model alias for {cfg.get('model_id')}",
             "inputTokenLimit": cfg.get("context_length", 220000),
-            "outputTokenLimit": 8192,
-            "supportedGenerationMethods": ["generateContent", "countTokens"]
+            "outputTokenLimit": _output_token_limit(cfg),
+            "supportedGenerationMethods": _supported_methods(cfg)
         })
     return {"models": gemini_models}
 
@@ -105,7 +170,7 @@ async def get_gemini_model(
         "displayName": cfg.get("display", alias),
         "description": f"Router API model alias for {cfg.get('model_id')}",
         "inputTokenLimit": cfg.get("context_length", 220000),
-        "outputTokenLimit": 8192,
-        "supportedGenerationMethods": ["generateContent", "countTokens"]
+        "outputTokenLimit": _output_token_limit(cfg),
+        "supportedGenerationMethods": _supported_methods(cfg)
     }
 

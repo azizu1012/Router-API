@@ -14,9 +14,9 @@ import { Layers, Trash2, Edit3, Plus, RefreshCw, Zap } from 'lucide-react';
 /* Field metadata is keyed into i18n rather than carrying Vietnamese strings,
    so the whole form follows the language switch. */
 const FIELD_META = {
-  alias: { labelKey: 'md_field_alias', descKey: 'md_field_alias_desc', placeholder: 'gemini-flash-35', editDisabled: true },
-  display: { labelKey: 'md_field_display', descKey: 'md_field_display_desc', placeholder: 'Gemini Flash 3.5' },
-  model_id: { labelKey: 'md_field_model_id', descKey: 'md_field_model_id_desc', placeholder: 'gemini-3.5-flash' },
+  alias: { labelKey: 'md_field_alias', descKey: 'md_field_alias_desc', placeholder: 'gemini-4-hydrogen', editDisabled: true },
+  display: { labelKey: 'md_field_display', descKey: 'md_field_display_desc', placeholder: 'Gemini 4 Hydrogen' },
+  model_id: { labelKey: 'md_field_model_id', descKey: 'md_field_model_id_desc', placeholder: 'gemini-4-hydrogen' },
   rpm: { labelKey: 'th_rpm', descKey: 'md_field_rpm_hint', placeholder: '10', type: 'number' },
   tpm: { labelKey: 'th_tpm', descKey: 'md_field_tpm_hint', placeholder: '1000000', type: 'number' },
   rpd: { labelKey: 'th_rpd', descKey: 'md_field_rpd_hint', placeholder: '1000', type: 'number' },

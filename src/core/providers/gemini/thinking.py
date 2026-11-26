@@ -96,20 +96,20 @@ def build_thinking_config(
 def get_default_thinking_for_model(model_id: str) -> Dict[str, Any]:
     """Auto-enable thinking with level appropriate for model.
 
-    - V3 flash: low (fast tool calls, enough reasoning)
-    - V3 pro: medium
+    - V3/V4 flash: low (fast tool calls, enough reasoning)
+    - V3/V4 non-flash (e.g. pro, gemini-4-hydrogen): medium
     - Gemma 4: high (strictly "high" or "minimal")
     - V2.5: budget 8192
-    - Lite: {} (no thinking support)
+    - Lite / Embedding / Decision: {} (no thinking support)
     """
     m = model_id.lower()
-    if "lite" in m:
+    if "lite" in m or "embedding" in m or "decision" in m:
         return {}
 
     if "gemma" in m:
         return {"thinking_level": "high", "include_thoughts": True}
 
-    is_v3 = "gemini-3" in m and "gemini-2" not in m
+    is_v3 = ("gemini-3" in m or "gemini-4" in m) and "gemini-2" not in m
 
     if is_v3:
         if "flash" in m and "pro" not in m:
@@ -128,11 +128,11 @@ def resolve_thinking_config(
     """Unified helper to build thinking config dictionary for a model, handling defaults and lite logic."""
     m = model_id.lower()
 
-    if "lite" in m:
+    if "lite" in m or "embedding" in m or "decision" in m:
         return {}
 
     is_gemma = "gemma" in m
-    is_v3 = "gemini-3" in m and "gemini-2" not in m
+    is_v3 = ("gemini-3" in m or "gemini-4" in m) and "gemini-2" not in m
 
     # If any specific thinking parameter is provided, use build_thinking_config
     if thinking_level is not None or thinking_budget is not None or include_thoughts is not None:

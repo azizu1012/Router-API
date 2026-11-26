@@ -246,7 +246,8 @@ export function AppProvider({ children }) {
             ...prev,
             mu: {
               savings: costData.savings || {},
-              pools: poolDetail.pools || []
+              pools: poolDetail.pools || [],
+              standalone_models: poolDetail.standalone_models || [],
             }
           }));
           break;

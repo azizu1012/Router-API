@@ -245,34 +245,74 @@ export default function MyAccountTab() {
   const livePools = (() => {
     if (!liveActivity || !liveActivity.models) return null;
     const models = liveActivity.models;
-    const flash = { rpm_rem: 0, rpm_lim: 0, tpm_rem: 0, tpm_lim: 0, cnt: 0 };
-    const lite = { rpm_rem: 0, rpm_lim: 0, tpm_rem: 0, tpm_lim: 0, cnt: 0 };
-    for (const [alias, ms] of Object.entries(models)) {
-      const p = alias.includes('lite') ? lite : flash;
-      p.rpm_rem += ms.rpm_remaining;
-      p.rpm_lim += ms.rpm_limit;
-      p.tpm_rem += ms.tpm_remaining;
-      p.tpm_lim += ms.tpm_limit;
-      p.cnt++;
-    }
+    const poolGroups = liveActivity.pools || {
+      'gemini-flash': ['gemini-flash-36', 'gemini-flash-30', 'gemini-flash-38'],
+      'gemini-flash-lite': ['gemini-flash-35-lite', 'gemini-flash-31-lite', 'gemini-flash-25-lite'],
+    };
+    const poolMemberSet = new Set(Object.values(poolGroups).flat());
+
+    const sumMembers = (memberList) => {
+      const acc = { rpm_rem: 0, rpm_lim: 0, tpm_rem: 0, tpm_lim: 0, cnt: 0 };
+      for (const alias of memberList) {
+        const ms = models[alias];
+        if (!ms) continue;
+        acc.rpm_rem += ms.rpm_remaining || 0;
+        acc.rpm_lim += ms.rpm_limit || 0;
+        acc.tpm_rem += ms.tpm_remaining || 0;
+        acc.tpm_lim += ms.tpm_limit || 0;
+        acc.cnt++;
+      }
+      return acc;
+    };
+
+    const flash = sumMembers(poolGroups['gemini-flash'] || []);
+    const lite = sumMembers(poolGroups['gemini-flash-lite'] || []);
     const cards = [];
-    if (flash.cnt > 0) cards.push({ label: 'Flash Pool', color: 'var(--c-accent)', ...flash });
+    if (flash.cnt > 0) cards.push({ label: 'Flash 3 Pool', color: 'var(--c-accent)', ...flash });
     if (lite.cnt > 0) cards.push({ label: 'Lite Pool', color: 'var(--s-3)', ...lite });
-    if (cards.length === 0) return null;
+
+    const standaloneAliases = Array.isArray(liveActivity.standalone)
+      ? liveActivity.standalone
+      : Object.keys(models).filter(a => !poolGroups[a] && !poolMemberSet.has(a));
+    const standaloneCards = standaloneAliases
+      .filter(alias => Boolean(models[alias]))
+      .map(alias => ({ alias, ...models[alias] }));
+
+    if (cards.length === 0 && standaloneCards.length === 0) return null;
     return (
-      <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
-        {cards.map(({ label, color, rpm_rem, rpm_lim, tpm_rem, tpm_lim, cnt }) => (
-          <Card key={label} variant="glass" padding="md">
-            <Card.Header
-              title={<span style={{ color }}>{label}</span>}
-              action={<span className="text-[0.6875rem] tabular-nums" style={{ color: 'var(--c-ink-3)' }}>{cnt} {t('lbl_models', lang)}</span>}
-            />
-            <div className="space-y-2 pt-1">
-              {poolGauge('RPM Live', rpm_rem, rpm_lim, '')}
-              {poolGauge('TPM Live', tpm_rem, tpm_lim, '')}
-            </div>
-          </Card>
-        ))}
+      <div className="space-y-3">
+        {cards.length > 0 && (
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+            {cards.map(({ label, color, rpm_rem, rpm_lim, tpm_rem, tpm_lim, cnt }) => (
+              <Card key={label} variant="glass" padding="md">
+                <Card.Header
+                  title={<span style={{ color }}>{label}</span>}
+                  action={<span className="text-[0.6875rem] tabular-nums" style={{ color: 'var(--c-ink-3)' }}>{cnt} {t('lbl_models', lang)}</span>}
+                />
+                <div className="space-y-2 pt-1">
+                  {poolGauge('RPM Live', rpm_rem, rpm_lim, '')}
+                  {poolGauge('TPM Live', tpm_rem, tpm_lim, '')}
+                </div>
+              </Card>
+            ))}
+          </div>
+        )}
+        {standaloneCards.length > 0 && (
+          <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-3">
+            {standaloneCards.map(m => (
+              <Card key={m.alias} variant="glass" padding="sm">
+                <Card.Header
+                  title={<span className="font-mono text-xs" style={{ color: 'var(--c-ink)' }}>{m.alias}</span>}
+                  action={<span className="text-[0.625rem]" style={{ color: 'var(--c-accent)' }}>{t('ov_standalone_badge', lang)}</span>}
+                />
+                <div className="space-y-2 pt-1">
+                  {poolGauge('RPM Live', m.rpm_remaining || 0, m.rpm_limit || 0, '')}
+                  {(m.tpm_limit || 0) > 0 && (m.tpm_limit || 0) < 999999999 && poolGauge('TPM Live', m.tpm_remaining || 0, m.tpm_limit || 0, '')}
+                </div>
+              </Card>
+            ))}
+          </div>
+        )}
       </div>
     );
   })();

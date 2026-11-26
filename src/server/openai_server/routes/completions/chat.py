@@ -178,6 +178,19 @@ async def chat_completions(
         from src.core.config.api_config import AVAILABLE_MODELS, MODEL_CONTEXT_LENGTH
         from src.core.router import router
         model_alias = router.resolve_model_alias(body.get("model", ""))
+        if not model_alias:
+            return JSONResponse(
+                status_code=404,
+                content={
+                    "error": {
+                        "message": (
+                            f"Model '{body.get('model', '')}' not found. Add a model alias "
+                            "for it or enable a custom endpoint that serves it."
+                        ),
+                        "type": "invalid_request_error",
+                    }
+                },
+            )
         model_cfg = AVAILABLE_MODELS.get(model_alias)
         limit_tokens = model_cfg.get("context_length", MODEL_CONTEXT_LENGTH) if model_cfg else MODEL_CONTEXT_LENGTH
 

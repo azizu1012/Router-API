@@ -396,10 +396,38 @@ def test_router_resolve_model_alias_with_account(client):
         target_model="gemini-flash",
     )
 
-    # Without account -> falls back to default
-    assert router.resolve_model_alias("my-cool-gpt") == router.current_model
+    # Without account -> no alias is visible, so the model is not routable
+    assert router.resolve_model_alias("my-cool-gpt") is None
     # With account -> resolves to gemini-flash
     assert router.resolve_model_alias("my-cool-gpt", account=user_acc) == "gemini-flash"
+
+
+def test_unknown_model_has_no_default_route():
+    """Unknown model names must not be silently mapped to a default model."""
+    from src.core.router import router
+
+    assert router.resolve_model_alias("claude-sonnet-4-5-20250929") is None
+    assert router.resolve_model_alias("claude-3-5-haiku-20241022") is None
+    assert router.resolve_model_alias("claude-opus-4-1") is None
+    assert router.resolve_model_alias("some-made-up-model") is None
+    assert router.resolve_model_alias("") is None
+
+
+def test_unknown_model_request_returns_404(client):
+    """A request for a model with no alias/native/endpoint match is rejected."""
+    user_acc, _, token_row = _create_user(client, name="strict_model_tester", tier="free")
+    raw_key = f"sk-{user_acc['name']}-{token_row['token_code']}"
+
+    resp = client.post(
+        "/v1/chat/completions",
+        headers={"Authorization": f"Bearer {raw_key}"},
+        json={
+            "model": "some-made-up-model",
+            "messages": [{"role": "user", "content": "Hi"}],
+        },
+    )
+    assert resp.status_code == 404, resp.text
+    assert "some-made-up-model" in resp.text
 
 
 

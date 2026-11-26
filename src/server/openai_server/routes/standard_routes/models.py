@@ -37,6 +37,8 @@ def _model_entry(m: Dict[str, Any]) -> Dict[str, Any]:
         phys = 0
     if phys > 0:
         entry["physical_context"] = phys
+    if m.get("kind"):
+        entry["kind"] = m["kind"]
     entry["max_tokens"] = config.MAX_OUTPUT_TOKENS
     return entry
 

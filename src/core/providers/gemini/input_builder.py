@@ -18,16 +18,17 @@ def build_gemini_inputs(
     from .thinking import build_thinking_config
 
     resolved_thinking = thinking_config
+    m_lower = model_id.lower()
     if resolved_thinking is None and reasoning_effort:
-        is_v3 = "gemini-3" in model_id and "gemini-2" not in model_id
-        is_gemma = "gemma" in model_id.lower()
+        is_v3 = ("gemini-3" in m_lower or "gemini-4" in m_lower) and "gemini-2" not in m_lower
+        is_gemma = "gemma" in m_lower
         resolved_thinking = build_thinking_config(
             thinking_level=reasoning_effort, is_v3=is_v3, is_gemma=is_gemma)
 
     if resolved_thinking:
-        if "lite" in model_id.lower():
+        if "lite" in m_lower or "embedding" in m_lower or "decision" in m_lower:
             resolved_thinking = {}
-        elif "gemma" in model_id.lower():
+        elif "gemma" in m_lower:
             from .thinking import sanitize_thinking_for_gemma
             resolved_thinking = sanitize_thinking_for_gemma(resolved_thinking)
 

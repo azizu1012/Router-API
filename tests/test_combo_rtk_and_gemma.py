@@ -39,7 +39,7 @@ def test_safe_context_length_defaults():
     assert GEMMA_CONTEXT_LENGTH == 14000
 
     assert "gemma-4-26b" in AVAILABLE_MODELS
-    assert "gemma-4-31b" in AVAILABLE_MODELS
+    assert "gemma-4-31b" not in AVAILABLE_MODELS
 
     gemma26 = AVAILABLE_MODELS["gemma-4-26b"]
     assert gemma26["rpm"] == 30
@@ -47,13 +47,6 @@ def test_safe_context_length_defaults():
     assert gemma26["rpd"] == 14400
     assert gemma26["context_length"] == 14000
     assert gemma26["physical_context"] == 262144
-
-    gemma31 = AVAILABLE_MODELS["gemma-4-31b"]
-    assert gemma31["rpm"] == 30
-    assert gemma31["tpm"] == 16000
-    assert gemma31["rpd"] == 14400
-    assert gemma31["context_length"] == 14000
-    assert gemma31["physical_context"] == 262144
 
     flash = AVAILABLE_MODELS["gemini-flash"]
     assert flash["context_length"] == 185000
@@ -64,7 +57,6 @@ def test_get_model_safe_context_length():
     assert get_model_safe_context_length("gemini-flash") == 185000
     assert get_model_safe_context_length("gemini-flash-lite") == 185000
     assert get_model_safe_context_length("gemma-4-26b") == 14000
-    assert get_model_safe_context_length("gemma-4-31b") == 14000
     # Custom / unknown model defaults to MODEL_CONTEXT_LENGTH
     assert get_model_safe_context_length("custom-unknown-model") == 185000
 
@@ -352,12 +344,11 @@ def test_gemma_alias_normalization():
 
     assert router.resolve_model_alias("gemma-4-26b") == "gemma-4-26b"
     assert router.resolve_model_alias("gemma-4-26b-a4b-it") == "gemma-4-26b"
-    assert router.resolve_model_alias("gemma-4-27b") == "gemma-4-26b"
-    assert router.resolve_model_alias("gemma-27b") == "gemma-4-26b"
-    assert router.resolve_model_alias("gemma-4-31b") == "gemma-4-31b"
-    assert router.resolve_model_alias("gemma-4-31b-it") == "gemma-4-31b"
-    assert router.resolve_model_alias("gemma-31b") == "gemma-4-31b"
-    assert router.resolve_model_alias("gemma-4") == "gemma-4-26b"
+    # No heuristic mapping: a Gemma-looking name that is not a configured
+    # model or alias is not silently routed to gemma-4-26b.
+    assert router.resolve_model_alias("gemma-4-27b") is None
+    assert router.resolve_model_alias("gemma-27b") is None
+    assert router.resolve_model_alias("gemma-4") is None
 
 
 @pytest.mark.anyio

@@ -107,20 +107,21 @@ class TestAutoMigrateSchema:
 class TestSunsetModels:
     def test_sunset_mechanism_removed(self):
         '''Sunset mechanism removed 2026-10-23: admin disables models in dashboard web.'''
-        for alias in ('gemini-flash-25', 'gemini-flash-25-lite', 'gemini-flash-35', 'gemini-flash-37', 'gemini-2.5-flash', 'gemini-2.5-flash-lite', 'gemini-3.5-flash', 'gemini-3.7-flash', 'gemini-flash-35-lite', 'gemini-3.5-flash-lite', 'gemini-flash-38', 'gemini-flash-36', 'gemini-flash-30', 'gemini-flash-lite', 'gemini-flash-31-lite', 'gemini-3.1-flash-lite'):
+        for alias in ('gemini-flash-25', 'gemini-flash-25-lite', 'gemini-2.5-flash', 'gemini-2.5-flash-lite', 'gemini-flash-35-lite', 'gemini-3.5-flash-lite', 'gemini-flash-38', 'gemini-flash-36', 'gemini-flash-30', 'gemini-flash-lite', 'gemini-flash-31-lite', 'gemini-3.1-flash-lite'):
             assert is_model_sunset(alias) is False
 
     def test_active_pool_members_includes_all_configured(self):
         '''Without sunset filtering, every configured member is handed out unless admin-disabled.'''
-        for m in ('gemini-flash-36', 'gemini-flash-30', 'gemini-flash-38', 'gemini-flash-37', 'gemini-flash-35', 'gemini-flash-25'):
+        for m in ('gemini-flash-36', 'gemini-flash-30', 'gemini-flash-38'):
             assert m in active_pool_members('gemini-flash') or not is_model_enabled(m), m
+        assert 'gemini-flash-25' not in active_pool_members('gemini-flash')
         for m in ('gemini-flash-35-lite', 'gemini-flash-31-lite', 'gemini-flash-25-lite'):
             assert m in active_pool_members('gemini-flash-lite') or not is_model_enabled(m), m
 
     @pytest.mark.anyio
     async def test_resolve_model_no_longer_rejects_discontinued(self):
         '''Previously sunsetted aliases must not raise 400-discontinued anymore.'''
-        for alias in ('gemini-flash-35', 'gemini-flash-37'):
+        for alias in ('gemini-flash-36', 'gemini-flash-25'):
             try:
                 await _resolve_model({'model': alias}, account={'account_id': 'test_acc'})
             except HTTPException as e:
@@ -129,6 +130,6 @@ class TestSunsetModels:
     def test_reserve_key_treats_previously_discontinued_like_active(self):
         '''reserve_key must not single out previously discontinued models.'''
         with patch('src.core.router.core.key_resolver.is_model_enabled', return_value=True):
-            res_old = router.reserve_key('gemini-flash-35', account={'account_id': 'test_acc'})
+            res_old = router.reserve_key('gemini-flash-25', account={'account_id': 'test_acc'})
             res_new = router.reserve_key('gemini-flash-38', account={'account_id': 'test_acc'})
             assert (res_old is None) == (res_new is None)

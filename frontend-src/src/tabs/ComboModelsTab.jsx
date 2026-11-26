@@ -37,6 +37,13 @@ export default function ComboModelsTab() {
   const { token, lang } = useApp();
   const [aliases, setAliases] = useState([]);
   const [endpoints, setEndpoints] = useState([]);
+  const [internalTargetModels, setInternalTargetModels] = useState([
+    'gemini-flash',
+    'gemini-flash-lite',
+    'gemini-4-hydrogen',
+    'gemini-flash-25',
+    'gemma-4-26b',
+  ]);
   const [form, setForm] = useState(blankForm());
   const [editing, setEditing] = useState(null);
   const [showForm, setShowForm] = useState(false);
@@ -55,15 +62,19 @@ export default function ComboModelsTab() {
   const load = useCallback(async (isCurrent = () => true) => {
     setLoading(true);
     try {
-      const [aliasData, endpointData] = await Promise.all([
+      const [aliasData, endpointData, poolData] = await Promise.all([
         api('/api/me/aliases', { method: 'GET' }, token),
-        api('/api/me/endpoints', { method: 'GET' }, token)
+        api('/api/me/endpoints', { method: 'GET' }, token),
+        api('/api/model-pools', { method: 'GET' }, token).catch(() => null),
       ]);
       if (!isCurrent()) return;
       const aliasList = Array.isArray(aliasData) ? aliasData : (aliasData.aliases || []);
       setAliases(aliasList.filter(alias => parseTargets(alias).length > 0));
       const endpointList = Array.isArray(endpointData) ? endpointData : (endpointData.endpoints || endpointData.ep || []);
       setEndpoints(endpointList);
+      if (Array.isArray(poolData?.target_models) && poolData.target_models.length > 0) {
+        setInternalTargetModels(poolData.target_models);
+      }
     } catch (err) {
       if (!isCurrent()) return;
       notify(`${t('cm_load_err', lang)}: ${err.message}`, 'error');
@@ -96,7 +107,7 @@ export default function ComboModelsTab() {
       const models = endpoint.enabled_models?.length ? endpoint.enabled_models : endpoint.models;
       if (models?.length) return models;
     }
-    return ['gemini-flash', 'gemini-flash-lite', 'gemini-pro'];
+    return internalTargetModels;
   };
 
   const normalizedTargets = form.targets.filter(target => target.model.trim()).map((target, index) => ({

@@ -262,27 +262,47 @@ export default function OverviewTab() {
     },
   ];
 
-  /* Pool live capacity: per-pool, with the meter filled by *consumed* share so
-     the bar and the number agree. */
-  const poolCards = (() => {
-    if (!liveStats) return null;
+  /* Pool & standalone live capacity: aggregate only pool members per pool so
+     standalone models like gemini-4-hydrogen are shown separately instead of
+     being folded into Gemini Flash. */
+  const { poolCards, standaloneCards } = (() => {
+    if (!liveStats) return { poolCards: null, standaloneCards: [] };
     const models = liveStats.models || {};
-    const pools = {
-      flash: { rpm_rem: 0, rpm_lim: 0, tpm_rem: 0, tpm_lim: 0, cnt: 0 },
-      lite: { rpm_rem: 0, rpm_lim: 0, tpm_rem: 0, tpm_lim: 0, cnt: 0 },
+    const poolGroups = liveStats.pools || {
+      'gemini-flash': ['gemini-flash-36', 'gemini-flash-30', 'gemini-flash-38'],
+      'gemini-flash-lite': ['gemini-flash-35-lite', 'gemini-flash-31-lite', 'gemini-flash-25-lite'],
     };
-    for (const [alias, ms] of Object.entries(models)) {
-      const p = alias.includes('lite') ? pools.lite : pools.flash;
-      p.rpm_rem += ms.rpm_remaining || 0;
-      p.rpm_lim += ms.rpm_limit || 0;
-      p.tpm_rem += ms.tpm_remaining || 0;
-      p.tpm_lim += ms.tpm_limit || 0;
-      p.cnt++;
-    }
-    const out = [];
-    if (pools.flash.cnt > 0) out.push({ key: 'flash', label: 'Gemini Flash', ...pools.flash });
-    if (pools.lite.cnt > 0) out.push({ key: 'lite', label: 'Gemini Flash Lite', ...pools.lite });
-    return out;
+    const poolMemberSet = new Set(Object.values(poolGroups).flat());
+
+    const sumMembers = (memberList) => {
+      const acc = { rpm_rem: 0, rpm_lim: 0, tpm_rem: 0, tpm_lim: 0, cnt: 0 };
+      for (const alias of memberList) {
+        const ms = models[alias];
+        if (!ms) continue;
+        acc.rpm_rem += ms.rpm_remaining || 0;
+        acc.rpm_lim += ms.rpm_limit || 0;
+        acc.tpm_rem += ms.tpm_remaining || 0;
+        acc.tpm_lim += ms.tpm_limit || 0;
+        acc.cnt++;
+      }
+      return acc;
+    };
+
+    const flash = sumMembers(poolGroups['gemini-flash'] || []);
+    const lite = sumMembers(poolGroups['gemini-flash-lite'] || []);
+    const outPools = [];
+    if (flash.cnt > 0) outPools.push({ key: 'flash', label: 'Gemini Flash 3 Pool', ...flash });
+    if (lite.cnt > 0) outPools.push({ key: 'lite', label: 'Gemini Flash Lite Pool', ...lite });
+
+    const standaloneAliases = Array.isArray(liveStats.standalone)
+      ? liveStats.standalone
+      : Object.keys(models).filter(a => !poolGroups[a] && !poolMemberSet.has(a));
+
+    const outStandalone = standaloneAliases
+      .filter(alias => Boolean(models[alias]))
+      .map(alias => ({ alias, ...models[alias] }));
+
+    return { poolCards: outPools, standaloneCards: outStandalone };
   })();
 
   /* Bar and number measure the same thing — headroom left. A bar filled to the
@@ -338,6 +358,43 @@ export default function OverviewTab() {
               </Card>
             ))}
           </div>
+
+          {standaloneCards.length > 0 && (
+            <div className="mt-4">
+              <div className="flex items-center gap-1.5 mb-2">
+                <Cpu className="w-3.5 h-3.5" style={{ color: 'var(--c-accent)' }} />
+                <span className="label-micro">{t('ov_standalone_live', lang)}</span>
+              </div>
+              <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-3">
+                {standaloneCards.map(m => (
+                  <Card key={m.alias} padding="sm">
+                    <div className="flex items-center justify-between gap-2 mb-2.5">
+                      <span className="text-xs font-semibold font-mono truncate" style={{ color: 'var(--c-ink)' }}>
+                        {m.alias}
+                      </span>
+                      <span className="text-[0.625rem] font-medium px-1.5 py-0.5 rounded shrink-0"
+                            style={{ background: 'var(--c-accent-soft)', color: 'var(--c-accent)' }}>
+                        {t('ov_standalone_badge', lang)}
+                      </span>
+                    </div>
+                    <div className="space-y-2">
+                      {meter('RPM', m.rpm_remaining || 0, m.rpm_limit || 0)}
+                      {(m.tpm_limit || 0) > 0 && (m.tpm_limit || 0) < 999999999 && meter('TPM', m.tpm_remaining || 0, m.tpm_limit || 0)}
+                      {(m.rpd_limit || 0) > 0 && (m.rpd_limit || 0) < 999999 && (
+                        <div className="flex items-baseline justify-between text-[0.6875rem] tabular-nums pt-0.5">
+                          <span className="label-micro">RPD</span>
+                          <span style={{ color: 'var(--c-ink-2)' }}>
+                            {Math.max(0, (m.rpd_limit || 0) - (m.rpd_used || 0)).toLocaleString()}
+                            <span style={{ color: 'var(--c-ink-3)' }}> / {(m.rpd_limit || 0).toLocaleString()} left</span>
+                          </span>
+                        </div>
+                      )}
+                    </div>
+                  </Card>
+                ))}
+              </div>
+            </div>
+          )}
         </div>
       )}
 

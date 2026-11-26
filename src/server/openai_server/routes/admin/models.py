@@ -101,6 +101,7 @@ async def admin_get_models(request: Request):
     pools = [
         {
             "name": pn,
+            "display": AVAILABLE_MODELS.get(pn, {}).get("display", pn),
             "members": pc["members"],
             "active_members": active_pool_members(pn),
         }

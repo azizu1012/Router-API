@@ -106,7 +106,7 @@ Hoặc bằng shell:
 ```bash
 export ANTHROPIC_BASE_URL="http://127.0.0.1:58100"
 export ANTHROPIC_AUTH_TOKEN="sk-<account-key>"
-export ANTHROPIC_MODEL="gemini-flash-35"
+export ANTHROPIC_MODEL="gemini-flash"
 claude
 ```
 
@@ -156,16 +156,21 @@ Client ──► Proxy layer      chỉ chuyển đổi format, không logic key
 
 Proxy cố tình "ngây thơ": chỉ dịch giao thức và ủy quyền phần còn lại. Toàn bộ logic chống lỗi nằm trong `PoolManager`, nên sửa ở đó là áp dụng cho mọi giao thức client cùng lúc.
 
-### Model pool ảo
+### Model pool ảo & model standalone
 
-Bạn request `gemini-flash`. Đằng sau nó là một tập model thay thế nhau, có thứ tự ưu tiên:
+Bạn request `gemini-flash`. Đằng sau nó là một tập các model Flash 3 thay thế nhau, có thứ tự ưu tiên:
 
-| Pool | Thành viên | Ghi chú |
+| Pool / Model | Thành viên / Model thật | Ghi chú |
 |---|---|---|
-| `gemini-flash` | `3.8` · `3.7` · `3.6` · `3.5` · `3.0` · `2.5` | 3.7 bị giới hạn capacity phía Google nên RPM bị bóp |
-| `gemini-flash-lite` | `3.5-lite` · `3.1` · `2.5` | tier rẻ hơn, dùng cho sub-agent |
+| `gemini-flash` (pool) | `3.6` · `3.0` · `3.8` | Chỉ gồm dòng Flash 3 |
+| `gemini-flash-lite` (pool) | `3.5-lite` · `3.1` · `2.5` | tier rẻ hơn, dùng cho sub-agent |
+| `gemini-4-hydrogen` (standalone) | `gemini-4-hydrogen` | Gemini 4 Hydrogen, chạy độc lập ngoài pool |
+| `gemini-flash-25` (standalone) | `gemini-2.5-flash` | Flash 2.5 độc lập, tách khỏi pool `gemini-flash` |
+| `gemma-4-26b` (standalone) | `gemma-4-26b-a4b-it` | Gemma 4 độc lập (14k safe / 262k physical) |
+| `gemini-embedding-2` / `gemini-embedding-001` | `gemini-embedding-2` / `gemini-embedding-001` | Model embedding (trần input `8192` / `2048` token) |
+| `gemini-decision-1` | `gemini-decision-1` | Model cho Gemini Decisions API |
 
-Mỗi member có hạn mức riêng. `ModelPool` cho phép mỗi member xử lý **một request tại một thời điểm**, nên một model chậm không thể bóp chết các model khác. Sau `POOL_SWAP_FAILURES` lỗi liên tiếp, member đó bị loại và router chuyển sang cái tiếp theo.
+Mỗi thành viên pool có hạn mức riêng. `ModelPool` cho phép mỗi thành viên xử lý **một request tại một thời điểm**, nên một model chậm không thể bóp chết các model khác. Sau `POOL_SWAP_FAILURES` lỗi liên tiếp, thành viên đó bị loại và router chuyển sang cái tiếp theo.
 
 Alias theo quy ước `gemini-flash-<version>` → `gemini-<version>-flash`. Ghi đè bất kỳ model backing nào qua env (xem `.env.example`).
 
@@ -212,7 +217,9 @@ tại cho client không tự điều phối được.
 | `POST` | `/v1/chat/completions` | OpenAI |
 | `POST` | `/opencode/v1/chat/completions` | OpenAI |
 | `POST` | `/v1/responses` | OpenAI Responses — `tools`, `instructions`, `stream` đều được map |
-| `POST` | `/v1/models/{id}:generateContent` | Gemini native (pass-through) |
+| `POST` | `/v1/embeddings`, `/embeddings`, `/opencode/v1/embeddings` | OpenAI Embeddings (`gemini-embedding-2`, `gemini-embedding-001`) |
+| `POST` | `/v1/decisions`, `/decisions`, `/v1beta/decisions`, `/v1alpha/decisions` | Gemini Decisions API (`gemini-decision-1`) |
+| `POST` | `/v1/models/{id}:generateContent`, `:embedContent`, `:batchEmbedContents` | Gemini native (`v1`, `v1beta`, `v1alpha`) |
 | `GET` | `/v1/models` | OpenAI **và** Anthropic schema superset |
 | `POST` | `/v1/search`, `/search` | Router |
 | `POST`| `/mcp` | MCP Server — tool `search_web`, Bearer token |

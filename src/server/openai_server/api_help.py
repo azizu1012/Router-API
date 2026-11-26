@@ -187,9 +187,9 @@ CATALOG: List[Dict[str, Any]] = [
                           "\"tools\" は Anthropic 形式の input_schema を使います。"
                           "\"output_config\": {\"effort\": \"high\"} で思考量を指定できます。",
                 },
-                "request": {"model": "gemini-flash-35", "max_tokens": 1024,
+                "request": {"model": "gemini-flash", "max_tokens": 1024,
                             "messages": [{"role": "user", "content": "__sample__"}]},
-                "stream_request": {"model": "gemini-flash-35", "max_tokens": 1024, "stream": True,
+                "stream_request": {"model": "gemini-flash", "max_tokens": 1024, "stream": True,
                                    "messages": [{"role": "user", "content": "__sample__"}]},
             },
             {
@@ -323,7 +323,7 @@ CATALOG: List[Dict[str, Any]] = [
                 "path": "/v1beta/models/{model_id}:generateContent",
                 "aliases": ["/v1/models/{model_id}:generateContent",
                             "/v1alpha/models/{model_id}:generateContent"],
-                "example_path": "/v1beta/models/gemini-3.5-flash:generateContent?key=<your-api-key>",
+                "example_path": "/v1beta/models/gemini-3.6-flash:generateContent?key=<your-api-key>",
                 "auth": "none",
                 "note": {
                     "vi": "Pass-through. Nhận token qua query ?key= hoặc header x-goog-api-key. "
@@ -340,7 +340,7 @@ CATALOG: List[Dict[str, Any]] = [
                 "path": "/v1beta/models/{model_id}:streamGenerateContent",
                 "aliases": ["/v1/models/{model_id}:streamGenerateContent",
                             "/v1alpha/models/{model_id}:streamGenerateContent"],
-                "example_path": "/v1beta/models/gemini-3.5-flash:streamGenerateContent?key=<your-api-key>",
+                "example_path": "/v1beta/models/gemini-3.6-flash:streamGenerateContent?key=<your-api-key>",
                 "auth": "none",
                 "note": {
                     "vi": "Bản streaming của endpoint trên.",
@@ -348,6 +348,84 @@ CATALOG: List[Dict[str, Any]] = [
                     "ja": "上のエンドポイントのストリーミング版です。",
                 },
                 "request": {"contents": [{"role": "user", "parts": [{"text": "__sample__"}]}]},
+            },
+            {
+                "method": "POST",
+                "path": "/v1beta/models/{model_id}:embedContent",
+                "aliases": ["/v1/models/{model_id}:embedContent",
+                            "/v1alpha/models/{model_id}:embedContent"],
+                "example_path": "/v1beta/models/gemini-embedding-2:embedContent",
+                "note": {
+                    "vi": "Embedding chuẩn Gemini native (output_dimensionality, task_type). "
+                          "Hỗ trợ gemini-embedding-2 và gemini-embedding-001.",
+                    "en": "Gemini-native single embedding (output_dimensionality, task_type). "
+                          "Supports gemini-embedding-2 and gemini-embedding-001.",
+                    "ja": "Gemini ネイティブの単一埋め込み (output_dimensionality, task_type)。"
+                          "gemini-embedding-2 と gemini-embedding-001 に対応しています。",
+                },
+                "request": {"content": {"parts": [{"text": "__sample__"}]}},
+            },
+            {
+                "method": "POST",
+                "path": "/v1beta/models/{model_id}:batchEmbedContents",
+                "aliases": ["/v1/models/{model_id}:batchEmbedContents",
+                            "/v1alpha/models/{model_id}:batchEmbedContents"],
+                "example_path": "/v1beta/models/gemini-embedding-2:batchEmbedContents",
+                "note": {
+                    "vi": "Embedding theo lô chuẩn Gemini native qua mảng requests.",
+                    "en": "Gemini-native batch embeddings via a requests array.",
+                    "ja": "requests 配列による Gemini ネイティブのバッチ埋め込みです。",
+                },
+                "request": {"requests": [
+                    {"model": "models/gemini-embedding-2",
+                     "content": {"parts": [{"text": "__sample__"}]}}
+                ]},
+            },
+        ],
+    },
+    {
+        "group": {
+            "vi": "Embeddings & Decisions",
+            "en": "Embeddings & Decisions",
+            "ja": "Embeddings & Decisions",
+        },
+        "id": "embeddings-decisions",
+        "summary": {
+            "vi": "Vector embedding chuẩn OpenAI và Gemini Decisions API dùng chung xoay vòng key và hạn mức.",
+            "en": "OpenAI-compatible embeddings and the Gemini Decisions API, backed by the same key rotation and quotas.",
+            "ja": "OpenAI 互換の埋め込みと Gemini Decisions API。同じキーローテーションとクォータ制御で動作します。",
+        },
+        "endpoints": [
+            {
+                "method": "POST",
+                "path": "/v1/embeddings",
+                "aliases": ["/embeddings", "/opencode/v1/embeddings"],
+                "note": {
+                    "vi": "Hỗ trợ input dạng chuỗi hoặc mảng chuỗi, \"dimensions\", "
+                          "\"encoding_format\" (float|base64), và \"task_type\". "
+                          "Model: gemini-embedding-2 (8192 tok), gemini-embedding-001 (2048 tok).",
+                    "en": "Accepts a string or list of strings for input, optional \"dimensions\", "
+                          "\"encoding_format\" (float|base64), and \"task_type\". "
+                          "Models: gemini-embedding-2 (8192 tok), gemini-embedding-001 (2048 tok).",
+                    "ja": "input には文字列または文字列配列を指定可能。\"dimensions\"、"
+                          "\"encoding_format\" (float|base64)、\"task_type\" に対応。"
+                          "モデル: gemini-embedding-2 (8192 tok)、gemini-embedding-001 (2048 tok)。",
+                },
+                "request": {"model": "gemini-embedding-2", "input": "__sample__"},
+            },
+            {
+                "method": "POST",
+                "path": "/v1/decisions",
+                "aliases": ["/decisions", "/v1beta/decisions", "/v1alpha/decisions"],
+                "note": {
+                    "vi": "Chuyển tiếp tới Gemini Decisions API (mặc định gemini-decision-1). "
+                          "Giữ nguyên cấu trúc request/response từ Google.",
+                    "en": "Forwards to the Gemini Decisions API (defaults to gemini-decision-1). "
+                          "Preserves Google's request and response payload.",
+                    "ja": "Gemini Decisions API（既定は gemini-decision-1）へ転送します。"
+                          "Google のリクエスト／レスポンス形式をそのまま維持します。",
+                },
+                "request": {"model": "gemini-decision-1", "input": "__sample__"},
             },
         ],
     },
@@ -465,17 +543,20 @@ NOTES: List[Dict[str, Any]] = [
         },
     },
     {
-        "title": {"vi": "Pool model", "en": "Model pools", "ja": "モデルプール"},
+        "title": {"vi": "Pool model và model standalone", "en": "Model pools and standalone models", "ja": "モデルプールとスタンドアロンモデル"},
         "body": {
-            "vi": "gemini-flash và gemini-flash-lite là pool ảo, không phải model thật. "
-                  "Router thử lần lượt các member phía sau, mỗi member một slot đồng thời. "
-                  "Dùng gemini-flash-38 tới gemini-flash-25 để ghim đúng một member.",
-            "en": "gemini-flash and gemini-flash-lite are virtual pools, not real models. The "
-                  "router tries the members behind them in turn, one concurrency slot each. Use "
-                  "gemini-flash-38 through gemini-flash-25 to pin one specific member.",
-            "ja": "gemini-flash と gemini-flash-lite は実モデルではなく仮想プールです。"
-                  "ルーターは背後メンバーを順に試し、各メンバーが 1 つの同時実行スロットを持ちます。"
-                  "gemini-flash-38 〜 gemini-flash-25 を指定すると 1 メンバーに固定できます。",
+            "vi": "gemini-flash (Gemini 3: 36/30/38), gemini-flash-lite (Lite), gemini-4 (Gemini 4) "
+                  "và gemini-2 (Gemini 2) là các pool ảo; router thử lần lượt các member phía sau, "
+                  "mỗi member một slot đồng thời và có thể bật/tắt từng member ở trang Models. "
+                  "gemma-4-26b, gemini-embedding-2, gemini-embedding-001 và gemini-decision-1 chạy standalone (không nằm trong pool).",
+            "en": "gemini-flash (Gemini 3: 36/30/38), gemini-flash-lite (Lite), gemini-4 (Gemini 4), "
+                  "and gemini-2 (Gemini 2) are virtual pools; the router tries their members in turn, "
+                  "one concurrency slot each, with per-member toggles on the Models tab. "
+                  "gemma-4-26b, gemini-embedding-2, gemini-embedding-001, and gemini-decision-1 run standalone outside any pool.",
+            "ja": "gemini-flash（Gemini 3: 36/30/38）、gemini-flash-lite（Lite）、gemini-4（Gemini 4）、"
+                  "gemini-2（Gemini 2）は仮想プールで、背後のメンバーを各 1 同時実行スロットで順に試し、"
+                  "Models タブから個別に有効/無効を切り替えられます。"
+                  "gemma-4-26b、gemini-embedding-2、gemini-embedding-001、gemini-decision-1 はプール外のスタンドアロンです。",
         },
     },
     {

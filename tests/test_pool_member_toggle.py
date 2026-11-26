@@ -120,14 +120,14 @@ class TestSwitchIsHonoured:
         assert api_config.is_model_enabled(FLASH_38) is True
 
     def test_deprecated_models_can_be_disabled(self, flag_member):
-        """When deprecated models (35, 37) are switched off, they drop out of active members."""
-        flag_member("gemini-flash-35", False)
-        flag_member("gemini-flash-37", False)
-        assert api_config.is_model_enabled("gemini-flash-35") is False
-        assert api_config.is_model_enabled("gemini-flash-37") is False
+        """When pool members (30, 38) are switched off, they drop out of active members."""
+        flag_member("gemini-flash-30", False)
+        flag_member("gemini-flash-38", False)
+        assert api_config.is_model_enabled("gemini-flash-30") is False
+        assert api_config.is_model_enabled("gemini-flash-38") is False
         active = api_config.active_pool_members("gemini-flash")
-        assert "gemini-flash-35" not in active
-        assert "gemini-flash-37" not in active
+        assert "gemini-flash-30" not in active
+        assert "gemini-flash-38" not in active
 
 
 # ── pool membership ─────────────────────────────────────────────────────────

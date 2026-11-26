@@ -19,11 +19,29 @@ class StatsPusher:
         now = time.time()
 
         # Pre-initialize limiters for all AVAILABLE_MODELS to ensure they are present
+        pool_groups = {}
+        pool_labels = {}
+        standalone_aliases = []
         try:
-            from src.core.config.api_config import AVAILABLE_MODELS
+            from src.core.config.api_config import AVAILABLE_MODELS, MODEL_POOLS
             from src.core.limits.gemini.limiter import get_rate_limiter
             for alias in AVAILABLE_MODELS:
                 get_rate_limiter(alias)
+            pool_member_set = set()
+            for pid, pcfg in MODEL_POOLS.items():
+                members = list(pcfg.get("members", []))
+                pool_groups[pid] = members
+                pool_labels[pid] = AVAILABLE_MODELS.get(pid, {}).get("display", pid)
+                pool_member_set.update(members)
+            standalone_entries = [
+                (cfg.get("priority", 99), alias)
+                for alias, cfg in AVAILABLE_MODELS.items()
+                if alias not in MODEL_POOLS
+                and alias not in pool_member_set
+                and not cfg.get("hidden", False)
+            ]
+            standalone_entries.sort()
+            standalone_aliases = [alias for _, alias in standalone_entries]
         except Exception as e:
             logger.warning("[StatsPusher] Failed to pre-initialize rate limiters: %s", e)
 
@@ -86,6 +104,9 @@ class StatsPusher:
                 "channel": "stats:overview",
                 "timestamp": int(now * 1000),
                 "models": model_stats,
+                "pools": pool_groups,
+                "pool_labels": pool_labels,
+                "standalone": standalone_aliases,
                 "connections": ws_manager.get_connection_count(),
                 "channels": ws_manager.get_channel_count(),
                 "active_keys": active_keys,

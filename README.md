@@ -106,7 +106,7 @@ Or shell:
 ```bash
 export ANTHROPIC_BASE_URL="http://127.0.0.1:58100"
 export ANTHROPIC_AUTH_TOKEN="sk-<account-key>"
-export ANTHROPIC_MODEL="gemini-flash-35"
+export ANTHROPIC_MODEL="gemini-flash"
 claude
 ```
 
@@ -156,16 +156,21 @@ Client ──► Proxy layer      format conversion only, no key/pool logic
 
 Proxies are deliberately dumb: they translate protocols and delegate everything else. All resilience logic lives in `PoolManager`, so a fix there applies to every client protocol at once.
 
-### Virtual model pools
+### Virtual model pools & standalone models
 
-You request `gemini-flash`. Behind it sits an ordered set of interchangeable members:
+You request `gemini-flash`. Behind it sits an ordered set of interchangeable Flash 3 members:
 
-| Pool | Members | Notes |
+| Pool / Model | Members / Backing ID | Notes |
 |---|---|---|
-| `gemini-flash` | `3.8` · `3.7` · `3.6` · `3.5` · `3.0` · `2.5` | 3.7 is capacity-constrained upstream, so its RPM is throttled |
-| `gemini-flash-lite` | `3.5-lite` · `3.1` · `2.5` | cheaper tier for sub-agents |
+| `gemini-flash` (pool) | `3.6` · `3.0` · `3.8` | Flash 3 series only |
+| `gemini-flash-lite` (pool) | `3.5-lite` · `3.1` · `2.5` | cheaper tier for sub-agents |
+| `gemini-4-hydrogen` (standalone) | `gemini-4-hydrogen` | Gemini 4 Hydrogen, runs outside any pool |
+| `gemini-flash-25` (standalone) | `gemini-2.5-flash` | Flash 2.5 standalone, outside `gemini-flash` pool |
+| `gemma-4-26b` (standalone) | `gemma-4-26b-a4b-it` | Gemma 4 standalone model (14k safe / 262k physical) |
+| `gemini-embedding-2` / `gemini-embedding-001` | `gemini-embedding-2` / `gemini-embedding-001` | Embedding models (`8192` / `2048` input token limit) |
+| `gemini-decision-1` | `gemini-decision-1` | Gemini Decisions API standalone model |
 
-Each member has its own budget. `ModelPool` gives one member one concurrent request at a time, so a slow model cannot starve the others. After `POOL_SWAP_FAILURES` consecutive failures a member is excluded and the router moves to the next.
+Each pool member has its own budget. `ModelPool` gives one member one concurrent request at a time, so a slow model cannot starve the others. After `POOL_SWAP_FAILURES` consecutive failures a member is excluded and the router moves to the next.
 
 Aliases follow `gemini-flash-<version>` → `gemini-<version>-flash`. Override any backing model via env (see `.env.example`).
 
@@ -216,7 +221,9 @@ grounded evidence without consuming Gemini model quota.
 | `POST` | `/v1/chat/completions` | OpenAI |
 | `POST` | `/opencode/v1/chat/completions` | OpenAI |
 | `POST` | `/v1/responses` | OpenAI Responses — `tools`, `instructions`, `stream` all mapped |
-| `POST` | `/v1/models/{id}:generateContent` | Gemini native (pass-through) |
+| `POST` | `/v1/embeddings`, `/embeddings`, `/opencode/v1/embeddings` | OpenAI Embeddings (`gemini-embedding-2`, `gemini-embedding-001`) |
+| `POST` | `/v1/decisions`, `/decisions`, `/v1beta/decisions`, `/v1alpha/decisions` | Gemini Decisions API (`gemini-decision-1`) |
+| `POST` | `/v1/models/{id}:generateContent`, `:embedContent`, `:batchEmbedContents` | Gemini native (`v1`, `v1beta`, `v1alpha`) |
 | `GET` | `/v1/models` | OpenAI **and** Anthropic schema superset |
 | `POST` | `/v1/search`, `/search` | Router |
 | `POST`| `/mcp` | MCP Server — tool `search_web`, Bearer token |

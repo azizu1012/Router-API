@@ -125,10 +125,16 @@ def start_flush_loop(interval: float = 5.0) -> None:
 
 def normalize_to_pool_alias(alias: str) -> str:
     alias_lower = str(alias).strip().lower()
-    if "lite" in alias_lower:
+    if not alias_lower:
+        return alias
+    from src.core.config.api_config import MODEL_POOLS, BACKING_TO_ALIAS
+    resolved = BACKING_TO_ALIAS.get(alias_lower, alias_lower)
+    for pool_name, pool_cfg in MODEL_POOLS.items():
+        members = [str(m).lower() for m in pool_cfg.get("members", [])]
+        if resolved == pool_name or resolved in members:
+            return pool_name
+    if "lite" in resolved and resolved.startswith("gemini-") and "flash" in resolved:
         return "gemini-flash-lite"
-    if "flash" in alias_lower:
-        return "gemini-flash"
     return alias
 
 

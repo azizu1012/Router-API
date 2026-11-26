@@ -27,7 +27,7 @@ from src.api.opencode_proxy.handler.proxy import (
     _resolve_thinking_config,
 )
 
-V3 = "gemini-3.5-flash"
+V3 = "gemini-3.6-flash"
 V25 = "gemini-2.5-flash"
 
 
@@ -221,3 +221,12 @@ class TestExplicitThinkingLevelIsChecked:
 
         level = types.ThinkingConfig(**cfg).thinking_level
         assert level in tuple(types.ThinkingLevel), level
+
+    def test_gemini_4_uses_thinking_level_and_embedding_decision_have_no_thinking(self):
+        from src.core.providers.gemini.thinking import get_default_thinking_for_model
+
+        cfg4 = _resolve_thinking_config({"output_config": {"effort": "high"}}, "gemini-4-hydrogen")
+        assert cfg4 == {"thinking_level": "high", "include_thoughts": True}
+        assert get_default_thinking_for_model("gemini-4-hydrogen")["thinking_level"] == "medium"
+        assert get_default_thinking_for_model("gemini-embedding-2") == {}
+        assert get_default_thinking_for_model("gemini-decision-1") == {}

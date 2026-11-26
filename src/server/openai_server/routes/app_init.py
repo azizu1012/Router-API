@@ -144,7 +144,9 @@ MCP_PATH_PREFIX = "/mcp"
 # new route is refused by default instead of quietly becoming reachable.
 _MODEL_PATHS = (
     "/v1/messages", "/messages", "/v1/chat/completions", "/v1/completions",
-    "/v1/responses", "/opencode/", "/v1beta/", "/v1alpha/", "/v1/models/",
+    "/v1/responses", "/v1/embeddings", "/embeddings",
+    "/v1/decisions", "/decisions",
+    "/opencode/", "/v1beta/", "/v1alpha/", "/v1/models/",
 )
 
 
@@ -345,7 +347,16 @@ async def static_mount_fallback_middleware(request: Request, call_next):
 
     response = await call_next(request)
 
-    if response.status_code in (404, 405) and _looks_like_api_traffic(path):
+    # Only rewrite a router-level miss. An endpoint is allowed to answer 404
+    # itself (unknown model, unknown alias, ...), and replacing that JSON body
+    # with "No route for ..." hid the real reason. Starlette's unmatched-route
+    # response is plain text; endpoint errors are JSON.
+    is_router_miss = "application/json" not in response.headers.get("content-type", "")
+    if (
+        response.status_code in (404, 405)
+        and is_router_miss
+        and _looks_like_api_traffic(path)
+    ):
         return JSONResponse(
             status_code=404,
             content={"error": {

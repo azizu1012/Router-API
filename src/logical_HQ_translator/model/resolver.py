@@ -56,7 +56,20 @@ async def _resolve_model(body: Dict[str, Any], pool_alias_override: Optional[str
     else:
         model_alias = router.resolve_model_alias(body.get("model", ""), account=account)
     if not model_alias:
-        model_alias = config.DEFAULT_MODEL_ALIAS
+        requested = str(body.get("model") or "").strip()
+        raise HTTPException(
+            status_code=404,
+            detail={
+                "type": "error",
+                "error": {
+                    "type": "invalid_request_error",
+                    "message": (
+                        f"Model '{requested}' not found. Add a model alias for it "
+                        "or enable a custom endpoint that serves it."
+                    ),
+                },
+            },
+        )
 
     from src.core.config.api_config import is_model_enabled
     if not is_model_enabled(model_alias):

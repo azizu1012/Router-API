@@ -9,6 +9,8 @@ import uuid
 import time
 from typing import Any, AsyncIterator, Dict, List, Optional
 
+from fastapi import HTTPException
+
 from src.core.orchestration.pool_manager import pool_manager
 from src.core.config_n_logg import config
 from src.core.config_n_logg.logger import logger_proxy as logger
@@ -259,18 +261,30 @@ class OpenCodeProxy:
         self, body: Dict[str, Any], account: Optional[Dict[str, Any]] = None, is_opencode: bool = False
     ) -> str:
         """
-        Giải quyết bí danh mô hình từ body yêu cầu hoặc từ cấu hình mặc định.
+        Resolve the model name in the request body to a routable alias.
 
-        Args:
-            body (Dict[str, Any]): Body của yêu cầu API, chứa thông tin về mô hình được yêu cầu.
-            account (Optional[Dict[str, Any]], optional): Thông tin tài khoản người dùng. Mặc định là None.
-            is_opencode (bool, optional): Cờ chỉ ra liệu yêu cầu có phải là từ OpenCode hay không. Mặc định là False.
-
-        Returns:
-            str: Bí danh mô hình đã được giải quyết hoặc bí danh mô hình mặc định.
+        Raises:
+            HTTPException: 404 when the model is not a native alias, an enabled
+                per-account alias, or a model served by an enabled custom
+                endpoint. There is no default-model fallback.
         """
-        model_alias = router.resolve_model_alias(body.get("model", ""))
-        return model_alias or config.DEFAULT_MODEL_ALIAS
+        model_alias = router.resolve_model_alias(body.get("model", ""), account=account)
+        if not model_alias:
+            requested = str(body.get("model") or "").strip()
+            raise HTTPException(
+                status_code=404,
+                detail={
+                    "type": "error",
+                    "error": {
+                        "type": "invalid_request_error",
+                        "message": (
+                            f"Model '{requested}' not found. Add a model alias for it "
+                            "or enable a custom endpoint that serves it."
+                        ),
+                    },
+                },
+            )
+        return model_alias
 
     # ── Entry Points ─────────────────────────────────────────────
 
